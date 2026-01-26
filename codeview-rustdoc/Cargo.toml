@@ -1,0 +1,12 @@
+[package]
+name = "codeview-rustdoc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cargo_metadata = "0.23.1"
+codeview-core = { path = "../codeview-core" }
+rustdoc-types = "0.57.0"
+serde_json = "1.0.149"
+syn = { version = "2.0.114", features = ["full", "visit"] }
+thiserror = "2.0.18"

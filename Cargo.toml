@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "codeview-core",
+    "codeview-rustdoc",
+    "codeview-cli",
+]
+resolver = "3"

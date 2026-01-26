@@ -1,0 +1,111 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Space+Grotesk:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --font-display: 'Fraunces', serif;
+    --font-body: 'Space Grotesk', sans-serif;
+    --bg: #f4efe6;
+    --bg-glow: #f7e2c5;
+    --panel: #fffaf1;
+    --panel-strong: #fff4e3;
+    --panel-border: rgba(38, 28, 20, 0.12);
+    --ink: #261c14;
+    --muted: #6f5f54;
+    --accent: #d76a2f;
+    --accent-strong: #c45123;
+    --edge-default: #5c6f7c;
+    --edge-contains: #c45d4f;
+    --edge-defines: #b85c3f;
+    --edge-implements: #4d6d7a;
+    --edge-uses: #6d7a5b;
+    --edge-calls: #785a8e;
+    --edge-calls-runtime: #8c6f5a;
+    --edge-derives: #5d7c74;
+    --kind-crate: #d1495b;
+    --kind-module: #f08a5d;
+    --kind-struct: #f2b04b;
+    --kind-union: #6c8ead;
+    --kind-enum: #2e8f96;
+    --kind-trait: #7a5b6c;
+    --kind-trait-alias: #8f7aa5;
+    --kind-impl: #3d5a80;
+    --kind-function: #4d9078;
+    --kind-method: #577590;
+    --kind-type-alias: #bc5f5f;
+    --kind-other: #a07a63;
+  }
+
+  body {
+    min-height: 100vh;
+    font-family: var(--font-body);
+    color: var(--ink);
+    background:
+      radial-gradient(circle at top left, rgba(247, 226, 197, 0.8), transparent 48%),
+      radial-gradient(circle at bottom right, rgba(235, 199, 173, 0.6), transparent 50%),
+      linear-gradient(120deg, var(--bg), #fdf8f0 60%);
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+@layer components {
+  .graph-node text {
+    font-size: 0.7rem;
+    font-weight: 500;
+    fill: var(--ink);
+    text-anchor: middle;
+    pointer-events: none;
+  }
+
+  .graph-node circle {
+    stroke: rgba(255, 255, 255, 0.7);
+    stroke-width: 2px;
+    transition: transform 0.2s ease, stroke 0.2s ease, stroke-width 0.2s ease;
+    cursor: pointer;
+  }
+
+  .graph-node.selected circle {
+    stroke: var(--accent-strong);
+    stroke-width: 3px;
+  }
+
+  .graph-link {
+    stroke-width: 1.6px;
+    opacity: 0.85;
+  }
+
+  .graph-link.inferred {
+    stroke-dasharray: 4 4;
+  }
+
+  .graph-link.runtime {
+    stroke-dasharray: 8 4;
+  }
+}
+
+@keyframes float-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
