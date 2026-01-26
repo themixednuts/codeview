@@ -350,6 +350,17 @@
       return result;
     }
 
+    // Remove nodes that appear in both directions (they'll be shown only in outgoing)
+    for (const id of outgoingNodes.keys()) {
+      if (incomingNodes.has(id)) {
+        // Merge edge kinds and keep in outgoing only
+        const outEntry = outgoingNodes.get(id)!;
+        const inEntry = incomingNodes.get(id)!;
+        outEntry.kinds.push(...inEntry.kinds);
+        incomingNodes.delete(id);
+      }
+    }
+
     const inArray = Array.from(incomingNodes.values());
     const outArray = Array.from(outgoingNodes.values());
 
@@ -696,17 +707,6 @@
       </g>
     {/each}
 
-    <!-- Labels for directions -->
-    {#if visData.nodes.filter(n => n.direction === 'in').length > 0}
-      <text x={60} y={30} class="fill-[var(--muted)] text-xs font-medium">
-        ← Incoming
-      </text>
-    {/if}
-    {#if visData.nodes.filter(n => n.direction === 'out').length > 0}
-      <text x={WIDTH - 60} y={30} text-anchor="end" class="fill-[var(--muted)] text-xs font-medium">
-        Outgoing →
-      </text>
-    {/if}
 
     <!-- Empty state hints -->
     {#if visData.nodes.length === 1}

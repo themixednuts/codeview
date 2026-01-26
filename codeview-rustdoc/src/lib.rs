@@ -64,7 +64,8 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
     let package = metadata
         .root_package()
         .ok_or(RustdocError::MissingRootPackage)?;
-    let crate_name = package.name.to_string();
+    // Normalize crate name: Cargo uses hyphens but Rust uses underscores internally
+    let crate_name = package.name.replace('-', "_");
 
     let status = Command::new("cargo")
         .arg("+nightly")
@@ -82,7 +83,7 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
     }
 
     let target_dir = metadata.target_directory.into_std_path_buf();
-    let crate_file = format!("{}.json", crate_name.replace('-', "_"));
+    let crate_file = format!("{crate_name}.json");
     let json_path = target_dir.join("doc").join(crate_file);
 
     Ok(RustdocJson {
@@ -1097,7 +1098,7 @@ fn crate_name_for_id(krate: &rdt::Crate, crate_id: u32, fallback: &str) -> Strin
     krate
         .external_crates
         .get(&crate_id)
-        .map(|krate| krate.name.clone())
+        .map(|krate| krate.name.replace('-', "_"))
         .unwrap_or_else(|| fallback.to_string())
 }
 
