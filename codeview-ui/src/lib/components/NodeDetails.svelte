@@ -5,9 +5,18 @@
   import CodeBlock from './CodeBlock.svelte';
   import CollapsibleSection from './CollapsibleSection.svelte';
 
-  let { selected, selectedEdges, kindLabels, visibilityLabels, edgeLabels, displayNode } = $props<{
+  let {
+    selected,
+    selectedEdges,
+    implBlocks,
+    kindLabels,
+    visibilityLabels,
+    edgeLabels,
+    displayNode
+  } = $props<{
     selected: Node | null;
     selectedEdges: SelectedEdges;
+    implBlocks: Node[];
     kindLabels: Record<NodeKind, string>;
     visibilityLabels: Record<Visibility, string>;
     edgeLabels: Record<EdgeKind, string>;
@@ -20,11 +29,22 @@
   let fieldsRef = $state<CollapsibleSection | null>(null);
   let variantsRef = $state<CollapsibleSection | null>(null);
   let docsRef = $state<CollapsibleSection | null>(null);
+  let implsRef = $state<CollapsibleSection | null>(null);
   let relationshipsRef = $state<CollapsibleSection | null>(null);
   let sourceRef = $state<CollapsibleSection | null>(null);
   let attrsRef = $state<CollapsibleSection | null>(null);
 
-  let allRefs = $derived([genericsRef, signatureRef, fieldsRef, variantsRef, docsRef, relationshipsRef, sourceRef, attrsRef].filter(Boolean) as CollapsibleSection[]);
+  let allRefs = $derived([
+    genericsRef,
+    signatureRef,
+    fieldsRef,
+    variantsRef,
+    docsRef,
+    implsRef,
+    relationshipsRef,
+    sourceRef,
+    attrsRef
+  ].filter(Boolean) as CollapsibleSection[]);
 
   function expandAll() {
     for (const ref of allRefs) {
@@ -41,6 +61,7 @@
   // Smart defaults: collapse sections with many items
   const FIELDS_COLLAPSE_THRESHOLD = 5;
   const VARIANTS_COLLAPSE_THRESHOLD = 5;
+  const IMPLS_COLLAPSE_THRESHOLD = 6;
   const EDGES_COLLAPSE_THRESHOLD = 8;
 
   function formatSignature(selected: Node): string | null {
@@ -119,7 +140,7 @@
         defaultOpen={true}
       >
         <div class="flex flex-wrap gap-2">
-          {#each selected.generics as generic}
+          {#each selected.generics as generic (generic)}
             <code class="rounded bg-[var(--panel)] px-2 py-1 text-sm text-[var(--ink)]">{generic}</code>
           {/each}
         </div>
@@ -140,7 +161,7 @@
           <div class="mt-4">
             <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Arguments</h4>
             <div class="mt-2 space-y-2">
-              {#each selected.signature.inputs as arg}
+              {#each selected.signature.inputs as arg (arg.name)}
                 <div class="flex items-baseline gap-2">
                   <code class="font-semibold text-[var(--ink)]">{arg.name}</code>
                   <span class="text-[var(--muted)]">:</span>
@@ -168,7 +189,7 @@
         defaultOpen={selected.fields.length <= FIELDS_COLLAPSE_THRESHOLD}
       >
         <div class="space-y-2">
-          {#each selected.fields as field}
+          {#each selected.fields as field (field.name)}
             <div class="flex items-baseline gap-2 rounded-lg bg-[var(--panel)] px-3 py-2">
               {#if field.visibility === 'Public'}
                 <span class="text-xs text-green-600">pub</span>
@@ -191,12 +212,12 @@
         defaultOpen={selected.variants.length <= VARIANTS_COLLAPSE_THRESHOLD}
       >
         <div class="space-y-3">
-          {#each selected.variants as variant}
+          {#each selected.variants as variant (variant.name)}
             <div class="rounded-lg bg-[var(--panel)] px-3 py-2">
               <code class="font-semibold text-[var(--ink)]">{variant.name}</code>
               {#if variant.fields.length > 0}
                 <div class="ml-4 mt-2 space-y-1 border-l-2 border-[var(--panel-border)] pl-3">
-                  {#each variant.fields as field}
+                  {#each variant.fields as field (field.name)}
                     <div class="flex items-baseline gap-2 text-sm">
                       <code class="text-[var(--ink)]">{field.name}</code>
                       <span class="text-[var(--muted)]">:</span>
@@ -222,6 +243,26 @@
       </CollapsibleSection>
     {/if}
 
+    {#if implBlocks.length > 0}
+      <CollapsibleSection
+        bind:this={implsRef}
+        title="Trait Implementations"
+        count={implBlocks.length}
+        defaultOpen={implBlocks.length <= IMPLS_COLLAPSE_THRESHOLD}
+      >
+        <div class="space-y-2">
+          {#each implBlocks as implBlock (implBlock.id)}
+            <div class="flex items-baseline gap-2 text-sm">
+              <span class="rounded bg-[var(--panel)] px-2 py-0.5 text-xs font-medium text-[var(--muted)]">
+                impl
+              </span>
+              <span class="text-[var(--ink)]">{implBlock.name}</span>
+            </div>
+          {/each}
+        </div>
+      </CollapsibleSection>
+    {/if}
+
     <!-- Relationships (collapse if many edges) -->
     <CollapsibleSection
       bind:this={relationshipsRef}
@@ -239,7 +280,7 @@
             {#if selectedEdges.outgoing.length === 0}
               <p class="text-sm text-[var(--muted)]">No outgoing edges</p>
             {:else}
-              {#each selectedEdges.outgoing as edge}
+              {#each selectedEdges.outgoing as edge (edge.kind + '-' + edge.to)}
                 <div class="flex items-baseline gap-2 text-sm">
                   <span class="rounded bg-[var(--panel)] px-2 py-0.5 text-xs font-medium text-[var(--muted)]">
                     {edgeLabels[edge.kind]}
@@ -260,7 +301,7 @@
             {#if selectedEdges.incoming.length === 0}
               <p class="text-sm text-[var(--muted)]">No incoming edges</p>
             {:else}
-              {#each selectedEdges.incoming as edge}
+              {#each selectedEdges.incoming as edge (edge.kind + '-' + edge.from)}
                 <div class="flex items-baseline gap-2 text-sm">
                   <span class="rounded bg-[var(--panel)] px-2 py-0.5 text-xs font-medium text-[var(--muted)]">
                     {edgeLabels[edge.kind]}
@@ -297,7 +338,7 @@
         defaultOpen={selected.attrs.length <= 3}
       >
         <div class="space-y-1">
-          {#each selected.attrs as attr}
+          {#each selected.attrs as attr (attr)}
             <code class="block text-sm text-[var(--muted)]">{attr}</code>
           {/each}
         </div>

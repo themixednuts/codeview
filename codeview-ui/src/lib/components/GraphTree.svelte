@@ -304,7 +304,7 @@
   <div class="select-none">
     <button
       type="button"
-      class="flex w-full items-center gap-1 rounded px-2 py-1 text-left text-sm hover:bg-[var(--panel-strong)] {isSelected
+      class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
         ? 'bg-[var(--accent)]/10 ring-1 ring-[var(--accent)]'
         : ''} {!matches ? 'opacity-50' : ''}"
       style="padding-left: {depth * 16 + 8}px"
@@ -313,20 +313,20 @@
         if (item.selectable) onSelect(item.node);
       }}
     >
-      <span class="w-4 text-center text-[var(--muted)]">
+      <span class="flex h-4 w-4 items-center justify-center text-[var(--muted)]">
         {#if hasChildren}
           {isExpanded ? '▼' : '▶'}
         {/if}
       </span>
       <span
-        class="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold text-white"
+        class="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold leading-none text-white"
         style="background-color: {kindColors[item.node.kind]}"
       >
         {kindIcons[item.node.kind]}
       </span>
-      <span class="truncate font-medium text-[var(--ink)]">{item.node.name}</span>
+      <span class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]">{item.node.name}</span>
       {#if item.node.visibility === 'Public'}
-        <span class="text-[10px] text-green-600">pub</span>
+        <span class="ml-auto text-[10px] leading-none text-green-600">pub</span>
       {/if}
     </button>
     {#if hasChildren && isExpanded}

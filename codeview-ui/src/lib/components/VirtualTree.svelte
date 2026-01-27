@@ -156,7 +156,7 @@
         {@const matches = matchesFilter(treeNode.node)}
         <button
           type="button"
-          class="flex w-full items-center gap-1 rounded px-2 text-left text-sm hover:bg-[var(--panel-strong)] {isSelected
+          class="flex w-full items-center gap-2 rounded px-2 text-left text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
             ? 'bg-[var(--accent)]/10 ring-1 ring-[var(--accent)]'
             : ''} {!matches ? 'opacity-50' : ''}"
           style="height: {ITEM_HEIGHT}px; padding-left: {depth * 16 + 8}px"
@@ -165,20 +165,20 @@
             if (treeNode.selectable) onSelect(treeNode.node);
           }}
         >
-          <span class="w-4 text-center text-[var(--muted)]">
+          <span class="flex h-4 w-4 items-center justify-center text-[var(--muted)]">
             {#if hasChildren}
               {isExpanded ? '▼' : '▶'}
             {/if}
           </span>
           <span
-            class="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold text-white"
+            class="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold leading-none text-white"
             style="background-color: {kindColors[treeNode.node.kind]}"
           >
             {kindIcons[treeNode.node.kind]}
           </span>
-          <span class="truncate font-medium text-[var(--ink)]">{treeNode.node.name}</span>
+          <span class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]">{treeNode.node.name}</span>
           {#if treeNode.node.visibility === 'Public'}
-            <span class="text-[10px] text-green-600">pub</span>
+            <span class="ml-auto text-[10px] leading-none text-green-600">pub</span>
           {/if}
         </button>
       {/each}
