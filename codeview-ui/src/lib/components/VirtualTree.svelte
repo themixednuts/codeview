@@ -1,19 +1,21 @@
-<script lang="ts">
+<script lang="ts" module>
   import type { Node, NodeKind } from '$lib/graph';
 
-  type TreeNode = {
+  export interface TreeNode {
     node: Node;
     children: TreeNode[];
     selectable: boolean;
-  };
+  }
 
-  type FlatNode = {
+  export interface FlatNode {
     treeNode: TreeNode;
     depth: number;
     isExpanded: boolean;
     hasChildren: boolean;
-  };
+  }
+</script>
 
+<script lang="ts">
   let {
     tree,
     selected,

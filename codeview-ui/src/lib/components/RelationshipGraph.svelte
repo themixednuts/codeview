@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Edge, Graph, Node, NodeKind } from '$lib/graph';
+  import type { Edge, EdgeKind, Graph, Node, NodeKind } from '$lib/graph';
   // Note: Use plain Map/Set for temporary computation to avoid proxy overhead
   // SvelteMap/SvelteSet should only be used for persistent reactive state
 
@@ -12,6 +12,42 @@
     selected: Node;
     onSelect: (node: Node) => void;
   }>();
+
+  // Edge filtering - categorize edges as structural or semantic
+  const structuralEdgeKinds: EdgeKind[] = ['Contains', 'Defines'];
+  const semanticEdgeKinds: EdgeKind[] = ['UsesType', 'Implements', 'CallsStatic', 'CallsRuntime', 'Derives'];
+
+  // Filter state - default: show semantic, hide structural
+  let showStructural = $state(false);
+  let showSemantic = $state(true);
+
+  // Filter edges before layout
+  let filteredEdges = $derived.by(() => {
+    return graph.edges.filter((edge) => {
+      if (structuralEdgeKinds.includes(edge.kind)) {
+        return showStructural;
+      }
+      if (semanticEdgeKinds.includes(edge.kind)) {
+        return showSemantic;
+      }
+      return true; // Unknown edge kinds default to visible
+    });
+  });
+
+  // Create filtered graph for layout
+  let filteredGraph = $derived.by(() => ({
+    nodes: graph.nodes,
+    edges: filteredEdges
+  }));
+
+  // Edge counts for UI display
+  let edgeCounts = $derived.by(() => {
+    const structural = graph.edges.filter((e) => structuralEdgeKinds.includes(e.kind)).length;
+    const semantic = graph.edges.filter((e) => semanticEdgeKinds.includes(e.kind)).length;
+    const total = graph.edges.length;
+    const visible = filteredEdges.length;
+    return { structural, semantic, total, visible };
+  });
 
   type VisNode = {
     node: Node;
@@ -171,7 +207,7 @@
   let hoveredNodeId = $state<string | null>(null);
   let hoveredEdgeIndex = $state<number | null>(null);
 
-  let visData = $derived(computeLayout(graph, selected));
+  let visData = $derived(computeLayout(filteredGraph, selected));
 
   // Compute positions with fan-out effect for hovered node
   let animatedNodes = $derived.by(() => {
@@ -488,9 +524,38 @@
 </script>
 
 <div class="rounded-xl border border-[var(--panel-border)] bg-white overflow-hidden">
-  <div class="border-b border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 flex items-center justify-between">
-    <span class="text-sm font-medium text-[var(--ink)]">Relationship Graph</span>
-    <div class="flex items-center gap-4">
+  <div class="border-b border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 flex items-center justify-between flex-wrap gap-2">
+    <div class="flex items-center gap-3">
+      <span class="text-sm font-medium text-[var(--ink)]">Relationship Graph</span>
+      <!-- Edge count indicator -->
+      <span class="text-xs text-[var(--muted)]">
+        {visData.edges.length} edges
+      </span>
+    </div>
+    <div class="flex items-center gap-4 flex-wrap">
+      <!-- Edge type filters -->
+      <div class="flex items-center gap-1">
+        <button
+          type="button"
+          onclick={() => showStructural = !showStructural}
+          class="px-2 py-1 text-xs rounded-md border transition-colors {showStructural
+            ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
+            : 'bg-white text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel)]'}"
+          title="Show structural edges (Contains, Defines)"
+        >
+          Structure
+        </button>
+        <button
+          type="button"
+          onclick={() => showSemantic = !showSemantic}
+          class="px-2 py-1 text-xs rounded-md border transition-colors {showSemantic
+            ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
+            : 'bg-white text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel)]'}"
+          title="Show semantic edges (UsesType, Implements, Calls, Derives)"
+        >
+          Semantic
+        </button>
+      </div>
       <!-- Zoom controls -->
       <div class="flex items-center gap-1">
         <button

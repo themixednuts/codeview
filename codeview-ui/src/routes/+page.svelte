@@ -14,19 +14,43 @@
     Visibility
   } from '$lib/graph';
   import { SvelteSet } from 'svelte/reactivity';
-  import { sampleGraph } from '$lib/sample-graph';
   import GraphTree from '$lib/components/GraphTree.svelte';
   import NodeDetails from '$lib/components/NodeDetails.svelte';
   import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
+  import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
   import type { SelectedEdges } from '$lib/ui';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
+  import { onMount } from 'svelte';
 
   // Use $state.raw to avoid deep proxy overhead for large graphs
-  let graph = $state.raw<Graph | null>(sampleGraph);
+  let graph = $state.raw<Graph | null>(null);
   let loadError = $state<string | null>(null);
-  let loading = $state(false);
+  let loading = $state(true);
+
+  // Try to load graph from server on startup
+  onMount(async () => {
+    try {
+      const response = await fetch('/graph.json');
+      if (response.ok) {
+        const text = await response.text();
+        let parsed: unknown;
+        if (text.length > WORKER_THRESHOLD) {
+          parsed = await parseJsonWithWorker(text);
+        } else {
+          parsed = JSON.parse(text);
+        }
+        const loadedGraph = parseGraph(parsed);
+        if (loadedGraph) {
+          graph = loadedGraph;
+        }
+      }
+    } catch {
+      // No graph available - user can load one manually
+    }
+    loading = false;
+  });
   let filter = $state('');
   let hideExternal = $state(true);
   let selectedId = $state<string | null>(null);
@@ -204,7 +228,7 @@
   }
 
   function resetGraph() {
-    graph = sampleGraph;
+    graph = null;
     loadError = null;
     filter = '';
     hideExternal = true;
@@ -515,6 +539,14 @@
     <div class="flex-1 overflow-auto bg-[var(--bg)] p-6">
       {#if visibleSelected && filteredGraph}
         <div class="space-y-6">
+          <!-- Breadcrumb Navigation -->
+          <svelte:boundary>
+            <Breadcrumbs graph={filteredGraph} selected={visibleSelected} onSelect={handleSelect} />
+            {#snippet failed(error, reset)}
+              <div class="text-xs text-red-600">Failed to load breadcrumbs</div>
+            {/snippet}
+          </svelte:boundary>
+
           <!-- Visual Relationship Graph -->
           <svelte:boundary>
             <RelationshipGraph graph={filteredGraph} selected={visibleSelected} onSelect={handleSelect} />
