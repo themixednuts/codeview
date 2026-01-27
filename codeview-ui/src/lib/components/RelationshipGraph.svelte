@@ -1,16 +1,28 @@
 <script lang="ts">
   import type { Edge, EdgeKind, Graph, Node, NodeKind } from '$lib/graph';
+  import type { LayoutMode, VisEdge, VisNode } from '$lib/graph-layout';
+  import {
+    CENTER_X,
+    CENTER_Y,
+    LAYOUT_HEIGHT,
+    LAYOUT_WIDTH,
+    computeLayout,
+    getEdgeAnchor,
+    getNodeDimensions
+  } from '$lib/graph-layout';
   // Note: Use plain Map/Set for temporary computation to avoid proxy overhead
   // SvelteMap/SvelteSet should only be used for persistent reactive state
 
   let {
     graph,
     selected,
-    onSelect
+    onSelect,
+    layoutMode = 'ego'
   } = $props<{
     graph: Graph;
     selected: Node;
     onSelect: (node: Node) => void;
+    layoutMode?: LayoutMode;
   }>();
 
   // Edge filtering - categorize edges as structural or semantic
@@ -49,40 +61,14 @@
     return { structural, semantic, total, visible };
   });
 
-  type VisNode = {
-    node: Node;
-    x: number;
-    y: number;
-    baseX: number;
-    baseY: number;
-    angle: number;
-    isCenter: boolean;
-    edgeKind: string;
-    direction: 'in' | 'out' | 'center';
-    layer: number;
-    indexInLayer: number;
-    totalInLayer: number;
-    layoutRadius: number; // The radius used during layout
-  };
-
-  type VisEdge = {
-    from: VisNode;
-    to: VisNode;
-    kind: string;
-    direction: 'in' | 'out';
-  };
-
-  const WIDTH = 700;
-  const HEIGHT = 500;
-  const CENTER_X = WIDTH / 2;
-  const CENTER_Y = HEIGHT / 2;
-  const BASE_RADIUS = 160;
-  const CENTER_RADIUS = 46;
-  const OUTER_RADIUS = 30;
-  const ARC_PADDING = 12;
+  const WIDTH = LAYOUT_WIDTH;
+  const HEIGHT = LAYOUT_HEIGHT;
+  const RECT_CORNER_RADIUS = 10;
+  const HEADER_HEIGHT = 16;
+  const GRID_SIZE = 32;
+  const PIN_RADIUS = 4;
+  const EDGE_NODE_PADDING = 10;
   const HOVER_RING = 4;
-  const LAYER_SPACING = 50;
-  const MAX_NODES_PER_LAYER = 16;
 
   // Pan and zoom state
   let zoom = $state(1);
@@ -204,56 +190,18 @@
     Derives: '#8b5cf6'
   };
 
+  function getNodeLabelLimit(node: Node, isCenter: boolean): number {
+    const dims = getNodeDimensions(node, isCenter);
+    if (dims.isRect) return isCenter ? 20 : 16;
+    return isCenter ? 12 : 9;
+  }
+
   let hoveredNodeId = $state<string | null>(null);
   let hoveredEdgeIndex = $state<number | null>(null);
 
-  let visData = $derived(computeLayout(filteredGraph, selected));
+  let visData = $derived(computeLayout(filteredGraph, selected, layoutMode));
 
-  // Compute positions with fan-out effect for hovered node
-  let animatedNodes = $derived.by(() => {
-    const nodes = visData.nodes;
-    if (!hoveredNodeId) return nodes;
-
-    const hoveredNode = nodes.find((n) => n.node.id === hoveredNodeId);
-    if (!hoveredNode || hoveredNode.isCenter) return nodes;
-
-    // Find siblings (same direction and layer)
-    const siblings = nodes.filter(
-      (n) =>
-        !n.isCenter &&
-        n.direction === hoveredNode.direction &&
-        n.layer === hoveredNode.layer
-    );
-
-    if (siblings.length <= 1) return nodes;
-
-    const siblingIndexById = new Map(
-      siblings.map((sibling, index) => [sibling.node.id, index] as const)
-    );
-    const hoveredIndex = siblingIndexById.get(hoveredNodeId);
-    if (hoveredIndex === undefined) return nodes;
-    const fanOutAngle = Math.min(0.22, 1.2 / siblings.length);
-
-    return nodes.map((n) => {
-      if (n.isCenter) return n;
-      if (n.direction !== hoveredNode.direction || n.layer !== hoveredNode.layer) return n;
-
-      const siblingIndex = siblingIndexById.get(n.node.id);
-      if (siblingIndex === undefined) return n;
-      const distanceFromHovered = siblingIndex - hoveredIndex;
-
-      // Apply fan-out: push siblings away from hovered node
-      const angleOffset = distanceFromHovered * fanOutAngle;
-      const newAngle = n.angle + angleOffset;
-
-      // Use the same radius from layout
-      const direction = n.direction === 'in' ? -1 : 1;
-      const newX = CENTER_X + direction * n.layoutRadius * Math.cos(newAngle);
-      const newY = CENTER_Y + n.layoutRadius * Math.sin(newAngle);
-
-      return { ...n, x: newX, y: newY };
-    });
-  });
+  let animatedNodes = $derived.by(() => visData.nodes);
 
   let animatedNodeMap = $derived.by(() => {
     const map = new Map<string, VisNode>();
@@ -276,159 +224,6 @@
     return neighbors;
   });
 
-  function computeLayout(graph: Graph, selected: Node): { nodes: VisNode[]; edges: VisEdge[] } {
-    // Use plain Map for computation (not SvelteMap) to avoid proxy overhead
-    const nodeMap = new Map<string, Node>();
-    for (const node of graph.nodes) {
-      nodeMap.set(node.id, node);
-    }
-
-    const incoming = graph.edges.filter((e) => e.to === selected.id);
-    const outgoing = graph.edges.filter((e) => e.from === selected.id);
-
-    // Deduplicate nodes (a node might have multiple edges to/from selected)
-    // Use plain Map for computation
-    const incomingNodes = new Map<string, { node: Node; kinds: string[] }>();
-    const outgoingNodes = new Map<string, { node: Node; kinds: string[] }>();
-
-    for (const edge of incoming) {
-      const node = nodeMap.get(edge.from);
-      if (node && node.id !== selected.id) {
-        if (!incomingNodes.has(node.id)) {
-          incomingNodes.set(node.id, { node, kinds: [] });
-        }
-        incomingNodes.get(node.id)!.kinds.push(edge.kind);
-      }
-    }
-
-    for (const edge of outgoing) {
-      const node = nodeMap.get(edge.to);
-      if (node && node.id !== selected.id) {
-        if (!outgoingNodes.has(node.id)) {
-          outgoingNodes.set(node.id, { node, kinds: [] });
-        }
-        outgoingNodes.get(node.id)!.kinds.push(edge.kind);
-      }
-    }
-
-    const visNodes: VisNode[] = [];
-    const visEdges: VisEdge[] = [];
-
-    // Center node
-    const centerNode: VisNode = {
-      node: selected,
-      x: CENTER_X,
-      y: CENTER_Y,
-      baseX: CENTER_X,
-      baseY: CENTER_Y,
-      angle: 0,
-      isCenter: true,
-      edgeKind: '',
-      direction: 'center',
-      layer: 0,
-      indexInLayer: 0,
-      totalInLayer: 1,
-      layoutRadius: 0
-    };
-    visNodes.push(centerNode);
-
-    // Layout nodes in an arc - simple approach
-    function layoutNodes(
-      entries: { node: Node; kinds: string[] }[],
-      direction: 'in' | 'out'
-    ): VisNode[] {
-      const result: VisNode[] = [];
-      if (entries.length === 0) return result;
-
-      const directionMultiplier = direction === 'in' ? -1 : 1;
-      const count = entries.length;
-
-      // Use full arc (nearly full semicircle) and adjust radius if needed
-      const maxArc = Math.PI * 0.95; // Use 95% of semicircle
-
-      // For many nodes, increase radius to give more arc length
-      // Each node needs ~55px of arc space (can overlap slightly)
-      const minArcPerNode = OUTER_RADIUS * 2 + ARC_PADDING;
-      const neededArcLength = count * minArcPerNode;
-      const minRadiusForArc = neededArcLength / maxArc;
-      const radius = Math.max(BASE_RADIUS, minRadiusForArc);
-
-      // Calculate angle spread - use what we need up to max
-      const actualArcNeeded = (count - 1) * minArcPerNode / radius;
-      const arcSpread = Math.min(maxArc, Math.max(actualArcNeeded, Math.PI * 0.4));
-
-      const angleStep = count > 1 ? arcSpread / (count - 1) : 0;
-      const startAngle = count > 1 ? -arcSpread / 2 : 0;
-
-      entries.forEach((entry, i) => {
-        const angle = startAngle + i * angleStep;
-        const x = CENTER_X + directionMultiplier * radius * Math.cos(angle);
-        const y = CENTER_Y + radius * Math.sin(angle);
-
-        const visNode: VisNode = {
-          node: entry.node,
-          x,
-          y,
-          baseX: x,
-          baseY: y,
-          angle,
-          isCenter: false,
-          edgeKind: formatEdgeKinds(entry.kinds),
-          direction,
-          layer: 0,
-          indexInLayer: i,
-          totalInLayer: count,
-          layoutRadius: radius
-        };
-        result.push(visNode);
-      });
-
-      return result;
-    }
-
-    // Remove nodes that appear in both directions (they'll be shown only in outgoing)
-    for (const id of outgoingNodes.keys()) {
-      if (incomingNodes.has(id)) {
-        // Merge edge kinds and keep in outgoing only
-        const outEntry = outgoingNodes.get(id)!;
-        const inEntry = incomingNodes.get(id)!;
-        outEntry.kinds.push(...inEntry.kinds);
-        incomingNodes.delete(id);
-      }
-    }
-
-    const inArray = Array.from(incomingNodes.values());
-    const outArray = Array.from(outgoingNodes.values());
-
-    const inVisNodes = layoutNodes(inArray, 'in');
-    const outVisNodes = layoutNodes(outArray, 'out');
-
-    visNodes.push(...inVisNodes);
-    visNodes.push(...outVisNodes);
-
-    // Create edges
-    for (const visNode of inVisNodes) {
-      const entry = incomingNodes.get(visNode.node.id)!;
-      visEdges.push({
-        from: visNode,
-        to: centerNode,
-        kind: formatEdgeKinds(entry.kinds),
-        direction: 'in'
-      });
-    }
-
-    for (const visNode of outVisNodes) {
-      const entry = outgoingNodes.get(visNode.node.id)!;
-      visEdges.push({
-        from: centerNode,
-        to: visNode,
-        kind: formatEdgeKinds(entry.kinds),
-        direction: 'out'
-      });
-    }
-
-    return { nodes: visNodes, edges: visEdges };
-  }
 
   function handleNodeClick(node: Node) {
     if (node.id !== selected.id) {
@@ -436,17 +231,9 @@
     }
   }
 
-  function getNodeRadius(isCenter: boolean): number {
-    return isCenter ? CENTER_RADIUS : OUTER_RADIUS;
-  }
-
   function truncateName(name: string, maxLen: number): string {
     if (name.length <= maxLen) return name;
     return name.slice(0, maxLen - 1) + '...';
-  }
-
-  function formatEdgeKinds(kinds: string[]): string {
-    return Array.from(new Set(kinds)).join(', ');
   }
 
   // Calculate label positions to avoid overlap
@@ -602,6 +389,14 @@
   >
     <svg viewBox="0 0 {WIDTH} {HEIGHT}" class="w-full" style="max-height: 500px;">
       <defs>
+      <pattern id="grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse">
+        <path
+          d={`M ${GRID_SIZE} 0 L 0 0 0 ${GRID_SIZE}`}
+          fill="none"
+          stroke="#e2e8f0"
+          stroke-width="0.6"
+        />
+      </pattern>
       <marker
         id="arrow-out"
         viewBox="0 0 10 10"
@@ -649,19 +444,25 @@
     </defs>
 
     <g transform="translate({panX}, {panY}) scale({zoom})">
+      <rect width={WIDTH} height={HEIGHT} fill="url(#grid)" />
       <!-- Edges (non-highlighted first, then highlighted on top) -->
     {#each visData.edges as edge, edgeIndex (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
       {@const fromNode = animatedNodeMap.get(edge.from.node.id) ?? edge.from}
       {@const toNode = animatedNodeMap.get(edge.to.node.id) ?? edge.to}
-      {@const dx = toNode.x - fromNode.x}
-      {@const dy = toNode.y - fromNode.y}
+      {@const startAnchor = getEdgeAnchor(fromNode, toNode)}
+      {@const endAnchor = getEdgeAnchor(toNode, fromNode)}
+      {@const dx = endAnchor.x - startAnchor.x}
+      {@const dy = endAnchor.y - startAnchor.y}
       {@const len = Math.hypot(dx, dy) || 1}
-      {@const fromRadius = getNodeRadius(edge.from.isCenter)}
-      {@const toRadius = getNodeRadius(edge.to.isCenter)}
-      {@const startX = fromNode.x + (dx / len) * fromRadius}
-      {@const startY = fromNode.y + (dy / len) * fromRadius}
-      {@const endX = toNode.x - (dx / len) * (toRadius + 8)}
-      {@const endY = toNode.y - (dy / len) * (toRadius + 8)}
+      {@const startX = startAnchor.x}
+      {@const startY = startAnchor.y}
+      {@const endX = endAnchor.x - (dx / len) * EDGE_NODE_PADDING}
+      {@const endY = endAnchor.y - (dy / len) * EDGE_NODE_PADDING}
+      {@const curveOffset = Math.min(Math.abs(dx) * 0.5, 120)}
+      {@const dir = dx >= 0 ? 1 : -1}
+      {@const c1x = startX + curveOffset * dir}
+      {@const c2x = endX - curveOffset * dir}
+      {@const pathD = `M ${startX} ${startY} C ${c1x} ${startY} ${c2x} ${endY} ${endX} ${endY}`}
       {@const isHighlighted = hoveredNodeId === edge.from.node.id || hoveredNodeId === edge.to.node.id || hoveredEdgeIndex === edgeIndex}
       <g
         class="edge transition-opacity duration-150"
@@ -669,11 +470,9 @@
         onmouseenter={() => hoveredEdgeIndex = edgeIndex}
         onmouseleave={() => hoveredEdgeIndex = null}
       >
-        <line
-          x1={startX}
-          y1={startY}
-          x2={endX}
-          y2={endY}
+        <path
+          d={pathD}
+          fill="none"
           stroke={edge.direction === 'out' ? 'var(--accent)' : (isHighlighted ? '#475569' : '#94a3b8')}
           stroke-width={isHighlighted ? 3 : 2}
           marker-end={edge.direction === 'out'
@@ -720,10 +519,16 @@
 
     <!-- Nodes -->
     {#each animatedNodes as visNode (visNode.node.id)}
-      {@const radius = getNodeRadius(visNode.isCenter)}
       {@const isHovered = hoveredNodeId === visNode.node.id}
       {@const isRelatedToHover = hoveredNeighborIds?.has(visNode.node.id) ?? false}
       {@const shouldDim = hoveredNodeId && !isHovered && !isRelatedToHover && !visNode.isCenter}
+      {@const dims = getNodeDimensions(visNode.node, visNode.isCenter)}
+      {@const hoverScale = isHovered && !visNode.isCenter ? 1.06 : 1}
+      {@const nodeWidth = dims.width * hoverScale}
+      {@const nodeHeight = dims.height * hoverScale}
+      {@const headerHeight = Math.min(HEADER_HEIGHT, nodeHeight)}
+      {@const radius = nodeWidth / 2}
+      {@const labelLimit = getNodeLabelLimit(visNode.node, visNode.isCenter)}
       <g
         class="node cursor-pointer transition-all duration-150"
         style="transform: translate({visNode.x}px, {visNode.y}px); opacity: {shouldDim ? 0.3 : 1}"
@@ -740,24 +545,64 @@
           }
         }}
       >
-        <!-- Node circle -->
-        <circle
-            r={isHovered && !visNode.isCenter ? radius + HOVER_RING : radius}
-          fill={kindColors[visNode.node.kind]}
-          class="transition-all duration-150 {visNode.isCenter
-            ? 'stroke-[var(--accent)] stroke-[3px]'
-            : isHovered
+        {#if dims.isRect}
+          <rect
+            x={-nodeWidth / 2}
+            y={-nodeHeight / 2}
+            width={nodeWidth}
+            height={nodeHeight}
+            rx={RECT_CORNER_RADIUS}
+            fill={kindColors[visNode.node.kind]}
+            opacity="0.88"
+            class="transition-all duration-150 {visNode.isCenter
               ? 'stroke-[var(--accent)] stroke-[3px]'
-              : 'hover:stroke-[var(--accent)] hover:stroke-2'}"
-        />
+              : isHovered
+                ? 'stroke-[var(--accent)] stroke-[3px]'
+                : 'hover:stroke-[var(--accent)] hover:stroke-2'}"
+          />
+          <rect
+            x={-nodeWidth / 2}
+            y={-nodeHeight / 2}
+            width={nodeWidth}
+            height={headerHeight}
+            rx={RECT_CORNER_RADIUS}
+            fill={kindColors[visNode.node.kind]}
+          />
+          <circle
+            cx={-nodeWidth / 2}
+            cy={0}
+            r={PIN_RADIUS}
+            fill="white"
+            stroke="#475569"
+            stroke-width="1"
+          />
+          <circle
+            cx={nodeWidth / 2}
+            cy={0}
+            r={PIN_RADIUS}
+            fill="white"
+            stroke="#475569"
+            stroke-width="1"
+          />
+        {:else}
+          <circle
+            r={isHovered && !visNode.isCenter ? radius + HOVER_RING : radius}
+            fill={kindColors[visNode.node.kind]}
+            class="transition-all duration-150 {visNode.isCenter
+              ? 'stroke-[var(--accent)] stroke-[3px]'
+              : isHovered
+                ? 'stroke-[var(--accent)] stroke-[3px]'
+                : 'hover:stroke-[var(--accent)] hover:stroke-2'}"
+          />
+        {/if}
         <!-- Node name -->
         <text
-          y={visNode.isCenter ? -2 : 0}
+          y={dims.isRect ? -nodeHeight / 2 + headerHeight / 2 : (visNode.isCenter ? -3 : 0)}
           text-anchor="middle"
           dominant-baseline="middle"
           class="fill-white font-medium pointer-events-none {visNode.isCenter ? 'text-sm' : 'text-[11px]'}"
         >
-          {truncateName(visNode.node.name, visNode.isCenter ? 12 : 8)}
+          {truncateName(visNode.node.name, labelLimit)}
         </text>
         <!-- Kind label for center node -->
         {#if visNode.isCenter}

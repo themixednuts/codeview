@@ -7,6 +7,7 @@
     FieldInfo,
     FunctionSignature,
     Graph,
+    ImplType,
     Node,
     NodeKind,
     Span,
@@ -18,6 +19,9 @@
   import NodeDetails from '$lib/components/NodeDetails.svelte';
   import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
   import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
+  import LayoutSwitcher from '$lib/components/LayoutSwitcher.svelte';
+  import type { LayoutMode } from '$lib/components/LayoutSwitcher.svelte';
+  import ThreeGraph from '$lib/components/ThreeGraph.svelte';
   import type { SelectedEdges } from '$lib/ui';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
@@ -29,31 +33,16 @@
   let loadError = $state<string | null>(null);
   let loading = $state(true);
 
-  // Try to load graph from server on startup
-  onMount(async () => {
-    try {
-      const response = await fetch('/graph.json');
-      if (response.ok) {
-        const text = await response.text();
-        let parsed: unknown;
-        if (text.length > WORKER_THRESHOLD) {
-          parsed = await parseJsonWithWorker(text);
-        } else {
-          parsed = JSON.parse(text);
-        }
-        const loadedGraph = parseGraph(parsed);
-        if (loadedGraph) {
-          graph = loadedGraph;
-        }
-      }
-    } catch {
-      // No graph available - user can load one manually
-    }
+  onMount(() => {
     loading = false;
+    hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
   });
   let filter = $state('');
   let hideExternal = $state(true);
   let selectedId = $state<string | null>(null);
+  let layoutMode = $state<LayoutMode>('ego');
+  let rendererMode = $state<'svg' | 'threejs'>('threejs');
+  let hasWebGPU = $state(false);
   const kindFilter = new SvelteSet<NodeKind>();
 
   const selected = $derived.by(() => {
@@ -130,6 +119,7 @@
     'Inherited',
     'Unknown'
   ]);
+  const implTypeSet = new Set<ImplType>(['Trait', 'Inherent']);
   const edgeKindSet = new Set<EdgeKind>([
     'Contains',
     'Defines',
@@ -189,32 +179,67 @@
     };
   });
 
+  const graphForDisplay = $derived.by(() => {
+    if (!filteredGraph) return null;
+    const traitImplIds = new Set(
+      filteredGraph.nodes
+        .filter((node) => node.kind === 'Impl' && node.impl_type === 'Trait')
+        .map((node) => node.id)
+    );
+    if (traitImplIds.size === 0) return filteredGraph;
+    return {
+      nodes: filteredGraph.nodes.filter((node) => !traitImplIds.has(node.id)),
+      edges: filteredGraph.edges.filter(
+        (edge) => !traitImplIds.has(edge.from) && !traitImplIds.has(edge.to)
+      )
+    };
+  });
+
   let stats = $derived({
-    nodeCount: filteredGraph?.nodes.length ?? 0,
-    edgeCount: filteredGraph?.edges.length ?? 0,
+    nodeCount: graphForDisplay?.nodes.length ?? 0,
+    edgeCount: graphForDisplay?.edges.length ?? 0,
     totalNodeCount: graph?.nodes.length ?? 0,
     externalCount: graph?.nodes.filter((n) => n.is_external).length ?? 0,
     kindCounts: nodeKindOrder
       .map((kind) => ({
         kind,
-        count: filteredGraph?.nodes.filter((n) => n.kind === kind).length ?? 0
+        count: graphForDisplay?.nodes.filter((n) => n.kind === kind).length ?? 0
       }))
       .filter((e) => e.count > 0)
   });
 
   const visibleSelected = $derived.by(() => {
-    if (!selected || !filteredGraph) return null;
-    return filteredGraph.nodes.some((node) => node.id === selected.id) ? selected : null;
+    if (!selected || !graphForDisplay) return null;
+    return graphForDisplay.nodes.some((node) => node.id === selected.id) ? selected : null;
   });
 
   const selectedEdges = $derived.by<SelectedEdges>(() => {
-    if (!filteredGraph || !visibleSelected) {
+    if (!graphForDisplay || !visibleSelected) {
       return { incoming: [], outgoing: [] };
     }
     return {
-      incoming: filteredGraph.edges.filter((edge) => edge.to === visibleSelected.id),
-      outgoing: filteredGraph.edges.filter((edge) => edge.from === visibleSelected.id)
+      incoming: graphForDisplay.edges.filter((edge) => edge.to === visibleSelected.id),
+      outgoing: graphForDisplay.edges.filter((edge) => edge.from === visibleSelected.id)
     };
+  });
+
+  const implBlocks = $derived.by(() => {
+    if (!filteredGraph || !visibleSelected) return [];
+    const implNodes = new Map(
+      filteredGraph.nodes
+        .filter((node) => node.kind === 'Impl' && node.impl_type === 'Trait')
+        .map((node) => [node.id, node])
+    );
+    const entries = new Map<string, Node>();
+    for (const edge of filteredGraph.edges) {
+      if (edge.kind === 'Defines' && edge.from === visibleSelected.id) {
+        const implNode = implNodes.get(edge.to);
+        if (implNode) {
+          entries.set(implNode.id, implNode);
+        }
+      }
+    }
+    return Array.from(entries.values());
   });
 
   function displayNode(id: string) {
@@ -311,6 +336,8 @@
       nodeKindSet.has(value as NodeKind) ? (value as NodeKind) : 'Module';
     const parseVisibility = (value: unknown): Visibility =>
       visibilitySet.has(value as Visibility) ? (value as Visibility) : 'Unknown';
+    const parseImplType = (value: unknown): ImplType | null =>
+      implTypeSet.has(value as ImplType) ? (value as ImplType) : null;
     const parseEdgeKind = (value: unknown): EdgeKind =>
       edgeKindSet.has(value as EdgeKind) ? (value as EdgeKind) : 'UsesType';
     const parseConfidence = (value: unknown): Confidence =>
@@ -407,7 +434,8 @@
           generics: Array.isArray(entry.generics)
             ? entry.generics.filter((generic): generic is string => typeof generic === 'string')
             : null,
-          docs: typeof entry.docs === 'string' ? entry.docs : null
+          docs: typeof entry.docs === 'string' ? entry.docs : null,
+          impl_type: parseImplType(entry.impl_type)
         } as Node;
       });
 
@@ -457,7 +485,7 @@
         <label class="flex cursor-pointer items-center gap-2 rounded-lg border border-[var(--panel-border)] bg-white px-3 py-1.5 text-sm text-[var(--muted)] hover:bg-[var(--panel)]">
           <input
             type="checkbox"
-            bind:checked={() => hideExternal, updateHideExternal}
+            bind:checked={() => hideExternal, (value) => updateHideExternal(value)}
             class="accent-[var(--accent)]"
           />
           <span>Hide deps ({stats.externalCount})</span>
@@ -495,7 +523,7 @@
           type="text"
           placeholder="Search items..."
           class="w-full rounded-lg border border-[var(--panel-border)] bg-white px-3 py-2 text-sm outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]"
-          bind:value={() => filter, updateFilter}
+          bind:value={() => filter, (value) => updateFilter(value)}
         />
       </div>
 
@@ -518,7 +546,7 @@
       <div class="flex-1 overflow-hidden">
         <svelte:boundary>
           <GraphTree
-            graph={filteredGraph}
+            graph={graphForDisplay}
             selected={visibleSelected}
             onSelect={handleSelect}
             filter={filter}
@@ -541,15 +569,65 @@
         <div class="space-y-6">
           <!-- Breadcrumb Navigation -->
           <svelte:boundary>
-            <Breadcrumbs graph={filteredGraph} selected={visibleSelected} onSelect={handleSelect} />
+            <Breadcrumbs graph={graphForDisplay} selected={visibleSelected} onSelect={handleSelect} />
             {#snippet failed(error, reset)}
               <div class="text-xs text-red-600">Failed to load breadcrumbs</div>
             {/snippet}
           </svelte:boundary>
 
+          <!-- Layout Switcher -->
+          <div class="flex items-center justify-between">
+            <h2 class="text-sm font-medium text-[var(--muted)]">Relationship Graph</h2>
+            <div class="flex items-center gap-2">
+              <LayoutSwitcher mode={layoutMode} onModeChange={(m) => layoutMode = m} />
+              <div class="flex items-center gap-1 rounded-lg border border-[var(--panel-border)] bg-white p-1">
+                <button
+                  type="button"
+                  class="rounded-md px-2 py-1 text-[11px] font-medium transition-colors {rendererMode === 'svg'
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'text-[var(--muted)] hover:bg-[var(--panel)]'}"
+                  onclick={() => rendererMode = 'svg'}
+                  title="SVG renderer"
+                >
+                  SVG
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md px-2 py-1 text-[11px] font-medium transition-colors {rendererMode === 'threejs'
+                    ? 'bg-[var(--accent)] text-white'
+                    : 'text-[var(--muted)] hover:bg-[var(--panel)]'} {hasWebGPU
+                    ? ''
+                    : 'opacity-40 cursor-not-allowed'}"
+                  onclick={() => {
+                    if (hasWebGPU) rendererMode = 'threejs';
+                  }}
+                  title={hasWebGPU ? 'Three.js WebGPU renderer' : 'WebGPU not available in this browser'}
+                >
+                  Three.js
+                </button>
+              </div>
+            </div>
+          </div>
+
           <!-- Visual Relationship Graph -->
           <svelte:boundary>
-            <RelationshipGraph graph={filteredGraph} selected={visibleSelected} onSelect={handleSelect} />
+            {#if rendererMode === 'threejs'}
+              <ThreeGraph
+                graph={graphForDisplay}
+                selected={visibleSelected}
+                onSelect={handleSelect}
+                {layoutMode}
+                centerNode={visibleSelected?.id ?? null}
+                onFallback={() => rendererMode = 'svg'}
+              />
+            {:else}
+              <RelationshipGraph
+                graph={graphForDisplay}
+                selected={visibleSelected}
+                onSelect={handleSelect}
+                {layoutMode}
+              />
+            {/if}
             {#snippet failed(error, reset)}
               <div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-600">
                 <p class="font-medium">Failed to render relationship graph</p>
@@ -564,6 +642,7 @@
             <NodeDetails
               selected={visibleSelected}
               {selectedEdges}
+              {implBlocks}
               {kindLabels}
               {visibilityLabels}
               {edgeLabels}

@@ -56,6 +56,36 @@
 }
 
 @layer components {
+  .three-graph-container {
+    background-color: var(--panel);
+    background-image:
+      linear-gradient(to right, rgba(203, 213, 225, 0.35) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(203, 213, 225, 0.35) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .three-node-label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    color: #ffffff;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 8px rgba(0, 0, 0, 0.3);
+    letter-spacing: -0.01em;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .three-node-label.is-center {
+    font-size: 13px;
+    font-weight: 600;
+    max-width: none;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 12px rgba(0, 0, 0, 0.25);
+  }
+
   .graph-node text {
     font-size: 0.7rem;
     font-weight: 500;
