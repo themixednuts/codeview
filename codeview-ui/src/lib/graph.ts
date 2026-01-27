@@ -11,6 +11,8 @@ export type NodeKind =
   | 'Method'
   | 'TypeAlias';
 
+export type ImplType = 'Trait' | 'Inherent';
+
 export type Visibility = 'Public' | 'Crate' | 'Restricted' | 'Inherited' | 'Unknown';
 
 export type EdgeKind =
@@ -67,6 +69,7 @@ export interface Node {
   signature?: FunctionSignature | null;
   generics?: string[] | null;
   docs?: string | null;
+  impl_type?: ImplType | null;
 }
 
 export interface Edge {

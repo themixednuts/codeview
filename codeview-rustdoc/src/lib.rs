@@ -5,8 +5,8 @@ use std::process::Command;
 
 use cargo_metadata::{MetadataCommand, TargetKind};
 use codeview_core::{
-    ArgumentInfo, Confidence, Edge, EdgeKind, FieldInfo, FunctionSignature, Graph, Node, NodeKind,
-    Span, VariantInfo, Visibility,
+    ArgumentInfo, Confidence, Edge, EdgeKind, FieldInfo, FunctionSignature, Graph, ImplType, Node,
+    NodeKind, Span, VariantInfo, Visibility,
 };
 use rustdoc_types as rdt;
 use syn::visit::Visit;
@@ -318,6 +318,17 @@ fn build_graph(
             continue;
         }
 
+        // Skip internal/generated paths (e.g., serde derive macro internals)
+        // - Paths containing "_" as a segment (serde's internal module)
+        // - Paths with segments starting with "__" (internal types like __FieldVisitor)
+        if summary
+            .path
+            .iter()
+            .any(|seg| seg == "_" || seg.starts_with("__"))
+        {
+            continue;
+        }
+
         let item_crate_name = crate_name_for_id(krate, summary.crate_id, crate_name);
         let is_external = !workspace_members.contains(&item_crate_name);
         ensure_crate_node(
@@ -370,6 +381,7 @@ fn build_graph(
                 signature,
                 generics,
                 docs,
+                impl_type: None,
             });
             node_cache.insert(node_id.clone());
         }
@@ -406,6 +418,11 @@ fn build_graph(
                 let impl_id = impl_node_id(&item_crate_name, item.id);
                 if !node_cache.contains(&impl_id) {
                     let name = impl_node_name(krate, crate_name, impl_block);
+                    let impl_type = if impl_block.trait_.is_some() {
+                        Some(ImplType::Trait)
+                    } else {
+                        Some(ImplType::Inherent)
+                    };
                     graph.add_node(Node {
                         id: impl_id.clone(),
                         name,
@@ -419,6 +436,7 @@ fn build_graph(
                         signature: None,
                         generics: extract_generics(&impl_block.generics),
                         docs: extract_docs(item),
+                        impl_type,
                     });
                     node_cache.insert(impl_id.clone());
                 }
@@ -1010,6 +1028,7 @@ fn ensure_crate_node(
         signature: None,
         generics: None,
         docs: None,
+        impl_type: None,
     });
     node_cache.insert(crate_name.to_string());
 }
@@ -1043,6 +1062,7 @@ fn ensure_module_nodes(
                 signature: None,
                 generics: None,
                 docs: None,
+                impl_type: None,
             });
             node_cache.insert(module_id.clone());
         }
@@ -1560,6 +1580,14 @@ fn build_function_index(
             continue;
         }
         if summary.path.is_empty() {
+            continue;
+        }
+        // Skip internal/generated paths
+        if summary
+            .path
+            .iter()
+            .any(|seg| seg == "_" || seg.starts_with("__"))
+        {
             continue;
         }
         let crate_name = crate_name_for_id(krate, summary.crate_id, default_crate_name);

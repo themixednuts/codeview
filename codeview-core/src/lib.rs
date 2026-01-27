@@ -49,6 +49,8 @@ pub struct Node {
     pub generics: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impl_type: Option<ImplType>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +94,12 @@ pub enum NodeKind {
     Function,
     Method,
     TypeAlias,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImplType {
+    Trait,
+    Inherent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
