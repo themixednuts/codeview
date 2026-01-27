@@ -26,6 +26,12 @@ enum Commands {
         out: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "strict")]
         call_mode: CallModeArg,
+        /// Start the UI server and open in browser
+        #[arg(long)]
+        open: bool,
+        /// Port for UI server (used with --open)
+        #[arg(long, default_value_t = 5173)]
+        port: u16,
     },
     Export {
         #[arg(long)]
@@ -38,6 +44,9 @@ enum Commands {
     Ui {
         #[arg(long, default_value_t = 5173)]
         port: u16,
+        /// Path to graph.json to serve
+        #[arg(long)]
+        graph: Option<PathBuf>,
     },
 }
 
@@ -61,9 +70,11 @@ fn main() -> Result<()> {
             manifest_path,
             out,
             call_mode,
-        } => analyze(manifest_path, out, call_mode),
+            open,
+            port,
+        } => analyze(manifest_path, out, call_mode, open, port),
         Commands::Export { input, format, out } => export_graph(input, format, out),
-        Commands::Ui { port } => serve_ui(port),
+        Commands::Ui { port, graph } => serve_ui(port, graph),
     }
 }
 
@@ -71,6 +82,8 @@ fn analyze(
     manifest_path: Option<PathBuf>,
     out: Option<PathBuf>,
     call_mode: CallModeArg,
+    open: bool,
+    port: u16,
 ) -> Result<()> {
     let manifest_path = manifest_path.unwrap_or_else(|| PathBuf::from("Cargo.toml"));
 
@@ -101,6 +114,10 @@ fn analyze(
         .with_context(|| format!("failed to write graph to {}", out_path.display()))?;
 
     eprintln!("Wrote graph to {}", out_path.display());
+
+    if open {
+        serve_ui(port, Some(out_path))?;
+    }
 
     Ok(())
 }
@@ -142,21 +159,50 @@ fn default_graph_path(rustdoc_json: &Path) -> PathBuf {
         .join("graph.json")
 }
 
-fn serve_ui(port: u16) -> Result<()> {
+fn serve_ui(port: u16, graph_path: Option<PathBuf>) -> Result<()> {
     let address = format!("127.0.0.1:{port}");
     let server =
         Server::http(&address).map_err(|err| anyhow::anyhow!("failed to bind {address}: {err}"))?;
-    println!("Codeview UI running at http://{address}");
+
+    let url = format!("http://{address}");
+
+    // Load graph data if path provided
+    let graph_data: Option<Vec<u8>> = match &graph_path {
+        Some(path) => {
+            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+            match fs::read(&canonical) {
+                Ok(data) => {
+                    eprintln!("Loaded graph from {}", canonical.display());
+                    Some(data)
+                }
+                Err(err) => {
+                    eprintln!("Warning: failed to load graph from {}: {err}", canonical.display());
+                    None
+                }
+            }
+        }
+        None => None,
+    };
+
+    println!("Codeview UI running at {url}");
+
+    // Open browser if we have a graph
+    if graph_data.is_some() {
+        if let Err(err) = open::that(&url) {
+            eprintln!("Failed to open browser: {err}");
+            eprintln!("Please open {url} manually");
+        }
+    }
 
     for request in server.incoming_requests() {
-        if let Err(error) = handle_ui_request(request) {
+        if let Err(error) = handle_ui_request(request, graph_data.as_deref()) {
             eprintln!("failed to handle request: {error}");
         }
     }
     Ok(())
 }
 
-fn handle_ui_request(request: tiny_http::Request) -> Result<()> {
+fn handle_ui_request(request: tiny_http::Request, graph_data: Option<&[u8]>) -> Result<()> {
     let is_head = request.method() == &Method::Head;
     if request.method() != &Method::Get && !is_head {
         let response = Response::empty(StatusCode(405));
@@ -167,6 +213,29 @@ fn handle_ui_request(request: tiny_http::Request) -> Result<()> {
     let url = request.url();
     let path = url.split('?').next().unwrap_or("/");
     let path = path.trim_start_matches('/');
+
+    // Serve graph.json if requested
+    if path == "graph.json" {
+        match graph_data {
+            Some(data) => {
+                let header = Header::from_bytes("Content-Type", "application/json")
+                    .map_err(|_| anyhow::anyhow!("failed to build content-type header"))?;
+                let response = if is_head {
+                    Response::empty(StatusCode(200)).with_header(header).boxed()
+                } else {
+                    Response::from_data(data).with_header(header).boxed()
+                };
+                request.respond(response)?;
+                return Ok(());
+            }
+            None => {
+                let response = Response::empty(StatusCode(404));
+                request.respond(response)?;
+                return Ok(());
+            }
+        }
+    }
+
     let file_path = if path.is_empty() { "index.html" } else { path };
 
     let file = UI_DIR
