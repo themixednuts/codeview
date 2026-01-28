@@ -1,14 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use codeview_core::{Graph, MermaidKind, export_mermaid};
 use codeview_rustdoc::{CallMode, generate_workspace_rustdoc_json, load_workspace_graph};
-use include_dir::{Dir, include_dir};
-use tiny_http::{Header, Method, Response, Server, StatusCode};
 
-static UI_DIR: Dir = include_dir!("$OUT_DIR/codeview-ui");
+const SIDECAR: &[u8] = include_bytes!(env!("SIDECAR_PATH"));
 
 #[derive(Parser)]
 #[command(name = "codeview", version, about = "Codeview CLI")]
@@ -19,6 +19,24 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Analyze a Rust workspace and open the interactive UI
+    Ui {
+        /// Path to the workspace (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Port for UI server (OS assigns one if not specified)
+        #[arg(long)]
+        port: Option<u16>,
+        /// Serve a pre-built graph.json instead of analyzing
+        #[arg(long)]
+        graph: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "strict")]
+        call_mode: CallModeArg,
+        /// Extra arguments to pass to cargo rustdoc (e.g. --all-features, --features "uuid")
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
+    },
+    /// Analyze without opening UI (just generate graph.json)
     Analyze {
         #[arg(long)]
         manifest_path: Option<PathBuf>,
@@ -26,13 +44,11 @@ enum Commands {
         out: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "strict")]
         call_mode: CallModeArg,
-        /// Start the UI server and open in browser
-        #[arg(long)]
-        open: bool,
-        /// Port for UI server (used with --open)
-        #[arg(long, default_value_t = 5173)]
-        port: u16,
+        /// Extra arguments to pass to cargo rustdoc (e.g. --all-features, --features "uuid")
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
     },
+    /// Export graph to other formats
     Export {
         #[arg(long)]
         input: PathBuf,
@@ -40,13 +56,6 @@ enum Commands {
         format: ExportFormat,
         #[arg(long)]
         out: PathBuf,
-    },
-    Ui {
-        #[arg(long, default_value_t = 5173)]
-        port: u16,
-        /// Path to graph.json to serve
-        #[arg(long)]
-        graph: Option<PathBuf>,
     },
 }
 
@@ -66,36 +75,93 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Ui {
+            path,
+            port,
+            graph,
+            call_mode,
+            cargo_args,
+        } => {
+            // If --graph is provided, just serve that directly
+            if let Some(graph_path) = graph {
+                let workspace_root = workspace_root_from_graph(&graph_path);
+                return serve_ui(port, graph_path, workspace_root);
+            }
+
+            // Otherwise, analyze the workspace first
+            let manifest_path = if path.is_file() {
+                path.clone()
+            } else {
+                path.join("Cargo.toml")
+            };
+
+            if !manifest_path.exists() {
+                anyhow::bail!("No Cargo.toml found at {}", manifest_path.display());
+            }
+
+            let graph_path = analyze_workspace(&manifest_path, call_mode, &cargo_args)?;
+            let workspace_root = manifest_path.parent().map(|p| p.to_path_buf());
+            serve_ui(port, graph_path, workspace_root)
+        }
         Commands::Analyze {
             manifest_path,
             out,
             call_mode,
-            open,
-            port,
-        } => analyze(manifest_path, out, call_mode, open, port),
+            cargo_args,
+        } => analyze(manifest_path, out, call_mode, cargo_args),
         Commands::Export { input, format, out } => export_graph(input, format, out),
-        Commands::Ui { port, graph } => serve_ui(port, graph),
     }
 }
 
-fn analyze(
-    manifest_path: Option<PathBuf>,
-    out: Option<PathBuf>,
+/// Analyze workspace and return the path to the generated graph.json
+fn analyze_workspace(
+    manifest_path: &Path,
     call_mode: CallModeArg,
-    open: bool,
-    port: u16,
-) -> Result<()> {
-    let manifest_path = manifest_path.unwrap_or_else(|| PathBuf::from("Cargo.toml"));
-
-    // Generate rustdoc for all workspace members
-    let rustdoc_jsons = generate_workspace_rustdoc_json(&manifest_path)?;
+    cargo_args: &[String],
+) -> Result<PathBuf> {
+    let rustdoc_jsons = generate_workspace_rustdoc_json(manifest_path, cargo_args)?;
     if rustdoc_jsons.is_empty() {
         anyhow::bail!("No crates were successfully documented");
     }
 
     eprintln!("Merging {} crate graphs...", rustdoc_jsons.len());
 
-    // Load and merge all graphs
+    let graph = load_workspace_graph(&rustdoc_jsons, manifest_path, call_mode.into())?;
+
+    eprintln!(
+        "Generated graph with {} nodes and {} edges",
+        graph.nodes.len(),
+        graph.edges.len()
+    );
+
+    let out_path = default_graph_path(&rustdoc_jsons[0].json_path);
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(&graph)?;
+    fs::write(&out_path, &json)
+        .with_context(|| format!("failed to write graph to {}", out_path.display()))?;
+
+    eprintln!("Wrote graph to {}", out_path.display());
+    Ok(out_path)
+}
+
+fn analyze(
+    manifest_path: Option<PathBuf>,
+    out: Option<PathBuf>,
+    call_mode: CallModeArg,
+    cargo_args: Vec<String>,
+) -> Result<()> {
+    let manifest_path = manifest_path.unwrap_or_else(|| PathBuf::from("Cargo.toml"));
+
+    let rustdoc_jsons = generate_workspace_rustdoc_json(&manifest_path, &cargo_args)?;
+    if rustdoc_jsons.is_empty() {
+        anyhow::bail!("No crates were successfully documented");
+    }
+
+    eprintln!("Merging {} crate graphs...", rustdoc_jsons.len());
+
     let graph = load_workspace_graph(&rustdoc_jsons, &manifest_path, call_mode.into())?;
 
     eprintln!(
@@ -114,11 +180,6 @@ fn analyze(
         .with_context(|| format!("failed to write graph to {}", out_path.display()))?;
 
     eprintln!("Wrote graph to {}", out_path.display());
-
-    if open {
-        serve_ui(port, Some(out_path))?;
-    }
-
     Ok(())
 }
 
@@ -159,107 +220,114 @@ fn default_graph_path(rustdoc_json: &Path) -> PathBuf {
         .join("graph.json")
 }
 
-fn serve_ui(port: u16, graph_path: Option<PathBuf>) -> Result<()> {
-    let address = format!("127.0.0.1:{port}");
-    let server =
-        Server::http(&address).map_err(|err| anyhow::anyhow!("failed to bind {address}: {err}"))?;
+/// Derive workspace root from graph path.
+///
+/// graph.json is typically at `<workspace>/target/codeview/graph.json`,
+/// so we go up 3 levels from the file to get the workspace root.
+fn workspace_root_from_graph(graph_path: &Path) -> Option<PathBuf> {
+    graph_path
+        .canonicalize()
+        .ok()?
+        .parent()? // codeview/
+        .parent()? // target/
+        .parent()  // workspace root
+        .map(|p| p.to_path_buf())
+}
 
-    let url = format!("http://{address}");
+/// Resolve the port to use: if specified, check availability and fall back to
+/// OS-assigned; if not specified, let the OS pick a free port.
+fn resolve_port(preferred: Option<u16>) -> u16 {
+    use std::net::TcpListener;
+    if let Some(port) = preferred {
+        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+        eprintln!("Port {port} is in use, finding an open port...");
+    }
+    TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .unwrap_or(4173)
+}
 
-    // Load graph data if path provided
-    let graph_data: Option<Vec<u8>> = match &graph_path {
-        Some(path) => {
-            let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
-            match fs::read(&canonical) {
-                Ok(data) => {
-                    eprintln!("Loaded graph from {}", canonical.display());
-                    Some(data)
+fn serve_ui(port: Option<u16>, graph_path: PathBuf, workspace_root: Option<PathBuf>) -> Result<()> {
+    use std::process::Command;
+
+    let port = resolve_port(port);
+
+    // Extract sidecar to a persistent temp location
+    let temp_dir = std::env::temp_dir().join("codeview");
+    fs::create_dir_all(&temp_dir)?;
+
+    let sidecar_path = temp_dir.join(sidecar_name());
+
+    fs::write(&sidecar_path, SIDECAR)
+        .with_context(|| format!("failed to write sidecar to {}", sidecar_path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&sidecar_path, fs::Permissions::from_mode(0o755))?;
+    }
+
+    let mut cmd = Command::new(&sidecar_path);
+    cmd.env("PORT", port.to_string());
+
+    if let Some(root) = &workspace_root {
+        cmd.env("CODEVIEW_WORKSPACE", root);
+        eprintln!("Workspace root: {}", root.display());
+    }
+
+    let canonical = graph_path.canonicalize().unwrap_or_else(|_| graph_path.clone());
+    cmd.env("CODEVIEW_GRAPH", &canonical);
+    eprintln!("Graph: {}", canonical.display());
+
+    let mut child = cmd
+        .spawn()
+        .with_context(|| format!("failed to spawn sidecar at {}", sidecar_path.display()))?;
+
+    let url = format!("http://127.0.0.1:{port}");
+    eprintln!("Codeview UI running at {url}");
+
+    if let Err(err) = open::that(&url) {
+        eprintln!("Failed to open browser: {err}");
+        eprintln!("Please open {url} manually");
+    }
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })
+    .context("failed to set Ctrl+C handler")?;
+
+    while running.load(Ordering::SeqCst) {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    anyhow::bail!("sidecar exited with status {status}");
                 }
-                Err(err) => {
-                    eprintln!("Warning: failed to load graph from {}: {err}", canonical.display());
-                    None
-                }
+                return Ok(());
+            }
+            Ok(None) => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(err) => {
+                anyhow::bail!("failed to wait for sidecar: {err}");
             }
         }
-        None => None,
-    };
-
-    println!("Codeview UI running at {url}");
-
-    // Open browser if we have a graph
-    if graph_data.is_some() {
-        if let Err(err) = open::that(&url) {
-            eprintln!("Failed to open browser: {err}");
-            eprintln!("Please open {url} manually");
-        }
     }
 
-    for request in server.incoming_requests() {
-        if let Err(error) = handle_ui_request(request, graph_data.as_deref()) {
-            eprintln!("failed to handle request: {error}");
-        }
-    }
+    eprintln!("\nShutting down...");
+    let _ = child.kill();
+    let _ = child.wait();
     Ok(())
 }
 
-fn handle_ui_request(request: tiny_http::Request, graph_data: Option<&[u8]>) -> Result<()> {
-    let is_head = request.method() == &Method::Head;
-    if request.method() != &Method::Get && !is_head {
-        let response = Response::empty(StatusCode(405));
-        request.respond(response)?;
-        return Ok(());
+fn sidecar_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "codeview-server.exe"
+    } else {
+        "codeview-server"
     }
-
-    let url = request.url();
-    let path = url.split('?').next().unwrap_or("/");
-    let path = path.trim_start_matches('/');
-
-    // Serve graph.json if requested
-    if path == "graph.json" {
-        match graph_data {
-            Some(data) => {
-                let header = Header::from_bytes("Content-Type", "application/json")
-                    .map_err(|_| anyhow::anyhow!("failed to build content-type header"))?;
-                let response = if is_head {
-                    Response::empty(StatusCode(200)).with_header(header).boxed()
-                } else {
-                    Response::from_data(data).with_header(header).boxed()
-                };
-                request.respond(response)?;
-                return Ok(());
-            }
-            None => {
-                let response = Response::empty(StatusCode(404));
-                request.respond(response)?;
-                return Ok(());
-            }
-        }
-    }
-
-    let file_path = if path.is_empty() { "index.html" } else { path };
-
-    let file = UI_DIR
-        .get_file(file_path)
-        .or_else(|| UI_DIR.get_file("index.html"));
-
-    match file {
-        Some(file) => {
-            let mime = mime_guess::from_path(file.path()).first_or_octet_stream();
-            let header = Header::from_bytes("Content-Type", mime.as_ref())
-                .map_err(|_| anyhow::anyhow!("failed to build content-type header"))?;
-            let response = if is_head {
-                Response::empty(StatusCode(200)).with_header(header).boxed()
-            } else {
-                Response::from_data(file.contents())
-                    .with_header(header)
-                    .boxed()
-            };
-            request.respond(response)?;
-        }
-        None => {
-            let response = Response::empty(StatusCode(404));
-            request.respond(response)?;
-        }
-    }
-    Ok(())
 }

@@ -1,85 +1,69 @@
 use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"));
-    let ui_dir = manifest_dir.join("..").join("codeview-ui");
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("missing out dir"));
-    let target_dir = out_dir.join("codeview-ui");
+    let ui_dir = manifest_dir.parent().unwrap().join("codeview-ui");
+    let target = env::var("TARGET").unwrap();
 
-    println!(
-        "cargo:rerun-if-changed={}",
-        ui_dir.join("package.json").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        ui_dir.join("svelte.config.js").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        ui_dir.join("vite.config.js").display()
-    );
+    // Rebuild when UI source changes
     println!("cargo:rerun-if-changed={}", ui_dir.join("src").display());
+    println!("cargo:rerun-if-changed={}", ui_dir.join("package.json").display());
+    println!("cargo:rerun-if-changed={}", ui_dir.join("svelte.config.js").display());
+    println!("cargo:rerun-if-changed={}", ui_dir.join("vite.config.ts").display());
 
-    let prebuilt_dir = env::var("CODEVIEW_UI_DIR").ok().map(PathBuf::from);
-    let build_dir = prebuilt_dir.clone().unwrap_or_else(|| ui_dir.join("build"));
+    // @jesterkit/exe-sveltekit builds directly to dist/codeview-server
+    // It handles cross-compilation via EXE_TARGET env var
+    let exe_target = match target.as_str() {
+        t if t.contains("x86_64") && t.contains("linux") => "linux-x64",
+        t if t.contains("aarch64") && t.contains("linux") => "linux-arm64",
+        t if t.contains("x86_64") && t.contains("darwin") => "darwin-x64",
+        t if t.contains("aarch64") && t.contains("darwin") => "darwin-arm64",
+        t if t.contains("x86_64") && t.contains("windows") => "windows-x64",
+        _ => panic!("Unsupported target for sidecar: {target}"),
+    };
 
-    if prebuilt_dir.is_none() && env::var("CODEVIEW_SKIP_UI_BUILD").is_err() {
-        build_ui(&ui_dir, &build_dir);
-    }
+    let sidecar_dir = manifest_dir.join("sidecar");
+    std::fs::create_dir_all(&sidecar_dir).expect("failed to create sidecar dir");
 
-    if !build_dir.exists() {
-        panic!(
-            "UI build output not found at {}. Set CODEVIEW_UI_DIR or run bun build.",
-            build_dir.display()
-        );
-    }
+    let sidecar_name = if target.contains("windows") {
+        format!("codeview-server-{exe_target}.exe")
+    } else {
+        format!("codeview-server-{exe_target}")
+    };
+    let sidecar_path = sidecar_dir.join(&sidecar_name);
 
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir).expect("failed to clean UI output directory");
-    }
-    copy_dir_all(&build_dir, &target_dir).expect("failed to copy UI build output");
-}
+    // Build SvelteKit app with @jesterkit/exe-sveltekit adapter
+    // This adapter builds directly to dist/codeview-server(.exe)
+    let status = Command::new("bun")
+        .args(["run", "build"])
+        .env("EXE_TARGET", exe_target)
+        .current_dir(&ui_dir)
+        .status()
+        .expect("failed to run `bun run build` - is bun installed?");
 
-fn build_ui(ui_dir: &Path, build_dir: &Path) {
-    let node_modules = ui_dir.join("node_modules");
-    if !node_modules.exists() || !build_dir.exists() {
-        run_command(
-            Command::new("bun").arg("install").current_dir(ui_dir),
-            "bun install",
-        );
-    }
-    run_command(
-        Command::new("bun")
-            .arg("run")
-            .arg("build")
-            .current_dir(ui_dir),
-        "bun run build",
-    );
-}
-
-fn run_command(command: &mut Command, label: &str) {
-    let status = command.status().unwrap_or_else(|err| {
-        panic!("failed to execute {label}: {err}");
-    });
     if !status.success() {
-        panic!("command {label} failed with status {status}");
+        panic!("`bun run build` failed in {}", ui_dir.display());
     }
-}
 
-fn copy_dir_all(from: &Path, to: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let path = entry.path();
-        let target = to.join(entry.file_name());
-        if path.is_dir() {
-            copy_dir_all(&path, &target)?;
-        } else {
-            fs::copy(&path, &target)?;
-        }
+    // Copy the built binary to sidecar dir
+    let built_name = if target.contains("windows") {
+        "codeview-server.exe"
+    } else {
+        "codeview-server"
+    };
+    let built_path = ui_dir.join("dist").join(built_name);
+
+    if !built_path.exists() {
+        panic!("Built binary not found at {}", built_path.display());
     }
-    Ok(())
+
+    std::fs::copy(&built_path, &sidecar_path)
+        .expect("failed to copy sidecar binary");
+
+    println!(
+        "cargo:rustc-env=SIDECAR_PATH={}",
+        sidecar_path.display()
+    );
 }
