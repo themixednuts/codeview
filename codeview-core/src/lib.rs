@@ -4,6 +4,15 @@ use serde::{Deserialize, Serialize};
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
+    /// Crate name → version string (e.g. "drizzle_core" → "0.1.4")
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub crate_versions: std::collections::HashMap<String, String>,
+    /// GitHub repository (e.g. "owner/repo") for source fetching on Cloudflare
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Git ref (branch, tag, or commit SHA) for source fetching on Cloudflare
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "ref")]
+    pub ref_: Option<String>,
 }
 
 impl Graph {
@@ -11,6 +20,9 @@ impl Graph {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
+            crate_versions: std::collections::HashMap::new(),
+            repo: None,
+            ref_: None,
         }
     }
 
@@ -49,8 +61,17 @@ pub struct Node {
     pub generics: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
+    /// Resolved intra-doc links: maps link text (e.g., "Vec") to node ID (e.g., "std::vec::Vec")
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub doc_links: std::collections::HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impl_type: Option<ImplType>,
+    /// For methods: the ID of the parent impl block
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_impl: Option<String>,
+    /// For impl blocks: the ID of the trait being implemented (if trait impl)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub impl_trait: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +137,10 @@ pub struct Span {
     pub file: String,
     pub line: u32,
     pub column: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +160,7 @@ pub enum EdgeKind {
     CallsStatic,
     CallsRuntime,
     Derives,
+    ReExports,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,5 +264,6 @@ fn edge_label(kind: EdgeKind) -> &'static str {
         EdgeKind::CallsStatic => "calls",
         EdgeKind::CallsRuntime => "calls_runtime",
         EdgeKind::Derives => "derives",
+        EdgeKind::ReExports => "re-exports",
     }
 }

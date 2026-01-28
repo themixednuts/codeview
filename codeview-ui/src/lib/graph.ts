@@ -22,7 +22,8 @@ export type EdgeKind =
   | 'UsesType'
   | 'CallsStatic'
   | 'CallsRuntime'
-  | 'Derives';
+  | 'Derives'
+  | 'ReExports';
 
 export type Confidence = 'Static' | 'Runtime' | 'Inferred';
 
@@ -30,6 +31,8 @@ export interface Span {
   file: string;
   line: number;
   column: number;
+  end_line?: number;
+  end_column?: number;
 }
 
 export interface FieldInfo {
@@ -69,7 +72,13 @@ export interface Node {
   signature?: FunctionSignature | null;
   generics?: string[] | null;
   docs?: string | null;
+  /** Resolved intra-doc links: maps link text (e.g., "Vec") to node ID (e.g., "std::vec::Vec") */
+  doc_links?: Record<string, string>;
   impl_type?: ImplType | null;
+  /** For methods: the ID of the parent impl block */
+  parent_impl?: string | null;
+  /** For impl blocks: the ID of the trait being implemented (if trait impl) */
+  impl_trait?: string | null;
 }
 
 export interface Edge {
@@ -82,4 +91,10 @@ export interface Edge {
 export interface Graph {
   nodes: Node[];
   edges: Edge[];
+  /** Crate name → version string (e.g. "drizzle_core" → "0.1.4") */
+  crate_versions?: Record<string, string>;
+  /** GitHub repository (e.g. "owner/repo") for source fetching on Cloudflare */
+  repo?: string;
+  /** Git ref (branch, tag, or commit SHA) for source fetching on Cloudflare */
+  ref?: string;
 }
