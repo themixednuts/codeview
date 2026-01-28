@@ -1,10 +1,10 @@
 <script lang="ts">
-  import type { Edge, Graph, Node, NodeKind } from '$lib/graph';
+  import type { Graph, Node, NodeKind } from '$lib/graph';
 
-  let { graph, selected, onSelect } = $props<{
+  let { graph, selected, getNodeUrl } = $props<{
     graph: Graph;
     selected: Node;
-    onSelect: (node: Node) => void;
+    getNodeUrl: (id: string) => string;
   }>();
 
   const kindColors: Record<NodeKind, string> = {
@@ -86,7 +86,7 @@
 
       {#if node.id === selected.id}
         <!-- Current node (not clickable) -->
-        <span class="flex items-center gap-1.5 px-2 py-1 rounded-md bg-[var(--panel)]">
+        <span class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-chip)] corner-squircle bg-[var(--panel-strong)]">
           <span
             class="w-2 h-2 rounded-full flex-shrink-0"
             style="background-color: {kindColors[node.kind]}"
@@ -95,17 +95,17 @@
         </span>
       {:else}
         <!-- Ancestor node (clickable) -->
-        <button
-          type="button"
-          class="flex items-center gap-1.5 px-2 py-1 rounded-md hover:bg-[var(--panel)] transition-colors"
-          onclick={() => onSelect(node)}
+        <a
+          href={getNodeUrl(node.id)}
+          data-sveltekit-noscroll
+          class="flex items-center gap-1.5 px-2 py-1 rounded-[var(--radius-chip)] corner-squircle hover:bg-[var(--panel-strong)] transition-colors"
         >
           <span
             class="w-2 h-2 rounded-full flex-shrink-0"
             style="background-color: {kindColors[node.kind]}"
           ></span>
           <span class="text-[var(--muted)] hover:text-[var(--ink)] truncate max-w-[150px]">{node.name}</span>
-        </button>
+        </a>
       {/if}
     {/each}
   </nav>

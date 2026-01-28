@@ -142,7 +142,7 @@
   }
 </script>
 
-<div class="rounded-3xl border border-[var(--panel-border)] bg-[var(--panel)]/90 p-6 shadow-[0_20px_36px_rgba(38,28,20,0.12)]">
+<div class="rounded-[var(--radius-panel)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] p-6 shadow-[var(--shadow-strong)]">
   <div class="flex flex-wrap items-start justify-between gap-4">
     <div>
       <h2 class="text-2xl font-semibold text-[var(--ink)]">Graph canvas</h2>
@@ -156,7 +156,7 @@
     </div>
   </div>
   <div
-    class="relative mt-6 h-[560px] overflow-hidden rounded-2xl border border-dashed border-[var(--panel-border)] bg-white/70"
+    class="relative mt-6 h-[560px] overflow-hidden rounded-[var(--radius-card)] corner-squircle border border-dashed border-[var(--panel-border)] bg-[var(--panel-muted)]"
     bind:clientWidth={width}
     bind:clientHeight={height}
   >
@@ -174,6 +174,25 @@
         onmouseup={handleMouseUp}
         onmouseleave={handleMouseUp}
       >
+        <defs>
+          <pattern
+            id="grid"
+            width={32 * transform.scale}
+            height={32 * transform.scale}
+            patternUnits="userSpaceOnUse"
+            x={transform.x % (32 * transform.scale)}
+            y={transform.y % (32 * transform.scale)}
+          >
+            <path
+              d={`M ${32 * transform.scale} 0 L 0 0 0 ${32 * transform.scale}`}
+              fill="none"
+              stroke="var(--panel-border)"
+              stroke-width={0.6 * transform.scale}
+              opacity="0.5"
+            />
+          </pattern>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#grid)" />
         <g transform={`translate(${transform.x}, ${transform.y}) scale(${transform.scale})`}>
           <g>
             {#each layout.links as link (link.from + link.to + link.kind)}
@@ -216,7 +235,7 @@
       <div class="absolute bottom-4 right-4 flex flex-col gap-1">
         <button
           type="button"
-          class="flex h-8 w-8 items-center justify-center rounded-lg bg-white/90 text-[var(--ink)] shadow-md hover:bg-white"
+          class="flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] corner-squircle bg-[var(--panel-solid)] text-[var(--ink)] shadow-[var(--shadow-soft)] hover:bg-[var(--panel-strong)]"
           onclick={zoomIn}
           title="Zoom in"
         >
@@ -224,7 +243,7 @@
         </button>
         <button
           type="button"
-          class="flex h-8 w-8 items-center justify-center rounded-lg bg-white/90 text-[var(--ink)] shadow-md hover:bg-white"
+          class="flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] corner-squircle bg-[var(--panel-solid)] text-[var(--ink)] shadow-[var(--shadow-soft)] hover:bg-[var(--panel-strong)]"
           onclick={zoomOut}
           title="Zoom out"
         >
@@ -232,7 +251,7 @@
         </button>
         <button
           type="button"
-          class="flex h-8 w-8 items-center justify-center rounded-lg bg-white/90 text-[var(--ink)] shadow-md hover:bg-white"
+          class="flex h-8 w-8 items-center justify-center rounded-[var(--radius-control)] corner-squircle bg-[var(--panel-solid)] text-[var(--ink)] shadow-[var(--shadow-soft)] hover:bg-[var(--panel-strong)]"
           onclick={resetZoom}
           title="Fit to view"
         >
@@ -247,7 +266,7 @@
       </div>
     {/if}
     {#if loading}
-      <div class="absolute inset-0 grid place-content-center bg-white/60 text-sm text-[var(--muted)]">
+      <div class="absolute inset-0 grid place-content-center bg-[var(--panel-muted)] text-sm text-[var(--muted)]">
         Loading graph data...
       </div>
     {/if}

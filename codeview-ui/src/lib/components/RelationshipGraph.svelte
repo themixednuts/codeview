@@ -16,14 +16,16 @@
   let {
     graph,
     selected,
-    onSelect,
+    getNodeUrl,
     layoutMode = 'ego'
   } = $props<{
     graph: Graph;
     selected: Node;
-    onSelect: (node: Node) => void;
+    getNodeUrl: (id: string) => string;
     layoutMode?: LayoutMode;
   }>();
+
+  type DragOffset = { x: number; y: number };
 
   // Edge filtering - categorize edges as structural or semantic
   const structuralEdgeKinds: EdgeKind[] = ['Contains', 'Defines'];
@@ -64,11 +66,11 @@
   const WIDTH = LAYOUT_WIDTH;
   const HEIGHT = LAYOUT_HEIGHT;
   const RECT_CORNER_RADIUS = 10;
-  const HEADER_HEIGHT = 16;
+  const HEADER_HEIGHT = 18;
   const GRID_SIZE = 32;
-  const PIN_RADIUS = 4;
   const EDGE_NODE_PADDING = 10;
   const HOVER_RING = 4;
+  const LABEL_CHAR_RATIO = 0.6;
 
   // Pan and zoom state
   let zoom = $state(1);
@@ -80,6 +82,15 @@
   let panStartPanX = 0;
   let panStartPanY = 0;
 
+  let containerEl = $state<HTMLDivElement | null>(null);
+  let dragNodeId = $state<string | null>(null);
+  let dragOffsets = $state<Record<string, DragOffset>>({});
+  let dragStart = { x: 0, y: 0 };
+  let dragNodeStart = { x: 0, y: 0 };
+  let dragBasePos = { x: 0, y: 0 };
+  let didDrag = false;
+  let suppressClick = false;
+
   // Tooltip state
   let tooltipNode = $state<VisNode | null>(null);
   let tooltipX = $state(0);
@@ -87,6 +98,13 @@
 
   const MIN_ZOOM = 0.3;
   const MAX_ZOOM = 3;
+
+  function captureContainer(element: HTMLDivElement) {
+    containerEl = element;
+    return () => {
+      containerEl = null;
+    };
+  }
 
   function handleWheel(e: WheelEvent) {
     e.preventDefault();
@@ -121,6 +139,7 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
+    if (dragNodeId) return;
     if (isPanning) {
       const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
       const dx = (e.clientX - panStartX) * (WIDTH / rect.width) / zoom;
@@ -132,6 +151,7 @@
 
   function handleMouseUp() {
     isPanning = false;
+    endNodeDrag();
   }
 
   function handleMouseLeave() {
@@ -140,17 +160,91 @@
   }
 
   function resetView() {
-    zoom = 1;
-    panX = 0;
-    panY = 0;
+    animateUpdate(() => {
+      zoom = 1;
+      panX = 0;
+      panY = 0;
+      dragOffsets = {};
+    });
+  }
+
+  function animateUpdate(update: () => void) {
+    if (document.startViewTransition) {
+      document.startViewTransition(update);
+    } else {
+      update();
+    }
   }
 
   function zoomIn() {
-    zoom = Math.min(MAX_ZOOM, zoom * 1.2);
+    animateUpdate(() => {
+      zoom = Math.min(MAX_ZOOM, zoom * 1.2);
+    });
   }
 
   function zoomOut() {
-    zoom = Math.max(MIN_ZOOM, zoom / 1.2);
+    animateUpdate(() => {
+      zoom = Math.max(MIN_ZOOM, zoom / 1.2);
+    });
+  }
+
+  function getWorldPoint(e: MouseEvent): { x: number; y: number } {
+    if (!containerEl) return { x: 0, y: 0 };
+    const rect = containerEl.getBoundingClientRect();
+    const svgX = ((e.clientX - rect.left) / rect.width) * WIDTH;
+    const svgY = ((e.clientY - rect.top) / rect.height) * HEIGHT;
+    return {
+      x: (svgX - panX) / zoom,
+      y: (svgY - panY) / zoom
+    };
+  }
+
+  function startNodeDrag(visNode: VisNode, e: MouseEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    dragNodeId = visNode.node.id;
+    didDrag = false;
+    dragStart = getWorldPoint(e);
+    dragNodeStart = { x: visNode.x, y: visNode.y };
+    const offset = dragOffsets[visNode.node.id] ?? { x: 0, y: 0 };
+    dragBasePos = { x: visNode.x - offset.x, y: visNode.y - offset.y };
+  }
+
+  function updateNodeDrag(e: MouseEvent) {
+    if (!dragNodeId) return;
+    const world = getWorldPoint(e);
+    const dx = world.x - dragStart.x;
+    const dy = world.y - dragStart.y;
+    if (!didDrag && Math.hypot(dx, dy) > 2) {
+      didDrag = true;
+    }
+    if (!didDrag) return;
+    const nextX = dragNodeStart.x + dx;
+    const nextY = dragNodeStart.y + dy;
+    dragOffsets = {
+      ...dragOffsets,
+      [dragNodeId]: { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y }
+    };
+  }
+
+  function endNodeDrag() {
+    if (dragNodeId && didDrag) {
+      suppressClick = true;
+    }
+    dragNodeId = null;
+  }
+
+  function handleGlobalMouseMove(e: MouseEvent) {
+    if (dragNodeId) {
+      updateNodeDrag(e);
+    }
+  }
+
+  function handleGlobalMouseUp() {
+    if (dragNodeId) {
+      endNodeDrag();
+    }
   }
 
   function showTooltip(visNode: VisNode, e: MouseEvent) {
@@ -190,10 +284,34 @@
     Derives: '#8b5cf6'
   };
 
-  function getNodeLabelLimit(node: Node, isCenter: boolean): number {
-    const dims = getNodeDimensions(node, isCenter);
-    if (dims.isRect) return isCenter ? 20 : 16;
-    return isCenter ? 12 : 9;
+  function getNodeLabelMetrics(nodeWidth: number, isRect: boolean, isCenter: boolean): {
+    maxChars: number;
+    maxWidth: number;
+    fontSize: number;
+  } {
+    const fontSize = isCenter ? 14 : 11;
+    const padding = isRect ? 20 : (isCenter ? 16 : 12);
+    const maxWidth = Math.max(24, nodeWidth - padding);
+    const maxChars = Math.max(4, Math.floor(maxWidth / (fontSize * LABEL_CHAR_RATIO)));
+    return { maxChars, maxWidth, fontSize };
+  }
+
+  function estimateLabelWidth(label: string, fontSize: number): number {
+    return label.length * fontSize * LABEL_CHAR_RATIO;
+  }
+
+  function getEdgeLabelMetrics(kind: string, isHighlighted: boolean): {
+    width: number;
+    height: number;
+    fontSize: number;
+  } {
+    const fontSize = isHighlighted ? 11 : 9;
+    const paddingX = isHighlighted ? 8 : 6;
+    const paddingY = isHighlighted ? 4 : 3;
+    const textWidth = estimateLabelWidth(kind, fontSize);
+    const width = Math.max(28, textWidth + paddingX * 2);
+    const height = fontSize + paddingY * 2;
+    return { width, height, fontSize };
   }
 
   let hoveredNodeId = $state<string | null>(null);
@@ -201,11 +319,19 @@
 
   let visData = $derived(computeLayout(filteredGraph, selected, layoutMode));
 
-  let animatedNodes = $derived.by(() => visData.nodes);
+  let layoutNodes = $derived.by(() => visData.nodes);
 
-  let animatedNodeMap = $derived.by(() => {
+  let positionedNodes = $derived.by(() => {
+    return layoutNodes.map((node) => {
+      const offset = dragOffsets[node.node.id];
+      if (!offset) return node;
+      return { ...node, x: node.x + offset.x, y: node.y + offset.y };
+    });
+  });
+
+  let positionedNodeMap = $derived.by(() => {
     const map = new Map<string, VisNode>();
-    for (const node of animatedNodes) {
+    for (const node of positionedNodes) {
       map.set(node.node.id, node);
     }
     return map;
@@ -225,15 +351,19 @@
   });
 
 
-  function handleNodeClick(node: Node) {
-    if (node.id !== selected.id) {
-      onSelect(node);
+  function handleNodeClick(node: Node, e: MouseEvent) {
+    if (suppressClick) {
+      suppressClick = false;
+      e.preventDefault();
+      return;
     }
+    // Let the <a> tag handle navigation naturally
   }
 
   function truncateName(name: string, maxLen: number): string {
     if (name.length <= maxLen) return name;
-    return name.slice(0, maxLen - 1) + '...';
+    if (maxLen <= 3) return name.slice(0, maxLen);
+    return name.slice(0, maxLen - 3) + '...';
   }
 
   // Calculate label positions to avoid overlap
@@ -241,34 +371,35 @@
     edge: VisEdge,
     edgeIndex: number,
     allEdges: VisEdge[],
-    animatedNodeMap: Map<string, VisNode>
-  ): { x: number; y: number; anchor: string; isHighlighted: boolean } {
+    positionedNodeMap: Map<string, VisNode>,
+    labelWidth: number
+  ): { x: number; y: number; anchor: string } {
     // Find the animated positions for this edge's nodes
-    const fromNode = animatedNodeMap.get(edge.from.node.id) ?? edge.from;
-    const toNode = animatedNodeMap.get(edge.to.node.id) ?? edge.to;
+    const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
+    const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
 
-    const dx = toNode.x - fromNode.x;
-    const dy = toNode.y - fromNode.y;
-    const len = Math.hypot(dx, dy);
-    const edgeAngle = Math.atan2(dy, dx);
+    const startAnchor = getEdgeAnchor(fromNode, toNode);
+    const endAnchor = getEdgeAnchor(toNode, fromNode);
+    const edgeDx = endAnchor.x - startAnchor.x;
+    const edgeDy = endAnchor.y - startAnchor.y;
+    const len = Math.hypot(edgeDx, edgeDy);
+    const edgeAngle = Math.atan2(edgeDy, edgeDx);
 
-    // Check if this edge is being hovered
-    const isHighlighted = hoveredEdgeIndex === edgeIndex ||
-      hoveredNodeId === edge.from.node.id ||
-      hoveredNodeId === edge.to.node.id;
-
-    // Position label closer to the non-center node (outer node) where there's more space
-    const t = edge.direction === 'in' ? 0.25 : 0.75;
-    let midX = fromNode.x + dx * t;
-    let midY = fromNode.y + dy * t;
-
-    // Offset perpendicular to the edge to avoid overlapping with the line
     if (len === 0) {
-      return { x: fromNode.x, y: fromNode.y, anchor: 'middle', isHighlighted };
+      return { x: fromNode.x, y: fromNode.y, anchor: 'middle' };
     }
 
-    const perpX = -dy / len;
-    const perpY = dx / len;
+    const inset = Math.min(EDGE_NODE_PADDING, len * 0.35);
+    const startX = startAnchor.x + (edgeDx / len) * inset;
+    const startY = startAnchor.y + (edgeDy / len) * inset;
+    const endX = endAnchor.x - (edgeDx / len) * inset;
+    const endY = endAnchor.y - (edgeDy / len) * inset;
+
+    let midX = (startX + endX) / 2;
+    let midY = (startY + endY) / 2;
+
+    const perpX = -edgeDy / len;
+    const perpY = edgeDx / len;
 
     // Only offset if there are edges with SIMILAR angles (would actually overlap)
     // Edges going in different directions don't need offsetting from each other
@@ -278,8 +409,8 @@
       // Must be same direction (in/out)
       if (other.direction !== edge.direction) continue;
 
-      const otherFrom = animatedNodeMap.get(other.from.node.id) ?? other.from;
-      const otherTo = animatedNodeMap.get(other.to.node.id) ?? other.to;
+      const otherFrom = positionedNodeMap.get(other.from.node.id) ?? other.from;
+      const otherTo = positionedNodeMap.get(other.to.node.id) ?? other.to;
       const otherDx = otherTo.x - otherFrom.x;
       const otherDy = otherTo.y - otherFrom.y;
       const otherAngle = Math.atan2(otherDy, otherDx);
@@ -294,7 +425,9 @@
 
     // Only apply offset if there are multiple edges with similar angles
     const myIndex = similarEdges.indexOf(edgeIndex);
-    const baseOffset = 8;
+    const lineGap = Math.hypot(endX - startX, endY - startY);
+    const sizePenalty = Math.max(0, (labelWidth - lineGap) * 0.25);
+    const baseOffset = 10 + sizePenalty;
     let crowdOffset = 0;
     if (similarEdges.length > 1 && myIndex >= 0) {
       crowdOffset = (myIndex - (similarEdges.length - 1) / 2) * 14;
@@ -303,14 +436,13 @@
     midX += perpX * (baseOffset + crowdOffset);
     midY += perpY * (baseOffset + crowdOffset);
 
-    // Determine anchor based on position relative to center
-    const anchor = midX < CENTER_X - 20 ? 'start' : midX > CENTER_X + 20 ? 'end' : 'middle';
-
-    return { x: midX, y: midY, anchor, isHighlighted };
+    return { x: midX, y: midY, anchor: 'middle' };
   }
 </script>
 
-<div class="rounded-xl border border-[var(--panel-border)] bg-white overflow-hidden">
+<svelte:window onmousemove={handleGlobalMouseMove} onmouseup={handleGlobalMouseUp} />
+
+<div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] overflow-hidden">
   <div class="border-b border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 flex items-center justify-between flex-wrap gap-2">
     <div class="flex items-center gap-3">
       <span class="text-sm font-medium text-[var(--ink)]">Relationship Graph</span>
@@ -325,9 +457,9 @@
         <button
           type="button"
           onclick={() => showStructural = !showStructural}
-          class="px-2 py-1 text-xs rounded-md border transition-colors {showStructural
+          class="px-2 py-1 text-xs rounded-[var(--radius-control)] corner-squircle border transition-colors {showStructural
             ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
-            : 'bg-white text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel)]'}"
+            : 'bg-[var(--panel-solid)] text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel-strong)]'}"
           title="Show structural edges (Contains, Defines)"
         >
           Structure
@@ -335,9 +467,9 @@
         <button
           type="button"
           onclick={() => showSemantic = !showSemantic}
-          class="px-2 py-1 text-xs rounded-md border transition-colors {showSemantic
+          class="px-2 py-1 text-xs rounded-[var(--radius-control)] corner-squircle border transition-colors {showSemantic
             ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
-            : 'bg-white text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel)]'}"
+            : 'bg-[var(--panel-solid)] text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel-strong)]'}"
           title="Show semantic edges (UsesType, Implements, Calls, Derives)"
         >
           Semantic
@@ -348,20 +480,20 @@
         <button
           type="button"
           onclick={zoomOut}
-          class="w-6 h-6 flex items-center justify-center rounded bg-white border border-[var(--panel-border)] text-[var(--muted)] hover:bg-[var(--panel)] text-sm"
+          class="w-6 h-6 flex items-center justify-center rounded-[var(--radius-control)] corner-squircle bg-[var(--panel-solid)] border border-[var(--panel-border)] text-[var(--muted)] hover:bg-[var(--panel-strong)] text-sm"
           title="Zoom out"
         >−</button>
         <span class="text-xs text-[var(--muted)] w-12 text-center">{Math.round(zoom * 100)}%</span>
         <button
           type="button"
           onclick={zoomIn}
-          class="w-6 h-6 flex items-center justify-center rounded bg-white border border-[var(--panel-border)] text-[var(--muted)] hover:bg-[var(--panel)] text-sm"
+          class="w-6 h-6 flex items-center justify-center rounded-[var(--radius-control)] corner-squircle bg-[var(--panel-solid)] border border-[var(--panel-border)] text-[var(--muted)] hover:bg-[var(--panel-strong)] text-sm"
           title="Zoom in"
         >+</button>
         <button
           type="button"
           onclick={resetView}
-          class="ml-1 px-2 h-6 flex items-center justify-center rounded bg-white border border-[var(--panel-border)] text-[var(--muted)] hover:bg-[var(--panel)] text-xs"
+          class="ml-1 px-2 h-6 flex items-center justify-center rounded-[var(--radius-control)] corner-squircle bg-[var(--panel-solid)] border border-[var(--panel-border)] text-[var(--muted)] hover:bg-[var(--panel-strong)] text-xs"
           title="Reset view"
         >Reset</button>
       </div>
@@ -379,7 +511,8 @@
   </div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="graph-container relative select-none"
+    {@attach captureContainer}
+    class="graph-container relative select-none h-[500px]"
     style="cursor: {isPanning ? 'grabbing' : 'grab'};"
     onwheel={handleWheel}
     onmousedown={handleMouseDown}
@@ -387,14 +520,21 @@
     onmouseup={handleMouseUp}
     onmouseleave={handleMouseLeave}
   >
-    <svg viewBox="0 0 {WIDTH} {HEIGHT}" class="w-full" style="max-height: 500px;">
+    <svg viewBox="0 0 {WIDTH} {HEIGHT}" class="w-full h-full" preserveAspectRatio="xMidYMid slice">
       <defs>
-      <pattern id="grid" width={GRID_SIZE} height={GRID_SIZE} patternUnits="userSpaceOnUse">
+      <pattern
+        id="grid"
+        width={GRID_SIZE * zoom}
+        height={GRID_SIZE * zoom}
+        patternUnits="userSpaceOnUse"
+        x={panX % (GRID_SIZE * zoom)}
+        y={panY % (GRID_SIZE * zoom)}
+      >
         <path
-          d={`M ${GRID_SIZE} 0 L 0 0 0 ${GRID_SIZE}`}
+          d={`M ${GRID_SIZE * zoom} 0 L 0 0 0 ${GRID_SIZE * zoom}`}
           fill="none"
-          stroke="#e2e8f0"
-          stroke-width="0.6"
+          stroke="var(--grid-line)"
+          stroke-width={0.6 * zoom}
         />
       </pattern>
       <marker
@@ -417,7 +557,7 @@
         markerHeight="6"
         orient="auto-start-reverse"
       >
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge-in)" />
       </marker>
       <marker
         id="arrow-out-highlight"
@@ -439,16 +579,16 @@
         markerHeight="7"
         orient="auto-start-reverse"
       >
-        <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569" />
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--edge-in-strong)" />
       </marker>
     </defs>
 
+    <rect width="100%" height="100%" fill="url(#grid)" />
     <g transform="translate({panX}, {panY}) scale({zoom})">
-      <rect width={WIDTH} height={HEIGHT} fill="url(#grid)" />
       <!-- Edges (non-highlighted first, then highlighted on top) -->
     {#each visData.edges as edge, edgeIndex (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
-      {@const fromNode = animatedNodeMap.get(edge.from.node.id) ?? edge.from}
-      {@const toNode = animatedNodeMap.get(edge.to.node.id) ?? edge.to}
+      {@const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from}
+      {@const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to}
       {@const startAnchor = getEdgeAnchor(fromNode, toNode)}
       {@const endAnchor = getEdgeAnchor(toNode, fromNode)}
       {@const dx = endAnchor.x - startAnchor.x}
@@ -458,11 +598,7 @@
       {@const startY = startAnchor.y}
       {@const endX = endAnchor.x - (dx / len) * EDGE_NODE_PADDING}
       {@const endY = endAnchor.y - (dy / len) * EDGE_NODE_PADDING}
-      {@const curveOffset = Math.min(Math.abs(dx) * 0.5, 120)}
-      {@const dir = dx >= 0 ? 1 : -1}
-      {@const c1x = startX + curveOffset * dir}
-      {@const c2x = endX - curveOffset * dir}
-      {@const pathD = `M ${startX} ${startY} C ${c1x} ${startY} ${c2x} ${endY} ${endX} ${endY}`}
+      {@const pathD = `M ${startX} ${startY} L ${endX} ${endY}`}
       {@const isHighlighted = hoveredNodeId === edge.from.node.id || hoveredNodeId === edge.to.node.id || hoveredEdgeIndex === edgeIndex}
       <g
         class="edge transition-opacity duration-150"
@@ -473,7 +609,9 @@
         <path
           d={pathD}
           fill="none"
-          stroke={edge.direction === 'out' ? 'var(--accent)' : (isHighlighted ? '#475569' : '#94a3b8')}
+          stroke={edge.direction === 'out'
+            ? 'var(--accent)'
+            : (isHighlighted ? 'var(--edge-in-strong)' : 'var(--edge-in)')}
           stroke-width={isHighlighted ? 3 : 2}
           marker-end={edge.direction === 'out'
             ? (isHighlighted ? 'url(#arrow-out-highlight)' : 'url(#arrow-out)')
@@ -485,24 +623,25 @@
 
     <!-- Edge labels (rendered after edges so they're on top) -->
     {#each visData.edges as edge, edgeIndex (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind + '|label')}
-      {@const labelPos = getLabelPosition(edge, edgeIndex, visData.edges, animatedNodeMap)}
-      {@const isHighlighted = labelPos.isHighlighted}
+      {@const isHighlighted = hoveredEdgeIndex === edgeIndex ||
+        hoveredNodeId === edge.from.node.id ||
+        hoveredNodeId === edge.to.node.id}
+      {@const labelMetrics = getEdgeLabelMetrics(edge.kind, isHighlighted)}
+      {@const labelPos = getLabelPosition(edge, edgeIndex, visData.edges, positionedNodeMap, labelMetrics.width)}
       <g
         class="transition-opacity duration-150"
         style="opacity: {hoveredNodeId && !isHighlighted ? 0.2 : 1}"
       >
-        {#if isHighlighted}
-          <!-- Background for highlighted labels -->
-          <rect
-            x={labelPos.x - (labelPos.anchor === 'end' ? 50 : labelPos.anchor === 'middle' ? 25 : 0)}
-            y={labelPos.y - 10}
-            width="50"
-            height="14"
-            fill="white"
-            rx="3"
-            class="transition-all duration-150"
-          />
-        {/if}
+        <rect
+          x={labelPos.x - labelMetrics.width / 2}
+          y={labelPos.y - labelMetrics.height / 2}
+          width={labelMetrics.width}
+          height={labelMetrics.height}
+          fill="var(--panel-solid)"
+          opacity={isHighlighted ? 0.95 : 0.82}
+          rx="3"
+          class="transition-all duration-150"
+        />
         <text
           x={labelPos.x}
           y={labelPos.y}
@@ -518,75 +657,83 @@
     {/each}
 
     <!-- Nodes -->
-    {#each animatedNodes as visNode (visNode.node.id)}
+    {#each positionedNodes as visNode (visNode.node.id)}
       {@const isHovered = hoveredNodeId === visNode.node.id}
       {@const isRelatedToHover = hoveredNeighborIds?.has(visNode.node.id) ?? false}
       {@const shouldDim = hoveredNodeId && !isHovered && !isRelatedToHover && !visNode.isCenter}
       {@const dims = getNodeDimensions(visNode.node, visNode.isCenter)}
       {@const hoverScale = isHovered && !visNode.isCenter ? 1.06 : 1}
-      {@const nodeWidth = dims.width * hoverScale}
-      {@const nodeHeight = dims.height * hoverScale}
-      {@const headerHeight = Math.min(HEADER_HEIGHT, nodeHeight)}
+      {@const nodeWidth = dims.width}
+      {@const nodeHeight = dims.height}
+      {@const cornerRadius = RECT_CORNER_RADIUS}
+      {@const headerHeight = dims.isRect
+        ? Math.min(HEADER_HEIGHT + (visNode.isCenter ? 2 : 0), nodeHeight - 12)
+        : Math.min(HEADER_HEIGHT, nodeHeight)}
+      {@const rectX = -nodeWidth / 2}
+      {@const rectY = -nodeHeight / 2}
+      {@const headerRadius = Math.min(cornerRadius, headerHeight)}
+      {@const headerDividerY = rectY + headerHeight}
+      {@const bodyCenterY = headerDividerY + (nodeHeight - headerHeight) / 2}
+      {@const headerPath = dims.isRect
+        ? `M ${rectX + headerRadius} ${rectY} H ${rectX + nodeWidth - headerRadius} A ${headerRadius} ${headerRadius} 0 0 1 ${rectX + nodeWidth} ${rectY + headerRadius} V ${headerDividerY} H ${rectX} V ${rectY + headerRadius} A ${headerRadius} ${headerRadius} 0 0 1 ${rectX + headerRadius} ${rectY} Z`
+        : ''}
       {@const radius = nodeWidth / 2}
-      {@const labelLimit = getNodeLabelLimit(visNode.node, visNode.isCenter)}
+      {@const labelMetrics = getNodeLabelMetrics(nodeWidth, dims.isRect, visNode.isCenter)}
+      {@const nodeLabel = truncateName(visNode.node.name, labelMetrics.maxChars)}
+      {@const compressLabel = estimateLabelWidth(nodeLabel, labelMetrics.fontSize) > labelMetrics.maxWidth}
+      {@const viewTransitionName = `node-${visNode.node.id.replace(/[^a-zA-Z0-9]/g, '_')}`}
+      {@const isDragging = dragNodeId === visNode.node.id}
+      <a href={getNodeUrl(visNode.node.id)} data-sveltekit-noscroll>
+      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <g
-        class="node cursor-pointer transition-all duration-150"
-        style="transform: translate({visNode.x}px, {visNode.y}px); opacity: {shouldDim ? 0.3 : 1}"
-        onclick={() => handleNodeClick(visNode.node)}
+        class="node cursor-grab"
+        class:cursor-grabbing={isDragging}
+        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1}; view-transition-name: {viewTransitionName};{isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
+        onmousedown={(e) => startNodeDrag(visNode, e)}
+        onclick={(e) => handleNodeClick(visNode.node, e)}
         onmouseenter={(e) => { hoveredNodeId = visNode.node.id; showTooltip(visNode, e); }}
         onmousemove={(e) => showTooltip(visNode, e)}
         onmouseleave={() => { hoveredNodeId = null; hideTooltip(); }}
-        role="button"
-        tabindex="0"
-        onkeydown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleNodeClick(visNode.node);
-          }
-        }}
       >
         {#if dims.isRect}
+          <!-- Body fill -->
           <rect
-            x={-nodeWidth / 2}
-            y={-nodeHeight / 2}
+            x={rectX}
+            y={rectY}
             width={nodeWidth}
             height={nodeHeight}
-            rx={RECT_CORNER_RADIUS}
+            rx={cornerRadius}
             fill={kindColors[visNode.node.kind]}
             opacity="0.88"
+          />
+          <!-- Header fill -->
+          <path d={headerPath} fill={kindColors[visNode.node.kind]} opacity="0.96" />
+          <!-- Divider line -->
+          <line
+            x1={rectX + 6}
+            x2={rectX + nodeWidth - 6}
+            y1={headerDividerY}
+            y2={headerDividerY}
+            stroke="rgba(255,255,255,0.25)"
+            stroke-width="1"
+          />
+          <!-- Stroke overlay -->
+          <rect
+            x={rectX}
+            y={rectY}
+            width={nodeWidth}
+            height={nodeHeight}
+            rx={cornerRadius}
+            fill="none"
             class="transition-all duration-150 {visNode.isCenter
               ? 'stroke-[var(--accent)] stroke-[3px]'
               : isHovered
                 ? 'stroke-[var(--accent)] stroke-[3px]'
                 : 'hover:stroke-[var(--accent)] hover:stroke-2'}"
           />
-          <rect
-            x={-nodeWidth / 2}
-            y={-nodeHeight / 2}
-            width={nodeWidth}
-            height={headerHeight}
-            rx={RECT_CORNER_RADIUS}
-            fill={kindColors[visNode.node.kind]}
-          />
-          <circle
-            cx={-nodeWidth / 2}
-            cy={0}
-            r={PIN_RADIUS}
-            fill="white"
-            stroke="#475569"
-            stroke-width="1"
-          />
-          <circle
-            cx={nodeWidth / 2}
-            cy={0}
-            r={PIN_RADIUS}
-            fill="white"
-            stroke="#475569"
-            stroke-width="1"
-          />
         {:else}
           <circle
-            r={isHovered && !visNode.isCenter ? radius + HOVER_RING : radius}
+            r={radius}
             fill={kindColors[visNode.node.kind]}
             class="transition-all duration-150 {visNode.isCenter
               ? 'stroke-[var(--accent)] stroke-[3px]'
@@ -597,17 +744,19 @@
         {/if}
         <!-- Node name -->
         <text
-          y={dims.isRect ? -nodeHeight / 2 + headerHeight / 2 : (visNode.isCenter ? -3 : 0)}
+          y={dims.isRect ? rectY + headerHeight / 2 : (visNode.isCenter ? -3 : 0)}
           text-anchor="middle"
           dominant-baseline="middle"
+          textLength={compressLabel ? labelMetrics.maxWidth : null}
+          lengthAdjust={compressLabel ? 'spacingAndGlyphs' : null}
           class="fill-white font-medium pointer-events-none {visNode.isCenter ? 'text-sm' : 'text-[11px]'}"
         >
-          {truncateName(visNode.node.name, labelLimit)}
+          {nodeLabel}
         </text>
         <!-- Kind label for center node -->
-        {#if visNode.isCenter}
+        {#if dims.isRect || visNode.isCenter}
           <text
-            y={14}
+            y={dims.isRect ? bodyCenterY : 14}
             text-anchor="middle"
             class="fill-white/70 text-[10px] pointer-events-none"
           >
@@ -615,6 +764,7 @@
           </text>
         {/if}
       </g>
+      </a>
     {/each}
 
 
@@ -630,7 +780,7 @@
     <!-- Tooltip -->
     {#if tooltipNode}
       <div
-        class="absolute pointer-events-none z-50 px-3 py-2 rounded-lg shadow-lg border border-[var(--panel-border)] bg-white text-sm max-w-xs"
+        class="absolute pointer-events-none z-50 px-3 py-2 rounded-[var(--radius-popover)] corner-squircle shadow-lg border border-[var(--panel-border)] bg-[var(--panel-solid)] text-sm max-w-xs"
         style="left: {tooltipX + 12}px; top: {tooltipY - 10}px; transform: translateY(-100%);"
       >
         <div class="font-medium text-[var(--ink)]">{tooltipNode.node.name}</div>
@@ -651,7 +801,7 @@
           </div>
         {/if}
         {#if tooltipNode.node.signature}
-          <div class="text-xs font-mono text-[var(--muted)] mt-1 pt-1 border-t border-[var(--panel-border)] truncate">
+          <div class="text-xs font-[var(--font-code)] text-[var(--muted)] mt-1 pt-1 border-t border-[var(--panel-border)] truncate">
             {tooltipNode.node.signature}
           </div>
         {/if}

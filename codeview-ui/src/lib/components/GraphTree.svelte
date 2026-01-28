@@ -49,13 +49,13 @@
   let {
     graph,
     selected,
-    onSelect,
+    getNodeUrl,
     filter,
     kindFilter
   } = $props<{
     graph: Graph | null;
     selected: Node | null;
-    onSelect: (node: Node) => void;
+    getNodeUrl: (id: string) => string;
     filter: string;
     kindFilter: Set<NodeKind>;
   }>();
@@ -71,6 +71,7 @@
   // Memoization cache for tree building
   let cachedGraphId: string | null = null;
   let cachedTree: TreeNode[] = [];
+  let cachedParentMap: Map<string, string> = new Map();
 
   function getGraphId(graph: Graph): string {
     return `${graph.nodes.length}-${graph.edges.length}`;
@@ -87,6 +88,7 @@
     // Use plain Map/Set for computation (no reactivity overhead)
     const nodeMap = new Map<string, Node>();
     const childrenMap = new Map<string, string[]>();
+    const parentMap = new Map<string, string>();
 
     for (const node of graph.nodes) {
       nodeMap.set(node.id, node);
@@ -99,6 +101,10 @@
           childrenMap.set(edge.from, []);
         }
         childrenMap.get(edge.from)!.push(edge.to);
+        // Track parent for each child (first parent wins for tree structure)
+        if (!parentMap.has(edge.to)) {
+          parentMap.set(edge.to, edge.from);
+        }
       }
     }
 
@@ -171,9 +177,23 @@
     // Cache the result
     cachedGraphId = graphId;
     cachedTree = result;
+    cachedParentMap = parentMap;
 
     return result;
   }
+
+  // Get ancestors of a node (from child to root)
+  function getAncestors(nodeId: string): string[] {
+    const ancestors: string[] = [];
+    let currentId = nodeId;
+    while (cachedParentMap.has(currentId)) {
+      const parentId = cachedParentMap.get(currentId)!;
+      ancestors.push(parentId);
+      currentId = parentId;
+    }
+    return ancestors;
+  }
+
 
   function matchesFilter(node: Node, filter: string, kindFilter: Set<NodeKind>): boolean {
     if (kindFilter.size > 0 && !kindFilter.has(node.kind)) {
@@ -228,6 +248,25 @@
     return result;
   });
 
+  const selectedAncestorIds = $derived.by(() => {
+    if (!selected || !graph) return [] as string[];
+    // Ensure parent map is up to date before reading ancestors.
+    baseTree;
+    return getAncestors(selected.id);
+  });
+
+  const expandedIdsForRender = $derived.by<Set<string>>(() => {
+    const combined = new Set<string>();
+    expandedIds.size;
+    for (const id of expandedIds) {
+      combined.add(id);
+    }
+    for (const id of selectedAncestorIds) {
+      combined.add(id);
+    }
+    return combined;
+  });
+
   function toggleExpand(id: string) {
     if (expandedIds.has(id)) {
       expandedIds.delete(id);
@@ -250,20 +289,21 @@
 
   // Use virtualization for large trees
   const useVirtualization = $derived(graph ? graph.nodes.length > 500 : false);
+
 </script>
 
 <div class="flex h-full flex-col">
   <div class="flex items-center gap-2 border-b border-[var(--panel-border)] px-3 py-2">
     <button
       type="button"
-      class="rounded px-2 py-1 text-xs text-[var(--muted)] hover:bg-[var(--panel-strong)]"
+      class="rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs text-[var(--muted)] hover:bg-[var(--panel-strong)]"
       onclick={expandAll}
     >
       Expand all
     </button>
     <button
       type="button"
-      class="rounded px-2 py-1 text-xs text-[var(--muted)] hover:bg-[var(--panel-strong)]"
+      class="rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs text-[var(--muted)] hover:bg-[var(--panel-strong)]"
       onclick={collapseAll}
     >
       Collapse all
@@ -280,14 +320,14 @@
     <VirtualTree
       {tree}
       {selected}
-      {onSelect}
-      {expandedIds}
+      {getNodeUrl}
+      expandedIds={expandedIdsForRender}
       onToggleExpand={toggleExpand}
       filter={normalizedFilter}
       {kindFilter}
     />
   {:else}
-    <div class="flex-1 overflow-auto p-2">
+    <div class="flex-1 overflow-auto p-2" style="scrollbar-gutter: stable;">
       {#each tree as item (item.node.id)}
         {@render treeItem(item, 0)}
       {/each}
@@ -297,38 +337,58 @@
 
 {#snippet treeItem(item: TreeNode, depth: number)}
   {@const hasChildren = item.children.length > 0}
-  {@const isExpanded = expandedIds.has(item.node.id)}
+  {@const isExpanded = expandedIdsForRender.has(item.node.id)}
   {@const isSelected = item.selectable && selected?.id === item.node.id}
   {@const matches = matchesFilter(item.node, normalizedFilter, kindFilter)}
 
   <div class="select-none">
-    <button
-      type="button"
-      class="flex w-full items-center gap-2 rounded px-2 py-1 text-left text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
-        ? 'bg-[var(--accent)]/10 ring-1 ring-[var(--accent)]'
+    <div
+      class="flex w-full items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
+        ? 'bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]'
         : ''} {!matches ? 'opacity-50' : ''}"
       style="padding-left: {depth * 16 + 8}px"
-      onclick={() => {
-        if (hasChildren) toggleExpand(item.node.id);
-        if (item.selectable) onSelect(item.node);
-      }}
     >
-      <span class="flex h-4 w-4 items-center justify-center text-[var(--muted)]">
-        {#if hasChildren}
+      {#if hasChildren}
+        <button
+          type="button"
+          class="flex h-4 w-4 items-center justify-center text-[var(--muted)] cursor-pointer"
+          onclick={() => toggleExpand(item.node.id)}
+          aria-label="{isExpanded ? 'Collapse' : 'Expand'} {item.node.name}"
+          aria-expanded={isExpanded}
+        >
           {isExpanded ? '▼' : '▶'}
-        {/if}
-      </span>
+        </button>
+      {:else}
+        <span class="flex h-4 w-4"></span>
+      {/if}
       <span
-        class="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold leading-none text-white"
+        class="flex h-5 w-5 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-[10px] font-bold leading-none text-white"
         style="background-color: {kindColors[item.node.kind]}"
       >
         {kindIcons[item.node.kind]}
       </span>
-      <span class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]">{item.node.name}</span>
-      {#if item.node.visibility === 'Public'}
-        <span class="ml-auto text-[10px] leading-none text-green-600">pub</span>
+      {#if item.selectable}
+        <a
+          href={getNodeUrl(item.node.id)}
+          data-sveltekit-noscroll
+          class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]"
+          onclick={() => { if (hasChildren) toggleExpand(item.node.id); }}
+        >
+          {item.node.name}
+        </a>
+      {:else}
+        <button
+          type="button"
+          class="min-w-0 flex-1 truncate text-left font-medium text-[var(--ink)] cursor-pointer"
+          onclick={() => { if (hasChildren) toggleExpand(item.node.id); }}
+        >
+          {item.node.name}
+        </button>
       {/if}
-    </button>
+      {#if item.node.visibility === 'Public'}
+        <span class="ml-auto text-[10px] leading-none text-[var(--accent)] font-medium">pub</span>
+      {/if}
+    </div>
     {#if hasChildren && isExpanded}
       {#each item.children as child (child.node.id)}
         {@render treeItem(child, depth + 1)}

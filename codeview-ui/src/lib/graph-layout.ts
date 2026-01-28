@@ -38,6 +38,9 @@ export const CIRCLE_RADIUS = 24;
 export const CENTER_CIRCLE_RADIUS = 34;
 export const RECT_NODE_WIDTH = 132;
 export const RECT_NODE_HEIGHT = 44;
+export const MIN_NODE_SPACING = 16;
+export const LABEL_CHAR_WIDTH = 6.6; // Approximate width per character at base font size
+export const ARROWHEAD_LENGTH = 12;
 
 export const RECT_NODE_KINDS = new Set<NodeKind>(['Struct', 'Enum', 'Union']);
 
@@ -71,10 +74,22 @@ export function getEdgeAnchor(fromNode: VisNode, toNode: VisNode): { x: number; 
     return { x: fromNode.x, y: fromNode.y };
   }
   if (dims.isRect) {
-    const side = dx >= 0 ? 1 : -1;
+    const halfWidth = dims.width / 2;
+    const halfHeight = dims.height / 2;
+    const absDx = Math.abs(dx);
+    const absDy = Math.abs(dy);
+    const horizontalBias = 1.4;
+    if (absDx * horizontalBias >= absDy) {
+      const scale = halfWidth / (absDx || 1);
+      return {
+        x: fromNode.x + dx * scale,
+        y: fromNode.y + dy * scale
+      };
+    }
+    const scale = halfHeight / (absDy || 1);
     return {
-      x: fromNode.x + (dims.width / 2) * side,
-      y: fromNode.y
+      x: fromNode.x + dx * scale,
+      y: fromNode.y + dy * scale
     };
   }
   const radius = dims.width / 2;
@@ -270,9 +285,15 @@ function computeForceLayout(graph: Graph, selected: Node): { nodes: VisNode[]; e
   });
 
   const iterations = 50;
-  const repulsion = 5000;
+  const baseRepulsion = 5000;
   const attraction = 0.05;
   const damping = 0.9;
+
+  const nodeRadii = new Map<string, number>();
+  for (const node of nodesToLayout) {
+    const box = getNodeBoundingBox(node, node.id === selected.id);
+    nodeRadii.set(node.id, Math.max(box.width, box.height) / 2);
+  }
 
   const velocities = new Map<string, { vx: number; vy: number }>();
   nodesToLayout.forEach(n => velocities.set(n.id, { vx: 0, vy: 0 }));
@@ -290,6 +311,13 @@ function computeForceLayout(graph: Graph, selected: Node): { nodes: VisNode[]; e
         const dx = posB.x - posA.x;
         const dy = posB.y - posA.y;
         const dist = Math.max(1, Math.hypot(dx, dy));
+
+        const radiusA = nodeRadii.get(a.id) || CIRCLE_RADIUS;
+        const radiusB = nodeRadii.get(b.id) || CIRCLE_RADIUS;
+        const minDist = radiusA + radiusB + MIN_NODE_SPACING;
+        const repulsionScale = Math.max(1, minDist / 40);
+        const repulsion = baseRepulsion * repulsionScale;
+
         const force = repulsion / (dist * dist);
         const fx = (dx / dist) * force;
         const fy = (dy / dist) * force;
@@ -355,6 +383,8 @@ function computeForceLayout(graph: Graph, selected: Node): { nodes: VisNode[]; e
     visNodes.push(visNode);
     visNodeMap.set(node.id, visNode);
   }
+
+  resolveCollisions(visNodes, selected.id);
 
   const visEdges: VisEdge[] = [];
   for (const edge of graph.edges) {
@@ -429,51 +459,66 @@ function computeHierarchicalLayout(graph: Graph, selected: Node): { nodes: VisNo
   visNodes.push(centerVisNode);
   visNodeMap.set(selected.id, centerVisNode);
 
-  incomingNodes.forEach((node, i) => {
-    const x = incomingNodes.length === 1
-      ? CENTER_X
-      : 100 + (LAYOUT_WIDTH - 200) * i / (incomingNodes.length - 1);
-    const visNode: VisNode = {
-      node,
-      x,
-      y: layerY[0],
-      baseX: x,
-      baseY: layerY[0],
-      angle: 0,
-      isCenter: false,
-      edgeKind: '',
-      direction: 'in',
-      layer: 0,
-      indexInLayer: i,
-      totalInLayer: incomingNodes.length,
-      layoutRadius: 0
-    };
-    visNodes.push(visNode);
-    visNodeMap.set(node.id, visNode);
-  });
+  function layoutRow(nodes: Node[], y: number, direction: 'in' | 'out', layer: number): VisNode[] {
+    if (nodes.length === 0) return [];
+    if (nodes.length === 1) {
+      const node = nodes[0];
+      return [{
+        node,
+        x: CENTER_X,
+        y,
+        baseX: CENTER_X,
+        baseY: y,
+        angle: 0,
+        isCenter: false,
+        edgeKind: '',
+        direction,
+        layer,
+        indexInLayer: 0,
+        totalInLayer: 1,
+        layoutRadius: 0
+      }];
+    }
 
-  outgoingNodes.forEach((node, i) => {
-    const x = outgoingNodes.length === 1
-      ? CENTER_X
-      : 100 + (LAYOUT_WIDTH - 200) * i / (outgoingNodes.length - 1);
-    const visNode: VisNode = {
-      node,
-      x,
-      y: layerY[2],
-      baseX: x,
-      baseY: layerY[2],
-      angle: 0,
-      isCenter: false,
-      edgeKind: '',
-      direction: 'out',
-      layer: 2,
-      indexInLayer: i,
-      totalInLayer: outgoingNodes.length,
-      layoutRadius: 0
-    };
+    const widths = nodes.map(n => getNodeDimensions(n, false).width);
+    const totalWidth = widths.reduce((sum, w) => sum + w, 0) + (nodes.length - 1) * MIN_NODE_SPACING;
+    let cursor = CENTER_X - totalWidth / 2;
+
+    return nodes.map((node, i) => {
+      const x = cursor + widths[i] / 2;
+      cursor += widths[i] + MIN_NODE_SPACING;
+      return {
+        node,
+        x,
+        y,
+        baseX: x,
+        baseY: y,
+        angle: 0,
+        isCenter: false,
+        edgeKind: '',
+        direction,
+        layer,
+        indexInLayer: i,
+        totalInLayer: nodes.length,
+        layoutRadius: 0
+      };
+    });
+  }
+
+  const inVisNodes = layoutRow(incomingNodes, layerY[0], 'in', 0);
+  const outVisNodes = layoutRow(outgoingNodes, layerY[2], 'out', 2);
+
+  for (const visNode of inVisNodes) {
     visNodes.push(visNode);
-    visNodeMap.set(node.id, visNode);
-  });
+    visNodeMap.set(visNode.node.id, visNode);
+  }
+
+  for (const visNode of outVisNodes) {
+    visNodes.push(visNode);
+    visNodeMap.set(visNode.node.id, visNode);
+  }
+
+  resolveCollisions(visNodes, selected.id);
 
   const visEdges: VisEdge[] = [];
   for (const edge of graph.edges) {
@@ -532,7 +577,23 @@ function computeRadialLayout(graph: Graph, selected: Node): { nodes: VisNode[]; 
   visNodes.push(centerVisNode);
   visNodeMap.set(selected.id, centerVisNode);
 
-  const radius = RADIAL_RADIUS;
+  const centerBox = getNodeBoundingBox(selected, true);
+  const centerRadius = Math.max(centerBox.width, centerBox.height) / 2;
+  let totalArcLength = 0;
+  for (const node of surroundingNodes) {
+    const box = getNodeBoundingBox(node, false);
+    totalArcLength += box.width + MIN_NODE_SPACING;
+  }
+  const minRadiusForSpacing = totalArcLength / (2 * Math.PI);
+  const minRadiusFromCenter = centerRadius + MIN_NODE_SPACING + ARROWHEAD_LENGTH +
+    (surroundingNodes.length > 0
+      ? Math.max(...surroundingNodes.map(n => {
+          const box = getNodeBoundingBox(n, false);
+          return Math.max(box.width, box.height) / 2;
+        }))
+      : 0);
+  const radius = Math.max(RADIAL_RADIUS, minRadiusForSpacing, minRadiusFromCenter);
+
   surroundingNodes.forEach((node, i) => {
     const angle = (2 * Math.PI * i) / surroundingNodes.length - Math.PI / 2;
     const x = CENTER_X + radius * Math.cos(angle);
@@ -565,6 +626,8 @@ function computeRadialLayout(graph: Graph, selected: Node): { nodes: VisNode[]; 
     visNodeMap.set(node.id, visNode);
   });
 
+  resolveCollisions(visNodes, selected.id);
+
   const visEdges: VisEdge[] = [];
   for (const edge of graph.edges) {
     const from = visNodeMap.get(edge.from);
@@ -584,4 +647,90 @@ function computeRadialLayout(graph: Graph, selected: Node): { nodes: VisNode[]; 
 
 function formatEdgeKinds(kinds: string[]): string {
   return Array.from(new Set(kinds)).join(', ');
+}
+
+function getEffectiveRadius(node: Node, isCenter: boolean): number {
+  const dims = getNodeDimensions(node, isCenter);
+  return Math.max(dims.width, dims.height) / 2;
+}
+
+function getNodeBoundingBox(node: Node, isCenter: boolean): { width: number; height: number } {
+  const dims = getNodeDimensions(node, isCenter);
+  const fontSize = isCenter ? 14 : 11;
+  const labelWidth = node.name.length * LABEL_CHAR_WIDTH;
+
+  // For rect nodes, label is inside; for circles, it may extend
+  const effectiveWidth = dims.isRect
+    ? dims.width
+    : Math.max(dims.width, labelWidth + 8);
+
+  // Add arrowhead padding since edges connect to this node
+  const withArrowPadding = effectiveWidth + ARROWHEAD_LENGTH;
+
+  return {
+    width: withArrowPadding,
+    height: dims.height
+  };
+}
+
+function resolveCollisions(
+  visNodes: VisNode[],
+  centerId: string,
+  iterations: number = 15
+): void {
+  for (let iter = 0; iter < iterations; iter++) {
+    let moved = false;
+    for (let i = 0; i < visNodes.length; i++) {
+      for (let j = i + 1; j < visNodes.length; j++) {
+        const a = visNodes[i];
+        const b = visNodes[j];
+
+        const boxA = getNodeBoundingBox(a.node, a.isCenter);
+        const boxB = getNodeBoundingBox(b.node, b.isCenter);
+
+        const halfWidthA = boxA.width / 2;
+        const halfHeightA = boxA.height / 2;
+        const halfWidthB = boxB.width / 2;
+        const halfHeightB = boxB.height / 2;
+
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+
+        const overlapX = (halfWidthA + halfWidthB + MIN_NODE_SPACING) - Math.abs(dx);
+        const overlapY = (halfHeightA + halfHeightB + MIN_NODE_SPACING) - Math.abs(dy);
+
+        if (overlapX > 0 && overlapY > 0) {
+          // Push apart along the axis with less overlap
+          let pushX = 0;
+          let pushY = 0;
+
+          if (overlapX < overlapY) {
+            pushX = dx >= 0 ? overlapX : -overlapX;
+          } else {
+            pushY = dy >= 0 ? overlapY : -overlapY;
+          }
+
+          if (a.node.id === centerId) {
+            b.x += pushX;
+            b.y += pushY;
+          } else if (b.node.id === centerId) {
+            a.x -= pushX;
+            a.y -= pushY;
+          } else {
+            a.x -= pushX * 0.5;
+            a.y -= pushY * 0.5;
+            b.x += pushX * 0.5;
+            b.y += pushY * 0.5;
+          }
+          moved = true;
+        }
+      }
+    }
+    if (!moved) break;
+  }
+
+  for (const node of visNodes) {
+    node.baseX = node.x;
+    node.baseY = node.y;
+  }
 }

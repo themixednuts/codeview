@@ -16,10 +16,11 @@
 </script>
 
 <script lang="ts">
+  import type { Attachment } from 'svelte/attachments';
   let {
     tree,
     selected,
-    onSelect,
+    getNodeUrl,
     expandedIds,
     onToggleExpand,
     filter,
@@ -27,7 +28,7 @@
   } = $props<{
     tree: TreeNode[];
     selected: Node | null;
-    onSelect: (node: Node) => void;
+    getNodeUrl: (id: string) => string;
     expandedIds: Set<string>;
     onToggleExpand: (id: string) => void;
     filter: string;
@@ -37,7 +38,6 @@
   const ITEM_HEIGHT = 32;
   const OVERSCAN = 5;
 
-  let containerRef = $state<HTMLDivElement | null>(null);
   let scrollTop = $state(0);
   let containerHeight = $state(400);
 
@@ -84,9 +84,16 @@
   // Offset for positioning visible items
   const offsetY = $derived(visibleRange.start * ITEM_HEIGHT);
 
-  function handleScroll(e: Event) {
-    scrollTop = (e.currentTarget as HTMLDivElement).scrollTop;
-  }
+  const attachScrollListener: Attachment<HTMLDivElement> = (node) => {
+    const handleScroll = () => {
+      scrollTop = node.scrollTop;
+    };
+    handleScroll();
+    node.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      node.removeEventListener('scroll', handleScroll);
+    };
+  };
 
   function matchesFilter(node: Node): boolean {
     if (kindFilter.size > 0 && !kindFilter.has(node.kind)) {
@@ -128,59 +135,102 @@
     TypeAlias: '='
   };
 
-  // Observe container size
-  $effect(() => {
-    if (!containerRef) return;
+  // Track last scrolled-to selection to avoid re-scrolling
+  let lastScrolledToId: string | null = null;
 
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        containerHeight = entry.contentRect.height;
+  const attachAutoScroll = (
+    selectedId: string | null,
+    nodes: FlatNode[],
+    height: number
+  ): Attachment<HTMLDivElement> => {
+    return (node) => {
+      // Only scroll if selection changed
+      if (selectedId === lastScrolledToId) return;
+      lastScrolledToId = selectedId;
+
+      if (!selectedId) return;
+
+      const selectedIndex = nodes.findIndex(
+        (item) => item.treeNode.node.id === selectedId
+      );
+
+      if (selectedIndex === -1) return;
+
+      const itemTop = selectedIndex * ITEM_HEIGHT;
+      const itemBottom = itemTop + ITEM_HEIGHT;
+      const viewTop = node.scrollTop;
+      const viewBottom = viewTop + height;
+
+      // Only scroll if item is not fully visible
+      if (itemTop < viewTop) {
+        node.scrollTo({ top: itemTop - ITEM_HEIGHT, behavior: 'smooth' });
+      } else if (itemBottom > viewBottom) {
+        node.scrollTo({ top: itemBottom - height + ITEM_HEIGHT, behavior: 'smooth' });
       }
-    });
-
-    observer.observe(containerRef);
-    return () => observer.disconnect();
-  });
+    };
+  };
 
 </script>
 
 <div
-  bind:this={containerRef}
-  class="flex-1 overflow-auto"
-  onscroll={handleScroll}
+  {@attach attachScrollListener}
+  {@attach attachAutoScroll(selected?.id ?? null, flatNodes, containerHeight)}
+  class="flex-1 overflow-auto p-2"
+  style="scrollbar-gutter: stable;"
+  bind:clientHeight={containerHeight}
 >
   <div style="height: {totalHeight}px; position: relative;">
     <div style="transform: translateY({offsetY}px);">
       {#each visibleNodes as { treeNode, depth, isExpanded, hasChildren } (treeNode.node.id)}
         {@const isSelected = treeNode.selectable && selected?.id === treeNode.node.id}
         {@const matches = matchesFilter(treeNode.node)}
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 rounded px-2 text-left text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
-            ? 'bg-[var(--accent)]/10 ring-1 ring-[var(--accent)]'
+        <div
+          class="flex w-full items-center gap-2 rounded-[var(--radius-chip)] corner-squircle box-border px-2 py-1 text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
+            ? 'bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]'
             : ''} {!matches ? 'opacity-50' : ''}"
           style="height: {ITEM_HEIGHT}px; padding-left: {depth * 16 + 8}px"
-          onclick={() => {
-            if (hasChildren) onToggleExpand(treeNode.node.id);
-            if (treeNode.selectable) onSelect(treeNode.node);
-          }}
         >
-          <span class="flex h-4 w-4 items-center justify-center text-[var(--muted)]">
-            {#if hasChildren}
+          {#if hasChildren}
+            <button
+              type="button"
+              class="flex h-4 w-4 items-center justify-center text-[var(--muted)] cursor-pointer"
+              onclick={() => onToggleExpand(treeNode.node.id)}
+              aria-label="{isExpanded ? 'Collapse' : 'Expand'} {treeNode.node.name}"
+              aria-expanded={isExpanded}
+            >
               {isExpanded ? '▼' : '▶'}
-            {/if}
-          </span>
+            </button>
+          {:else}
+            <span class="flex h-4 w-4"></span>
+          {/if}
           <span
-            class="flex h-5 w-5 items-center justify-center rounded text-[10px] font-bold leading-none text-white"
+            class="flex h-5 w-5 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-[10px] font-bold leading-none text-white"
             style="background-color: {kindColors[treeNode.node.kind]}"
           >
             {kindIcons[treeNode.node.kind]}
           </span>
-          <span class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]">{treeNode.node.name}</span>
-          {#if treeNode.node.visibility === 'Public'}
-            <span class="ml-auto text-[10px] leading-none text-green-600">pub</span>
+          {#if treeNode.selectable}
+            <a
+              href={getNodeUrl(treeNode.node.id)}
+              data-sveltekit-noscroll
+              class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]"
+              onclick={() => { if (hasChildren) onToggleExpand(treeNode.node.id); }}
+            >
+              {treeNode.node.name}
+            </a>
+          {:else}
+            <button
+              type="button"
+              class="min-w-0 flex-1 truncate text-left font-medium text-[var(--ink)] cursor-pointer"
+              onclick={() => { if (hasChildren) onToggleExpand(treeNode.node.id); }}
+            >
+              {treeNode.node.name}
+            </button>
           {/if}
-        </button>
+          {#if treeNode.node.visibility === 'Public'}
+            <span class="ml-auto text-[10px] leading-none text-[var(--accent)] font-medium">pub</span>
+          {/if}
+        </div>
       {/each}
     </div>
   </div>

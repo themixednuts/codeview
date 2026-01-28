@@ -12,7 +12,7 @@
   }>();
 </script>
 
-<div class="rounded-3xl border border-[var(--panel-border)] bg-[var(--panel)]/90 p-6 shadow-[0_16px_28px_rgba(38,28,20,0.1)]">
+<div class="rounded-[var(--radius-panel)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] p-6 shadow-[var(--shadow-strong)]">
   <h3 class="text-xl font-semibold text-[var(--ink)]">Legend</h3>
   <div class="mt-4">
     <p class="text-xs uppercase tracking-[0.2em] text-[var(--muted)]">Node kinds</p>
@@ -22,7 +22,7 @@
       {:else}
         {#each stats.kindCounts as entry (entry.kind)}
           <span
-            class="inline-flex items-center gap-2 rounded-full border border-[var(--panel-border)] bg-white/80 px-3 py-1 text-xs font-semibold text-[var(--ink)]"
+            class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-1 text-xs font-semibold text-[var(--ink)]"
           >
             <span class="h-2.5 w-2.5 rounded-full" style={`background:${nodeColor(entry.kind)}`}></span>
             {kindLabels[entry.kind]}
@@ -39,7 +39,7 @@
         <p class="text-sm text-[var(--muted)]">No edges loaded.</p>
       {:else}
         {#each stats.edgeCounts as entry (entry.kind)}
-          <div class="flex items-center justify-between rounded-2xl border border-[var(--panel-border)] bg-white/70 px-3 py-2">
+          <div class="flex items-center justify-between rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-3 py-2">
             <span class="font-semibold text-[var(--ink)]">{edgeLabels[entry.kind]}</span>
             <div class="flex items-center gap-2">
               <span class="h-2.5 w-2.5 rounded-full" style={`background:${edgeColor(entry.kind)}`}></span>
@@ -50,11 +50,11 @@
       {/if}
     </div>
   </div>
-  <div class="mt-6 rounded-2xl border border-[var(--panel-border)] bg-white/70 px-4 py-3 text-xs text-[var(--muted)]">
+  <div class="mt-6 rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-3 text-xs text-[var(--muted)]">
     <p class="font-semibold text-[var(--ink)]">Confidence markers</p>
     <div class="mt-2 flex flex-wrap gap-3">
-      {#each Object.entries(confidenceLabels) as [key, value]}
-        <span class="rounded-full border border-[var(--panel-border)] bg-white/80 px-3 py-1">
+      {#each Object.entries(confidenceLabels) as [key, value] (key)}
+        <span class="rounded-[var(--radius-chip)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-1">
           {value}
         </span>
       {/each}

@@ -2,26 +2,36 @@
   import {
     parseDocumentation,
     highlightDocumentation,
-    type SupportedLanguage
+    type SupportedLanguage,
+    type DocLinks
   } from '$lib/highlight';
+  import { goto } from '$app/navigation';
   import CodeBlock from './CodeBlock.svelte';
 
   let {
     docs,
     defaultLang = 'rust',
-    theme = 'dark'
+    theme = 'light',
+    docLinks = {},
+    getNodeUrl,
+    nodeExists
   } = $props<{
     docs: string;
     defaultLang?: SupportedLanguage;
     theme?: 'dark' | 'light';
+    docLinks?: DocLinks;
+    /** Returns URL for navigating to a node */
+    getNodeUrl?: (id: string) => string;
+    /** Check if a node exists in the graph (for determining internal vs external links) */
+    nodeExists?: (nodeId: string) => boolean;
   }>();
 
-  // Parse documentation into segments
-  const segments = $derived(parseDocumentation(docs, defaultLang));
+  // Parse documentation into segments (with intra-doc link resolution)
+  const segments = $derived(parseDocumentation(docs, defaultLang, docLinks));
 
-  // Track highlighted HTML for code blocks
+  // Track highlighted HTML for all segments
   let highlightedSegments = $state<
-    Array<{ type: 'text' | 'code'; content: string; html?: string }>
+    Array<{ type: 'text' | 'code'; content: string; html: string }>
   >([]);
 
   $effect(() => {
@@ -29,14 +39,55 @@
       highlightedSegments = result;
     });
   });
+
+  /**
+   * Handle clicks on the documentation container.
+   * Uses event delegation to catch clicks on intra-doc links.
+   */
+  function handleClick(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    const link = target.closest('a.intra-doc-link') as HTMLAnchorElement | null;
+
+    if (!link) return;
+
+    event.preventDefault();
+
+    const nodeId = link.dataset.nodeId;
+    if (!nodeId) return;
+
+    // Check if node exists in our graph
+    const exists = nodeExists?.(nodeId) ?? false;
+
+    if (exists && getNodeUrl) {
+      // Internal navigation
+      goto(getNodeUrl(nodeId), { noScroll: true });
+    } else {
+      // External link - open docs.rs
+      // Convert node ID like "postgres::client::Client" to docs.rs URL
+      const parts = nodeId.split('::');
+      if (parts.length >= 1) {
+        const crateName = parts[0];
+        const path = parts.slice(1).join('/');
+        // docs.rs format: https://docs.rs/crate/latest/crate/path/struct.Name.html
+        // We don't know the item type, so link to the search or module
+        const docsUrl = path
+          ? `https://docs.rs/${crateName}/latest/${crateName}/${path.toLowerCase()}/`
+          : `https://docs.rs/${crateName}/latest/${crateName}/`;
+        window.open(docsUrl, '_blank', 'noopener,noreferrer');
+      }
+    }
+  }
 </script>
 
-<div class="documentation space-y-3">
+<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+<div class="documentation space-y-3" onclick={handleClick}>
   {#each highlightedSegments as segment, i (i)}
     {#if segment.type === 'text'}
-      <p class="documentation-text whitespace-pre-wrap text-sm text-[var(--ink)] leading-relaxed">{segment.content}</p>
+      <div class="documentation-text prose prose-sm text-[var(--ink)]">
+        {@html segment.html}
+      </div>
     {:else if segment.type === 'code' && segment.html}
-      <div class="code-block overflow-x-auto rounded-lg text-sm">
+      <div class="code-block overflow-x-auto rounded-[var(--radius-control)] corner-squircle text-sm">
         {@html segment.html}
       </div>
     {:else if segment.type === 'code'}
@@ -50,16 +101,74 @@
     font-family: var(--font-body);
   }
 
+  .documentation-text :global(p) {
+    margin: 0.5rem 0;
+    line-height: 1.6;
+  }
+
+  .documentation-text :global(p:first-child) {
+    margin-top: 0;
+  }
+
+  .documentation-text :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .documentation-text :global(a) {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .documentation-text :global(a:hover) {
+    opacity: 0.8;
+  }
+
+  /* Intra-doc links (links to other items in the crate) */
+  .documentation-text :global(a.intra-doc-link) {
+    cursor: pointer;
+  }
+
+  .documentation-text :global(a.intra-doc-link code) {
+    color: var(--accent);
+  }
+
+  .documentation-text :global(code) {
+    font-family: var(--font-code);
+    font-size: 0.875em;
+    background: var(--code-bg);
+    padding: 0.125rem 0.375rem;
+    border-radius: 0.25rem;
+    border: 1px solid var(--code-border);
+  }
+
+  .documentation-text :global(strong) {
+    font-weight: 600;
+  }
+
+  .documentation-text :global(ul),
+  .documentation-text :global(ol) {
+    margin: 0.5rem 0;
+    padding-left: 1.5rem;
+  }
+
+  .documentation-text :global(li) {
+    margin: 0.25rem 0;
+  }
+
   .code-block :global(pre) {
     margin: 0;
     padding: 0.75rem;
-    border-radius: 0.5rem;
+    border-radius: var(--radius-control);
     overflow-x: auto;
+    background: var(--code-bg) !important;
+    border: 1px solid var(--code-border);
   }
 
   .code-block :global(code) {
-    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    font-family: var(--font-code);
     font-size: 0.8125rem;
-    line-height: 1.5;
+    line-height: 1.6;
+    color: var(--code-ink);
   }
 </style>
