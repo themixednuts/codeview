@@ -14,5 +14,9 @@ Cargo.lock
 .playwright-mcp/
 opencode.json
 
+# Build output
+/codeview-ui/dist
+
 # Temp/test data
 /tmp
+nul
