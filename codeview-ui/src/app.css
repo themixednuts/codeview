@@ -6,15 +6,39 @@
     color-scheme: light;
     --font-display: 'Fraunces', serif;
     --font-body: 'Space Grotesk', sans-serif;
+    --font-code: var(--font-body);
+    --radius-panel: 1.5rem;
+    --radius-card: 1rem;
+    --radius-control: 0.75rem;
+    --radius-chip: 0.625rem;
+    --radius-popover: 0.875rem;
     --bg: #f4efe6;
+    --bg-strong: #fdf8f0;
+    --bg-top: rgba(247, 226, 197, 0.85);
+    --bg-bottom: rgba(235, 199, 173, 0.6);
     --bg-glow: #f7e2c5;
     --panel: #fffaf1;
     --panel-strong: #fff4e3;
+    --panel-solid: #ffffff;
+    --panel-muted: #f6efe4;
     --panel-border: rgba(38, 28, 20, 0.12);
     --ink: #261c14;
     --muted: #6f5f54;
     --accent: #d76a2f;
     --accent-strong: #c45123;
+    --shadow-soft: 0 12px 24px rgba(38, 28, 20, 0.08);
+    --shadow-strong: 0 18px 32px rgba(38, 28, 20, 0.12);
+    --shadow-glow: 0 24px 50px rgba(38, 28, 20, 0.12);
+    --code-bg: #f6f1e8;
+    --code-border: rgba(38, 28, 20, 0.12);
+    --code-ink: #2b241e;
+    --danger: #b42318;
+    --danger-bg: #fff1f0;
+    --danger-border: rgba(180, 35, 24, 0.2);
+    --success: #2f855a;
+    --grid-line: rgba(38, 28, 20, 0.08);
+    --edge-in: #94a3b8;
+    --edge-in-strong: #475569;
     --edge-default: #5c6f7c;
     --edge-contains: #c45d4f;
     --edge-defines: #b85c3f;
@@ -37,14 +61,53 @@
     --kind-other: #a07a63;
   }
 
+  :root[data-theme='dark'] {
+    color-scheme: dark;
+    --bg: #0e1117;
+    --bg-strong: #101722;
+    --bg-top: rgba(46, 62, 86, 0.35);
+    --bg-bottom: rgba(11, 14, 20, 0.85);
+    --bg-glow: #1f2a3a;
+    --panel: #151b23;
+    --panel-strong: #1d2430;
+    --panel-solid: #171d27;
+    --panel-muted: #11161d;
+    --panel-border: rgba(148, 163, 184, 0.18);
+    --ink: #e6edf3;
+    --muted: #9aa4b2;
+    --accent: #f08a5d;
+    --accent-strong: #f6a879;
+    --shadow-soft: 0 12px 24px rgba(0, 0, 0, 0.35);
+    --shadow-strong: 0 18px 32px rgba(0, 0, 0, 0.45);
+    --shadow-glow: 0 24px 50px rgba(0, 0, 0, 0.55);
+    --code-bg: #0d1117;
+    --code-border: rgba(148, 163, 184, 0.2);
+    --code-ink: #c9d1d9;
+    --danger: #ffb4ad;
+    --danger-bg: rgba(180, 35, 24, 0.2);
+    --danger-border: rgba(255, 180, 173, 0.25);
+    --success: #7ce7ac;
+    --grid-line: rgba(148, 163, 184, 0.2);
+    --edge-in: #94a3b8;
+    --edge-in-strong: #cbd5e1;
+  }
+
   body {
     min-height: 100vh;
     font-family: var(--font-body);
     color: var(--ink);
     background:
-      radial-gradient(circle at top left, rgba(247, 226, 197, 0.8), transparent 48%),
-      radial-gradient(circle at bottom right, rgba(235, 199, 173, 0.6), transparent 50%),
-      linear-gradient(120deg, var(--bg), #fdf8f0 60%);
+      radial-gradient(circle at top left, var(--bg-top), transparent 48%),
+      radial-gradient(circle at bottom right, var(--bg-bottom), transparent 50%),
+      linear-gradient(120deg, var(--bg), var(--bg-strong) 60%);
+    background-color: var(--bg);
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-code);
   }
 
   h1,
@@ -56,39 +119,10 @@
 }
 
 @layer components {
-  .three-graph-container {
-    background-color: var(--panel);
-    background-image:
-      linear-gradient(to right, rgba(203, 213, 225, 0.35) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(203, 213, 225, 0.35) 1px, transparent 1px);
-    background-size: 32px 32px;
-  }
-
-  .three-node-label {
-    position: absolute;
-    left: 0;
-    top: 0;
-    color: #ffffff;
-    font-size: 10px;
-    font-weight: 500;
-    white-space: nowrap;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 8px rgba(0, 0, 0, 0.3);
-    letter-spacing: -0.01em;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .three-node-label.is-center {
-    font-size: 13px;
-    font-weight: 600;
-    max-width: none;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 12px rgba(0, 0, 0, 0.25);
-  }
-
   .graph-node text {
     font-size: 0.7rem;
     font-weight: 500;
+    font-family: var(--font-body);
     fill: var(--ink);
     text-anchor: middle;
     pointer-events: none;
@@ -118,6 +152,60 @@
   .graph-link.runtime {
     stroke-dasharray: 8 4;
   }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: var(--radius-chip);
+    border: 1px solid var(--panel-border);
+    background: var(--panel);
+    padding: 0.125rem 0.5rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+
+  .badge-strong {
+    background: var(--panel-strong);
+    color: var(--ink);
+  }
+
+  .token-name {
+    font-family: var(--font-code);
+    font-weight: 600;
+    color: var(--ink);
+  }
+
+  .token-type {
+    font-family: var(--font-code);
+    font-weight: 600;
+    color: var(--accent-strong);
+  }
+
+  .token-meta {
+    font-family: var(--font-code);
+    color: var(--muted);
+  }
+
+  .shiki,
+  .shiki code {
+    font-family: var(--font-code);
+  }
+
+  @supports (corner-shape: squircle) {
+    .corner-squircle {
+      corner-shape: squircle;
+    }
+
+    .badge {
+      corner-shape: squircle;
+    }
+
+    .code-block pre {
+      corner-shape: squircle;
+    }
+  }
 }
 
 @keyframes float-in {
@@ -138,4 +226,30 @@
   to {
     opacity: 1;
   }
+}
+
+/* View Transitions API styles */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Fast, snappy node transitions when changing layouts */
+::view-transition-group(*) {
+  animation-duration: 150ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+::view-transition-old(*):only-child {
+  animation: none;
+}
+
+::view-transition-new(*):only-child {
+  animation: none;
+}
+
+/* Contain view transitions within graph area */
+.graph-container {
+  contain: layout style paint;
 }
