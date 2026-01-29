@@ -3,10 +3,20 @@ name = "codeview-rustdoc"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["native"]
+native = ["dep:cargo_metadata"]
+wasm = ["dep:wasm-bindgen"]
+
 [dependencies]
-cargo_metadata = "0.23.1"
 codeview-core = { path = "../codeview-core" }
 rustdoc-types = "0.57.0"
 serde_json = "1.0.149"
 syn = { version = "2.0.114", features = ["full", "visit"] }
 thiserror = "2.0.18"
+
+# Native-only: cargo metadata for workspace member detection + crate root resolution
+cargo_metadata = { version = "0.23.1", optional = true }
+
+# WASM-only: wasm-bindgen for JS interop
+wasm-bindgen = { version = "0.2", optional = true }

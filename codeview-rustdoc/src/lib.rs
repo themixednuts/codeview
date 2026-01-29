@@ -1,16 +1,22 @@
 use std::collections::{HashMap, HashSet};
+#[cfg(feature = "native")]
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "native")]
 use std::process::Command;
 
+#[cfg(feature = "native")]
 use cargo_metadata::{MetadataCommand, TargetKind};
 use codeview_core::{
-    ArgumentInfo, Confidence, Edge, EdgeKind, FieldInfo, FunctionSignature, Graph, ImplType, Node,
-    NodeKind, Span, VariantInfo, Visibility,
+    ArgumentInfo, Confidence, CrateGraph, Edge, EdgeKind, ExternalCrate, FieldInfo,
+    FunctionSignature, Graph, ImplType, Node, NodeKind, Span, VariantInfo, Visibility, Workspace,
 };
 use rustdoc_types as rdt;
 use syn::visit::Visit;
 use thiserror::Error;
+
+#[cfg(feature = "wasm")]
+mod wasm;
 
 #[derive(Debug, Error)]
 pub enum RustdocError {
@@ -18,6 +24,7 @@ pub enum RustdocError {
     Io(#[from] std::io::Error),
     #[error("failed to parse rustdoc json: {0}")]
     Json(#[from] serde_json::Error),
+    #[cfg(feature = "native")]
     #[error("failed to read cargo metadata: {0}")]
     Metadata(#[from] cargo_metadata::Error),
     #[error("failed to parse source: {0}")]
@@ -30,6 +37,7 @@ pub enum RustdocError {
     MissingCrateRoot,
 }
 
+#[cfg(feature = "native")]
 #[derive(Debug, Clone)]
 pub struct RustdocJson {
     pub crate_name: String,
@@ -49,6 +57,7 @@ impl CallMode {
     }
 }
 
+#[cfg(feature = "native")]
 fn get_workspace_members(manifest_path: &Path) -> Result<HashSet<String>, RustdocError> {
     let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
     let members: HashSet<String> = metadata
@@ -59,6 +68,7 @@ fn get_workspace_members(manifest_path: &Path) -> Result<HashSet<String>, Rustdo
     Ok(members)
 }
 
+#[cfg(feature = "native")]
 pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, RustdocError> {
     let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
     let package = metadata
@@ -94,9 +104,11 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
 }
 
 /// Generate rustdoc JSON for all workspace members
+#[cfg(feature = "native")]
 pub fn generate_workspace_rustdoc_json(
     manifest_path: &Path,
     cargo_args: &[String],
+    verbose: bool,
 ) -> Result<Vec<RustdocJson>, RustdocError> {
     let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
     let workspace_root = metadata.workspace_root.as_std_path().to_path_buf();
@@ -109,13 +121,33 @@ pub fn generate_workspace_rustdoc_json(
         let crate_name = package.name.replace('-', "_");
         let pkg_manifest = package.manifest_path.as_std_path();
 
-        eprintln!("Documenting {} ...", crate_name);
+        if verbose {
+            eprintln!("Documenting {} ...", crate_name);
+        }
+
+        // Determine the right target flag: prefer --lib, fall back to first bin
+        let has_lib = package.targets.iter().any(|t| {
+            t.kind
+                .iter()
+                .any(|k| matches!(k, TargetKind::Lib | TargetKind::ProcMacro))
+        });
+        let first_bin = package
+            .targets
+            .iter()
+            .find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
+            .map(|t| t.name.clone());
 
         let mut cmd = Command::new("cargo");
         cmd.arg("+nightly")
             .arg("rustdoc")
             .arg("--manifest-path")
             .arg(pkg_manifest);
+
+        if has_lib {
+            cmd.arg("--lib");
+        } else if let Some(bin_name) = &first_bin {
+            cmd.arg("--bin").arg(bin_name);
+        }
 
         // Add user-provided cargo args (e.g. --all-features, --features "uuid")
         for arg in cargo_args {
@@ -128,11 +160,27 @@ pub fn generate_workspace_rustdoc_json(
             .arg("json")
             .current_dir(&workspace_root);
 
-        let status = cmd.status()?;
+        if !verbose {
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped());
+        }
 
-        if !status.success() {
-            eprintln!("Warning: rustdoc failed for {}", crate_name);
-            continue;
+        if verbose {
+            let status = cmd.status()?;
+            if !status.success() {
+                eprintln!("Warning: rustdoc failed for {}", crate_name);
+                continue;
+            }
+        } else {
+            let output = cmd.output()?;
+            if !output.status.success() {
+                eprintln!("Warning: rustdoc failed for {}", crate_name);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.is_empty() {
+                    eprintln!("{}", stderr.trim_end());
+                }
+                continue;
+            }
         }
 
         let crate_file = format!("{}.json", crate_name.replace('-', "_"));
@@ -150,24 +198,29 @@ pub fn generate_workspace_rustdoc_json(
     Ok(results)
 }
 
-/// Load and merge graphs from multiple rustdoc JSON files
+/// Load and merge graphs from multiple rustdoc JSON files into a Workspace.
+#[cfg(feature = "native")]
 pub fn load_workspace_graph(
     rustdoc_jsons: &[RustdocJson],
     manifest_path: &Path,
     call_mode: CallMode,
-) -> Result<Graph, RustdocError> {
+) -> Result<Workspace, RustdocError> {
     let mut nodes_by_id: HashMap<String, Node> = HashMap::new();
     let mut edge_keys = HashSet::new();
     let mut edges = Vec::new();
 
     // Collect crate versions from cargo metadata
     let mut crate_versions = HashMap::new();
-    if let Ok(metadata) = MetadataCommand::new().manifest_path(manifest_path).exec() {
-        for package in metadata.workspace_packages() {
-            let crate_name = package.name.replace('-', "_");
-            crate_versions.insert(crate_name, package.version.to_string());
-        }
-    }
+    let workspace_members: HashSet<String> =
+        if let Ok(metadata) = MetadataCommand::new().manifest_path(manifest_path).exec() {
+            for package in metadata.workspace_packages() {
+                let crate_name = package.name.replace('-', "_");
+                crate_versions.insert(crate_name.clone(), package.version.to_string());
+            }
+            crate_versions.keys().cloned().collect()
+        } else {
+            HashSet::new()
+        };
 
     for rustdoc in rustdoc_jsons {
         let graph = load_graph_from_path_with_sources(
@@ -203,10 +256,77 @@ pub fn load_workspace_graph(
         }
     }
 
-    Ok(Graph {
-        nodes: nodes_by_id.into_values().collect(),
-        edges,
-        crate_versions,
+    // Partition nodes and edges into per-crate graphs
+    let all_nodes: Vec<Node> = nodes_by_id.into_values().collect();
+
+    // Determine which crate a node belongs to by its ID prefix
+    let node_crate = |id: &str| -> String {
+        // Node IDs are like "crate_name::module::Item" or just "crate_name"
+        let crate_name = id.split("::").next().unwrap_or(id);
+        crate_name.to_string()
+    };
+
+    // Group nodes by crate
+    let mut crate_nodes: HashMap<String, Vec<Node>> = HashMap::new();
+    for node in all_nodes {
+        let cn = node_crate(&node.id);
+        crate_nodes.entry(cn).or_default().push(node);
+    }
+
+    // Build per-crate edge lists and cross-crate edge list
+    let mut crate_edges: HashMap<String, Vec<Edge>> = HashMap::new();
+    let mut cross_crate_edges = Vec::new();
+    for edge in edges {
+        let from_crate = node_crate(&edge.from);
+        let to_crate = node_crate(&edge.to);
+        if from_crate == to_crate {
+            crate_edges.entry(from_crate).or_default().push(edge);
+        } else {
+            cross_crate_edges.push(edge);
+        }
+    }
+
+    // Build workspace member CrateGraphs
+    let mut crate_graphs = Vec::new();
+    for member in &workspace_members {
+        let nodes = crate_nodes.remove(member).unwrap_or_default();
+        let edges = crate_edges.remove(member).unwrap_or_default();
+        let version = crate_versions
+            .get(member)
+            .cloned()
+            .unwrap_or_else(|| "0.0.0".to_string());
+        crate_graphs.push(CrateGraph {
+            id: member.clone(),
+            name: member.clone(),
+            version,
+            nodes,
+            edges,
+        });
+    }
+    crate_graphs.sort_by(|a, b| a.id.cmp(&b.id));
+
+    // Build external crate stubs from remaining nodes
+    let mut external_crates = Vec::new();
+    let mut remaining_crate_names: Vec<String> = crate_nodes.keys().cloned().collect();
+    remaining_crate_names.sort();
+    for ext_name in remaining_crate_names {
+        let nodes = crate_nodes.remove(&ext_name).unwrap_or_default();
+        // Also include any intra-crate edges for external crates
+        let _edges = crate_edges.remove(&ext_name).unwrap_or_default();
+        external_crates.push(ExternalCrate {
+            id: ext_name.clone(),
+            name: ext_name,
+            nodes,
+        });
+    }
+
+    Ok(Workspace {
+        version: codeview_core::SCHEMA_VERSION,
+        crates: crate_graphs,
+        external_crates,
+        cross_crate_edges,
+        repo: None,
+        ref_: None,
     })
 }
 
@@ -255,11 +375,13 @@ fn node_completeness_score(node: &Node) -> u32 {
     score
 }
 
+#[cfg(feature = "native")]
 pub fn load_graph_from_path(path: &Path, crate_name: &str) -> Result<Graph, RustdocError> {
     let content = fs::read_to_string(path)?;
     extract_graph(&content, crate_name)
 }
 
+#[cfg(feature = "native")]
 pub fn load_graph_from_path_with_sources(
     path: &Path,
     crate_name: &str,
@@ -279,9 +401,34 @@ pub fn load_graph_from_path_with_sources(
 
 pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError> {
     let krate: rdt::Crate = serde_json::from_str(json)?;
-    build_graph(&krate, crate_name, None, None, CallMode::Strict)
+    build_graph(&krate, crate_name, BuildGraphOptions {
+        workspace_members: None,
+        source: None,
+        call_mode: CallMode::Strict,
+    })
 }
 
+/// Extract a crate graph with call edges from in-memory source files.
+///
+/// `source_files` maps relative paths (e.g. "src/lib.rs") to their content.
+/// `root_file` (e.g. "src/lib.rs") is the entry point for module traversal.
+pub fn extract_graph_with_source_map(
+    json: &str,
+    crate_name: &str,
+    source_files: HashMap<String, String>,
+    root_file: &str,
+    call_mode: CallMode,
+) -> Result<Graph, RustdocError> {
+    let krate: rdt::Crate = serde_json::from_str(json)?;
+    let provider = MemorySourceProvider::new(source_files);
+    build_graph(&krate, crate_name, BuildGraphOptions {
+        workspace_members: None,
+        source: Some((Path::new(root_file), &provider)),
+        call_mode,
+    })
+}
+
+#[cfg(feature = "native")]
 pub fn extract_graph_with_sources(
     json: &str,
     crate_name: &str,
@@ -290,21 +437,30 @@ pub fn extract_graph_with_sources(
     call_mode: CallMode,
 ) -> Result<Graph, RustdocError> {
     let krate: rdt::Crate = serde_json::from_str(json)?;
-    build_graph(
-        &krate,
-        crate_name,
-        Some(workspace_manifest_path),
-        Some(crate_manifest_path),
+    let workspace_members = get_workspace_members(workspace_manifest_path)?;
+    let root_file = crate_root_source(crate_manifest_path)?;
+    build_graph(&krate, crate_name, BuildGraphOptions {
+        workspace_members: Some(workspace_members),
+        source: Some((&root_file, &FsSourceProvider)),
         call_mode,
-    )
+    })
+}
+
+/// Options for graph extraction.
+struct BuildGraphOptions<'a> {
+    /// Known workspace member crate names. If None, only `crate_name` is treated as local.
+    workspace_members: Option<HashSet<String>>,
+    /// Source provider for call edge extraction. If provided, the root file path and
+    /// provider are used to parse source files and extract call edges.
+    source: Option<(&'a Path, &'a dyn SourceProvider)>,
+    /// Call resolution mode.
+    call_mode: CallMode,
 }
 
 fn build_graph(
     krate: &rdt::Crate,
     crate_name: &str,
-    workspace_manifest_path: Option<&Path>,
-    crate_manifest_path: Option<&Path>,
-    call_mode: CallMode,
+    opts: BuildGraphOptions<'_>,
 ) -> Result<Graph, RustdocError> {
     let mut graph = Graph::new();
     let mut node_cache = HashSet::new();
@@ -313,10 +469,8 @@ fn build_graph(
     let function_index = build_function_index(krate, &method_ids, crate_name);
     let trait_lookup = build_trait_lookup(krate, crate_name);
 
-    // Get workspace members to determine which crates are external
-    let workspace_members = workspace_manifest_path
-        .map(get_workspace_members)
-        .transpose()?
+    let workspace_members = opts
+        .workspace_members
         .unwrap_or_else(|| HashSet::from([crate_name.to_string()]));
 
     ensure_crate_node(
@@ -384,13 +538,50 @@ fn build_graph(
                 .cloned()
                 .unwrap_or_else(|| node_id.clone());
 
-            let (fields, variants, signature, generics, docs) = item
+            let (fields, variants, signature, generics, where_clause, docs) = item
                 .map(|item| extract_item_details(&krate.index, item))
                 .unwrap_or_default();
 
             let doc_links = item
                 .map(|item| extract_doc_links(item, krate, crate_name))
                 .unwrap_or_default();
+
+            let mut bound_links = item
+                .and_then(|item| item_generics(item))
+                .map(|g| extract_bound_links(g, krate, crate_name))
+                .unwrap_or_default();
+
+            // Add type links from signatures
+            if let Some(item) = item {
+                match &item.inner {
+                    rdt::ItemEnum::Function(f) => {
+                        bound_links.extend(extract_signature_links(&f.sig, krate, crate_name));
+                    }
+                    rdt::ItemEnum::Struct(s) => {
+                        let field_ids: Vec<_> = match &s.kind {
+                            rdt::StructKind::Plain { fields, .. } => fields.clone(),
+                            rdt::StructKind::Tuple(fields) => fields.iter().filter_map(|f| *f).collect(),
+                            rdt::StructKind::Unit => vec![],
+                        };
+                        bound_links.extend(extract_field_type_links(&krate.index, &field_ids, krate, crate_name));
+                    }
+                    rdt::ItemEnum::Enum(e) => {
+                        for variant_id in &e.variants {
+                            if let Some(variant_item) = krate.index.get(variant_id) {
+                                if let rdt::ItemEnum::Variant(v) = &variant_item.inner {
+                                    let field_ids: Vec<_> = match &v.kind {
+                                        rdt::VariantKind::Plain => vec![],
+                                        rdt::VariantKind::Tuple(fields) => fields.iter().filter_map(|f| *f).collect(),
+                                        rdt::VariantKind::Struct { fields, .. } => fields.clone(),
+                                    };
+                                    bound_links.extend(extract_field_type_links(&krate.index, &field_ids, krate, crate_name));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
 
             graph.add_node(Node {
                 id: node_id.clone(),
@@ -404,8 +595,10 @@ fn build_graph(
                 variants,
                 signature,
                 generics,
+                where_clause,
                 docs,
                 doc_links,
+                bound_links,
                 impl_type: None,
                 parent_impl: None,
                 impl_trait: None,
@@ -428,7 +621,26 @@ fn build_graph(
         }
     }
 
-    add_use_import_edges(&mut graph, &mut edge_cache, krate, crate_name);
+    // Build item_to_parent map from module children (used for re-exports and impl parenting)
+    let item_to_parent: HashMap<rdt::Id, rdt::Id> = {
+        let mut map = HashMap::new();
+        for (module_id, item) in &krate.index {
+            if let rdt::ItemEnum::Module(module) = &item.inner {
+                for child_id in &module.items {
+                    map.insert(*child_id, *module_id);
+                }
+            }
+        }
+        map
+    };
+
+    add_use_import_edges_with_parent_map(
+        &mut graph,
+        &mut edge_cache,
+        krate,
+        crate_name,
+        &item_to_parent,
+    );
 
     for item in krate.index.values() {
         let owner_id = match &item.inner {
@@ -468,13 +680,29 @@ fn build_graph(
                         variants: None,
                         signature: None,
                         generics: extract_generics(&impl_block.generics),
+                        where_clause: extract_where_clause(&impl_block.generics),
                         docs: extract_docs(item),
                         doc_links: extract_doc_links(item, krate, crate_name),
+                        bound_links: extract_bound_links(&impl_block.generics, krate, crate_name),
                         impl_type,
                         parent_impl: None,
                         impl_trait: impl_trait_id.clone(),
                     });
                     node_cache.insert(impl_id.clone());
+                }
+
+                // Add Contains edge from parent module to impl node
+                if let Some(parent_id) = item_to_parent.get(&item.id)
+                    && let Some(parent_node_id) = resolve_id(krate, crate_name, *parent_id)
+                {
+                    push_edge(
+                        &mut graph,
+                        &mut edge_cache,
+                        parent_node_id,
+                        impl_id.clone(),
+                        EdgeKind::Contains,
+                        Confidence::Static,
+                    );
                 }
 
                 if let Some(for_id) = type_to_id(&impl_block.for_)
@@ -504,46 +732,57 @@ fn build_graph(
                 }
 
                 for assoc_id in &impl_block.items {
-                    // Try to resolve via paths first
-                    let assoc_node_id = if let Some(id) = resolve_id(krate, crate_name, *assoc_id) {
-                        id
-                    } else if let Some(assoc_item) = krate.index.get(assoc_id) {
-                        // Item not in paths, create node from index
-                        let method_id = format!("{}::method-{}", item_crate_name, assoc_id.0);
-                        if !node_cache.contains(&method_id) {
-                            let name = assoc_item.name.clone().unwrap_or_else(|| method_id.clone());
-                            let kind = match &assoc_item.inner {
-                                rdt::ItemEnum::Function(_) => NodeKind::Method,
-                                rdt::ItemEnum::Constant { .. } => continue, // Skip constants for now
-                                rdt::ItemEnum::TypeAlias(_) => NodeKind::TypeAlias,
-                                _ => continue,
-                            };
-                            let (fields, variants, signature, generics, docs) =
-                                extract_item_details(&krate.index, assoc_item);
-                            graph.add_node(Node {
-                                id: method_id.clone(),
-                                name,
-                                kind,
-                                visibility: map_visibility(&assoc_item.visibility),
-                                span: assoc_item.span.as_ref().map(map_span),
-                                attrs: format_attributes(&assoc_item.attrs),
-                                is_external,
-                                fields,
-                                variants,
-                                signature,
-                                generics,
-                                docs,
-                                doc_links: extract_doc_links(assoc_item, krate, crate_name),
-                                impl_type: None,
-                                parent_impl: Some(impl_id.clone()),
-                                impl_trait: None,
-                            });
-                            node_cache.insert(method_id.clone());
-                        }
-                        method_id
-                    } else {
+                    let Some(assoc_item) = krate.index.get(assoc_id) else {
                         continue;
                     };
+
+                    let kind = match &assoc_item.inner {
+                        rdt::ItemEnum::Function(_) => NodeKind::Method,
+                        rdt::ItemEnum::Constant { .. } => continue,
+                        rdt::ItemEnum::TypeAlias(_) => NodeKind::TypeAlias,
+                        _ => continue,
+                    };
+
+                    // Create a per-impl node so each impl block owns its own child.
+                    // This avoids shared children when the same rustdoc ID appears
+                    // in multiple impl blocks (e.g. blanket impls like `impl<T> Any for T`).
+                    let assoc_node_id = format!("{}::method-{}", impl_id, assoc_id.0);
+                    if !node_cache.contains(&assoc_node_id) {
+                        let name = assoc_item
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| assoc_node_id.clone());
+                        let (fields, variants, signature, generics, where_clause, docs) =
+                            extract_item_details(&krate.index, assoc_item);
+                        let mut bound_links = item_generics(assoc_item)
+                            .map(|g| extract_bound_links(g, krate, crate_name))
+                            .unwrap_or_default();
+                        // Add type links from method signature
+                        if let rdt::ItemEnum::Function(f) = &assoc_item.inner {
+                            bound_links.extend(extract_signature_links(&f.sig, krate, crate_name));
+                        }
+                        graph.add_node(Node {
+                            id: assoc_node_id.clone(),
+                            name,
+                            kind,
+                            visibility: map_visibility(&assoc_item.visibility),
+                            span: assoc_item.span.as_ref().map(map_span),
+                            attrs: format_attributes(&assoc_item.attrs),
+                            is_external,
+                            fields,
+                            variants,
+                            signature,
+                            generics,
+                            where_clause,
+                            docs,
+                            doc_links: extract_doc_links(assoc_item, krate, crate_name),
+                            bound_links,
+                            impl_type: None,
+                            parent_impl: Some(impl_id.clone()),
+                            impl_trait: None,
+                        });
+                        node_cache.insert(assoc_node_id.clone());
+                    }
 
                     push_edge(
                         &mut graph,
@@ -643,13 +882,14 @@ fn build_graph(
         );
     }
 
-    if let Some(crate_manifest) = crate_manifest_path {
-        add_static_call_edges(
+    if let Some((root_file, source_provider)) = opts.source {
+        add_call_edges(
             &mut graph,
             &mut edge_cache,
-            crate_manifest,
+            root_file,
             &function_index,
-            call_mode,
+            opts.call_mode,
+            source_provider,
         )?;
     }
 
@@ -732,10 +972,20 @@ fn map_span(span: &rdt::Span) -> Span {
     }
 }
 
+/// Strip `$crate::` prefixes that leak from rustdoc macro expansions.
+/// `$crate::clone::Clone` → `Clone`, `$crate::fmt::Debug` → `Debug`.
+fn clean_path(path: &str) -> String {
+    // For display, use just the final type name segment.
+    // e.g. "crate::config::Config" → "Config",
+    //      "$crate::clone::Clone" → "Clone",
+    //      "std::path::Path" → "Path"
+    path.rsplit("::").next().unwrap_or(path).to_string()
+}
+
 fn format_type(ty: &rdt::Type) -> String {
     match ty {
         rdt::Type::ResolvedPath(path) => {
-            let mut result = path.path.clone();
+            let mut result = clean_path(&path.path);
             if let Some(args) = &path.args {
                 result.push_str(&format_generic_args(args));
             }
@@ -745,7 +995,7 @@ fn format_type(ty: &rdt::Type) -> String {
             let traits: Vec<_> = dyn_trait
                 .traits
                 .iter()
-                .map(|p| p.trait_.path.clone())
+                .map(|p| clean_path(&p.trait_.path))
                 .collect();
             format!("dyn {}", traits.join(" + "))
         }
@@ -772,7 +1022,7 @@ fn format_type(ty: &rdt::Type) -> String {
             let bound_strs: Vec<_> = bounds
                 .iter()
                 .filter_map(|b| match b {
-                    rdt::GenericBound::TraitBound { trait_, .. } => Some(trait_.path.clone()),
+                    rdt::GenericBound::TraitBound { trait_, .. } => Some(clean_path(&trait_.path)),
                     _ => None,
                 })
                 .collect();
@@ -957,6 +1207,165 @@ fn extract_function_signature(
     }
 }
 
+/// Get the generics from an item's inner data, if any.
+fn item_generics(item: &rdt::Item) -> Option<&rdt::Generics> {
+    match &item.inner {
+        rdt::ItemEnum::Struct(s) => Some(&s.generics),
+        rdt::ItemEnum::Union(u) => Some(&u.generics),
+        rdt::ItemEnum::Enum(e) => Some(&e.generics),
+        rdt::ItemEnum::Function(f) => Some(&f.generics),
+        rdt::ItemEnum::Trait(t) => Some(&t.generics),
+        rdt::ItemEnum::TraitAlias(a) => Some(&a.generics),
+        rdt::ItemEnum::TypeAlias(a) => Some(&a.generics),
+        _ => None,
+    }
+}
+
+/// Collect resolved type links from a Type tree.
+/// Maps cleaned display name → resolved node ID for every ResolvedPath encountered.
+fn collect_type_links(
+    ty: &rdt::Type,
+    krate: &rdt::Crate,
+    crate_name: &str,
+    links: &mut HashMap<String, String>,
+) {
+    match ty {
+        rdt::Type::ResolvedPath(path) => {
+            let display = clean_path(&path.path);
+            if let Some(node_id) = resolve_id(krate, crate_name, path.id) {
+                links.insert(display, node_id);
+            }
+            if let Some(args) = &path.args {
+                collect_generic_args_links(args, krate, crate_name, links);
+            }
+        }
+        rdt::Type::DynTrait(dyn_trait) => {
+            for poly in &dyn_trait.traits {
+                let display = clean_path(&poly.trait_.path);
+                if let Some(node_id) = resolve_id(krate, crate_name, poly.trait_.id) {
+                    links.insert(display, node_id);
+                }
+                if let Some(args) = &poly.trait_.args {
+                    collect_generic_args_links(args, krate, crate_name, links);
+                }
+            }
+        }
+        rdt::Type::BorrowedRef { type_, .. }
+        | rdt::Type::RawPointer { type_, .. }
+        | rdt::Type::Slice(type_)
+        | rdt::Type::Array { type_, .. }
+        | rdt::Type::Pat { type_, .. } => {
+            collect_type_links(type_, krate, crate_name, links);
+        }
+        rdt::Type::Tuple(types) => {
+            for t in types {
+                collect_type_links(t, krate, crate_name, links);
+            }
+        }
+        rdt::Type::FunctionPointer(fp) => {
+            for (_, t) in &fp.sig.inputs {
+                collect_type_links(t, krate, crate_name, links);
+            }
+            if let Some(out) = &fp.sig.output {
+                collect_type_links(out, krate, crate_name, links);
+            }
+        }
+        rdt::Type::ImplTrait(bounds) => {
+            for bound in bounds {
+                if let rdt::GenericBound::TraitBound { trait_, .. } = bound {
+                    let display = clean_path(&trait_.path);
+                    if let Some(node_id) = resolve_id(krate, crate_name, trait_.id) {
+                        links.insert(display, node_id);
+                    }
+                }
+            }
+        }
+        rdt::Type::QualifiedPath { self_type, .. } => {
+            collect_type_links(self_type, krate, crate_name, links);
+        }
+        _ => {}
+    }
+}
+
+fn collect_generic_args_links(
+    args: &rdt::GenericArgs,
+    krate: &rdt::Crate,
+    crate_name: &str,
+    links: &mut HashMap<String, String>,
+) {
+    match args {
+        rdt::GenericArgs::AngleBracketed { args, .. } => {
+            for arg in args {
+                if let rdt::GenericArg::Type(t) = arg {
+                    collect_type_links(t, krate, crate_name, links);
+                }
+            }
+        }
+        rdt::GenericArgs::Parenthesized { inputs, output } => {
+            for input in inputs {
+                collect_type_links(input, krate, crate_name, links);
+            }
+            if let Some(out) = output {
+                collect_type_links(out, krate, crate_name, links);
+            }
+        }
+        rdt::GenericArgs::ReturnTypeNotation => {}
+    }
+}
+
+/// Extract type links from a function signature (inputs + output).
+fn extract_signature_links(
+    sig: &rdt::FunctionSignature,
+    krate: &rdt::Crate,
+    crate_name: &str,
+) -> HashMap<String, String> {
+    let mut links = HashMap::new();
+    for (_, ty) in &sig.inputs {
+        collect_type_links(ty, krate, crate_name, &mut links);
+    }
+    if let Some(output) = &sig.output {
+        collect_type_links(output, krate, crate_name, &mut links);
+    }
+    links
+}
+
+/// Extract type links from struct/enum fields.
+fn extract_field_type_links(
+    index: &HashMap<rdt::Id, rdt::Item>,
+    field_ids: &[rdt::Id],
+    krate: &rdt::Crate,
+    crate_name: &str,
+) -> HashMap<String, String> {
+    let mut links = HashMap::new();
+    for field_id in field_ids {
+        if let Some(item) = index.get(field_id) {
+            if let rdt::ItemEnum::StructField(ty) = &item.inner {
+                collect_type_links(ty, krate, crate_name, &mut links);
+            }
+        }
+    }
+    links
+}
+
+/// Collect resolved trait bound links from a slice of generic bounds.
+/// Returns a map from cleaned display name → resolved node ID.
+fn collect_bound_links(
+    bounds: &[rdt::GenericBound],
+    krate: &rdt::Crate,
+    crate_name: &str,
+) -> HashMap<String, String> {
+    let mut links = HashMap::new();
+    for bound in bounds {
+        if let rdt::GenericBound::TraitBound { trait_, .. } = bound {
+            let display = clean_path(&trait_.path);
+            if let Some(node_id) = resolve_id(krate, crate_name, trait_.id) {
+                links.insert(display, node_id);
+            }
+        }
+    }
+    links
+}
+
 fn extract_generics(generics: &rdt::Generics) -> Option<Vec<String>> {
     let params: Vec<_> = generics
         .params
@@ -971,7 +1380,7 @@ fn extract_generics(generics: &rdt::Generics) -> Option<Vec<String>> {
                         .iter()
                         .filter_map(|b| match b {
                             rdt::GenericBound::TraitBound { trait_, .. } => {
-                                Some(trait_.path.clone())
+                                Some(clean_path(&trait_.path))
                             }
                             rdt::GenericBound::Outlives(lt) => Some(lt.clone()),
                             _ => None,
@@ -998,6 +1407,74 @@ fn extract_generics(generics: &rdt::Generics) -> Option<Vec<String>> {
         None
     } else {
         Some(params)
+    }
+}
+
+/// Extract bound_links for all trait bounds in both generics params and where clauses.
+fn extract_bound_links(
+    generics: &rdt::Generics,
+    krate: &rdt::Crate,
+    crate_name: &str,
+) -> HashMap<String, String> {
+    let mut links = HashMap::new();
+    // From generic params
+    for param in &generics.params {
+        if let rdt::GenericParamDefKind::Type { bounds, .. } = &param.kind {
+            links.extend(collect_bound_links(bounds, krate, crate_name));
+        }
+    }
+    // From where predicates
+    for pred in &generics.where_predicates {
+        if let rdt::WherePredicate::BoundPredicate { bounds, .. } = pred {
+            links.extend(collect_bound_links(bounds, krate, crate_name));
+        }
+    }
+    links
+}
+
+fn extract_where_clause(generics: &rdt::Generics) -> Option<Vec<String>> {
+    let predicates: Vec<_> = generics
+        .where_predicates
+        .iter()
+        .filter_map(|pred| match pred {
+            rdt::WherePredicate::BoundPredicate { type_, bounds, .. } => {
+                let ty = format_type(type_);
+                let bound_strs: Vec<_> = bounds
+                    .iter()
+                    .filter_map(|b| match b {
+                        rdt::GenericBound::TraitBound { trait_, .. } => {
+                            Some(clean_path(&trait_.path))
+                        }
+                        rdt::GenericBound::Outlives(lt) => Some(lt.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if bound_strs.is_empty() {
+                    None
+                } else {
+                    Some(format!("{}: {}", ty, bound_strs.join(" + ")))
+                }
+            }
+            rdt::WherePredicate::LifetimePredicate { lifetime, outlives } => {
+                if outlives.is_empty() {
+                    None
+                } else {
+                    Some(format!("{}: {}", lifetime, outlives.join(" + ")))
+                }
+            }
+            rdt::WherePredicate::EqPredicate { lhs, rhs } => {
+                let rhs_str = match rhs {
+                    rdt::Term::Type(ty) => format_type(ty),
+                    rdt::Term::Constant(c) => c.value.clone().unwrap_or_default(),
+                };
+                Some(format!("{} = {}", format_type(lhs), rhs_str))
+            }
+        })
+        .collect();
+    if predicates.is_empty() {
+        None
+    } else {
+        Some(predicates)
     }
 }
 
@@ -1029,6 +1506,7 @@ fn extract_item_details(
     Option<Vec<VariantInfo>>,
     Option<FunctionSignature>,
     Option<Vec<String>>,
+    Option<Vec<String>>,
     Option<String>,
 ) {
     let docs = extract_docs(item);
@@ -1038,6 +1516,7 @@ fn extract_item_details(
             None,
             None,
             extract_generics(&item_struct.generics),
+            extract_where_clause(&item_struct.generics),
             docs,
         ),
         rdt::ItemEnum::Union(item_union) => {
@@ -1065,6 +1544,7 @@ fn extract_item_details(
                 None,
                 None,
                 extract_generics(&item_union.generics),
+                extract_where_clause(&item_union.generics),
                 docs,
             )
         }
@@ -1073,6 +1553,7 @@ fn extract_item_details(
             extract_enum_variants(index, &item_enum.variants),
             None,
             extract_generics(&item_enum.generics),
+            extract_where_clause(&item_enum.generics),
             docs,
         ),
         rdt::ItemEnum::Function(function) => (
@@ -1080,6 +1561,7 @@ fn extract_item_details(
             None,
             Some(extract_function_signature(&function.sig, &function.header)),
             extract_generics(&function.generics),
+            extract_where_clause(&function.generics),
             docs,
         ),
         rdt::ItemEnum::Trait(item_trait) => (
@@ -1087,15 +1569,26 @@ fn extract_item_details(
             None,
             None,
             extract_generics(&item_trait.generics),
+            extract_where_clause(&item_trait.generics),
             docs,
         ),
-        rdt::ItemEnum::TraitAlias(alias) => {
-            (None, None, None, extract_generics(&alias.generics), docs)
-        }
-        rdt::ItemEnum::TypeAlias(alias) => {
-            (None, None, None, extract_generics(&alias.generics), docs)
-        }
-        _ => (None, None, None, None, docs),
+        rdt::ItemEnum::TraitAlias(alias) => (
+            None,
+            None,
+            None,
+            extract_generics(&alias.generics),
+            extract_where_clause(&alias.generics),
+            docs,
+        ),
+        rdt::ItemEnum::TypeAlias(alias) => (
+            None,
+            None,
+            None,
+            extract_generics(&alias.generics),
+            extract_where_clause(&alias.generics),
+            docs,
+        ),
+        _ => (None, None, None, None, None, docs),
     }
 }
 
@@ -1122,8 +1615,10 @@ fn ensure_crate_node(
         variants: None,
         signature: None,
         generics: None,
+        where_clause: None,
         docs: None,
         doc_links: HashMap::new(),
+        bound_links: HashMap::new(),
         impl_type: None,
         parent_impl: None,
         impl_trait: None,
@@ -1159,8 +1654,10 @@ fn ensure_module_nodes(
                 variants: None,
                 signature: None,
                 generics: None,
+                where_clause: None,
                 docs: None,
                 doc_links: HashMap::new(),
+                bound_links: HashMap::new(),
                 impl_type: None,
                 parent_impl: None,
                 impl_trait: None,
@@ -1524,22 +2021,13 @@ fn add_uses_edges(
     }
 }
 
-fn add_use_import_edges(
+fn add_use_import_edges_with_parent_map(
     graph: &mut Graph,
     edge_cache: &mut HashSet<String>,
     krate: &rdt::Crate,
     default_crate_name: &str,
+    item_to_parent: &HashMap<rdt::Id, rdt::Id>,
 ) {
-    // Build a map from item ID to parent module ID
-    let mut item_to_parent: HashMap<rdt::Id, rdt::Id> = HashMap::new();
-    for (module_id, item) in &krate.index {
-        if let rdt::ItemEnum::Module(module) = &item.inner {
-            for child_id in &module.items {
-                item_to_parent.insert(*child_id, *module_id);
-            }
-        }
-    }
-
     // Process use items and create edges from parent module to target
     for (item_id, item) in &krate.index {
         let rdt::ItemEnum::Use(use_item) = &item.inner else {
@@ -1726,19 +2214,83 @@ fn build_function_index(
     index
 }
 
-fn add_static_call_edges(
+/// Abstraction for reading source files — allows both filesystem and in-memory access.
+pub trait SourceProvider {
+    fn read_file(&self, path: &Path) -> Result<String, RustdocError>;
+    fn file_exists(&self, path: &Path) -> bool;
+}
+
+/// Reads source files from the local filesystem.
+#[cfg(feature = "native")]
+pub struct FsSourceProvider;
+
+#[cfg(feature = "native")]
+impl SourceProvider for FsSourceProvider {
+    fn read_file(&self, path: &Path) -> Result<String, RustdocError> {
+        Ok(fs::read_to_string(path)?)
+    }
+    fn file_exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+}
+
+/// Reads source files from an in-memory map (for WASM / cloud workflows).
+pub struct MemorySourceProvider {
+    files: HashMap<String, String>,
+}
+
+fn normalize_memory_key(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn normalize_memory_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+impl MemorySourceProvider {
+    pub fn new(files: HashMap<String, String>) -> Self {
+        Self {
+            files: files
+                .into_iter()
+                .map(|(k, v)| (normalize_memory_key(&k), v))
+                .collect(),
+        }
+    }
+}
+
+impl SourceProvider for MemorySourceProvider {
+    fn read_file(&self, path: &Path) -> Result<String, RustdocError> {
+        let key = normalize_memory_path(path);
+        self.files
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| RustdocError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("file not in memory source map: {}", path.display()),
+            )))
+    }
+    fn file_exists(&self, path: &Path) -> bool {
+        let key = normalize_memory_path(path);
+        self.files.contains_key(&key)
+    }
+}
+
+/// Add call edges from source files using any SourceProvider.
+#[allow(private_interfaces)]
+fn add_call_edges(
     graph: &mut Graph,
     edge_cache: &mut HashSet<String>,
-    manifest_path: &Path,
+    root_file: &Path,
     function_index: &FunctionIndex,
     call_mode: CallMode,
+    source_provider: &dyn SourceProvider,
 ) -> Result<(), RustdocError> {
-    let root_file = crate_root_source(manifest_path)?;
-    let mut parser = SourceParser::new(function_index, graph, edge_cache, call_mode);
-    parser.parse_module_file(&root_file, Vec::new())?;
+    let mut parser = SourceParser::new(function_index, graph, edge_cache, call_mode, source_provider);
+    parser.parse_module_file(root_file, Vec::new())?;
     Ok(())
 }
 
+#[cfg(feature = "native")]
 fn crate_root_source(manifest_path: &Path) -> Result<PathBuf, RustdocError> {
     let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
     let package = metadata
@@ -1765,7 +2317,7 @@ fn crate_root_source(manifest_path: &Path) -> Result<PathBuf, RustdocError> {
     Ok(target.src_path.clone().into_std_path_buf())
 }
 
-struct FunctionIndex {
+pub(crate) struct FunctionIndex {
     callables: Vec<String>,
     callables_by_name: HashMap<String, Vec<String>>,
     methods: Vec<String>,
@@ -1865,6 +2417,7 @@ struct SourceParser<'a> {
     edge_cache: &'a mut HashSet<String>,
     call_mode: CallMode,
     visited_files: HashSet<PathBuf>,
+    source_provider: &'a dyn SourceProvider,
 }
 
 impl<'a> SourceParser<'a> {
@@ -1873,6 +2426,7 @@ impl<'a> SourceParser<'a> {
         graph: &'a mut Graph,
         edge_cache: &'a mut HashSet<String>,
         call_mode: CallMode,
+        source_provider: &'a dyn SourceProvider,
     ) -> Self {
         Self {
             function_index,
@@ -1880,6 +2434,7 @@ impl<'a> SourceParser<'a> {
             edge_cache,
             call_mode,
             visited_files: HashSet::new(),
+            source_provider,
         }
     }
 
@@ -1892,7 +2447,7 @@ impl<'a> SourceParser<'a> {
         if !self.visited_files.insert(path.clone()) {
             return Ok(());
         }
-        let content = fs::read_to_string(&path)?;
+        let content = self.source_provider.read_file(&path)?;
         let file = syn::parse_file(&content)?;
         let current_dir = path.parent().unwrap_or_else(|| Path::new("."));
         self.parse_items(&file.items, &module_path, current_dir)?;
@@ -1940,7 +2495,7 @@ impl<'a> SourceParser<'a> {
             return Ok(());
         }
 
-        let module_file = resolve_module_file(current_dir, item_mod);
+        let module_file = resolve_module_file(current_dir, item_mod, self.source_provider);
         if let Some(module_file) = module_file {
             self.parse_module_file(&module_file, next_path)?;
         }
@@ -2154,25 +2709,25 @@ impl<'a> SourceParser<'a> {
     }
 }
 
-fn resolve_module_file(current_dir: &Path, item_mod: &syn::ItemMod) -> Option<PathBuf> {
+fn resolve_module_file(current_dir: &Path, item_mod: &syn::ItemMod, source_provider: &dyn SourceProvider) -> Option<PathBuf> {
     if let Some(path_override) = module_path_override(item_mod) {
         let full_path = if path_override.is_absolute() {
             path_override
         } else {
             current_dir.join(path_override)
         };
-        if full_path.exists() {
+        if source_provider.file_exists(&full_path) {
             return Some(full_path);
         }
     }
 
     let name = item_mod.ident.to_string();
     let candidate = current_dir.join(format!("{name}.rs"));
-    if candidate.exists() {
+    if source_provider.file_exists(&candidate) {
         return Some(candidate);
     }
     let mod_rs = current_dir.join(&name).join("mod.rs");
-    if mod_rs.exists() {
+    if source_provider.file_exists(&mod_rs) {
         return Some(mod_rs);
     }
     None
