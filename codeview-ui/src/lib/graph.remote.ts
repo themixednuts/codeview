@@ -1,147 +1,197 @@
-import * as v from 'valibot';
-import { getRequestEvent, query } from '$app/server';
+import { getRequestEvent, query, command } from '$app/server';
+import { error } from '@sveltejs/kit';
 import { initProvider } from '$lib/server/provider';
-import type { Graph, Node, Edge } from '$lib/graph';
+import { checkRateLimitPolicy } from '$lib/server/rate-limit';
+import { isValidCrateName, isValidVersion, sanitizeSearchQuery } from './server/validation';
+import type { Node, Workspace } from '$lib/graph';
+import {
+	NodeIdSchema,
+	NodeIdsSchema,
+	CrateRefSchema,
+	NodeDetailInputSchema,
+	ProcessingInputSchema,
+	SearchNodesInputSchema,
+	type NodeSummary,
+	type CrateSummary,
+	type CrateIndex,
+	type CrateTree,
+	type NodeDetail,
+	type CrateStatus,
+	type CrateSearchResult
+} from '$lib/schema';
 
-async function loadGraph(): Promise<Graph | null> {
+async function loadWorkspace(): Promise<Workspace | null> {
 	const provider = await initProvider(getRequestEvent());
-	return provider.loadGraph();
+	return provider.loadWorkspace();
 }
 
-/** Lightweight node summary for tree/list display */
-type NodeSummary = Pick<Node, 'id' | 'name' | 'kind' | 'visibility' | 'is_external'>;
+async function loadCrateGraphByRef(
+	name: string,
+	version?: string
+): Promise<import('$lib/graph').CrateGraph | null> {
+	const provider = await initProvider(getRequestEvent());
+	return provider.loadCrateGraph(name, version ?? 'latest');
+}
+
+// Cached lookup structures (built once from the cached workspace)
+let _allNodesCache: Map<string, Node> | null = null;
+let _edgesBySrcCache: Map<string, Workspace['cross_crate_edges']> | null = null;
+let _edgesByDstCache: Map<string, Workspace['cross_crate_edges']> | null = null;
+let _cachedWorkspaceRef: Workspace | null = null;
+
+function getAllNodes(ws: Workspace): Map<string, Node> {
+	if (_allNodesCache && _cachedWorkspaceRef === ws) return _allNodesCache;
+	const map = new Map<string, Node>();
+	for (const c of ws.crates) {
+		for (const n of c.nodes) map.set(n.id, n);
+	}
+	for (const ext of ws.external_crates) {
+		for (const n of ext.nodes) map.set(n.id, n);
+	}
+	_allNodesCache = map;
+	_cachedWorkspaceRef = ws;
+	return map;
+}
+
+function getCrossEdgesByNode(ws: Workspace): { bySrc: Map<string, typeof ws.cross_crate_edges>; byDst: Map<string, typeof ws.cross_crate_edges> } {
+	if (_edgesBySrcCache && _edgesByDstCache && _cachedWorkspaceRef === ws) {
+		return { bySrc: _edgesBySrcCache, byDst: _edgesByDstCache };
+	}
+	const bySrc = new Map<string, typeof ws.cross_crate_edges>();
+	const byDst = new Map<string, typeof ws.cross_crate_edges>();
+	for (const e of ws.cross_crate_edges) {
+		if (!bySrc.has(e.from)) bySrc.set(e.from, []);
+		bySrc.get(e.from)!.push(e);
+		if (!byDst.has(e.to)) byDst.set(e.to, []);
+		byDst.get(e.to)!.push(e);
+	}
+	_edgesBySrcCache = bySrc;
+	_edgesByDstCache = byDst;
+	return { bySrc, byDst };
+}
 
 function summarizeNode(n: Node): NodeSummary {
-	return { id: n.id, name: n.name, kind: n.kind, visibility: n.visibility, is_external: n.is_external };
+	return {
+		id: n.id, name: n.name, kind: n.kind, visibility: n.visibility, is_external: n.is_external,
+		...(n.kind === 'Impl' ? { impl_trait: n.impl_trait, generics: n.generics, where_clause: n.where_clause, bound_links: n.bound_links } : {})
+	};
 }
 
-/** Get list of crates (for index page) */
-export const getCrates = query(async () => {
-	const graph = await loadGraph();
-	if (!graph) return [];
-	return graph.nodes
-		.filter((n) => n.kind === 'Crate' && !n.is_external)
-		.map((n) => ({
-			id: n.id,
-			name: n.name,
-			version: graph.crate_versions?.[n.id] ?? 'latest'
-		}));
+/** Get list of workspace crates (for index page + switcher) */
+export const getCrates = query(async (): Promise<CrateSummary[]> => {
+	const ws = await loadWorkspace();
+	if (!ws) return [];
+	return ws.crates.map((c) => ({
+		id: c.id,
+		name: c.name,
+		version: c.version
+	}));
 });
 
-/** Get all crate trees merged into one graph (for the global sidebar) */
-export const getAllCrateTrees = query(async () => {
-	const graph = await loadGraph();
-	if (!graph) return null;
+/** Get a hosted-friendly list of top crates (registry-backed). */
+export const getTopCrates = query(async (): Promise<CrateSearchResult[]> => {
+	const provider = await initProvider(getRequestEvent());
+	return provider.getTopCrates(10);
+});
 
-	// Find all local crate root IDs
-	const crateIds = graph.nodes
-		.filter((n) => n.kind === 'Crate' && !n.is_external)
-		.map((n) => n.id);
+/** Get currently processing crates (cloud mode). */
+export const getProcessingCrates = query(ProcessingInputSchema, async (): Promise<CrateSearchResult[]> => {
+	const provider = await initProvider(getRequestEvent());
+	return provider.getProcessingCrates(20);
+});
 
-	// Build child map once
-	const childMap = new Map<string, string[]>();
-	for (const edge of graph.edges) {
-		if (edge.kind === 'Contains' || edge.kind === 'Defines') {
-			if (!childMap.has(edge.from)) childMap.set(edge.from, []);
-			childMap.get(edge.from)!.push(edge.to);
-		}
-	}
-
-	// Walk all crates to collect all tree node IDs
-	const treeNodeIds = new Set<string>();
-	for (const crateId of crateIds) {
-		treeNodeIds.add(crateId);
-		const queue = [crateId];
-		while (queue.length > 0) {
-			const id = queue.pop()!;
-			const children = childMap.get(id);
-			if (children) {
-				for (const child of children) {
-					if (!treeNodeIds.has(child)) {
-						treeNodeIds.add(child);
-						queue.push(child);
-					}
-				}
-			}
-		}
-	}
-
-	const nodes = graph.nodes
-		.filter((n) => treeNodeIds.has(n.id))
-		.map(summarizeNode);
-	const edges = graph.edges.filter(
-		(e) =>
-			(e.kind === 'Contains' || e.kind === 'Defines') &&
-			treeNodeIds.has(e.from) &&
-			treeNodeIds.has(e.to)
-	);
-
-	// Include crate version mapping
-	const crateVersions: Record<string, string> = {};
-	for (const crateId of crateIds) {
-		crateVersions[crateId] = graph.crate_versions?.[crateId] ?? 'latest';
-	}
-
-	return { nodes, edges, crateVersions };
+/** Detect whether we are running in hosted (Cloudflare) mode. */
+export const getHostedMode = query(async (): Promise<boolean> => {
+	const event = getRequestEvent();
+	const env = event.platform?.env as { CRATE_REGISTRY?: unknown; CRATE_GRAPHS?: unknown } | undefined;
+	return Boolean(env?.CRATE_REGISTRY || env?.CRATE_GRAPHS);
 });
 
 /** Get crate tree structure (nodes + Contains/Defines edges for one crate) */
-export const getCrateTree = query(v.string(), async (crateId: string) => {
-	const graph = await loadGraph();
-	if (!graph) return null;
-
-	// Collect all node IDs that belong to this crate
-	const treeNodeIds = new Set<string>();
-	treeNodeIds.add(crateId);
-
-	// Walk Contains/Defines edges to find all descendants
-	const childMap = new Map<string, string[]>();
-	for (const edge of graph.edges) {
-		if (edge.kind === 'Contains' || edge.kind === 'Defines') {
-			if (!childMap.has(edge.from)) childMap.set(edge.from, []);
-			childMap.get(edge.from)!.push(edge.to);
-		}
+export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Promise<CrateTree | null> => {
+	const t0 = performance.now();
+	const ws = await loadWorkspace();
+	let crate = ws?.crates.find((c) => c.id === name) ?? null;
+	if (!crate) {
+		const graph = await loadCrateGraphByRef(name, version);
+		if (!graph) return null;
+		crate = graph;
 	}
 
-	const queue = [crateId];
-	while (queue.length > 0) {
-		const id = queue.pop()!;
-		const children = childMap.get(id);
-		if (children) {
-			for (const child of children) {
-				if (!treeNodeIds.has(child)) {
-					treeNodeIds.add(child);
-					queue.push(child);
-				}
-			}
-		}
-	}
+	// Only return tree-relevant edges
+	const treeEdges = crate.edges.filter((e) => e.kind === 'Contains' || e.kind === 'Defines');
 
-	const nodes = graph.nodes
-		.filter((n) => treeNodeIds.has(n.id))
-		.map(summarizeNode);
-	const edges = graph.edges.filter(
-		(e) =>
-			(e.kind === 'Contains' || e.kind === 'Defines') &&
-			treeNodeIds.has(e.from) &&
-			treeNodeIds.has(e.to)
-	);
-
-	return { nodes, edges };
+	const result = {
+		nodes: crate.nodes.map(summarizeNode),
+		edges: treeEdges
+	};
+	const dt = performance.now() - t0;
+	if (dt > 2) console.log(`[perf:server] getCrateTree(${name}) ${dt.toFixed(1)}ms (${result.nodes.length}n ${result.edges.length}e)`);
+	return result;
 });
 
 /** Get full node detail + all edges (for the detail panel) */
-export const getNodeDetail = query(v.string(), async (nodeId: string) => {
-	const graph = await loadGraph();
+export const getNodeDetail = query(NodeDetailInputSchema, async ({ nodeId, version }): Promise<NodeDetail | null> => {
+	const t0 = performance.now();
+	const ws = await loadWorkspace();
+	if (ws) {
+		// Determine which crate the node belongs to
+		const cratePrefix = nodeId.split('::')[0];
+		const crate = ws.crates.find((c) => c.id === cratePrefix);
+
+		const allNodes = getAllNodes(ws);
+		const node = allNodes.get(nodeId);
+		if (!node) return null;
+
+		// Collect edges: from the crate's internal edges + cross-crate indexed edges
+		const { bySrc, byDst } = getCrossEdgesByNode(ws);
+		const edges = [
+			...(crate?.edges.filter((e) => e.from === nodeId || e.to === nodeId) ?? []),
+			...(bySrc.get(nodeId) ?? []),
+			...(byDst.get(nodeId) ?? [])
+		];
+
+		// Related nodes referenced by those edges
+		const relatedIds = new Set<string>();
+		for (const e of edges) {
+			relatedIds.add(e.from);
+			relatedIds.add(e.to);
+		}
+		relatedIds.delete(nodeId);
+
+		const relatedNodes: NodeSummary[] = [];
+		for (const id of relatedIds) {
+			const n = allNodes.get(id);
+			if (n) relatedNodes.push(summarizeNode(n));
+		}
+
+		const dt = performance.now() - t0;
+		if (dt > 2) console.log(`[perf:server] getNodeDetail(${nodeId}) ${dt.toFixed(1)}ms (${edges.length}e ${relatedNodes.length}r)`);
+		return { node, edges, relatedNodes };
+	}
+
+	// Hosted fallback: load crate graph from R2
+	const cratePrefix = nodeId.split('::')[0];
+	const graph = await loadCrateGraphByRef(cratePrefix, version);
 	if (!graph) return null;
 
-	const node = graph.nodes.find((n) => n.id === nodeId);
+	const nodesById = new Map<string, Node>();
+	for (const n of graph.nodes) nodesById.set(n.id, n);
+	const node = nodesById.get(nodeId);
 	if (!node) return null;
 
-	// All edges where this node is from or to
 	const edges = graph.edges.filter((e) => e.from === nodeId || e.to === nodeId);
-
-	// Related nodes referenced by those edges
+	const provider = await initProvider(getRequestEvent());
+	const crossData = await provider.getCrossEdgeData(nodeId);
+	const edgeKey = (e: { from: string; to: string; kind: string; confidence: string }) =>
+		`${e.from}|${e.to}|${e.kind}|${e.confidence}`;
+	const edgeKeys = new Set(edges.map((e) => edgeKey(e)));
+	for (const e of crossData.edges) {
+		if (!edgeKeys.has(edgeKey(e))) {
+			edges.push(e);
+			edgeKeys.add(edgeKey(e));
+		}
+	}
 	const relatedIds = new Set<string>();
 	for (const e of edges) {
 		relatedIds.add(e.from);
@@ -149,50 +199,154 @@ export const getNodeDetail = query(v.string(), async (nodeId: string) => {
 	}
 	relatedIds.delete(nodeId);
 
-	const relatedNodes = graph.nodes
-		.filter((n) => relatedIds.has(n.id))
-		.map(summarizeNode);
+	const relatedNodesMap = new Map<string, NodeSummary>();
+	for (const id of relatedIds) {
+		const n = nodesById.get(id);
+		if (n) relatedNodesMap.set(id, summarizeNode(n));
+	}
+	for (const n of crossData.nodes) {
+		if (!relatedNodesMap.has(n.id)) relatedNodesMap.set(n.id, n);
+	}
+	const relatedNodes = Array.from(relatedNodesMap.values());
 
+	const dt = performance.now() - t0;
+	if (dt > 2) console.log(`[perf:server] getNodeDetail(${nodeId}) ${dt.toFixed(1)}ms (${edges.length}e ${relatedNodes.length}r)`);
 	return { node, edges, relatedNodes };
 });
 
 /** Get available versions for a crate */
-export const getCrateVersions = query(v.string(), async (crateName: string) => {
-	const graph = await loadGraph();
-	if (!graph) return [];
-	const version = graph.crate_versions?.[crateName];
-	return version ? [version] : ['latest'];
+export const getCrateVersions = query(NodeIdSchema, async (crateName: string): Promise<string[]> => {
+	const provider = await initProvider(getRequestEvent());
+	return await provider.getCrateVersions(crateName, 20);
+});
+
+/** Get a lightweight crate index for hosted mode (external crate list + versions). */
+export const getCrateIndex = query(CrateRefSchema, async ({ name, version }): Promise<CrateIndex | null> => {
+	const provider = await initProvider(getRequestEvent());
+	return await provider.loadCrateIndex(name, version ?? 'latest');
 });
 
 /** Search nodes by name/id, optionally scoped to a crate */
 export const searchNodes = query(
-	v.object({ crate: v.optional(v.string()), q: v.string() }),
-	async ({ crate, q }: { crate?: string; q: string }) => {
-		const graph = await loadGraph();
-		if (!graph) return [];
+	SearchNodesInputSchema,
+	async ({ crate: crateId, version, q }: { crate?: string; version?: string; q: string }): Promise<NodeSummary[]> => {
+		const ws = await loadWorkspace();
 		const lower = q.toLowerCase();
+
+		if (ws) {
+			const results: NodeSummary[] = [];
+			for (const c of ws.crates) {
+				if (crateId && c.id !== crateId) continue;
+				for (const n of c.nodes) {
+					if (
+						!n.is_external &&
+						(n.name.toLowerCase().includes(lower) || n.id.toLowerCase().includes(lower))
+					) {
+						results.push(summarizeNode(n));
+					}
+				}
+			}
+			return results;
+		}
+
+		if (!crateId) return [];
+		const graph = await loadCrateGraphByRef(crateId, version);
+		if (!graph) return [];
 		return graph.nodes
 			.filter(
 				(n) =>
 					!n.is_external &&
-					(!crate || n.id === crate || n.id.startsWith(crate + '::')) &&
 					(n.name.toLowerCase().includes(lower) || n.id.toLowerCase().includes(lower))
 			)
 			.map(summarizeNode);
 	}
 );
 
-/** Check whether node IDs exist in the graph (for link validation) */
+/** Check whether node IDs exist in the workspace (for link validation) */
 export const checkNodeExists = query(
-	v.array(v.string()),
-	async (nodeIds: string[]) => {
-		const graph = await loadGraph();
-		if (!graph) return {};
-		const nodeSet = new Set(graph.nodes.map((n) => n.id));
+	NodeIdsSchema,
+	async (nodeIds: string[]): Promise<Record<string, boolean>> => {
+		const ws = await loadWorkspace();
+		if (!ws) return {};
+		const allNodes = getAllNodes(ws);
 		const result: Record<string, boolean> = {};
 		for (const id of nodeIds) {
-			result[id] = nodeSet.has(id);
+			result[id] = allNodes.has(id);
 		}
 		return result;
+	}
+);
+
+// --- Cloud multi-crate queries ---
+
+const CrateKeySchema = NodeIdSchema; // reuse string schema for name param
+
+/** Get the parse status of a crate (cloud mode). */
+export const getCrateStatus = query(
+	CrateKeySchema,
+	async (nameVersion: string): Promise<CrateStatus> => {
+		const [rawName, rawVersion] = nameVersion.split('@');
+		const name = rawName ?? '';
+		const version = rawVersion ?? 'latest';
+		if (!isValidCrateName(name) || !isValidVersion(version)) {
+			throw error(400, 'Invalid crate name or version');
+		}
+		const provider = await initProvider(getRequestEvent());
+		return provider.getCrateStatus(name, version);
+	}
+);
+
+/** Trigger parsing of a crate (cloud mode). */
+export const triggerCrateParse = command(
+	CrateKeySchema,
+	async (nameVersion: string): Promise<void> => {
+		const [rawName, rawVersion] = nameVersion.split('@');
+		const name = rawName ?? '';
+		const version = rawVersion ?? 'latest';
+		if (!isValidCrateName(name) || !isValidVersion(version)) {
+			throw error(400, 'Invalid crate name or version');
+		}
+		const event = getRequestEvent();
+		const allowed = await checkRateLimitPolicy(event, 'parse');
+		if (!allowed) {
+			throw error(429, 'Rate limit exceeded');
+		}
+		const provider = await initProvider(event);
+		await provider.triggerParse(name, version);
+	}
+);
+
+/** Search the registry for crates (cloud mode). */
+export const searchRegistry = query(
+	NodeIdSchema,
+	async (q: string): Promise<CrateSearchResult[]> => {
+		const queryText = sanitizeSearchQuery(q);
+		if (!queryText) return [];
+		const provider = await initProvider(getRequestEvent());
+		return provider.searchRegistry(queryText);
+	}
+);
+
+/** Load a single crate graph from R2 (cloud mode). */
+export const loadCrateGraph = query(
+	CrateKeySchema,
+	async (nameVersion: string): Promise<CrateTree | null> => {
+		const [rawName, rawVersion] = nameVersion.split('@');
+		const name = rawName ?? '';
+		const version = rawVersion ?? 'latest';
+		if (!isValidCrateName(name) || !isValidVersion(version)) {
+			throw error(400, 'Invalid crate name or version');
+		}
+		const provider = await initProvider(getRequestEvent());
+		const graph = await provider.loadCrateGraph(name, version);
+		if (!graph) return null;
+
+		// Filter to tree-relevant edges only
+		const treeEdges = graph.edges.filter((e) => e.kind === 'Contains' || e.kind === 'Defines');
+
+		return {
+			nodes: graph.nodes.map(summarizeNode),
+			edges: treeEdges
+		};
 	}
 );

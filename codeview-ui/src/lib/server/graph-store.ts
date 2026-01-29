@@ -1,48 +1,58 @@
 import { DurableObject } from 'cloudflare:workers';
+import { eq } from 'drizzle-orm';
+import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
+import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
+import type { WorkspaceOutput } from '$lib/schema';
+import migrations from './db/migrations';
+import { graphData, sourceCache } from './db/schema';
 
 export class GraphStore extends DurableObject {
-	constructor(ctx: DurableObjectState, env: unknown) {
+	private db: DrizzleSqliteDODatabase;
+
+	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
-		this.ctx.storage.sql.exec(`
-			CREATE TABLE IF NOT EXISTS graph_data (
-				id INTEGER PRIMARY KEY CHECK (id = 1),
-				json TEXT NOT NULL
-			);
-			CREATE TABLE IF NOT EXISTS source_cache (
-				path TEXT PRIMARY KEY,
-				content TEXT NOT NULL,
-				cached_at INTEGER NOT NULL
-			);
-		`);
+		this.db = drizzle(this.ctx.storage);
+		this.ctx.blockConcurrencyWhile(async () => {
+			await migrate(this.db, migrations);
+		});
 	}
 
-	async getGraph(): Promise<string | null> {
-		const row = this.ctx.storage.sql
-			.exec('SELECT json FROM graph_data WHERE id = 1')
-			.one();
-		return (row?.json as string) ?? null;
+	async getGraph(): Promise<WorkspaceOutput | null> {
+		const row = this.db
+			.select({ json: graphData.json })
+			.from(graphData)
+			.where(eq(graphData.id, 1))
+			.get();
+		return row?.json ?? null;
 	}
 
 	async getSourceFile(path: string): Promise<string | null> {
-		const row = this.ctx.storage.sql
-			.exec('SELECT content FROM source_cache WHERE path = ?', path)
-			.one();
-		return (row?.content as string) ?? null;
+		const row = this.db
+			.select({ content: sourceCache.content })
+			.from(sourceCache)
+			.where(eq(sourceCache.path, path))
+			.get();
+		return row?.content ?? null;
 	}
 
 	async cacheSourceFile(path: string, content: string): Promise<void> {
-		this.ctx.storage.sql.exec(
-			'INSERT OR REPLACE INTO source_cache (path, content, cached_at) VALUES (?, ?, ?)',
-			path,
-			content,
-			Date.now()
-		);
+		const now = Date.now();
+		this.db
+			.insert(sourceCache)
+			.values({ path, content, cachedAt: now })
+			.onConflictDoUpdate({
+				target: sourceCache.path,
+				set: { content, cachedAt: now }
+			});
 	}
 
-	async ingestGraph(graphJson: string): Promise<void> {
-		this.ctx.storage.sql.exec(
-			'INSERT OR REPLACE INTO graph_data (id, json) VALUES (1, ?)',
-			graphJson
-		);
+	async ingestGraph(graphJson: WorkspaceOutput): Promise<void> {
+		this.db
+			.insert(graphData)
+			.values({ id: 1, json: graphJson })
+			.onConflictDoUpdate({
+				target: graphData.id,
+				set: { json: graphJson }
+			});
 	}
 }
