@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Edge, EdgeKind, Node, NodeKind, Visibility } from '$lib/graph';
   import type { SelectedEdges } from '$lib/ui';
+  import { kindColors } from '$lib/tree-constants';
   import Documentation from './Documentation.svelte';
   import CodeBlock from './CodeBlock.svelte';
   import CollapsibleSection from './CollapsibleSection.svelte';
@@ -14,7 +15,8 @@
   let {
     selected,
     selectedEdges,
-    implBlocks,
+    sourceImpls,
+    blanketImpls,
     methodGroups,
     kindLabels,
     visibilityLabels,
@@ -22,11 +24,15 @@
     displayNode,
     theme = 'light',
     getNodeUrl,
-    nodeExists
+    nodeExists,
+    nodeMeta,
+    crateName,
+    crateVersion
   } = $props<{
     selected: Node | null;
     selectedEdges: SelectedEdges;
-    implBlocks: Node[];
+    sourceImpls: Node[];
+    blanketImpls: Node[];
     methodGroups: MethodGroup[];
     kindLabels: Record<NodeKind, string>;
     visibilityLabels: Record<Visibility, string>;
@@ -37,10 +43,81 @@
     getNodeUrl?: (id: string) => string;
     /** Check if a node exists in the graph */
     nodeExists?: (nodeId: string) => boolean;
+    /** Fetch related node metadata (e.g. is_external) */
+    nodeMeta?: (nodeId: string) => { is_external?: boolean } | undefined;
+    crateName?: string;
+    crateVersion?: string;
   }>();
 
+  const totalImpls = $derived(sourceImpls.length + blanketImpls.length);
+  const selectedKind = $derived(selected?.kind as NodeKind);
+
+  function crateFromId(id?: string | null) {
+    return id?.split('::')[0];
+  }
+
+  function resolveVersionForCrate(id?: string | null) {
+    const idCrate = crateFromId(id);
+    if (!idCrate) return undefined;
+    return idCrate === crateName ? crateVersion : undefined;
+  }
+
+  function isExternalNode(nodeId: string): boolean {
+    return nodeMeta?.(nodeId)?.is_external ?? false;
+  }
+
+  function docsUrlForNode(nodeId: string): string | null {
+    const parts = nodeId.split('::');
+    if (parts.length === 0) return null;
+    const crate = parts[0];
+    const version = crate === crateName && crateVersion ? crateVersion : 'latest';
+    const path = parts.slice(1).join('/');
+    return path
+      ? `https://docs.rs/${crate}/${version}/${crate}/${path.toLowerCase()}/`
+      : `https://docs.rs/${crate}/${version}/${crate}/`;
+  }
+
+  type BoundSegment = { text: string; nodeId?: string };
+
+  /**
+   * Split a generic param or where-predicate string into segments,
+   * linking trait names that appear in the bound_links map.
+   * e.g. "V: SQLParam + 'a" with links {"SQLParam": "drizzle_core::params::SQLParam"}
+   * → [{text:"V: "}, {text:"SQLParam", nodeId:"..."}, {text:" + 'a"}]
+   */
+  function splitBoundSegments(text: string, links: Record<string, string> | undefined): BoundSegment[] {
+    if (!links || Object.keys(links).length === 0) return [{ text }];
+
+    // Sort keys longest-first so longer trait names match before shorter substrings
+    const keys = Object.keys(links).sort((a, b) => b.length - a.length);
+
+    const segments: BoundSegment[] = [];
+    let remaining = text;
+
+    while (remaining.length > 0) {
+      let earliest = -1;
+      let matchedKey = '';
+      for (const key of keys) {
+        const idx = remaining.indexOf(key);
+        if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+          earliest = idx;
+          matchedKey = key;
+        }
+      }
+      if (earliest === -1) {
+        segments.push({ text: remaining });
+        break;
+      }
+      if (earliest > 0) {
+        segments.push({ text: remaining.slice(0, earliest) });
+      }
+      segments.push({ text: matchedKey, nodeId: links[matchedKey] });
+      remaining = remaining.slice(earliest + matchedKey.length);
+    }
+    return segments;
+  }
+
   // Track collapsible section refs for expand/collapse all
-  let genericsRef = $state<CollapsibleSection | null>(null);
   let signatureRef = $state<CollapsibleSection | null>(null);
   let fieldsRef = $state<CollapsibleSection | null>(null);
   let variantsRef = $state<CollapsibleSection | null>(null);
@@ -48,11 +125,9 @@
   let methodsRef = $state<CollapsibleSection | null>(null);
   let implsRef = $state<CollapsibleSection | null>(null);
   let relationshipsRef = $state<CollapsibleSection | null>(null);
-  let sourceRef = $state<CollapsibleSection | null>(null);
   let attrsRef = $state<CollapsibleSection | null>(null);
 
   let allRefs = $derived([
-    genericsRef,
     signatureRef,
     fieldsRef,
     variantsRef,
@@ -60,7 +135,6 @@
     methodsRef,
     implsRef,
     relationshipsRef,
-    sourceRef,
     attrsRef
   ].filter(Boolean) as CollapsibleSection[]);
 
@@ -84,7 +158,7 @@
   const EDGES_COLLAPSE_THRESHOLD = 8;
 
   const methodCount = $derived.by(() =>
-    methodGroups.reduce((total, group) => total + group.methods.length, 0)
+    methodGroups.reduce((total: number, group: MethodGroup) => total + group.methods.length, 0)
   );
 
   const SIGNATURE_WRAP_COLUMN = 100;
@@ -150,21 +224,76 @@
     return `${header}(\n${wrappedArgs},\n)${ret}`;
   }
 
-  const kindColors: Record<NodeKind, string> = {
-    Crate: '#e85d04',
-    Module: '#2d6a4f',
-    Struct: '#9d4edd',
-    Union: '#7b2cbf',
-    Enum: '#3a86ff',
-    Trait: '#06d6a0',
-    TraitAlias: '#0db39e',
-    Impl: '#8d99ae',
-    Function: '#f72585',
-    Method: '#b5179e',
-    TypeAlias: '#ff6d00'
-  };
 
 </script>
+
+{#snippet linkedBadge(text: string, links: Record<string, string> | undefined, strong: boolean)}
+  <code class="badge {strong ? 'badge-strong' : ''} badge-code">
+    {#each splitBoundSegments(text, links) as seg, index (index)}
+      {#if seg.nodeId && getNodeUrl}
+        {#if isExternalNode(seg.nodeId)}
+          <a
+            href={docsUrlForNode(seg.nodeId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-[var(--accent)] hover:underline underline-offset-2"
+          >
+            {seg.text}
+          </a>
+        {:else}
+          <a href={getNodeUrl(seg.nodeId)} data-sveltekit-noscroll class="text-[var(--accent)] hover:underline underline-offset-2">
+            {seg.text}
+          </a>
+        {/if}
+      {:else}
+        {seg.text}
+      {/if}
+    {/each}
+  </code>
+{/snippet}
+
+{#snippet implRow(implBlock: Node)}
+  <div class="flex flex-wrap items-center gap-2 text-sm">
+    <span class="badge">impl</span>
+    {#if implBlock.generics && implBlock.generics.length > 0}
+      {#each implBlock.generics as generic (generic)}
+        {@render linkedBadge(generic, implBlock.bound_links, true)}
+      {/each}
+    {/if}
+    {#if implBlock.impl_trait}
+      {#if getNodeUrl && nodeExists?.(implBlock.impl_trait) && !isExternalNode(implBlock.impl_trait)}
+        <a
+          href={getNodeUrl(implBlock.impl_trait)}
+          data-sveltekit-noscroll
+          class="token-name text-[var(--accent)] hover:underline underline-offset-2"
+        >
+          {displayNode(implBlock.impl_trait)}
+        </a>
+      {:else if isExternalNode(implBlock.impl_trait)}
+        <a
+          href={docsUrlForNode(implBlock.impl_trait)}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="token-name text-[var(--accent)] hover:underline underline-offset-2"
+        >
+          {displayNode(implBlock.impl_trait)}
+        </a>
+      {:else}
+        <span class="token-name">{displayNode(implBlock.impl_trait)}</span>
+      {/if}
+      <span class="text-[var(--muted)]">for</span>
+      <span class="token-name">{selected?.name}</span>
+    {:else}
+      <span class="text-[var(--ink)]">{implBlock.name}</span>
+    {/if}
+    {#if implBlock.where_clause && implBlock.where_clause.length > 0}
+      <span class="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">where</span>
+      {#each implBlock.where_clause as predicate (predicate)}
+        {@render linkedBadge(predicate, implBlock.bound_links, false)}
+      {/each}
+    {/if}
+  </div>
+{/snippet}
 
 {#if selected}
   <div class="max-w-3xl">
@@ -173,8 +302,8 @@
       <div class="flex items-center justify-between">
         <div class="flex items-center gap-3">
           <span
-            class="rounded-[var(--radius-chip)] corner-squircle px-3 py-1 text-sm font-semibold text-white"
-            style="background-color: {kindColors[selected.kind]}"
+            class="badge badge-lg badge-filled text-sm"
+            style="background-color: {kindColors[selectedKind]}"
           >
             {kindLabels[selected.kind]}
           </span>
@@ -185,7 +314,7 @@
         <div class="flex items-center gap-1">
           <button
             type="button"
-            class="px-2 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)] hover:bg-[var(--panel)] rounded-[var(--radius-chip)] corner-squircle transition-colors"
+            class="badge badge-sm hover:bg-[var(--panel-strong)] hover:text-[var(--ink)] transition-colors"
             onclick={expandAll}
           >
             Expand all
@@ -193,7 +322,7 @@
           <span class="text-[var(--muted)]">|</span>
           <button
             type="button"
-            class="px-2 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)] hover:bg-[var(--panel)] rounded-[var(--radius-chip)] corner-squircle transition-colors"
+            class="badge badge-sm hover:bg-[var(--panel-strong)] hover:text-[var(--ink)] transition-colors"
             onclick={collapseAll}
           >
             Collapse all
@@ -202,23 +331,32 @@
       </div>
       <h2 class="mt-3 text-2xl font-bold text-[var(--ink)]">{selected.name}</h2>
       <p class="mt-1 text-sm text-[var(--muted)] font-[var(--font-code)]">{selected.id}</p>
-    </div>
-
-    <!-- Generics -->
-    {#if selected.generics && selected.generics.length > 0}
-      <CollapsibleSection
-        bind:this={genericsRef}
-        title="Type Parameters"
-        count={selected.generics.length}
-        defaultOpen={true}
-      >
-        <div class="flex flex-wrap gap-2">
+      {#if selected.span}
+        <div class="mt-2 text-xs">
+          <SourceViewer
+            span={selected.span}
+            {theme}
+            crateName={crateFromId(selected.id) ?? crateName}
+            crateVersion={resolveVersionForCrate(selected.id)}
+          />
+        </div>
+      {/if}
+      {#if selected.generics && selected.generics.length > 0}
+        <div class="mt-3 flex flex-wrap items-center gap-2">
           {#each selected.generics as generic (generic)}
-            <code class="badge badge-strong font-[var(--font-code)]">{generic}</code>
+            {@render linkedBadge(generic, selected.bound_links, true)}
           {/each}
         </div>
-      </CollapsibleSection>
-    {/if}
+      {/if}
+      {#if selected.where_clause && selected.where_clause.length > 0}
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span class="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">where</span>
+          {#each selected.where_clause as predicate (predicate)}
+            {@render linkedBadge(predicate, selected.bound_links, false)}
+          {/each}
+        </div>
+      {/if}
+    </div>
 
     <!-- Signature (always open) -->
     {#if selected.signature}
@@ -235,10 +373,10 @@
             <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Arguments</h4>
             <div class="mt-2 space-y-2">
               {#each selected.signature.inputs as arg (arg.name)}
-                <div class="flex items-baseline gap-2">
-                  <code class="token-name">{arg.name}</code>
+                <div class="flex flex-wrap items-baseline gap-2">
+                  <code class="badge badge-strong badge-code">{arg.name}</code>
                   <span class="text-[var(--muted)]">:</span>
-                  <code class="token-type">{arg.type_name}</code>
+                  {@render linkedBadge(arg.type_name, selected.bound_links, false)}
                 </div>
               {/each}
             </div>
@@ -247,7 +385,9 @@
         {#if selected.signature.output}
           <div class="mt-4">
             <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Returns</h4>
-            <code class="token-type mt-2 block">{selected.signature.output}</code>
+            <div class="mt-2">
+              {@render linkedBadge(selected.signature.output, selected.bound_links, false)}
+            </div>
           </div>
         {/if}
       </CollapsibleSection>
@@ -261,15 +401,15 @@
         count={selected.fields.length}
         defaultOpen={selected.fields.length <= FIELDS_COLLAPSE_THRESHOLD}
       >
-        <div class="space-y-2">
+        <div class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] divide-y divide-[var(--panel-border)]">
           {#each selected.fields as field (field.name)}
-            <div class="flex flex-wrap items-baseline gap-2 rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-3 py-2">
+            <div class="flex flex-wrap items-baseline gap-2 px-3 py-2 text-sm">
               {#if field.visibility === 'Public'}
                 <span class="badge badge-strong text-[var(--accent)]">pub</span>
               {/if}
-              <code class="token-name">{field.name}</code>
+              <code class="badge badge-strong badge-code">{field.name}</code>
               <span class="text-[var(--muted)]">:</span>
-              <code class="token-type break-normal whitespace-pre-wrap">{formatTypeName(field.type_name)}</code>
+              {@render linkedBadge(formatTypeName(field.type_name), selected.bound_links, false)}
             </div>
           {/each}
         </div>
@@ -286,15 +426,27 @@
       >
         <div class="space-y-3">
           {#each selected.variants as variant (variant.name)}
-            <div class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-3 py-2">
-              <code class="token-name">{variant.name}</code>
+            <div class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] overflow-hidden">
+              <div class="flex items-center justify-between gap-2 border-b border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-2">
+                <code class="token-name">{variant.name}</code>
+                {#if variant.fields.length > 0}
+                  <span class="badge badge-sm text-[var(--muted)]">
+                    {variant.fields.length} field{variant.fields.length === 1 ? '' : 's'}
+                  </span>
+                {:else}
+                  <span class="badge badge-sm text-[var(--muted)]">unit</span>
+                {/if}
+              </div>
               {#if variant.fields.length > 0}
-                <div class="ml-4 mt-2 space-y-1 border-l-2 border-[var(--panel-border)] pl-3">
+                <div class="divide-y divide-[var(--panel-border)]">
                   {#each variant.fields as field (field.name)}
-                    <div class="flex flex-wrap items-baseline gap-2 text-sm">
-                      <code class="token-name">{field.name}</code>
+                    <div class="flex flex-wrap items-baseline gap-2 px-3 py-2 text-sm">
+                      {#if field.visibility === 'Public'}
+                        <span class="badge badge-strong text-[var(--accent)]">pub</span>
+                      {/if}
+                      <code class="badge badge-strong badge-code">{field.name}</code>
                       <span class="text-[var(--muted)]">:</span>
-                      <code class="token-type break-normal whitespace-pre-wrap">{formatTypeName(field.type_name)}</code>
+                      {@render linkedBadge(formatTypeName(field.type_name), selected.bound_links, false)}
                     </div>
                   {/each}
                 </div>
@@ -344,7 +496,12 @@
                 </div>
                 <div class="text-xs">
                   {#if group.impl.span}
-                    <SourceViewer span={group.impl.span} {theme} />
+                    <SourceViewer
+                      span={group.impl.span}
+                      {theme}
+                      crateName={crateFromId(group.impl.id) ?? crateName}
+                      crateVersion={resolveVersionForCrate(group.impl.id)}
+                    />
                   {:else}
                     <span class="font-[var(--font-code)] text-[var(--muted)]">Location unavailable</span>
                   {/if}
@@ -359,7 +516,7 @@
                       {#if method.visibility === 'Public'}
                         <span class="badge badge-strong text-[var(--accent)]">pub</span>
                       {/if}
-                      <code class="token-name">{method.name}</code>
+                      <code class="badge badge-strong badge-code">{method.name}</code>
                       {#if method.signature?.is_async}
                         <span class="badge">async</span>
                       {/if}
@@ -378,7 +535,12 @@
                       {/if}
                       {#if method.span}
                         <div class="text-xs shrink-0">
-                          <SourceViewer span={method.span} {theme} />
+                          <SourceViewer
+                            span={method.span}
+                            {theme}
+                            crateName={crateFromId(method.id) ?? crateName}
+                            crateVersion={resolveVersionForCrate(method.id)}
+                          />
                         </div>
                       {/if}
                     </div>
@@ -396,48 +558,36 @@
       </CollapsibleSection>
     {/if}
 
-    {#if implBlocks.length > 0}
+    {#if totalImpls > 0}
       <CollapsibleSection
         bind:this={implsRef}
         title="Trait Implementations"
-        count={implBlocks.length}
-        defaultOpen={implBlocks.length <= IMPLS_COLLAPSE_THRESHOLD}
+        count={totalImpls}
+        defaultOpen={totalImpls <= IMPLS_COLLAPSE_THRESHOLD}
       >
-        <div class="space-y-2">
-          {#each implBlocks as implBlock (implBlock.id)}
-            <div class="flex flex-wrap items-baseline gap-2 text-sm">
-              <span class="badge">
-                impl
-              </span>
-              {#if implBlock.impl_trait}
-                {#if getNodeUrl && nodeExists?.(implBlock.impl_trait)}
-                  <a
-                    href={getNodeUrl(implBlock.impl_trait)}
-                    data-sveltekit-noscroll
-                    class="token-name text-[var(--accent)] hover:underline underline-offset-2"
-                  >
-                    {displayNode(implBlock.impl_trait)}
-                  </a>
-                {:else}
-                  <span class="token-name">{displayNode(implBlock.impl_trait)}</span>
-                {/if}
-                <span class="text-[var(--muted)]">for</span>
-                {#if getNodeUrl && nodeExists?.(selected.id)}
-                  <a
-                    href={getNodeUrl(selected.id)}
-                    data-sveltekit-noscroll
-                    class="token-name text-[var(--accent)] hover:underline underline-offset-2"
-                  >
-                    {selected.name}
-                  </a>
-                {:else}
-                  <span class="token-name">{selected.name}</span>
-                {/if}
-              {:else}
-                <span class="text-[var(--ink)]">{implBlock.name}</span>
-              {/if}
+        <div class="space-y-4">
+          <!-- Source (user-written) implementations -->
+          {#if sourceImpls.length > 0}
+            <div class="space-y-2">
+              {#each sourceImpls as implBlock (implBlock.id)}
+                {@render implRow(implBlock)}
+              {/each}
             </div>
-          {/each}
+          {/if}
+
+          <!-- Auto/blanket implementations -->
+          {#if blanketImpls.length > 0}
+            <details class="group">
+              <summary class="cursor-pointer select-none text-xs font-semibold uppercase tracking-wider text-[var(--muted)] hover:text-[var(--ink)] transition-colors">
+                Auto/blanket implementations ({blanketImpls.length})
+              </summary>
+              <div class="mt-2 space-y-1 opacity-70">
+                {#each blanketImpls as implBlock (implBlock.id)}
+                  {@render implRow(implBlock)}
+                {/each}
+              </div>
+            </details>
+          {/if}
         </div>
       </CollapsibleSection>
     {/if}
@@ -466,8 +616,10 @@
                   </span>
                 </div>
                 <div>
-                  {#if getNodeUrl}
+                  {#if getNodeUrl && !isExternalNode(edge.to)}
                     <a href={getNodeUrl(edge.to)} data-sveltekit-noscroll class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.to)}</a>
+                  {:else if isExternalNode(edge.to)}
+                    <a href={docsUrlForNode(edge.to)} target="_blank" rel="noopener noreferrer" class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.to)}</a>
                   {:else}
                     <span class="text-[var(--ink)]">{displayNode(edge.to)}</span>
                   {/if}
@@ -493,8 +645,10 @@
                   </span>
                 </div>
                 <div>
-                  {#if getNodeUrl}
+                  {#if getNodeUrl && !isExternalNode(edge.from)}
                     <a href={getNodeUrl(edge.from)} data-sveltekit-noscroll class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.from)}</a>
+                  {:else if isExternalNode(edge.from)}
+                    <a href={docsUrlForNode(edge.from)} target="_blank" rel="noopener noreferrer" class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.from)}</a>
                   {:else}
                     <span class="text-[var(--ink)]">{displayNode(edge.from)}</span>
                   {/if}
@@ -505,17 +659,6 @@
         </div>
       </div>
     </CollapsibleSection>
-
-    <!-- Source location -->
-    {#if selected.span}
-      <CollapsibleSection
-        bind:this={sourceRef}
-        title="Source"
-        defaultOpen={true}
-      >
-        <SourceViewer span={selected.span} {theme} />
-      </CollapsibleSection>
-    {/if}
 
     <!-- Attributes -->
     {#if selected.attrs && selected.attrs.length > 0}

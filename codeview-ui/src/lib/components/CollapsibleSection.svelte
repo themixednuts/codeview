@@ -44,7 +44,7 @@
       </svg>
       <h3 class="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">{title}</h3>
       {#if count !== null}
-        <span class="rounded-[var(--radius-chip)] corner-squircle bg-[var(--panel-strong)] px-2 py-0.5 text-xs font-medium text-[var(--muted)]">
+        <span class="badge badge-strong badge-sm text-[var(--muted)]">
           {count}
         </span>
       {/if}

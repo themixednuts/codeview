@@ -1,0 +1,93 @@
+<script lang="ts">
+  import type { Node, NodeKind } from '$lib/graph';
+  import { kindColors, kindIcons } from '$lib/tree-constants';
+
+  let {
+    node,
+    depth,
+    hasChildren,
+    isExpanded,
+    isSelected,
+    dimmed,
+    selectable,
+    href,
+    onToggle,
+    itemHeight
+  } = $props<{
+    node: Node;
+    depth: number;
+    hasChildren: boolean;
+    isExpanded: boolean;
+    isSelected: boolean;
+    dimmed: boolean;
+    selectable: boolean;
+    href: string;
+    onToggle: () => void;
+    /** Fixed row height in px (used by virtual tree) */
+    itemHeight?: number;
+  }>();
+
+  const kind = $derived(node.kind as NodeKind);
+  const heightStyle = $derived(itemHeight ? `height: ${itemHeight}px; ` : '');
+  const paddingStyle = $derived(`padding-left: ${depth * 16 + 8}px`);
+  const style = $derived(`${heightStyle}${paddingStyle}`);
+</script>
+
+{#if selectable}
+  <a
+    {href}
+    data-sveltekit-noscroll
+    class="flex w-full items-center gap-2 rounded-[var(--radius-chip)] corner-squircle box-border px-2 py-1 text-sm leading-none hover:bg-[var(--panel-strong)] {isSelected
+      ? 'bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]'
+      : ''} {dimmed ? 'opacity-50' : ''}"
+    {style}
+    onclick={onToggle}
+  >
+    {#if hasChildren}
+      <span class="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--muted)]">
+        {isExpanded ? '▼' : '▶'}
+      </span>
+    {:else}
+      <span class="flex h-4 w-4 shrink-0"></span>
+    {/if}
+    <span
+      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-[10px] font-bold leading-none text-white"
+      style="background-color: {kindColors[kind]}"
+    >
+      {kindIcons[kind]}
+    </span>
+    <span class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]">
+      {node.name}
+    </span>
+    {#if node.visibility === 'Public'}
+      <span class="ml-auto text-[10px] leading-none text-[var(--accent)] font-medium">pub</span>
+    {/if}
+  </a>
+{:else}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="flex w-full items-center gap-2 rounded-[var(--radius-chip)] corner-squircle box-border px-2 py-1 text-sm leading-none hover:bg-[var(--panel-strong)] {dimmed ? 'opacity-50' : ''} {hasChildren ? 'cursor-pointer' : ''}"
+    {style}
+    onclick={onToggle}
+  >
+    {#if hasChildren}
+      <span class="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--muted)]">
+        {isExpanded ? '▼' : '▶'}
+      </span>
+    {:else}
+      <span class="flex h-4 w-4 shrink-0"></span>
+    {/if}
+    <span
+      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-[10px] font-bold leading-none text-white"
+      style="background-color: {kindColors[kind]}"
+    >
+      {kindIcons[kind]}
+    </span>
+    <span class="min-w-0 flex-1 truncate font-medium text-[var(--ink)]">
+      {node.name}
+    </span>
+    {#if node.visibility === 'Public'}
+      <span class="ml-auto text-[10px] leading-none text-[var(--accent)] font-medium">pub</span>
+    {/if}
+  </div>
+{/if}

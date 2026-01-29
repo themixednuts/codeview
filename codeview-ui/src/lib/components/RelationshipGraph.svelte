@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { Edge, EdgeKind, Graph, Node, NodeKind } from '$lib/graph';
   import type { LayoutMode, VisEdge, VisNode } from '$lib/graph-layout';
+  import { kindColors } from '$lib/tree-constants';
+  import { Memo, KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import {
     CENTER_X,
     CENTER_Y,
@@ -17,12 +19,20 @@
     graph,
     selected,
     getNodeUrl,
-    layoutMode = 'ego'
+    layoutMode = 'ego',
+    showStructural = false,
+    showSemantic = true,
+    onToggleStructural,
+    onToggleSemantic
   } = $props<{
     graph: Graph;
     selected: Node;
     getNodeUrl: (id: string) => string;
     layoutMode?: LayoutMode;
+    showStructural?: boolean;
+    showSemantic?: boolean;
+    onToggleStructural?: () => void;
+    onToggleSemantic?: () => void;
   }>();
 
   type DragOffset = { x: number; y: number };
@@ -31,13 +41,9 @@
   const structuralEdgeKinds: EdgeKind[] = ['Contains', 'Defines'];
   const semanticEdgeKinds: EdgeKind[] = ['UsesType', 'Implements', 'CallsStatic', 'CallsRuntime', 'Derives'];
 
-  // Filter state - default: show semantic, hide structural
-  let showStructural = $state(false);
-  let showSemantic = $state(true);
-
   // Filter edges before layout
-  let filteredEdges = $derived.by(() => {
-    return graph.edges.filter((edge) => {
+  const filteredEdgesMemo = new Memo(() => {
+    return graph.edges.filter((edge: Edge) => {
       if (structuralEdgeKinds.includes(edge.kind)) {
         return showStructural;
       }
@@ -47,21 +53,24 @@
       return true; // Unknown edge kinds default to visible
     });
   });
+  let filteredEdges = $derived(filteredEdgesMemo.current);
 
   // Create filtered graph for layout
-  let filteredGraph = $derived.by(() => ({
+  const filteredGraphMemo = new Memo(() => ({
     nodes: graph.nodes,
     edges: filteredEdges
   }));
+  let filteredGraph = $derived(filteredGraphMemo.current);
 
   // Edge counts for UI display
-  let edgeCounts = $derived.by(() => {
-    const structural = graph.edges.filter((e) => structuralEdgeKinds.includes(e.kind)).length;
-    const semantic = graph.edges.filter((e) => semanticEdgeKinds.includes(e.kind)).length;
+  const edgeCountsMemo = new Memo(() => {
+    const structural = graph.edges.filter((e: Edge) => structuralEdgeKinds.includes(e.kind)).length;
+    const semantic = graph.edges.filter((e: Edge) => semanticEdgeKinds.includes(e.kind)).length;
     const total = graph.edges.length;
     const visible = filteredEdges.length;
     return { structural, semantic, total, visible };
   });
+  let edgeCounts = $derived(edgeCountsMemo.current);
 
   const WIDTH = LAYOUT_WIDTH;
   const HEIGHT = LAYOUT_HEIGHT;
@@ -160,32 +169,18 @@
   }
 
   function resetView() {
-    animateUpdate(() => {
-      zoom = 1;
-      panX = 0;
-      panY = 0;
-      dragOffsets = {};
-    });
-  }
-
-  function animateUpdate(update: () => void) {
-    if (document.startViewTransition) {
-      document.startViewTransition(update);
-    } else {
-      update();
-    }
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    dragOffsets = {};
   }
 
   function zoomIn() {
-    animateUpdate(() => {
-      zoom = Math.min(MAX_ZOOM, zoom * 1.2);
-    });
+    zoom = Math.min(MAX_ZOOM, zoom * 1.2);
   }
 
   function zoomOut() {
-    animateUpdate(() => {
-      zoom = Math.max(MIN_ZOOM, zoom / 1.2);
-    });
+    zoom = Math.max(MIN_ZOOM, zoom / 1.2);
   }
 
   function getWorldPoint(e: MouseEvent): { x: number; y: number } {
@@ -260,20 +255,6 @@
     tooltipNode = null;
   }
 
-  const kindColors: Record<NodeKind, string> = {
-    Crate: '#e85d04',
-    Module: '#2d6a4f',
-    Struct: '#9d4edd',
-    Union: '#7b2cbf',
-    Enum: '#3a86ff',
-    Trait: '#06d6a0',
-    TraitAlias: '#0db39e',
-    Impl: '#8d99ae',
-    Function: '#f72585',
-    Method: '#b5179e',
-    TypeAlias: '#ff6d00'
-  };
-
   const edgeColors: Record<string, string> = {
     Contains: '#94a3b8',
     Defines: '#64748b',
@@ -317,7 +298,18 @@
   let hoveredNodeId = $state<string | null>(null);
   let hoveredEdgeIndex = $state<number | null>(null);
 
-  let visData = $derived(computeLayout(filteredGraph, selected, layoutMode));
+  const visDataMemo = new KeyedMemo(
+    () => keyOf(filteredGraph, selected.id, layoutMode),
+    () => {
+      const t0 = performance.now();
+      const result = computeLayout(filteredGraph, selected, layoutMode);
+      const dt = performance.now() - t0;
+      if (dt > 5) console.log(`[perf:derived] visData ${dt.toFixed(1)}ms`);
+      return result;
+    },
+    { equalsKey: keyEqual }
+  );
+  let visData = $derived(visDataMemo.current);
 
   let layoutNodes = $derived.by(() => visData.nodes);
 
@@ -366,15 +358,74 @@
     return name.slice(0, maxLen - 3) + '...';
   }
 
-  // Calculate label positions to avoid overlap
+  function docsUrlForNode(nodeId: string): string {
+    const parts = nodeId.split('::');
+    const crate = parts[0] ?? nodeId;
+    const path = parts.slice(1).join('/');
+    return path
+      ? `https://docs.rs/${crate}/latest/${crate}/${path.toLowerCase()}/`
+      : `https://docs.rs/${crate}/latest/${crate}/`;
+  }
+
+  function nodeLink(node: Node): { href: string; external: boolean } {
+    if (node.is_external) {
+      return { href: docsUrlForNode(node.id), external: true };
+    }
+    return { href: getNodeUrl(node.id), external: false };
+  }
+
+  // Precompute edge angle similarity groups (O(e log e) instead of O(e²))
+  let edgeSimilarityGroups = $derived.by(() => {
+    const t0 = performance.now();
+    const edges = visData.edges;
+    if (edges.length === 0) return new Map<number, { group: number[]; indexOf: number }>();
+
+    // Compute angle + direction for each edge
+    type EdgeAngle = { index: number; angle: number; direction: string };
+    const edgeAngles: EdgeAngle[] = edges.map((edge, i) => {
+      const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
+      const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
+      const dx = toNode.x - fromNode.x;
+      const dy = toNode.y - fromNode.y;
+      return { index: i, angle: Math.atan2(dy, dx), direction: edge.direction };
+    });
+
+    // Sort by direction then angle for efficient grouping
+    const sorted = [...edgeAngles].sort((a, b) => {
+      if (a.direction !== b.direction) return a.direction < b.direction ? -1 : 1;
+      return a.angle - b.angle;
+    });
+
+    // Group edges with similar angles (within 0.35 radians) and same direction
+    const result = new Map<number, { group: number[]; indexOf: number }>();
+    let groupStart = 0;
+    while (groupStart < sorted.length) {
+      const group: number[] = [sorted[groupStart].index];
+      let groupEnd = groupStart + 1;
+      while (groupEnd < sorted.length
+        && sorted[groupEnd].direction === sorted[groupStart].direction
+        && Math.abs(sorted[groupEnd].angle - sorted[groupStart].angle) < 0.35
+      ) {
+        group.push(sorted[groupEnd].index);
+        groupEnd++;
+      }
+      for (let k = 0; k < group.length; k++) {
+        result.set(group[k], { group, indexOf: k });
+      }
+      groupStart = groupEnd;
+    }
+
+    const dt = performance.now() - t0;
+    if (dt > 2) console.log(`[perf:derived] edgeSimilarityGroups ${dt.toFixed(1)}ms (${edges.length} edges)`);
+    return result;
+  });
+
+  // Calculate label position for an edge using precomputed groups
   function getLabelPosition(
     edge: VisEdge,
     edgeIndex: number,
-    allEdges: VisEdge[],
-    positionedNodeMap: Map<string, VisNode>,
     labelWidth: number
   ): { x: number; y: number; anchor: string } {
-    // Find the animated positions for this edge's nodes
     const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
     const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
 
@@ -383,7 +434,6 @@
     const edgeDx = endAnchor.x - startAnchor.x;
     const edgeDy = endAnchor.y - startAnchor.y;
     const len = Math.hypot(edgeDx, edgeDy);
-    const edgeAngle = Math.atan2(edgeDy, edgeDx);
 
     if (len === 0) {
       return { x: fromNode.x, y: fromNode.y, anchor: 'middle' };
@@ -401,36 +451,13 @@
     const perpX = -edgeDy / len;
     const perpY = edgeDx / len;
 
-    // Only offset if there are edges with SIMILAR angles (would actually overlap)
-    // Edges going in different directions don't need offsetting from each other
-    const similarEdges: number[] = [];
-    for (let i = 0; i < allEdges.length; i++) {
-      const other = allEdges[i];
-      // Must be same direction (in/out)
-      if (other.direction !== edge.direction) continue;
-
-      const otherFrom = positionedNodeMap.get(other.from.node.id) ?? other.from;
-      const otherTo = positionedNodeMap.get(other.to.node.id) ?? other.to;
-      const otherDx = otherTo.x - otherFrom.x;
-      const otherDy = otherTo.y - otherFrom.y;
-      const otherAngle = Math.atan2(otherDy, otherDx);
-
-      // Check if angles are similar (within ~20 degrees)
-      const angleDiff = Math.abs(edgeAngle - otherAngle);
-      const normalizedDiff = Math.min(angleDiff, Math.PI * 2 - angleDiff);
-      if (normalizedDiff < 0.35) {
-        similarEdges.push(i);
-      }
-    }
-
-    // Only apply offset if there are multiple edges with similar angles
-    const myIndex = similarEdges.indexOf(edgeIndex);
+    const similarity = edgeSimilarityGroups.get(edgeIndex);
     const lineGap = Math.hypot(endX - startX, endY - startY);
     const sizePenalty = Math.max(0, (labelWidth - lineGap) * 0.25);
     const baseOffset = 10 + sizePenalty;
     let crowdOffset = 0;
-    if (similarEdges.length > 1 && myIndex >= 0) {
-      crowdOffset = (myIndex - (similarEdges.length - 1) / 2) * 14;
+    if (similarity && similarity.group.length > 1) {
+      crowdOffset = (similarity.indexOf - (similarity.group.length - 1) / 2) * 14;
     }
 
     midX += perpX * (baseOffset + crowdOffset);
@@ -456,7 +483,7 @@
       <div class="flex items-center gap-1">
         <button
           type="button"
-          onclick={() => showStructural = !showStructural}
+          onclick={() => onToggleStructural?.()}
           class="px-2 py-1 text-xs rounded-[var(--radius-control)] corner-squircle border transition-colors {showStructural
             ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
             : 'bg-[var(--panel-solid)] text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel-strong)]'}"
@@ -466,7 +493,7 @@
         </button>
         <button
           type="button"
-          onclick={() => showSemantic = !showSemantic}
+          onclick={() => onToggleSemantic?.()}
           class="px-2 py-1 text-xs rounded-[var(--radius-control)] corner-squircle border transition-colors {showSemantic
             ? 'bg-[var(--accent)] text-white border-[var(--accent)]'
             : 'bg-[var(--panel-solid)] text-[var(--muted)] border-[var(--panel-border)] hover:bg-[var(--panel-strong)]'}"
@@ -627,7 +654,7 @@
         hoveredNodeId === edge.from.node.id ||
         hoveredNodeId === edge.to.node.id}
       {@const labelMetrics = getEdgeLabelMetrics(edge.kind, isHighlighted)}
-      {@const labelPos = getLabelPosition(edge, edgeIndex, visData.edges, positionedNodeMap, labelMetrics.width)}
+      {@const labelPos = getLabelPosition(edge, edgeIndex, labelMetrics.width)}
       <g
         class="transition-opacity duration-150"
         style="opacity: {hoveredNodeId && !isHighlighted ? 0.2 : 1}"
@@ -681,14 +708,19 @@
       {@const labelMetrics = getNodeLabelMetrics(nodeWidth, dims.isRect, visNode.isCenter)}
       {@const nodeLabel = truncateName(visNode.node.name, labelMetrics.maxChars)}
       {@const compressLabel = estimateLabelWidth(nodeLabel, labelMetrics.fontSize) > labelMetrics.maxWidth}
-      {@const viewTransitionName = `node-${visNode.node.id.replace(/[^a-zA-Z0-9]/g, '_')}`}
       {@const isDragging = dragNodeId === visNode.node.id}
-      <a href={getNodeUrl(visNode.node.id)} data-sveltekit-noscroll>
+      {@const link = nodeLink(visNode.node)}
+      <a
+        href={link.href}
+        data-sveltekit-noscroll={link.external ? undefined : true}
+        target={link.external ? '_blank' : undefined}
+        rel={link.external ? 'noopener noreferrer' : undefined}
+      >
       <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <g
         class="node cursor-grab"
         class:cursor-grabbing={isDragging}
-        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1}; view-transition-name: {viewTransitionName};{isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
+        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1};{isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
         onmousedown={(e) => startNodeDrag(visNode, e)}
         onclick={(e) => handleNodeClick(visNode.node, e)}
         onmouseenter={(e) => { hoveredNodeId = visNode.node.id; showTooltip(visNode, e); }}

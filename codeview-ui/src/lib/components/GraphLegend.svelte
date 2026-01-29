@@ -22,7 +22,7 @@
       {:else}
         {#each stats.kindCounts as entry (entry.kind)}
           <span
-            class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-1 text-xs font-semibold text-[var(--ink)]"
+            class="badge badge-solid badge-lg gap-2"
           >
             <span class="h-2.5 w-2.5 rounded-full" style={`background:${nodeColor(entry.kind)}`}></span>
             {kindLabels[entry.kind]}
@@ -54,9 +54,7 @@
     <p class="font-semibold text-[var(--ink)]">Confidence markers</p>
     <div class="mt-2 flex flex-wrap gap-3">
       {#each Object.entries(confidenceLabels) as [key, value] (key)}
-        <span class="rounded-[var(--radius-chip)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-1">
-          {value}
-        </span>
+        <span class="badge badge-solid badge-lg">{value}</span>
       {/each}
     </div>
   </div>

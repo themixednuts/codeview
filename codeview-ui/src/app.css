@@ -171,6 +171,34 @@
     color: var(--ink);
   }
 
+  .badge-solid {
+    background: var(--panel-solid);
+    color: var(--ink);
+  }
+
+  .badge-accent {
+    background: var(--accent);
+    border-color: transparent;
+    color: #ffffff;
+  }
+
+  .badge-filled {
+    border-color: transparent;
+    color: #ffffff;
+  }
+
+  .badge-sm {
+    padding: 0.1rem 0.4rem;
+  }
+
+  .badge-lg {
+    padding: 0.25rem 0.75rem;
+  }
+
+  .badge-code {
+    font-family: var(--font-code);
+  }
+
   .token-name {
     font-family: var(--font-code);
     font-weight: 600;

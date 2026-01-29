@@ -4,14 +4,22 @@
   import { page } from '$app/state';
   import { browser } from '$app/environment';
   import { getSource } from '$lib/source.remote';
+  import { Memo } from '$lib/reactivity.svelte';
+  import { getContext } from 'svelte';
   import CodeBlock from './CodeBlock.svelte';
   let {
     span,
-    theme = 'light'
+    theme = 'light',
+    crateName,
+    crateVersion
   } = $props<{
     span: Span;
     theme?: 'dark' | 'light';
+    crateName?: string;
+    crateVersion?: string;
   }>();
+  const isHosted = $derived(getContext<() => boolean>('isHosted')?.() ?? false);
+
 
   let source = $state<{ error: string | null; content: string | null } | null>(null);
   let loading = $state(false);
@@ -22,6 +30,12 @@
   const isOpen = $derived(browser && page.state?.sourceSpanKey === spanKey);
 
   async function open() {
+    if (isHosted && crateName) {
+      const targetVersion = crateVersion ?? 'latest';
+      const url = docsSourceUrl(crateName, targetVersion, span.file);
+      window.open(url, '_blank', 'noopener,noreferrer');
+      return;
+    }
     if (!source) {
       loading = true;
       try {
@@ -46,13 +60,14 @@
     if (e.key === 'Escape') close();
   }
 
-  const highlightRange = $derived.by(() => {
+  const highlightRangeMemo = new Memo(() => {
     const start = span.line;
     const end = span.end_line ?? span.line;
     const lines: number[] = [];
     for (let i = start; i <= end; i++) lines.push(i);
     return lines;
   });
+  const highlightRange = $derived(highlightRangeMemo.current);
 
   // Auto-fetch source when state opens this modal
   $effect(() => {
@@ -83,6 +98,12 @@
     if (file.endsWith('.toml')) return 'toml';
     if (file.endsWith('.json')) return 'json';
     return 'text';
+  }
+
+  function docsSourceUrl(crate: string, version: string, file: string): string {
+    const cleaned = file.replace(/^\.\/+/, '');
+    const path = cleaned.startsWith('src/') ? cleaned : `src/${cleaned}`;
+    return `https://docs.rs/${crate}/${version}/src/${crate}/${path}.html`;
   }
 </script>
 

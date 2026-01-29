@@ -101,18 +101,27 @@ export function getEdgeAnchor(fromNode: VisNode, toNode: VisNode): { x: number; 
 }
 
 export function computeLayout(graph: Graph, selected: Node, mode: LayoutMode): { nodes: VisNode[]; edges: VisEdge[] } {
+  const t0 = performance.now();
+  let result: { nodes: VisNode[]; edges: VisEdge[] };
   switch (mode) {
     case 'ego':
-      return computeEgoLayout(graph, selected);
+      result = computeEgoLayout(graph, selected);
+      break;
     case 'force':
-      return computeForceLayout(graph, selected);
+      result = computeForceLayout(graph, selected);
+      break;
     case 'hierarchical':
-      return computeHierarchicalLayout(graph, selected);
+      result = computeHierarchicalLayout(graph, selected);
+      break;
     case 'radial':
-      return computeRadialLayout(graph, selected);
+      result = computeRadialLayout(graph, selected);
+      break;
     default:
-      return computeEgoLayout(graph, selected);
+      result = computeEgoLayout(graph, selected);
   }
+  const dt = performance.now() - t0;
+  console.log(`[perf:layout] ${mode} ${dt.toFixed(1)}ms (${graph.nodes.length}n ${graph.edges.length}e → ${result.nodes.length}n ${result.edges.length}e)`);
+  return result;
 }
 
 function computeEgoLayout(graph: Graph, selected: Node): { nodes: VisNode[]; edges: VisEdge[] } {

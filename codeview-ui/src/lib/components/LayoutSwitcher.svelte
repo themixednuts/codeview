@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { Memo } from '$lib/reactivity.svelte';
+
   export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
   interface Props {
@@ -22,7 +24,7 @@
     radial: null
   });
 
-  let indicatorStyle = $derived.by(() => {
+  const indicatorStyleMemo = new Memo(() => {
     const btn = buttonRefs[mode];
     if (!btn) return { left: 0, width: 0 };
     return {
@@ -30,6 +32,7 @@
       width: btn.offsetWidth
     };
   });
+  let indicatorStyle = $derived(indicatorStyleMemo.current);
 
   function handleModeChange(newMode: LayoutMode) {
     if (newMode === mode) return;
@@ -55,7 +58,7 @@
     <button
       bind:this={buttonRefs[layout.id]}
       type="button"
-      class="relative z-10 rounded-[var(--radius-chip)] corner-squircle px-3 py-1 text-xs font-medium transition-colors {mode === layout.id
+      class="relative z-10 badge badge-lg bg-transparent border-transparent text-xs transition-colors {mode === layout.id
         ? 'text-white'
         : 'text-[var(--muted)] hover:text-[var(--ink)]'}"
       onclick={() => handleModeChange(layout.id)}
