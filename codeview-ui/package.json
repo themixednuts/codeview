@@ -6,9 +6,13 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "bunx svelte-check --tsconfig ./tsconfig.json"
+    "check": "bunx svelte-check --tsconfig ./tsconfig.json",
+    "db:generate": "bunx drizzle-kit generate",
+    "db:studio": "bunx drizzle-kit studio",
+    "cf:types": "bunx wrangler types src/cloudflare.d.ts"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260128.0",
     "@eslym/sveltekit-adapter-bun": "^2.0.5",
     "@jesterkit/exe-sveltekit": "^0.1.7",
     "@sveltejs/adapter-node": "^5.5.2",
@@ -19,14 +23,17 @@
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^25.0.10",
     "@typescript-eslint/types": "^8.53.1",
+    "drizzle-kit": "^1.0.0-beta.12-a5629fb",
     "svelte": "^5.48.2",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
-    "vite": "^7.3.1"
+    "vite": "^7.3.1",
+    "wrangler": "^4.61.1"
   },
   "dependencies": {
     "@shikijs/transformers": "^3.21.0",
     "d3-force": "^3.0.0",
+    "drizzle-orm": "^1.0.0-beta.12-a5629fb",
     "markdown-it": "^14.1.0",
     "shiki": "^3.21.0",
     "valibot": "^1.2.0"
