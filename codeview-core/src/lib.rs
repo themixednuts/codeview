@@ -1,12 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+/// Current graph schema version.
+pub const SCHEMA_VERSION: u32 = 1;
+
+/// Top-level workspace: per-crate graphs with cross-crate edges.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Graph {
-    pub nodes: Vec<Node>,
-    pub edges: Vec<Edge>,
-    /// Crate name → version string (e.g. "drizzle_core" → "0.1.4")
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub crate_versions: std::collections::HashMap<String, String>,
+pub struct Workspace {
+    #[serde(default = "default_version")]
+    pub version: u32,
+    /// Workspace member crates (fully analyzed)
+    pub crates: Vec<CrateGraph>,
+    /// External crate stubs (referenced but not analyzed)
+    pub external_crates: Vec<ExternalCrate>,
+    /// Edges that cross crate boundaries (from_crate != to_crate)
+    pub cross_crate_edges: Vec<Edge>,
     /// GitHub repository (e.g. "owner/repo") for source fetching on Cloudflare
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
@@ -15,14 +22,49 @@ pub struct Graph {
     pub ref_: Option<String>,
 }
 
+/// A single crate's graph data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrateGraph {
+    /// Crate identifier (e.g. "drizzle_core")
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Crate version string
+    pub version: String,
+    /// All nodes belonging to this crate
+    pub nodes: Vec<Node>,
+    /// Internal edges (both from+to within this crate)
+    pub edges: Vec<Edge>,
+}
+
+/// Stub for an external crate referenced by workspace crates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalCrate {
+    /// Crate identifier (e.g. "std")
+    pub id: String,
+    /// Display name
+    pub name: String,
+    /// Stub nodes for external items referenced by workspace crates
+    pub nodes: Vec<Node>,
+}
+
+const fn default_version() -> u32 {
+    SCHEMA_VERSION
+}
+
+/// Internal flat graph used during per-crate graph building.
+/// Not serialized to the output format.
+#[derive(Debug, Clone)]
+pub struct Graph {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<Edge>,
+}
+
 impl Graph {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
-            crate_versions: std::collections::HashMap::new(),
-            repo: None,
-            ref_: None,
         }
     }
 
@@ -60,10 +102,16 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generics: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub where_clause: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub docs: Option<String>,
     /// Resolved intra-doc links: maps link text (e.g., "Vec") to node ID (e.g., "std::vec::Vec")
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub doc_links: std::collections::HashMap<String, String>,
+    /// Resolved trait bound links from generics/where clauses:
+    /// maps display name (e.g., "Clone") to node ID (e.g., "core::clone::Clone")
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub bound_links: std::collections::HashMap<String, String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impl_type: Option<ImplType>,
     /// For methods: the ID of the parent impl block
@@ -168,102 +216,4 @@ pub enum Confidence {
     Static,
     Runtime,
     Inferred,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MermaidKind {
-    Flow,
-    Class,
-}
-
-pub fn export_mermaid(graph: &Graph, kind: MermaidKind) -> String {
-    match kind {
-        MermaidKind::Flow => export_mermaid_flow(graph),
-        MermaidKind::Class => export_mermaid_class(graph),
-    }
-}
-
-fn export_mermaid_flow(graph: &Graph) -> String {
-    let mut lines = Vec::new();
-    lines.push("graph TD".to_string());
-
-    for node in &graph.nodes {
-        let node_id = mermaid_id(&node.id);
-        let label = mermaid_label(&node.name);
-        lines.push(format!("    {node_id}[\"{label}\"]"));
-    }
-
-    for edge in &graph.edges {
-        let from = mermaid_id(&edge.from);
-        let to = mermaid_id(&edge.to);
-        let label = edge_label(edge.kind);
-        lines.push(format!("    {from} -->|{label}| {to}"));
-    }
-
-    lines.join("\n")
-}
-
-fn export_mermaid_class(graph: &Graph) -> String {
-    let mut lines = Vec::new();
-    lines.push("classDiagram".to_string());
-
-    for node in &graph.nodes {
-        match node.kind {
-            NodeKind::Struct
-            | NodeKind::Union
-            | NodeKind::Enum
-            | NodeKind::Trait
-            | NodeKind::TraitAlias
-            | NodeKind::TypeAlias => {
-                let node_id = mermaid_id(&node.id);
-                lines.push(format!("    class {node_id} {{ }}"));
-            }
-            _ => {}
-        }
-    }
-
-    for edge in &graph.edges {
-        let from = mermaid_id(&edge.from);
-        let to = mermaid_id(&edge.to);
-        match edge.kind {
-            EdgeKind::Implements => lines.push(format!("    {from} ..|> {to}")),
-            EdgeKind::UsesType => lines.push(format!("    {from} --> {to}")),
-            _ => {}
-        }
-    }
-
-    lines.join("\n")
-}
-
-fn mermaid_id(raw: &str) -> String {
-    let mut id = String::with_capacity(raw.len());
-    for ch in raw.chars() {
-        if ch.is_ascii_alphanumeric() {
-            id.push(ch);
-        } else {
-            id.push('_');
-        }
-    }
-    if id.is_empty() {
-        "node".to_string()
-    } else {
-        id
-    }
-}
-
-fn mermaid_label(raw: &str) -> String {
-    raw.replace('"', "\\\"")
-}
-
-fn edge_label(kind: EdgeKind) -> &'static str {
-    match kind {
-        EdgeKind::Contains => "contains",
-        EdgeKind::Defines => "defines",
-        EdgeKind::Implements => "implements",
-        EdgeKind::UsesType => "uses",
-        EdgeKind::CallsStatic => "calls",
-        EdgeKind::CallsRuntime => "calls_runtime",
-        EdgeKind::Derives => "derives",
-        EdgeKind::ReExports => "re-exports",
-    }
 }
