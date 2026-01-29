@@ -1,12 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use codeview_core::{Graph, MermaidKind, export_mermaid};
 use codeview_rustdoc::{CallMode, generate_workspace_rustdoc_json, load_workspace_graph};
+use serde::{Deserialize, Serialize};
 
 const SIDECAR: &[u8] = include_bytes!(env!("SIDECAR_PATH"));
 
@@ -27,6 +27,12 @@ enum Commands {
         /// Port for UI server (OS assigns one if not specified)
         #[arg(long)]
         port: Option<u16>,
+        /// Open the browser automatically
+        #[arg(long)]
+        open: bool,
+        /// Show cargo rustdoc output and detailed progress
+        #[arg(long, short)]
+        verbose: bool,
         /// Serve a pre-built graph.json instead of analyzing
         #[arg(long)]
         graph: Option<PathBuf>,
@@ -36,39 +42,38 @@ enum Commands {
         #[arg(last = true)]
         cargo_args: Vec<String>,
     },
+    /// List running codeview server instances
+    Ps,
     /// Analyze without opening UI (just generate graph.json)
     Analyze {
         #[arg(long)]
         manifest_path: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Show cargo rustdoc output and detailed progress
+        #[arg(long, short)]
+        verbose: bool,
         #[arg(long, value_enum, default_value = "strict")]
         call_mode: CallModeArg,
         /// Extra arguments to pass to cargo rustdoc (e.g. --all-features, --features "uuid")
         #[arg(last = true)]
         cargo_args: Vec<String>,
     },
-    /// Export graph to other formats
-    Export {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long, value_enum, default_value = "mermaid-flow")]
-        format: ExportFormat,
-        #[arg(long)]
-        out: PathBuf,
-    },
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum)]
-enum ExportFormat {
-    MermaidFlow,
-    MermaidClass,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum CallModeArg {
     Strict,
     Ambiguous,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Instance {
+    pid: u32,
+    port: u16,
+    url: String,
+    workspace: Option<String>,
+    graph: String,
 }
 
 fn main() -> Result<()> {
@@ -78,6 +83,8 @@ fn main() -> Result<()> {
         Commands::Ui {
             path,
             port,
+            open,
+            verbose,
             graph,
             call_mode,
             cargo_args,
@@ -85,7 +92,7 @@ fn main() -> Result<()> {
             // If --graph is provided, just serve that directly
             if let Some(graph_path) = graph {
                 let workspace_root = workspace_root_from_graph(&graph_path);
-                return serve_ui(port, graph_path, workspace_root);
+                return serve_ui(port, open, verbose, graph_path, workspace_root);
             }
 
             // Otherwise, analyze the workspace first
@@ -99,17 +106,18 @@ fn main() -> Result<()> {
                 anyhow::bail!("No Cargo.toml found at {}", manifest_path.display());
             }
 
-            let graph_path = analyze_workspace(&manifest_path, call_mode, &cargo_args)?;
+            let graph_path = analyze_workspace(&manifest_path, call_mode, &cargo_args, verbose)?;
             let workspace_root = manifest_path.parent().map(|p| p.to_path_buf());
-            serve_ui(port, graph_path, workspace_root)
+            serve_ui(port, open, verbose, graph_path, workspace_root)
         }
+        Commands::Ps => list_instances(),
         Commands::Analyze {
             manifest_path,
             out,
+            verbose,
             call_mode,
             cargo_args,
-        } => analyze(manifest_path, out, call_mode, cargo_args),
-        Commands::Export { input, format, out } => export_graph(input, format, out),
+        } => analyze(manifest_path, out, verbose, call_mode, cargo_args),
     }
 }
 
@@ -118,64 +126,114 @@ fn analyze_workspace(
     manifest_path: &Path,
     call_mode: CallModeArg,
     cargo_args: &[String],
+    verbose: bool,
 ) -> Result<PathBuf> {
-    let rustdoc_jsons = generate_workspace_rustdoc_json(manifest_path, cargo_args)?;
+    let rustdoc_jsons = generate_workspace_rustdoc_json(manifest_path, cargo_args, verbose)?;
     if rustdoc_jsons.is_empty() {
         anyhow::bail!("No crates were successfully documented");
     }
 
-    eprintln!("Merging {} crate graphs...", rustdoc_jsons.len());
+    if verbose {
+        eprintln!("Merging {} crate graphs...", rustdoc_jsons.len());
+    }
 
-    let graph = load_workspace_graph(&rustdoc_jsons, manifest_path, call_mode.into())?;
+    let workspace = load_workspace_graph(&rustdoc_jsons, manifest_path, call_mode.into())?;
 
-    eprintln!(
-        "Generated graph with {} nodes and {} edges",
-        graph.nodes.len(),
-        graph.edges.len()
-    );
+    if verbose {
+        let total_nodes: usize = workspace
+            .crates
+            .iter()
+            .map(|c| c.nodes.len())
+            .sum::<usize>()
+            + workspace
+                .external_crates
+                .iter()
+                .map(|c| c.nodes.len())
+                .sum::<usize>();
+        let total_edges: usize = workspace
+            .crates
+            .iter()
+            .map(|c| c.edges.len())
+            .sum::<usize>()
+            + workspace.cross_crate_edges.len();
+
+        eprintln!(
+            "Generated workspace with {} crates, {} external crates, {} nodes, {} edges",
+            workspace.crates.len(),
+            workspace.external_crates.len(),
+            total_nodes,
+            total_edges,
+        );
+    }
 
     let out_path = default_graph_path(&rustdoc_jsons[0].json_path);
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create output dir {}", parent.display()))?;
     }
-    let json = serde_json::to_string_pretty(&graph)?;
+    let json = serde_json::to_string_pretty(&workspace)?;
     fs::write(&out_path, &json)
         .with_context(|| format!("failed to write graph to {}", out_path.display()))?;
 
-    eprintln!("Wrote graph to {}", out_path.display());
+    if verbose {
+        eprintln!("Wrote graph to {}", out_path.display());
+    }
     Ok(out_path)
 }
 
 fn analyze(
     manifest_path: Option<PathBuf>,
     out: Option<PathBuf>,
+    verbose: bool,
     call_mode: CallModeArg,
     cargo_args: Vec<String>,
 ) -> Result<()> {
     let manifest_path = manifest_path.unwrap_or_else(|| PathBuf::from("Cargo.toml"));
 
-    let rustdoc_jsons = generate_workspace_rustdoc_json(&manifest_path, &cargo_args)?;
+    let rustdoc_jsons = generate_workspace_rustdoc_json(&manifest_path, &cargo_args, verbose)?;
     if rustdoc_jsons.is_empty() {
         anyhow::bail!("No crates were successfully documented");
     }
 
-    eprintln!("Merging {} crate graphs...", rustdoc_jsons.len());
+    if verbose {
+        eprintln!("Merging {} crate graphs...", rustdoc_jsons.len());
+    }
 
-    let graph = load_workspace_graph(&rustdoc_jsons, &manifest_path, call_mode.into())?;
+    let workspace = load_workspace_graph(&rustdoc_jsons, &manifest_path, call_mode.into())?;
 
-    eprintln!(
-        "Generated graph with {} nodes and {} edges",
-        graph.nodes.len(),
-        graph.edges.len()
-    );
+    if verbose {
+        let total_nodes: usize = workspace
+            .crates
+            .iter()
+            .map(|c| c.nodes.len())
+            .sum::<usize>()
+            + workspace
+                .external_crates
+                .iter()
+                .map(|c| c.nodes.len())
+                .sum::<usize>();
+        let total_edges: usize = workspace
+            .crates
+            .iter()
+            .map(|c| c.edges.len())
+            .sum::<usize>()
+            + workspace.cross_crate_edges.len();
+
+        eprintln!(
+            "Generated workspace with {} crates, {} external crates, {} nodes, {} edges",
+            workspace.crates.len(),
+            workspace.external_crates.len(),
+            total_nodes,
+            total_edges,
+        );
+    }
 
     let out_path = out.unwrap_or_else(|| default_graph_path(&rustdoc_jsons[0].json_path));
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create output dir {}", parent.display()))?;
     }
-    let json = serde_json::to_string_pretty(&graph)?;
+    let json = serde_json::to_string_pretty(&workspace)?;
     fs::write(&out_path, json)
         .with_context(|| format!("failed to write graph to {}", out_path.display()))?;
 
@@ -190,25 +248,6 @@ impl From<CallModeArg> for CallMode {
             CallModeArg::Ambiguous => CallMode::Ambiguous,
         }
     }
-}
-
-fn export_graph(input: PathBuf, format: ExportFormat, out: PathBuf) -> Result<()> {
-    let content = fs::read_to_string(&input)
-        .with_context(|| format!("failed to read graph json {}", input.display()))?;
-    let graph: Graph = serde_json::from_str(&content)?;
-    let output = match format {
-        ExportFormat::MermaidFlow => export_mermaid(&graph, MermaidKind::Flow),
-        ExportFormat::MermaidClass => export_mermaid(&graph, MermaidKind::Class),
-    };
-
-    if let Some(parent) = out.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
-    }
-    fs::write(&out, output)
-        .with_context(|| format!("failed to write export to {}", out.display()))?;
-
-    Ok(())
 }
 
 fn default_graph_path(rustdoc_json: &Path) -> PathBuf {
@@ -230,7 +269,7 @@ fn workspace_root_from_graph(graph_path: &Path) -> Option<PathBuf> {
         .ok()?
         .parent()? // codeview/
         .parent()? // target/
-        .parent()  // workspace root
+        .parent() // workspace root
         .map(|p| p.to_path_buf())
 }
 
@@ -250,13 +289,116 @@ fn resolve_port(preferred: Option<u16>) -> u16 {
         .unwrap_or(4173)
 }
 
-fn serve_ui(port: Option<u16>, graph_path: PathBuf, workspace_root: Option<PathBuf>) -> Result<()> {
+fn instances_dir() -> PathBuf {
+    std::env::temp_dir().join("codeview-instances")
+}
+
+fn register_instance(instance: &Instance) {
+    let dir = instances_dir();
+    let _ = fs::create_dir_all(&dir);
+    let path = dir.join(format!("{}.json", instance.pid));
+    let _ = fs::write(path, serde_json::to_string(instance).unwrap_or_default());
+}
+
+fn unregister_instance(pid: u32) {
+    let path = instances_dir().join(format!("{pid}.json"));
+    let _ = fs::remove_file(path);
+}
+
+fn is_process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+            fn GetExitCodeProcess(handle: *mut c_void, code: *mut u32) -> i32;
+        }
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code: u32 = 0;
+            let ok = GetExitCodeProcess(handle, &mut code);
+            CloseHandle(handle);
+            ok != 0 && code == STILL_ACTIVE
+        }
+    }
+    #[cfg(unix)]
+    {
+        // kill(pid, 0) checks existence without sending a signal
+        unsafe { libc::kill(pid as i32, 0) == 0 }
+    }
+}
+
+fn list_instances() -> Result<()> {
+    let dir = instances_dir();
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => {
+            println!("No running instances.");
+            return Ok(());
+        }
+    };
+
+    let mut found = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "json") {
+            let data = match fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let inst: Instance = match serde_json::from_str(&data) {
+                Ok(i) => i,
+                Err(_) => {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                }
+            };
+            if !is_process_alive(inst.pid) {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            if !found {
+                println!("{:<8} {:<8} {:<30} WORKSPACE", "PID", "PORT", "URL");
+                found = true;
+            }
+            println!(
+                "{:<8} {:<8} {:<30} {}",
+                inst.pid,
+                inst.port,
+                inst.url,
+                inst.workspace.as_deref().unwrap_or("-"),
+            );
+        }
+    }
+
+    if !found {
+        println!("No running instances.");
+    }
+
+    Ok(())
+}
+
+fn serve_ui(
+    port: Option<u16>,
+    open: bool,
+    verbose: bool,
+    graph_path: PathBuf,
+    workspace_root: Option<PathBuf>,
+) -> Result<()> {
     use std::process::Command;
 
     let port = resolve_port(port);
+    let pid = std::process::id();
 
-    // Extract sidecar to a persistent temp location
-    let temp_dir = std::env::temp_dir().join("codeview");
+    // Extract sidecar to a per-instance temp location so multiple instances can coexist
+    let temp_dir = std::env::temp_dir().join(format!("codeview-{pid}"));
     fs::create_dir_all(&temp_dir)?;
 
     let sidecar_path = temp_dir.join(sidecar_name());
@@ -275,21 +417,57 @@ fn serve_ui(port: Option<u16>, graph_path: PathBuf, workspace_root: Option<PathB
 
     if let Some(root) = &workspace_root {
         cmd.env("CODEVIEW_WORKSPACE", root);
-        eprintln!("Workspace root: {}", root.display());
+        if verbose {
+            eprintln!("Workspace root: {}", root.display());
+        }
     }
 
-    let canonical = graph_path.canonicalize().unwrap_or_else(|_| graph_path.clone());
+    let canonical = graph_path
+        .canonicalize()
+        .unwrap_or_else(|_| graph_path.clone());
     cmd.env("CODEVIEW_GRAPH", &canonical);
-    eprintln!("Graph: {}", canonical.display());
+    if verbose {
+        eprintln!("Graph: {}", canonical.display());
+    }
+
+    // On Unix, use pre_exec to tell the child to receive SIGKILL when the
+    // parent dies. This must be set before spawn.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                // PR_SET_PDEATHSIG = 1; SIGKILL = 9
+                libc::prctl(1, 9);
+                Ok(())
+            });
+        }
+    }
 
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn sidecar at {}", sidecar_path.display()))?;
 
+    // On Windows, use a Job Object so the child is killed when the CLI exits.
+    #[cfg(windows)]
+    {
+        if let Err(err) = assign_child_to_job(&child) {
+            eprintln!("Warning: could not tie server lifetime to CLI: {err}");
+        }
+    }
+
     let url = format!("http://127.0.0.1:{port}");
     eprintln!("Codeview UI running at {url}");
 
-    if let Err(err) = open::that(&url) {
+    register_instance(&Instance {
+        pid,
+        port,
+        url: url.clone(),
+        workspace: workspace_root.as_ref().map(|p| p.display().to_string()),
+        graph: canonical.display().to_string(),
+    });
+
+    if open && let Err(err) = open::that(&url) {
         eprintln!("Failed to open browser: {err}");
         eprintln!("Please open {url} manually");
     }
@@ -304,6 +482,8 @@ fn serve_ui(port: Option<u16>, graph_path: PathBuf, workspace_root: Option<PathB
     while running.load(Ordering::SeqCst) {
         match child.try_wait() {
             Ok(Some(status)) => {
+                unregister_instance(pid);
+                cleanup_temp(&temp_dir);
                 if !status.success() {
                     anyhow::bail!("sidecar exited with status {status}");
                 }
@@ -321,6 +501,104 @@ fn serve_ui(port: Option<u16>, graph_path: PathBuf, workspace_root: Option<PathB
     eprintln!("\nShutting down...");
     let _ = child.kill();
     let _ = child.wait();
+    unregister_instance(pid);
+    cleanup_temp(&temp_dir);
+    Ok(())
+}
+
+fn cleanup_temp(dir: &Path) {
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// On Windows, assign the child process to a Job Object configured to kill
+/// all processes when the last handle closes (i.e. when the CLI exits, even
+/// if killed unexpectedly). This prevents orphaned server processes.
+#[cfg(windows)]
+fn assign_child_to_job(child: &std::process::Child) -> Result<()> {
+    use std::mem;
+    use std::os::windows::io::AsRawHandle;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn CreateJobObjectW(
+            lpJobAttributes: *mut std::ffi::c_void,
+            lpName: *const u16,
+        ) -> *mut std::ffi::c_void;
+        fn SetInformationJobObject(
+            hJob: *mut std::ffi::c_void,
+            JobObjectInformationClass: u32,
+            lpJobObjectInformation: *const std::ffi::c_void,
+            cbJobObjectInformationLength: u32,
+        ) -> i32;
+        fn AssignProcessToJobObject(
+            hJob: *mut std::ffi::c_void,
+            hProcess: *mut std::ffi::c_void,
+        ) -> i32;
+    }
+
+    // JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+    const JOB_OBJECT_INFO_CLASS_EXTENDED: u32 = 9;
+
+    #[repr(C)]
+    struct IoCounters {
+        _data: [u64; 6],
+    }
+
+    #[repr(C)]
+    struct BasicLimitInformation {
+        _per_process_user_time: i64,
+        _per_job_user_time: i64,
+        limit_flags: u32,
+        _min_working_set: usize,
+        _max_working_set: usize,
+        _active_process_limit: u32,
+        _affinity: usize,
+        _priority_class: u32,
+        _scheduling_class: u32,
+    }
+
+    #[repr(C)]
+    struct ExtendedLimitInformation {
+        basic: BasicLimitInformation,
+        _io: IoCounters,
+        _process_memory_limit: usize,
+        _job_memory_limit: usize,
+        _peak_process_memory_used: usize,
+        _peak_job_memory_used: usize,
+    }
+
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+        if job.is_null() {
+            anyhow::bail!("CreateJobObjectW failed");
+        }
+
+        let mut info: ExtendedLimitInformation = mem::zeroed();
+        info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        let ret = SetInformationJobObject(
+            job,
+            JOB_OBJECT_INFO_CLASS_EXTENDED,
+            &info as *const _ as *const std::ffi::c_void,
+            mem::size_of::<ExtendedLimitInformation>() as u32,
+        );
+        if ret == 0 {
+            anyhow::bail!("SetInformationJobObject failed");
+        }
+
+        let handle = child.as_raw_handle();
+        let ret = AssignProcessToJobObject(job, handle);
+        if ret == 0 {
+            anyhow::bail!("AssignProcessToJobObject failed");
+        }
+
+        // Keep the job handle alive for the lifetime of the process. When
+        // the CLI exits, Windows closes the handle and kills all job processes.
+        static JOB_HANDLE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        JOB_HANDLE.get_or_init(|| job as usize);
+    }
+
     Ok(())
 }
 

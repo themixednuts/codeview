@@ -9,9 +9,18 @@ fn main() {
 
     // Rebuild when UI source changes
     println!("cargo:rerun-if-changed={}", ui_dir.join("src").display());
-    println!("cargo:rerun-if-changed={}", ui_dir.join("package.json").display());
-    println!("cargo:rerun-if-changed={}", ui_dir.join("svelte.config.js").display());
-    println!("cargo:rerun-if-changed={}", ui_dir.join("vite.config.ts").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        ui_dir.join("package.json").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        ui_dir.join("svelte.config.js").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        ui_dir.join("vite.config.ts").display()
+    );
 
     // @jesterkit/exe-sveltekit builds directly to dist/codeview-server
     // It handles cross-compilation via EXE_TARGET env var
@@ -59,11 +68,7 @@ fn main() {
         panic!("Built binary not found at {}", built_path.display());
     }
 
-    std::fs::copy(&built_path, &sidecar_path)
-        .expect("failed to copy sidecar binary");
+    std::fs::copy(&built_path, &sidecar_path).expect("failed to copy sidecar binary");
 
-    println!(
-        "cargo:rustc-env=SIDECAR_PATH={}",
-        sidecar_path.display()
-    );
+    println!("cargo:rustc-env=SIDECAR_PATH={}", sidecar_path.display());
 }
