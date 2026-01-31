@@ -3,27 +3,21 @@
   import { getCrates, getTopCrates, searchRegistry } from '$lib/graph.remote';
   import { cached } from '$lib/query-cache.svelte';
 
-  const workspaceCratesQuery = cached('workspaceCrates', getCrates());
-  const topCratesQuery = cached('topCrates', getTopCrates());
-
   const workspaceCrates = $derived(
-    (workspaceCratesQuery.current ?? []).map((crate) => ({
+    (await cached('workspaceCrates', getCrates())).map((crate) => ({
       id: crate.id,
       name: crate.name,
       version: crate.version
     }))
   );
   const topCrates = $derived(
-    (topCratesQuery.current ?? []).map((crate) => ({
+    (await cached('topCrates', getTopCrates())).map((crate) => ({
       id: crate.name,
       name: crate.name,
       version: crate.version,
       description: crate.description
     }))
   );
-  const cratesLoading = $derived(topCratesQuery.loading);
-  const hasWorkspaceCrates = $derived(workspaceCrates.length > 0);
-  const hasTopCrates = $derived(topCrates.length > 0);
 
   let searchInput = $state('');
   const searchTerm = $derived(searchInput.trim());
@@ -142,73 +136,77 @@
       </div>
     </section>
 
-    {#if hasWorkspaceCrates}
-      <section id="workspace-crates" class="space-y-4">
-        <div>
-          <h2 class="text-2xl font-semibold text-[var(--ink)]">Workspace</h2>
-          <p class="text-sm text-[var(--muted)]">Crates from your local workspace.</p>
-        </div>
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {#each workspaceCrates as crate (crate.id)}
-            <a
-              href={`/${crate.id}/${crate.version}`}
-              class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-4 shadow-[var(--shadow-soft)] transition hover:-translate-y-0.5"
-            >
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-sm font-semibold text-[var(--ink)]">{crate.name}</span>
-                <span class="badge">{crate.version}</span>
-              </div>
-              <p class="mt-2 text-xs text-[var(--muted)]">
-                Open the crate overview and navigate relationships.
-              </p>
-            </a>
-          {/each}
-        </div>
-      </section>
-    {/if}
-
-    <section id="crates" class="space-y-4">
-      <div>
-        <h2 class="text-2xl font-semibold text-[var(--ink)]">Popular Crates</h2>
-        <p class="text-sm text-[var(--muted)]">Pick a crate to open its graph.</p>
-      </div>
-      {#if hasTopCrates}
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {#each topCrates as crate (crate.id)}
-            <a
-              href={`/${crate.id}/${crate.version}`}
-              class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-4 shadow-[var(--shadow-soft)] transition hover:-translate-y-0.5"
-            >
-              <div class="flex items-center justify-between gap-3">
-                <span class="text-sm font-semibold text-[var(--ink)]">{crate.name}</span>
-                <span class="badge">{crate.version}</span>
-              </div>
-              {#if crate.description}
-                <p class="mt-2 text-xs text-[var(--muted)]">{crate.description}</p>
-              {:else}
+    <svelte:boundary>
+      {#if workspaceCrates.length > 0}
+        <section id="workspace-crates" class="space-y-4">
+          <div>
+            <h2 class="text-2xl font-semibold text-[var(--ink)]">Workspace</h2>
+            <p class="text-sm text-[var(--muted)]">Crates from your local workspace.</p>
+          </div>
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {#each workspaceCrates as crate (crate.id)}
+              <a
+                href={`/${crate.id}/${crate.version}`}
+                class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-4 shadow-[var(--shadow-soft)] transition hover:-translate-y-0.5"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-sm font-semibold text-[var(--ink)]">{crate.name}</span>
+                  <span class="badge">{crate.version}</span>
+                </div>
                 <p class="mt-2 text-xs text-[var(--muted)]">
                   Open the crate overview and navigate relationships.
                 </p>
-              {/if}
-            </a>
-          {/each}
+              </a>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
+      <section id="crates" class="space-y-4">
+        <div>
+          <h2 class="text-2xl font-semibold text-[var(--ink)]">Popular Crates</h2>
+          <p class="text-sm text-[var(--muted)]">Pick a crate to open its graph.</p>
         </div>
-      {:else if cratesLoading}
+        {#if topCrates.length > 0}
+          <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {#each topCrates as crate (crate.id)}
+              <a
+                href={`/${crate.id}/${crate.version}`}
+                class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-4 shadow-[var(--shadow-soft)] transition hover:-translate-y-0.5"
+              >
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-sm font-semibold text-[var(--ink)]">{crate.name}</span>
+                  <span class="badge">{crate.version}</span>
+                </div>
+                {#if crate.description}
+                  <p class="mt-2 text-xs text-[var(--muted)]">{crate.description}</p>
+                {:else}
+                  <p class="mt-2 text-xs text-[var(--muted)]">
+                    Open the crate overview and navigate relationships.
+                  </p>
+                {/if}
+              </a>
+            {/each}
+          </div>
+        {:else}
+          <div
+            class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6"
+          >
+            <p class="text-sm font-semibold text-[var(--ink)]">No crates available.</p>
+            <p class="mt-2 text-sm text-[var(--muted)]">
+              Try searching for a crate above.
+            </p>
+          </div>
+        {/if}
+      </section>
+
+      {#snippet pending()}
         <div
           class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6 text-sm text-[var(--muted)]"
         >
           Loading crates...
         </div>
-      {:else}
-        <div
-          class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6"
-        >
-          <p class="text-sm font-semibold text-[var(--ink)]">No crates available.</p>
-          <p class="mt-2 text-sm text-[var(--muted)]">
-            Try searching for a crate above.
-          </p>
-        </div>
-      {/if}
-    </section>
+      {/snippet}
+    </svelte:boundary>
   </div>
 </div>

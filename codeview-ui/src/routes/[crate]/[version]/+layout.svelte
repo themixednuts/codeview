@@ -1,32 +1,23 @@
 <script lang="ts">
   import type { Node, NodeKind } from '$lib/graph';
   import { SvelteSet } from 'svelte/reactivity';
-  import { getContext, setContext, tick } from 'svelte';
+  import { themeCtx, getNodeUrlCtx, crateVersionsCtx, graphForDisplayCtx } from '$lib/context';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
   import { getCrates, getCrateIndex, getCrateTree, getCrateVersions, searchNodes } from '$lib/graph.remote';
+  import { cached } from '$lib/query-cache.svelte';
   import { nodeUrl } from '$lib/url';
   import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
+  import { onDestroy } from 'svelte';
   import GraphTree from '$lib/components/GraphTree.svelte';
   import { CrateStatusConnection } from '$lib/crate-status.svelte';
-
-  /** Kind badge colors */
-  const kindColors: Record<NodeKind, string> = {
-    Crate: '#e85d04', Module: '#2d6a4f', Struct: '#9d4edd', Union: '#7b2cbf',
-    Enum: '#3a86ff', Trait: '#06d6a0', TraitAlias: '#0db39e', Impl: '#8d99ae',
-    Function: '#f72585', Method: '#b5179e', TypeAlias: '#ff6d00'
-  };
-  const kindIcons: Record<NodeKind, string> = {
-    Crate: '📦', Module: '📁', Struct: 'S', Union: 'U', Enum: 'E',
-    Trait: 'T', TraitAlias: 'T', Impl: 'I', Function: 'fn', Method: 'fn', TypeAlias: '='
-  };
+  import { perf } from '$lib/perf';
+  import { perfTick } from '$lib/perf.svelte';
+  import { kindColors, kindIcons } from '$lib/tree-constants';
 
   let { children } = $props();
-  const getTheme = getContext<() => 'light' | 'dark'>('theme');
-  const getHosted = getContext<() => boolean>('isHosted');
-  const theme = $derived(getTheme());
-  const isHosted = $derived(getHosted());
+  const theme = $derived(themeCtx.get());
 
   const params = $derived(page.params);
   const crateName = $derived(params.crate);
@@ -35,35 +26,28 @@
   // --- Status-aware loading state ---
   const statusConn = new CrateStatusConnection();
 
-  // Connect when crate/version changes
+  // Connect when crate/version changes — connect() handles closing previous ES internally
   $effect(() => {
     const name = crateName;
     const ver = version;
     if (!browser || !name || !ver) return;
-    statusConn.connect(name, ver, { allowWebSocket: isHosted });
-    return () => statusConn.destroy();
+    statusConn.connect(name, ver);
   });
+  onDestroy(() => statusConn.destroy());
 
-  // Auto-trigger parse for unknown crates
-  $effect(() => {
-    if (!browser || !crateName || !version) return;
-    if (isHosted && statusConn.hasStatus && statusConn.status === 'unknown') {
-      statusConn.triggerParse(crateName, version, { allowWebSocket: isHosted });
-    }
-  });
 
   // --- Existing workspace/crate loading (works when status is 'ready') ---
 
   // Load workspace crate list (for switcher + version map)
-  const cratesQuery = getCrates();
+  const cratesQuery = cached('workspaceCrates', getCrates());
 
   // Hosted fallback: load lightweight crate index for cross-crate navigation
   const indexQuery = $derived(
-    crateName && version ? getCrateIndex({ name: crateName, version }) : null
+    crateName && version ? cached(`index:${crateName}@${version}`, getCrateIndex({ name: crateName, version })) : null
   );
 
   // Versions list for current crate (hosted uses registry)
-  const versionsQuery = $derived(crateName ? getCrateVersions(crateName) : null);
+  const versionsQuery = $derived(crateName ? cached(`versions:${crateName}`, getCrateVersions(crateName)) : null);
 
   const crateVersionsMemo = new KeyedMemo(
     () => keyOf(crateName, version, cratesQuery.current, indexQuery?.current),
@@ -74,10 +58,12 @@
           map[c.id] = c.version;
           if (c.name && c.name !== c.id) map[c.name] = c.version;
         }
-      } else if (indexQuery?.current) {
+      }
+      // Always merge index data (includes external crate versions)
+      if (indexQuery?.current) {
         for (const c of indexQuery.current.crates) {
-          map[c.id] = c.version;
-          if (c.name && c.name !== c.id) map[c.name] = c.version;
+          if (!map[c.id]) map[c.id] = c.version;
+          if (c.name && c.name !== c.id && !map[c.name]) map[c.name] = c.version;
         }
       }
       if (crateName && version && !map[crateName]) {
@@ -126,26 +112,47 @@
   }
 
   const getNodeUrl = (id: string, parent?: string) => {
-    const url = nodeUrl(id, crateVersions);
-    return parent ? `${url}?parent=${encodeURIComponent(parent)}` : url;
+    const base = nodeUrl(id, crateVersions);
+    // Carry forward current query params so view state (layout, structural,
+    // semantic, etc.) persists across navigations.
+    const params = new URLSearchParams(page.url.searchParams);
+    if (parent) {
+      params.set('parent', parent);
+    } else {
+      params.delete('parent');
+    }
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
   };
 
-  setContext('getNodeUrl', () => getNodeUrl);
-  setContext('crateVersions', () => crateVersions);
+  getNodeUrlCtx.set(() => getNodeUrl);
+  crateVersionsCtx.set(() => crateVersions);
 
   // Load the current crate's tree
-  const treeQuery = $derived(crateName && version ? getCrateTree({ name: crateName, version }) : null);
+  const treeQuery = $derived(
+    crateName && version ? cached(`tree:${crateName}@${version}`, getCrateTree({ name: crateName, version })) : null
+  );
+
+  // When status transitions to 'ready', refresh the tree and index queries
+  // to pick up freshly parsed data (the initial call may have cached null).
+  $effect(() => {
+    if (statusConn.status === 'ready') {
+      treeQuery?.refresh();
+      indexQuery?.refresh();
+    }
+  });
 
   // Build a Graph-shaped object for GraphTree from the tree response.
   const treeGraphMemo = new KeyedMemo(
     () => keyOf(crateName, treeQuery?.current),
     () => {
       if (!treeQuery || treeQuery.loading || !treeQuery.current) return null;
-      console.log(`[perf:derived] treeGraph materialized (${treeQuery.current.nodes.length}n ${treeQuery.current.edges.length}e)`);
-      return {
-        nodes: treeQuery.current.nodes as Node[],
-        edges: treeQuery.current.edges
-      };
+      return perf.time('derived', 'treeGraph', () => ({
+        nodes: treeQuery.current!.nodes as Node[],
+        edges: treeQuery.current!.edges
+      }), {
+        detail: (r) => `${r.nodes.length}n ${r.edges.length}e`
+      });
     },
     { equalsKey: keyEqual }
   );
@@ -174,55 +181,57 @@
     () => treeGraph,
     () => {
       if (!treeGraph) return null;
-      const t0 = performance.now();
-      let nodes = treeGraph.nodes;
-      let edges = treeGraph.edges;
+      return perf.time('derived', 'graphForDisplay', () => {
+        let nodes = treeGraph.nodes;
+        let edges = treeGraph.edges;
 
-      // Remove orphan nodes: any node not reachable from a Crate root via Contains/Defines.
-      const childMap = new Map<string, string[]>();
-      for (const e of edges) {
-        if (e.kind === 'Contains' || e.kind === 'Defines') {
-          if (!childMap.has(e.from)) childMap.set(e.from, []);
-          childMap.get(e.from)!.push(e.to);
+        // Remove orphan nodes: any node not reachable from a Crate root via Contains/Defines.
+        const childMap = new Map<string, string[]>();
+        for (const e of edges) {
+          if (e.kind === 'Contains' || e.kind === 'Defines') {
+            if (!childMap.has(e.from)) childMap.set(e.from, []);
+            childMap.get(e.from)!.push(e.to);
+          }
         }
-      }
-      const reachable = new Set<string>();
-      const crateIds = nodes.filter((n) => n.kind === 'Crate').map((n) => n.id);
-      const queue = [...crateIds];
-      for (const id of queue) {
-        if (reachable.has(id)) continue;
-        reachable.add(id);
-        const children = childMap.get(id);
-        if (children) queue.push(...children);
-      }
-      if (reachable.size < nodes.length) {
-        nodes = nodes.filter((n) => reachable.has(n.id));
-        edges = edges.filter((e) => reachable.has(e.from) && reachable.has(e.to));
-      }
+        const reachable = new Set<string>();
+        const crateIds = nodes.filter((n) => n.kind === 'Crate').map((n) => n.id);
+        const queue = [...crateIds];
+        for (const id of queue) {
+          if (reachable.has(id)) continue;
+          reachable.add(id);
+          const children = childMap.get(id);
+          if (children) queue.push(...children);
+        }
+        if (reachable.size < nodes.length) {
+          nodes = nodes.filter((n) => reachable.has(n.id));
+          edges = edges.filter((e) => reachable.has(e.from) && reachable.has(e.to));
+        }
 
-      const dt = performance.now() - t0;
-      if (dt > 2) console.log(`[perf:derived] graphForDisplay ${dt.toFixed(1)}ms (${nodes.length}n ${edges.length}e)`);
-      return { nodes, edges };
+        return { nodes, edges };
+      }, {
+        detail: (r) => `${r.nodes.length}n ${r.edges.length}e`
+      });
     }
   );
   const graphForDisplay = $derived(graphForDisplayMemo.current);
 
-  setContext('graphForDisplay', () => graphForDisplay);
+  graphForDisplayCtx.set(() => graphForDisplay);
 
   const statsMemo = new KeyedMemo(
     () => graphForDisplay,
     () => {
       if (!graphForDisplay) return { kindCounts: [] as { kind: NodeKind; count: number }[] };
-      const t0 = performance.now();
-      const kindCounts = nodeKindOrder
-        .map((kind) => ({
-          kind,
-          count: graphForDisplay.nodes.filter((n) => n.kind === kind).length
-        }))
-        .filter((e) => e.count > 0);
-      const dt = performance.now() - t0;
-      if (dt > 2) console.log(`[perf:derived] stats ${dt.toFixed(1)}ms (${graphForDisplay.nodes.length}n)`);
-      return { kindCounts };
+      return perf.time('derived', 'stats', () => {
+        const kindCounts = nodeKindOrder
+          .map((kind) => ({
+            kind,
+            count: graphForDisplay.nodes.filter((n) => n.kind === kind).length
+          }))
+          .filter((e) => e.count > 0);
+        return { kindCounts };
+      }, {
+        detail: () => `${graphForDisplay.nodes.length}n`
+      });
     }
   );
   const stats = $derived(statsMemo.current);
@@ -254,30 +263,48 @@
   $effect(() => {
     if (crateName && crateName !== lastCrateName) {
       lastCrateName = crateName;
-      const t0 = performance.now();
-      console.log(`[perf:render] layout crate changed to ${crateName}`);
-      tick().then(() => {
-        console.log(`[perf:render] layout tick ${(performance.now() - t0).toFixed(0)}ms`);
-      });
+      perfTick('render', `layout crate=${crateName} tick`);
     }
   });
 
-  // Determine if we should show the main UI (ready or local mode with data)
+  // Determine if we should show the main UI
   const isReady = $derived(
-    statusConn.status === 'ready' || statusConn.status === 'unknown' || treeGraph !== null
+    statusConn.status === 'ready' || treeGraph !== null
   );
+
+  // --- Step progress mappings ---
+  const stepLabels: Record<string, string> = {
+    resolving: 'Resolving metadata...',
+    fetching: 'Downloading rustdoc...',
+    parsing: 'Extracting graph...',
+    storing: 'Uploading graph...',
+    indexing: 'Indexing dependencies...'
+  };
+  const stepPercents: Record<string, number> = {
+    resolving: 20,
+    fetching: 40,
+    parsing: 60,
+    storing: 80,
+    indexing: 90
+  };
+  const stepLabel = $derived(statusConn.step ? (stepLabels[statusConn.step] ?? 'Processing...') : 'Starting...');
+  const stepPercent = $derived(statusConn.step ? (stepPercents[statusConn.step] ?? 10) : 10);
 
 </script>
 
 <div class="flex flex-1 overflow-hidden">
   <!-- Status overlay for processing/failed states -->
-  {#if statusConn.status === 'processing'}
+  {#if statusConn.status === 'unknown' && !treeGraph}
+    <div class="flex flex-1 items-center justify-center">
+      <div class="text-sm text-[var(--muted)]">Loading...</div>
+    </div>
+  {:else if statusConn.status === 'processing'}
     <div class="flex flex-1 items-center justify-center">
       <div class="text-center">
         <div class="mb-4 text-lg font-semibold text-[var(--ink)]">Parsing {crateName} {version}</div>
-        <div class="mb-2 text-sm text-[var(--muted)]">Fetching rustdoc and extracting graph...</div>
+        <div class="mb-2 text-sm text-[var(--muted)]">{stepLabel}</div>
         <div class="mx-auto h-1 w-48 overflow-hidden rounded-full bg-[var(--panel-border)]">
-          <div class="h-full animate-pulse rounded-full bg-[var(--accent)]" style="width: 60%"></div>
+          <div class="h-full rounded-full bg-[var(--accent)] transition-all duration-500" style="width: {stepPercent}%"></div>
         </div>
       </div>
     </div>
@@ -291,7 +318,7 @@
         <button
           type="button"
           class="rounded-[var(--radius-control)] corner-squircle bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
-          onclick={() => crateName && version && statusConn.retry(crateName, version, { allowWebSocket: isHosted })}
+          onclick={() => crateName && version && statusConn.retry(crateName, version)}
         >
           Retry
         </button>
@@ -375,6 +402,7 @@
               <div class="px-2 pb-1 text-xs text-[var(--muted)]">{searchQuery.current.length} result{searchQuery.current.length === 1 ? '' : 's'}</div>
               {#each searchQuery.current as node (node.id)}
                 {@const isSelected = selectedNodeId === node.id}
+                {@const KindIcon = kindIcons[node.kind]}
                 <a
                   href={getNodeUrl(node.id)}
                   data-sveltekit-noscroll
@@ -383,9 +411,9 @@
                     : ''}"
                 >
                   <span
-                    class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-[10px] font-bold leading-none text-white"
+                    class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-white"
                     style="background-color: {kindColors[node.kind]}"
-                  >{kindIcons[node.kind]}</span>
+                  ><KindIcon size={12} strokeWidth={2.5} /></span>
                   <span class="min-w-0 flex-1">
                     <span class="block truncate font-medium text-[var(--ink)]">{node.name}</span>
                     <span class="block truncate text-xs text-[var(--muted)]">{node.id}</span>

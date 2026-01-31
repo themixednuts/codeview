@@ -10,17 +10,17 @@
  * serving cached data while the query re-fetches. All underlying properties
  * and methods (.refresh(), .error, thenable, etc.) are forwarded.
  *
- * Usage — drop-in replacement, no API change for consumers:
+ * Works with both the `.current`/`.loading` pattern and the `await` pattern:
  *
- *   // before
- *   const q = getTopCrates();
- *
- *   // after
+ *   // .current/.loading (alternative)
  *   const q = cached('topCrates', getTopCrates());
- *
- *   // consumers unchanged
  *   const data = $derived(q.current ?? []);
- *   const loading = $derived(q.loading);
+ *
+ *   // await + <svelte:boundary> (recommended)
+ *   const data = $derived(await cached('topCrates', getTopCrates()));
+ *
+ * The proxy intercepts `.then()` so that `await` resolves immediately from
+ * cache on back-navigation instead of showing the boundary's pending snippet.
  *
  * Data is never stale: once the query resolves (.loading = false), the fresh
  * result always wins — even if it's null or an empty array. The cache only
@@ -46,10 +46,10 @@ const _cache = new Map<string, unknown>();
  * Uses a plain Map (not SvelteMap) — Svelte's reactivity is driven by the
  * underlying query proxy's signals, not by cache writes.
  */
-export function cached<T>(
+export function cached<Q extends { current: unknown; loading: boolean }>(
 	key: string,
-	query: { current: T | undefined; loading: boolean; [k: string | symbol]: unknown }
-): typeof query {
+	query: Q
+): Q {
 	return new Proxy(query, {
 		get(target, prop, receiver) {
 			if (prop === 'current') {
@@ -62,7 +62,7 @@ export function cached<T>(
 				}
 
 				// Still loading — serve cached data if we have it
-				if (_cache.has(key)) return _cache.get(key) as T;
+				if (_cache.has(key)) return _cache.get(key) as Q['current'];
 				return fresh; // undefined (no cache yet — first visit)
 			}
 
@@ -71,7 +71,21 @@ export function cached<T>(
 				return target.loading && !_cache.has(key);
 			}
 
-			// Forward everything else: .refresh(), .error, .then(), etc.
+			if (prop === 'then') {
+				// When cached data is available and the raw query is still loading,
+				// resolve the thenable immediately so `await` doesn't block and
+				// <svelte:boundary pending> is never shown on back-navigation.
+				if (target.loading && _cache.has(key)) {
+					return (onFulfilled?: (v: Q['current']) => unknown, onRejected?: (e: unknown) => unknown) =>
+						Promise.resolve(_cache.get(key) as Q['current']).then(onFulfilled, onRejected);
+				}
+				// Otherwise forward to the real .then() (first visit or already resolved)
+				const thenFn = Reflect.get(target, prop, receiver);
+				if (typeof thenFn === 'function') return thenFn.bind(target);
+				return thenFn;
+			}
+
+			// Forward everything else: .refresh(), .error, etc.
 			const value = Reflect.get(target, prop, receiver);
 			// Bind functions so they execute on the original target
 			if (typeof value === 'function') return value.bind(target);
