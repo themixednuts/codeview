@@ -23,7 +23,6 @@ opencode.json
 
 # Generated data
 /codeview-ui/graph.json
-/codeview-ui/drizzle/
 
 # Temp/test data
 /tmp
