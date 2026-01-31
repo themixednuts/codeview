@@ -1,46 +1,89 @@
 <script lang="ts">
-  import { getCrates, getHostedMode, getTopCrates, searchRegistry } from '$lib/graph.remote';
+  import { Debounced } from 'runed';
+  import { getCrates, getTopCrates, searchRegistry } from '$lib/graph.remote';
+  import { cached } from '$lib/query-cache.svelte';
 
-  const hostedQuery = getHostedMode();
-  const isHosted = $derived(hostedQuery.current ?? false);
+  const workspaceCratesQuery = cached('workspaceCrates', getCrates());
+  const topCratesQuery = cached('topCrates', getTopCrates());
 
-  const localCratesQuery = getCrates();
-  const topCratesQuery = $derived(isHosted ? getTopCrates() : null);
-
-  const displayedCrates = $derived.by(() => {
-    if (isHosted) {
-      const results = topCratesQuery?.current ?? [];
-      return results.map((crate) => ({
-        id: crate.name,
-        name: crate.name,
-        version: crate.version,
-        description: crate.description
-      }));
-    }
-    const results = localCratesQuery.current ?? [];
-    return results.map((crate) => ({
+  const workspaceCrates = $derived(
+    (workspaceCratesQuery.current ?? []).map((crate) => ({
       id: crate.id,
       name: crate.name,
       version: crate.version
-    }));
-  });
-  const cratesLoading = $derived(isHosted ? (topCratesQuery?.loading ?? false) : localCratesQuery.loading);
-  const hasCrates = $derived(displayedCrates.length > 0);
+    }))
+  );
+  const topCrates = $derived(
+    (topCratesQuery.current ?? []).map((crate) => ({
+      id: crate.name,
+      name: crate.name,
+      version: crate.version,
+      description: crate.description
+    }))
+  );
+  const cratesLoading = $derived(topCratesQuery.loading);
+  const hasWorkspaceCrates = $derived(workspaceCrates.length > 0);
+  const hasTopCrates = $derived(topCrates.length > 0);
 
   let searchInput = $state('');
   const searchTerm = $derived(searchInput.trim());
+  const debouncedSearch = new Debounced(() => searchTerm, 250);
+  const debouncedTerm = $derived(debouncedSearch.current);
 
+  // True while the user is typing but debounce hasn't fired yet
+  const isDebouncing = $derived(searchTerm.length >= 2 && searchTerm !== debouncedTerm);
+
+  // TODO: abort in-flight searches when the term changes once SvelteKit
+  // remote functions support abort signals: https://github.com/sveltejs/kit/issues/14502
   const searchQuery = $derived(
-    isHosted && searchTerm.length >= 2 ? searchRegistry(searchTerm) : null
+    debouncedTerm.length >= 2 ? searchRegistry(debouncedTerm) : null
   );
   const searchResults = $derived(searchQuery?.current ?? []);
-  const searchLoading = $derived(searchQuery?.loading ?? false);
+  const searchLoading = $derived(isDebouncing || (searchQuery?.loading ?? false));
   const limitedSearchResults = $derived(searchResults.slice(0, 6));
-  const showSearchResults = $derived(isHosted && searchTerm.length >= 2);
+  const showSearchResults = $derived(searchTerm.length >= 2);
 </script>
 
 <div class="flex flex-1 overflow-auto">
   <div class="mx-auto flex w-full max-w-6xl flex-col gap-10 px-6 py-10">
+    <div class="relative">
+      <input
+        id="global-search"
+        type="search"
+        placeholder="Search crates, types, functions..."
+        bind:value={searchInput}
+        class="w-full rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] px-4 py-2.5 text-sm outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]"
+      />
+      {#if showSearchResults}
+        <div
+          class="absolute left-0 right-0 z-30 mt-2 rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-3 shadow-[var(--shadow-soft)]"
+        >
+          {#if searchLoading}
+            <p class="text-xs text-[var(--muted)]">Searching...</p>
+          {:else if limitedSearchResults.length > 0}
+            <div class="space-y-1">
+              {#each limitedSearchResults as result (result.name)}
+                <a
+                  href={`/${result.name}/${result.version}`}
+                  class="block rounded-[var(--radius-chip)] corner-squircle px-3 py-2 hover:bg-[var(--panel-strong)] transition-colors"
+                >
+                  <div class="flex items-center justify-between gap-2">
+                    <p class="text-sm font-medium text-[var(--ink)]">{result.name}</p>
+                    <span class="badge badge-sm">{result.version}</span>
+                  </div>
+                  {#if result.description}
+                    <p class="text-xs text-[var(--muted)] mt-1">{result.description}</p>
+                  {/if}
+                </a>
+              {/each}
+            </div>
+          {:else}
+            <p class="text-xs text-[var(--muted)]">No matches found.</p>
+          {/if}
+        </div>
+      {/if}
+    </div>
+
     <section
       class="relative overflow-hidden rounded-[var(--radius-panel)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] p-8 shadow-[var(--shadow-glow)] animate-[float-in_0.8s_ease-out]"
     >
@@ -96,74 +139,17 @@
         <p class="mt-4 max-w-2xl text-base leading-relaxed text-[var(--muted)]">
           Browse crates and relationships with a clean, focused graph view.
         </p>
-        {#if isHosted}
-          <div class="mt-6 max-w-lg">
-            <label
-              for="global-search"
-              class="text-xs uppercase tracking-[0.2em] text-[var(--muted)]"
-            >
-              Search
-            </label>
-            <input
-              id="global-search"
-              type="search"
-              placeholder="Search crates, types, functions..."
-              bind:value={searchInput}
-              class="mt-2 w-full rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-2 text-sm outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]"
-            />
-            {#if showSearchResults}
-              <div
-                class="mt-3 rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-3"
-              >
-                {#if searchLoading}
-                  <p class="text-xs text-[var(--muted)]">Searching...</p>
-                {:else if limitedSearchResults.length > 0}
-                  <p class="text-xs text-[var(--muted)]">Preview results</p>
-                  <div class="mt-2 space-y-2">
-                    {#each limitedSearchResults as result (result.name)}
-                      <a
-                        href={`/${result.name}/${result.version}`}
-                        class="block rounded-[var(--radius-chip)] corner-squircle bg-[var(--panel)] px-3 py-2 hover:bg-[var(--panel-strong)] transition-colors"
-                      >
-                        <div class="flex items-center justify-between gap-2">
-                          <p class="text-sm font-medium text-[var(--ink)]">{result.name}</p>
-                          <span class="badge badge-sm">{result.version}</span>
-                        </div>
-                        {#if result.description}
-                          <p class="text-xs text-[var(--muted)] mt-1">{result.description}</p>
-                        {/if}
-                      </a>
-                    {/each}
-                  </div>
-                {:else}
-                  <p class="text-xs text-[var(--muted)]">No matches yet.</p>
-                {/if}
-              </div>
-            {/if}
-          </div>
-        {/if}
       </div>
     </section>
 
-    <section id="crates" class="space-y-4">
-      <div class="flex flex-wrap items-end justify-between gap-3">
+    {#if hasWorkspaceCrates}
+      <section id="workspace-crates" class="space-y-4">
         <div>
-          <h2 class="text-2xl font-semibold text-[var(--ink)]">Crates</h2>
-          <p class="text-sm text-[var(--muted)]">Pick a crate to open its graph.</p>
+          <h2 class="text-2xl font-semibold text-[var(--ink)]">Workspace</h2>
+          <p class="text-sm text-[var(--muted)]">Crates from your local workspace.</p>
         </div>
-        {#if hasCrates && isHosted}
-          <span class="badge badge-strong">Top 10</span>
-        {/if}
-      </div>
-      {#if cratesLoading}
-        <div
-          class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6 text-sm text-[var(--muted)]"
-        >
-          Loading crates...
-        </div>
-      {:else if hasCrates}
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {#each displayedCrates as crate (crate.id)}
+          {#each workspaceCrates as crate (crate.id)}
             <a
               href={`/${crate.id}/${crate.version}`}
               class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-4 shadow-[var(--shadow-soft)] transition hover:-translate-y-0.5"
@@ -178,13 +164,48 @@
             </a>
           {/each}
         </div>
+      </section>
+    {/if}
+
+    <section id="crates" class="space-y-4">
+      <div>
+        <h2 class="text-2xl font-semibold text-[var(--ink)]">Popular Crates</h2>
+        <p class="text-sm text-[var(--muted)]">Pick a crate to open its graph.</p>
+      </div>
+      {#if hasTopCrates}
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {#each topCrates as crate (crate.id)}
+            <a
+              href={`/${crate.id}/${crate.version}`}
+              class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-4 shadow-[var(--shadow-soft)] transition hover:-translate-y-0.5"
+            >
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-sm font-semibold text-[var(--ink)]">{crate.name}</span>
+                <span class="badge">{crate.version}</span>
+              </div>
+              {#if crate.description}
+                <p class="mt-2 text-xs text-[var(--muted)]">{crate.description}</p>
+              {:else}
+                <p class="mt-2 text-xs text-[var(--muted)]">
+                  Open the crate overview and navigate relationships.
+                </p>
+              {/if}
+            </a>
+          {/each}
+        </div>
+      {:else if cratesLoading}
+        <div
+          class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6 text-sm text-[var(--muted)]"
+        >
+          Loading crates...
+        </div>
       {:else}
         <div
           class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6"
         >
-          <p class="text-sm font-semibold text-[var(--ink)]">No graph data yet.</p>
+          <p class="text-sm font-semibold text-[var(--ink)]">No crates available.</p>
           <p class="mt-2 text-sm text-[var(--muted)]">
-            Add a graph JSON to see crates listed here.
+            Try searching for a crate above.
           </p>
         </div>
       {/if}
