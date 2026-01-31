@@ -1,10 +1,16 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { CrateRegistry } from '../crate-registry';
-import { getRegistry } from '../registry/index';
-import { getParser } from '../parser/index';
-import { getSourceAdapter } from '../sources/index';
-import { fetchSourcesWithProviders } from '../sources/runner';
-import type { Ecosystem } from '../registry/types';
+import { decompress } from 'fzstd';
+import type { CrateRegistry } from '$cloudflare/crate-registry';
+import { getRegistry } from '$lib/server/registry/index';
+import { getParser } from '$lib/server/parser/index';
+import { getSourceAdapter } from '$lib/server/sources/index';
+import { fetchSourcesWithProviders } from '$lib/server/sources/runner';
+import type { Ecosystem } from '$lib/server/registry/types';
+import { getLogger } from '$lib/log';
+import { isStdCrate } from '$lib/std-crates';
+import { normalizeCrateName } from '$lib/server/validation';
+
+const log = getLogger('workflow');
 
 interface ParseCrateParams {
 	ecosystem: Ecosystem;
@@ -12,12 +18,18 @@ interface ParseCrateParams {
 	version: string;
 }
 
-interface Env {
+/**
+ * Typed env for the codeview-services worker (see workers/wrangler.toml).
+ * Narrows the global Env with typed DO/Workflow generics and secrets.
+ * Run `bun run cf:types:services` to regenerate the source-of-truth types.
+ */
+type ServicesEnv = Omit<Env, 'GRAPH_STORE' | 'CRATE_REGISTRY' | 'PARSE_CRATE'> & {
+	GRAPH_STORE: DurableObjectNamespace<import('../graph-store').GraphStore>;
 	CRATE_REGISTRY: DurableObjectNamespace<CrateRegistry>;
 	CRATE_GRAPHS: R2Bucket;
-	PARSE_CRATE?: Workflow<{ ecosystem: Ecosystem; name: string; version: string }>;
+	PARSE_CRATE: Workflow<{ ecosystem: Ecosystem; name: string; version: string }>;
 	GITHUB_TOKEN?: string;
-}
+};
 
 const USER_AGENT = 'codeview';
 const SOURCE_MAX_BYTES = 96 * 1024 * 1024;
@@ -35,6 +47,14 @@ type CrateIndex = {
 	name: string;
 	version: string;
 	crates: CrateIndexEntry[];
+};
+
+/** Serializable cross-edge data passed between workflow steps. */
+type CrossEdgeStepResult = {
+	edges: Array<{ from: string; to: string; kind: string; confidence: string }>;
+	nodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }>;
+	externalCrates: CrateIndexEntry[];
+	hasSources: boolean;
 };
 
 async function mapWithConcurrency<T, R>(
@@ -59,7 +79,7 @@ async function mapWithConcurrency<T, R>(
 	return results;
 }
 
-export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams> {
+export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCrateParams> {
 	async run(event: WorkflowEvent<ParseCrateParams>, step: WorkflowStep) {
 		const { ecosystem, name, version } = event.payload;
 		const r2Key = `${ecosystem}/${name}/${version}/graph.json`;
@@ -81,9 +101,10 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams
 			return;
 		}
 
-		// Step 2: Set status to processing
-		await step.do('set-status-processing', async () => {
-			await registryStub.setStatus(ecosystem, name, version, 'processing');
+		// Step 2: Resolving — set status
+		await step.do('set-status-resolving', async () => {
+			log.debug`${name}@${version} → resolving`;
+			await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'resolving');
 		});
 
 		try {
@@ -99,16 +120,22 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams
 				}
 			);
 
-			// Step 4: Parse + store graph (fetch artifact + sources inside one step)
-			await step.do(
-				'parse-and-store',
+			// Step 4: Fetching — set status
+			await step.do('set-status-fetching', async () => {
+				log.debug`${name}@${version} → fetching`;
+				await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'fetching');
+			});
+
+			// Step 5: Fetch artifact, parse, and store to R2.
+			// Returns only the lightweight cross-edge data for the next step.
+			const crossEdgeData = await step.do(
+				'fetch-parse-store',
 				{ retries: { limit: 2, delay: '2 seconds', backoff: 'exponential' } },
 				async () => {
 					const parser = getParser(ecosystem);
-					const crateName = name.replace(/-/g, '_');
 					const artifactUrl =
 						metadata.artifactUrl ??
-						`https://docs.rs/crate/${name}/${version}/target/doc/${crateName}.json`;
+						`https://docs.rs/crate/${name}/${version}/json`;
 
 					const artifactRes = await fetch(artifactUrl, {
 						headers: { 'User-Agent': USER_AGENT }
@@ -118,7 +145,19 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams
 							`Failed to fetch artifact: ${artifactRes.status} ${artifactRes.statusText}`
 						);
 					}
-					const artifact = await artifactRes.text();
+
+					// docs.rs serves rustdoc JSON as zstd-compressed (application/zstd)
+					let artifact: Uint8Array;
+					const contentType = artifactRes.headers.get('content-type') ?? '';
+					if (contentType.includes('zstd')) {
+						const compressed = new Uint8Array(await artifactRes.arrayBuffer());
+						artifact = decompress(compressed);
+					} else {
+						artifact = new Uint8Array(await artifactRes.arrayBuffer());
+					}
+
+					log.debug`${name}@${version} → parsing`;
+					await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'parsing');
 
 					const sourceAdapter = getSourceAdapter(ecosystem);
 					const providers = sourceAdapter.getProviders({
@@ -192,8 +231,8 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams
 						const candidates = [
 							ext.name,
 							ext.id,
-							ext.name.replace(/_/g, '-'),
-							ext.id.replace(/_/g, '-')
+							normalizeCrateName(ext.name),
+							normalizeCrateName(ext.id)
 						].filter((value, index, all) => value && all.indexOf(value) === index);
 
 						for (const candidate of candidates) {
@@ -210,11 +249,14 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams
 						return null;
 					}
 
+					// Std-lib crates are part of the Rust toolchain and not published
+					// on crates.io — skip them during external crate resolution.
 					const externalCrates: { id: string; name: string }[] = [];
 					const seenExternal = new Set<string>();
 					for (const c of parseResult.externalCrates) {
 						if (seenExternal.has(c.id)) continue;
 						seenExternal.add(c.id);
+						if (isStdCrate(c.name) || isStdCrate(c.id)) continue;
 						externalCrates.push({ id: c.id, name: c.name });
 					}
 					const externalEntries = await mapWithConcurrency(
@@ -238,59 +280,96 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<Env, ParseCrateParams
 						]
 					};
 
+					// Store graph + index + cross-edge data to R2 (all independent)
+					log.debug`${name}@${version} → storing`;
+					await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'storing');
+					const parsedAt = new Date().toISOString();
 					const graphJson = JSON.stringify(parseResult.graph);
-					await this.env.CRATE_GRAPHS.put(r2Key, graphJson, {
-						httpMetadata: { contentType: 'application/json' },
-						customMetadata: {
-							ecosystem,
-							name,
-							version,
-							parsedAt: new Date().toISOString(),
-							hasSources: sourceFiles ? 'true' : 'false'
-						}
-					});
-
 					const indexKey = `${ecosystem}/${name}/${version}/index.json`;
-					await this.env.CRATE_GRAPHS.put(indexKey, JSON.stringify(index), {
-						httpMetadata: { contentType: 'application/json' },
-						customMetadata: {
-							ecosystem,
-							name,
-							version,
-							parsedAt: new Date().toISOString()
-						}
-					});
+					const crossEdgeKey = `${ecosystem}/${name}/${version}/_cross-edges.json`;
+					const crossEdgePayload: CrossEdgeStepResult = {
+						edges: crossEdges,
+						nodes: Array.from(crossNodeMap.values()),
+						externalCrates: filteredExternal,
+						hasSources: sourceFiles !== null
+					};
 
+					await Promise.all([
+						this.env.CRATE_GRAPHS.put(r2Key, graphJson, {
+							httpMetadata: { contentType: 'application/json' },
+							customMetadata: {
+								ecosystem,
+								name,
+								version,
+								parsedAt,
+								hasSources: sourceFiles ? 'true' : 'false'
+							}
+						}),
+						this.env.CRATE_GRAPHS.put(indexKey, JSON.stringify(index), {
+							httpMetadata: { contentType: 'application/json' },
+							customMetadata: { ecosystem, name, version, parsedAt }
+						}),
+						this.env.CRATE_GRAPHS.put(crossEdgeKey, JSON.stringify(crossEdgePayload), {
+							httpMetadata: { contentType: 'application/json' }
+						})
+					]);
+				}
+			);
+
+			// Step 6: Indexing — set status
+			await step.do('set-status-indexing', async () => {
+				log.debug`${name}@${version} → indexing`;
+				await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'indexing');
+			});
+
+			// Step 7: Index cross-edges into the registry DO
+			// Reads cross-edge data from R2 (stored by fetch-parse-store step)
+			await step.do(
+				'index-cross-edges',
+				{ retries: { limit: 2, delay: '2 seconds', backoff: 'exponential' } },
+				async () => {
+					const crossEdgeKey = `${ecosystem}/${name}/${version}/_cross-edges.json`;
+					const obj = await this.env.CRATE_GRAPHS.get(crossEdgeKey);
+					if (!obj) {
+						console.warn(`[workflow] ${name}@${version} no cross-edge data found, skipping`);
+						return;
+					}
+					const crossEdgeData = await obj.json<CrossEdgeStepResult>();
 					await registryStub.replaceCrossEdges(
 						ecosystem,
 						name,
 						version,
-						crossEdges,
-						Array.from(crossNodeMap.values())
+						crossEdgeData.edges,
+						crossEdgeData.nodes
 					);
-
-					const parseCrate = this.env.PARSE_CRATE;
-					if (parseCrate) {
-						try {
-							await mapWithConcurrency(filteredExternal, FANOUT_CONCURRENCY, async (entry) => {
-								if (!entry.name || entry.name === name) return;
-								const status = await registryStub.getStatus(ecosystem, entry.name, entry.version);
-								if (status.status !== 'unknown') return;
-								await registryStub.setStatus(ecosystem, entry.name, entry.version, 'processing');
-								await parseCrate.create({
-									params: { ecosystem, name: entry.name, version: entry.version }
-								});
-							});
-						} catch (err) {
-							console.warn('Fanout parse scheduling failed:', err);
-						}
-					}
-
-					return { hasSources: sourceFiles !== null };
 				}
 			);
 
-			// Step 5: Mark as ready
+			// Step 8: Fan out parsing for external dependencies
+			await step.do('fanout-dependencies', async () => {
+				const crossEdgeKey = `${ecosystem}/${name}/${version}/_cross-edges.json`;
+				const obj = await this.env.CRATE_GRAPHS.get(crossEdgeKey);
+				if (!obj) return;
+				const crossEdgeData = await obj.json<CrossEdgeStepResult>();
+
+				const parseCrate = this.env.PARSE_CRATE;
+				if (!parseCrate) return;
+				try {
+					await mapWithConcurrency(crossEdgeData.externalCrates, FANOUT_CONCURRENCY, async (entry) => {
+						if (!entry.name || entry.name === name) return;
+						const status = await registryStub.getStatus(ecosystem, entry.name, entry.version);
+						if (status.status !== 'unknown') return;
+						await Promise.all([
+							registryStub.setStatus(ecosystem, entry.name, entry.version, 'processing'),
+							parseCrate.create({ params: { ecosystem, name: entry.name, version: entry.version } })
+						]);
+					});
+				} catch (err) {
+					console.warn('Fanout parse scheduling failed:', err);
+				}
+			});
+
+			// Step 9: Mark as ready
 			await step.do('set-status-ready', async () => {
 				await registryStub.setStatus(ecosystem, name, version, 'ready');
 			});

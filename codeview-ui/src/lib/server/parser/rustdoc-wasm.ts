@@ -1,67 +1,51 @@
-import type { ParserAdapter, ParseResult, SourceFiles } from './types';
+import type { ParserAdapter, ParseResult } from './types';
 import { resolveRootFileForCrate } from './cargo-manifest';
 
-/**
- * WASM-based rustdoc parser.
- *
- * Wraps codeview-rustdoc's `extract_graph` / `extract_graph_with_sources`
- * compiled to WASM via wasm-bindgen.
- *
- * TODO: Replace the stub with actual WASM import once codeview-rustdoc
- * is compiled with `wasm-pack build --target web --features wasm --no-default-features`.
- */
+// vite-plugin-wasm-esm handles init: readFile in SSR, fetch in client.
+const { extract_graph, extract_graph_with_sources, ensure_capacity } = await import('codeview-rustdoc');
 
-let wasmModule: WasmModule | null = null;
+const HYPHEN_RE = /-/g;
+const textEncoder = new TextEncoder();
 
-interface WasmModule {
-	extract_graph(json: string, crate_name: string): string;
-	extract_graph_with_sources(
-		json: string,
-		crate_name: string,
-		source_files_json: string,
-		root_file: string
-	): string;
-}
-
-async function loadWasm(): Promise<WasmModule> {
-	if (wasmModule) return wasmModule;
-
-	// Dynamic import of the WASM package — path will be configured at build time
-	// const mod = await import('codeview-rustdoc-wasm');
-	// wasmModule = mod;
-	// return wasmModule;
-
-	throw new Error(
-		'WASM parser not yet available. Build codeview-rustdoc with: wasm-pack build --target web --features wasm --no-default-features'
-	);
-}
-
+/** Yield to the event loop so SSE pushes and other I/O can proceed. */
+const yieldTick = () => new Promise<void>((r) => setTimeout(r, 0));
 
 export function createRustdocWasmParser(): ParserAdapter {
 	return {
 		async parse(artifact, name, version, sourceFiles) {
-			const wasm = await loadWasm();
+			// Convert to Uint8Array — avoid string → charCodeAt loop in wasm-bindgen
+			let jsonBytes: Uint8Array;
+			if (artifact instanceof Uint8Array) {
+				jsonBytes = artifact;
+			} else if (typeof artifact === 'string') {
+				jsonBytes = textEncoder.encode(artifact);
+			} else {
+				jsonBytes = new Uint8Array(artifact);
+			}
 
-			const json = typeof artifact === 'string' ? artifact : new TextDecoder().decode(artifact);
-			const crateName = name.replace(/-/g, '_');
+			const crateName = name.replace(HYPHEN_RE, '_');
+
+			// Pre-grow WASM memory for the large input + overhead
+			ensure_capacity(jsonBytes.byteLength * 2);
+
+			// Yield before the blocking WASM call so SSE status updates flush
+			await yieldTick();
 
 			let resultJson: string;
 
 			if (sourceFiles && sourceFiles.size > 0) {
-				// Convert Map to plain object for JSON serialization
 				const sourcesObj: Record<string, string> = {};
 				for (const [path, content] of sourceFiles) {
 					sourcesObj[path] = content;
 				}
-			const rootFile = resolveRootFileForCrate(name, sourceFiles) ?? 'src/lib.rs';
-				resultJson = wasm.extract_graph_with_sources(
-					json,
-					crateName,
-					JSON.stringify(sourcesObj),
-				rootFile
+				const sourcesBytes = textEncoder.encode(JSON.stringify(sourcesObj));
+				const rootFile = resolveRootFileForCrate(name, sourceFiles) ?? 'src/lib.rs';
+
+				resultJson = extract_graph_with_sources(
+					jsonBytes, crateName, sourcesBytes, rootFile
 				);
 			} else {
-				resultJson = wasm.extract_graph(json, crateName);
+				resultJson = extract_graph(jsonBytes, crateName);
 			}
 
 			const graph = JSON.parse(resultJson);

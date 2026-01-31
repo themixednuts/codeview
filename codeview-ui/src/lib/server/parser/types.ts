@@ -14,6 +14,7 @@ export interface CrateGraphData {
 export interface ExternalCrateData {
 	id: string;
 	name: string;
+	version?: string | null;
 	nodes: unknown[];
 }
 
@@ -26,7 +27,7 @@ export interface ParserAdapter {
 	 * If sourceFiles is provided, the parser can extract call edges from source code.
 	 */
 	parse(
-		artifact: ArrayBuffer | string,
+		artifact: Uint8Array | string,
 		name: string,
 		version: string,
 		sourceFiles?: SourceFiles
