@@ -16,6 +16,13 @@ opencode.json
 
 # Build output
 /codeview-ui/dist
+/codeview-cli/sidecar/
+
+# Wrangler dev state
+/codeview-ui/.wrangler/
+
+# Generated data
+/codeview-ui/graph.json
 
 # Temp/test data
 /tmp
