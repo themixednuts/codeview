@@ -1,19 +1,22 @@
 <script lang="ts">
-  import type { Edge, EdgeKind, Graph, Node, NodeKind } from '$lib/graph';
+  import type { Graph, Node } from '$lib/graph';
   import type { LayoutMode, VisEdge, VisNode } from '$lib/graph-layout';
   import { kindColors } from '$lib/tree-constants';
-  import { Memo, KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
+  import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import {
     CENTER_X,
     CENTER_Y,
     LAYOUT_HEIGHT,
     LAYOUT_WIDTH,
-    computeLayout,
     getEdgeAnchor,
     getNodeDimensions
   } from '$lib/graph-layout';
-  // Note: Use plain Map/Set for temporary computation to avoid proxy overhead
-  // SvelteMap/SvelteSet should only be used for persistent reactive state
+  import {
+    buildBaseScene,
+    buildNodeMap,
+    computeSceneLabels,
+  } from '$lib/renderers/graph';
+  import { perf } from '$lib/perf';
 
   let {
     graph,
@@ -37,41 +40,6 @@
 
   type DragOffset = { x: number; y: number };
 
-  // Edge filtering - categorize edges as structural or semantic
-  const structuralEdgeKinds: EdgeKind[] = ['Contains', 'Defines'];
-  const semanticEdgeKinds: EdgeKind[] = ['UsesType', 'Implements', 'CallsStatic', 'CallsRuntime', 'Derives'];
-
-  // Filter edges before layout
-  const filteredEdgesMemo = new Memo(() => {
-    return graph.edges.filter((edge: Edge) => {
-      if (structuralEdgeKinds.includes(edge.kind)) {
-        return showStructural;
-      }
-      if (semanticEdgeKinds.includes(edge.kind)) {
-        return showSemantic;
-      }
-      return true; // Unknown edge kinds default to visible
-    });
-  });
-  let filteredEdges = $derived(filteredEdgesMemo.current);
-
-  // Create filtered graph for layout
-  const filteredGraphMemo = new Memo(() => ({
-    nodes: graph.nodes,
-    edges: filteredEdges
-  }));
-  let filteredGraph = $derived(filteredGraphMemo.current);
-
-  // Edge counts for UI display
-  const edgeCountsMemo = new Memo(() => {
-    const structural = graph.edges.filter((e: Edge) => structuralEdgeKinds.includes(e.kind)).length;
-    const semantic = graph.edges.filter((e: Edge) => semanticEdgeKinds.includes(e.kind)).length;
-    const total = graph.edges.length;
-    const visible = filteredEdges.length;
-    return { structural, semantic, total, visible };
-  });
-  let edgeCounts = $derived(edgeCountsMemo.current);
-
   const WIDTH = LAYOUT_WIDTH;
   const HEIGHT = LAYOUT_HEIGHT;
   const RECT_CORNER_RADIUS = 10;
@@ -91,10 +59,15 @@
   let panStartPanX = 0;
   let panStartPanY = 0;
 
+  // True during drag or pan — disables CSS transitions for performance
+  let isInteracting = $state(false);
+
   let containerEl = $state<HTMLDivElement | null>(null);
+  let svgEl = $state<SVGSVGElement | null>(null);
   let dragNodeId = $state<string | null>(null);
-  let dragOffsets = $state<Record<string, DragOffset>>({});
+  let dragOffsets = $state.raw<Record<string, DragOffset>>({});
   let dragStart = { x: 0, y: 0 };
+  let dragStartScreen = { x: 0, y: 0 };
   let dragNodeStart = { x: 0, y: 0 };
   let dragBasePos = { x: 0, y: 0 };
   let didDrag = false;
@@ -120,14 +93,8 @@
     const delta = e.deltaY > 0 ? 0.9 : 1.1;
     const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoom * delta));
 
-    // Zoom toward mouse position
-    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    // Convert mouse position to SVG coordinates
-    const svgX = (mouseX / rect.width) * WIDTH;
-    const svgY = (mouseY / rect.height) * HEIGHT;
+    // Zoom toward mouse position (in SVG viewBox coords)
+    const { x: svgX, y: svgY } = screenToSvg(e.clientX, e.clientY);
 
     // Adjust pan to zoom toward mouse
     const zoomRatio = newZoom / zoom;
@@ -140,6 +107,7 @@
   function handleMouseDown(e: MouseEvent) {
     if (e.button === 0) { // Left click
       isPanning = true;
+      isInteracting = true;
       panStartX = e.clientX;
       panStartY = e.clientY;
       panStartPanX = panX;
@@ -150,21 +118,25 @@
   function handleMouseMove(e: MouseEvent) {
     if (dragNodeId) return;
     if (isPanning) {
-      const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      const dx = (e.clientX - panStartX) * (WIDTH / rect.width) / zoom;
-      const dy = (e.clientY - panStartY) * (HEIGHT / rect.height) / zoom;
-      panX = panStartPanX + dx;
-      panY = panStartPanY + dy;
+      // Delta in viewBox space — screenToSvg already accounts for SVG scaling
+      const cur = screenToSvg(e.clientX, e.clientY);
+      const start = screenToSvg(panStartX, panStartY);
+      panX = panStartPanX + (cur.x - start.x);
+      panY = panStartPanY + (cur.y - start.y);
     }
   }
 
   function handleMouseUp() {
     isPanning = false;
+    isInteracting = false;
     endNodeDrag();
   }
 
   function handleMouseLeave() {
     isPanning = false;
+    if (!dragNodeId) {
+      isInteracting = false;
+    }
     tooltipNode = null;
   }
 
@@ -183,14 +155,20 @@
     zoom = Math.max(MIN_ZOOM, zoom / 1.2);
   }
 
+  /** Convert screen (clientX/Y) to SVG viewBox coordinates using native SVG APIs. */
+  function screenToSvg(clientX: number, clientY: number): DOMPoint {
+    if (!svgEl) return new DOMPoint(0, 0);
+    const ctm = svgEl.getScreenCTM();
+    if (!ctm) return new DOMPoint(0, 0);
+    return new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+  }
+
+  /** Convert screen mouse coords to world (scene) coordinates, accounting for pan & zoom. */
   function getWorldPoint(e: MouseEvent): { x: number; y: number } {
-    if (!containerEl) return { x: 0, y: 0 };
-    const rect = containerEl.getBoundingClientRect();
-    const svgX = ((e.clientX - rect.left) / rect.width) * WIDTH;
-    const svgY = ((e.clientY - rect.top) / rect.height) * HEIGHT;
+    const svg = screenToSvg(e.clientX, e.clientY);
     return {
-      x: (svgX - panX) / zoom,
-      y: (svgY - panY) / zoom
+      x: (svg.x - panX) / zoom,
+      y: (svg.y - panY) / zoom
     };
   }
 
@@ -199,8 +177,12 @@
     e.stopPropagation();
     e.preventDefault();
     dragNodeId = visNode.node.id;
+    hoveredNodeId = visNode.node.id;
+    hideTooltip();
+    isInteracting = true;
     didDrag = false;
     dragStart = getWorldPoint(e);
+    dragStartScreen = { x: e.clientX, y: e.clientY };
     dragNodeStart = { x: visNode.x, y: visNode.y };
     const offset = dragOffsets[visNode.node.id] ?? { x: 0, y: 0 };
     dragBasePos = { x: visNode.x - offset.x, y: visNode.y - offset.y };
@@ -208,26 +190,31 @@
 
   function updateNodeDrag(e: MouseEvent) {
     if (!dragNodeId) return;
-    const world = getWorldPoint(e);
-    const dx = world.x - dragStart.x;
-    const dy = world.y - dragStart.y;
-    if (!didDrag && Math.hypot(dx, dy) > 2) {
-      didDrag = true;
-    }
-    if (!didDrag) return;
-    const nextX = dragNodeStart.x + dx;
-    const nextY = dragNodeStart.y + dy;
-    dragOffsets = {
-      ...dragOffsets,
-      [dragNodeId]: { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y }
-    };
+    perf.frame('interact', 'dragFrame', () => {
+      // Screen-space threshold (5px) — consistent across zoom levels, like Excalidraw
+      if (!didDrag && Math.hypot(e.clientX - dragStartScreen.x, e.clientY - dragStartScreen.y) > 5) {
+        didDrag = true;
+      }
+      if (!didDrag) return;
+      const world = getWorldPoint(e);
+      const dx = world.x - dragStart.x;
+      const dy = world.y - dragStart.y;
+      const nextX = dragNodeStart.x + dx;
+      const nextY = dragNodeStart.y + dy;
+      dragOffsets = {
+        ...dragOffsets,
+        [dragNodeId!]: { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y }
+      };
+    });
   }
 
   function endNodeDrag() {
     if (dragNodeId && didDrag) {
       suppressClick = true;
     }
+    hoveredNodeId = null;
     dragNodeId = null;
+    isInteracting = false;
   }
 
   function handleGlobalMouseMove(e: MouseEvent) {
@@ -298,41 +285,81 @@
   let hoveredNodeId = $state<string | null>(null);
   let hoveredEdgeIndex = $state<number | null>(null);
 
-  const visDataMemo = new KeyedMemo(
-    () => keyOf(filteredGraph, selected.id, layoutMode),
-    () => {
-      const t0 = performance.now();
-      const result = computeLayout(filteredGraph, selected, layoutMode);
-      const dt = performance.now() - t0;
-      if (dt > 5) console.log(`[perf:derived] visData ${dt.toFixed(1)}ms`);
-      return result;
-    },
+  // Stage 1: base scene (layout + similarity groups). Cached behind KeyedMemo.
+  const baseSceneMemo = new KeyedMemo(
+    () => keyOf(graph, selected.id, layoutMode, showStructural, showSemantic),
+    () => perf.time('derived', 'baseScene', () => buildBaseScene(graph, selected, layoutMode, { showStructural, showSemantic }), { threshold: 5 }),
     { equalsKey: keyEqual }
   );
-  let visData = $derived(visDataMemo.current);
-
-  let layoutNodes = $derived.by(() => visData.nodes);
+  let baseScene = $derived(baseSceneMemo.current);
 
   let positionedNodes = $derived.by(() => {
-    return layoutNodes.map((node) => {
-      const offset = dragOffsets[node.node.id];
-      if (!offset) return node;
-      return { ...node, x: node.x + offset.x, y: node.y + offset.y };
+    return perf.frame('derived', 'positionedNodes', () =>
+      baseScene.nodes.map((node) => {
+        const offset = dragOffsets[node.node.id];
+        if (!offset) return node;
+        return { ...node, x: node.x + offset.x, y: node.y + offset.y };
+      })
+    );
+  });
+
+  let positionedNodeMap = $derived.by(() => perf.frame('derived', 'positionedNodeMap', () => buildNodeMap(positionedNodes)));
+
+  // Viewport culling — only render nodes/edges visible in the current view
+  const CULL_MARGIN = 100; // px margin around viewport for labels
+  let visibleBounds = $derived.by(() => ({
+    minX: -panX / zoom - CULL_MARGIN,
+    minY: -panY / zoom - CULL_MARGIN,
+    maxX: (-panX + WIDTH) / zoom + CULL_MARGIN,
+    maxY: (-panY + HEIGHT) / zoom + CULL_MARGIN,
+  }));
+
+  function isNodeVisible(node: VisNode): boolean {
+    const dims = getNodeDimensions(node.node, node.isCenter);
+    const hw = dims.width / 2;
+    const hh = dims.height / 2;
+    return (
+      node.x + hw >= visibleBounds.minX &&
+      node.x - hw <= visibleBounds.maxX &&
+      node.y + hh >= visibleBounds.minY &&
+      node.y - hh <= visibleBounds.maxY
+    );
+  }
+
+  let visibleNodeIds = $derived.by(() => {
+    return perf.frame('derived', 'visibleNodeIds', () => {
+      const ids = new Set<string>();
+      for (const node of positionedNodes) {
+        if (isNodeVisible(node)) ids.add(node.node.id);
+      }
+      return ids;
     });
   });
 
-  let positionedNodeMap = $derived.by(() => {
-    const map = new Map<string, VisNode>();
-    for (const node of positionedNodes) {
-      map.set(node.node.id, node);
-    }
-    return map;
+  let visibleNodes = $derived(positionedNodes.filter(n => visibleNodeIds.has(n.node.id)));
+
+  let visibleEdges = $derived.by(() => {
+    return perf.frame('derived', 'visibleEdges', () =>
+      baseScene.edges
+        .map((edge, i) => ({ edge, index: i }))
+        .filter(({ edge }) => {
+          const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
+          const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
+          if (visibleNodeIds.has(edge.from.node.id) || visibleNodeIds.has(edge.to.node.id)) return true;
+          const minX = Math.min(fromNode.x, toNode.x);
+          const maxX = Math.max(fromNode.x, toNode.x);
+          const minY = Math.min(fromNode.y, toNode.y);
+          const maxY = Math.max(fromNode.y, toNode.y);
+          return !(maxX < visibleBounds.minX || minX > visibleBounds.maxX ||
+                   maxY < visibleBounds.minY || minY > visibleBounds.maxY);
+        })
+    );
   });
 
   let hoveredNeighborIds = $derived.by(() => {
     if (!hoveredNodeId) return null;
     const neighbors = new Set<string>();
-    for (const edge of visData.edges) {
+    for (const edge of baseScene.edges) {
       if (edge.from.node.id === hoveredNodeId) {
         neighbors.add(edge.to.node.id);
       } else if (edge.to.node.id === hoveredNodeId) {
@@ -374,97 +401,16 @@
     return { href: getNodeUrl(node.id), external: false };
   }
 
-  // Precompute edge angle similarity groups (O(e log e) instead of O(e²))
-  let edgeSimilarityGroups = $derived.by(() => {
-    const t0 = performance.now();
-    const edges = visData.edges;
-    if (edges.length === 0) return new Map<number, { group: number[]; indexOf: number }>();
-
-    // Compute angle + direction for each edge
-    type EdgeAngle = { index: number; angle: number; direction: string };
-    const edgeAngles: EdgeAngle[] = edges.map((edge, i) => {
-      const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
-      const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
-      const dx = toNode.x - fromNode.x;
-      const dy = toNode.y - fromNode.y;
-      return { index: i, angle: Math.atan2(dy, dx), direction: edge.direction };
-    });
-
-    // Sort by direction then angle for efficient grouping
-    const sorted = [...edgeAngles].sort((a, b) => {
-      if (a.direction !== b.direction) return a.direction < b.direction ? -1 : 1;
-      return a.angle - b.angle;
-    });
-
-    // Group edges with similar angles (within 0.35 radians) and same direction
-    const result = new Map<number, { group: number[]; indexOf: number }>();
-    let groupStart = 0;
-    while (groupStart < sorted.length) {
-      const group: number[] = [sorted[groupStart].index];
-      let groupEnd = groupStart + 1;
-      while (groupEnd < sorted.length
-        && sorted[groupEnd].direction === sorted[groupStart].direction
-        && Math.abs(sorted[groupEnd].angle - sorted[groupStart].angle) < 0.35
-      ) {
-        group.push(sorted[groupEnd].index);
-        groupEnd++;
-      }
-      for (let k = 0; k < group.length; k++) {
-        result.set(group[k], { group, indexOf: k });
-      }
-      groupStart = groupEnd;
-    }
-
-    const dt = performance.now() - t0;
-    if (dt > 2) console.log(`[perf:derived] edgeSimilarityGroups ${dt.toFixed(1)}ms (${edges.length} edges)`);
-    return result;
+  // Stage 2: label positions. Recomputes with drag-aware positions (cheap).
+  let edgeLabelPositions = $derived.by(() => {
+    return perf.frame('derived', 'edgeLabelPositions', () =>
+      computeSceneLabels(
+        baseScene,
+        positionedNodeMap,
+        (kind) => getEdgeLabelMetrics(kind, false)
+      )
+    );
   });
-
-  // Calculate label position for an edge using precomputed groups
-  function getLabelPosition(
-    edge: VisEdge,
-    edgeIndex: number,
-    labelWidth: number
-  ): { x: number; y: number; anchor: string } {
-    const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
-    const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
-
-    const startAnchor = getEdgeAnchor(fromNode, toNode);
-    const endAnchor = getEdgeAnchor(toNode, fromNode);
-    const edgeDx = endAnchor.x - startAnchor.x;
-    const edgeDy = endAnchor.y - startAnchor.y;
-    const len = Math.hypot(edgeDx, edgeDy);
-
-    if (len === 0) {
-      return { x: fromNode.x, y: fromNode.y, anchor: 'middle' };
-    }
-
-    const inset = Math.min(EDGE_NODE_PADDING, len * 0.35);
-    const startX = startAnchor.x + (edgeDx / len) * inset;
-    const startY = startAnchor.y + (edgeDy / len) * inset;
-    const endX = endAnchor.x - (edgeDx / len) * inset;
-    const endY = endAnchor.y - (edgeDy / len) * inset;
-
-    let midX = (startX + endX) / 2;
-    let midY = (startY + endY) / 2;
-
-    const perpX = -edgeDy / len;
-    const perpY = edgeDx / len;
-
-    const similarity = edgeSimilarityGroups.get(edgeIndex);
-    const lineGap = Math.hypot(endX - startX, endY - startY);
-    const sizePenalty = Math.max(0, (labelWidth - lineGap) * 0.25);
-    const baseOffset = 10 + sizePenalty;
-    let crowdOffset = 0;
-    if (similarity && similarity.group.length > 1) {
-      crowdOffset = (similarity.indexOf - (similarity.group.length - 1) / 2) * 14;
-    }
-
-    midX += perpX * (baseOffset + crowdOffset);
-    midY += perpY * (baseOffset + crowdOffset);
-
-    return { x: midX, y: midY, anchor: 'middle' };
-  }
 </script>
 
 <svelte:window onmousemove={handleGlobalMouseMove} onmouseup={handleGlobalMouseUp} />
@@ -475,7 +421,7 @@
       <span class="text-sm font-medium text-[var(--ink)]">Relationship Graph</span>
       <!-- Edge count indicator -->
       <span class="text-xs text-[var(--muted)]">
-        {visData.edges.length} edges
+        {baseScene.edges.length} edges
       </span>
     </div>
     <div class="flex items-center gap-4 flex-wrap">
@@ -547,7 +493,7 @@
     onmouseup={handleMouseUp}
     onmouseleave={handleMouseLeave}
   >
-    <svg viewBox="0 0 {WIDTH} {HEIGHT}" class="w-full h-full" preserveAspectRatio="xMidYMid slice">
+    <svg bind:this={svgEl} viewBox="0 0 {WIDTH} {HEIGHT}" class="w-full h-full" preserveAspectRatio="xMidYMid slice">
       <defs>
       <pattern
         id="grid"
@@ -612,8 +558,8 @@
 
     <rect width="100%" height="100%" fill="url(#grid)" />
     <g transform="translate({panX}, {panY}) scale({zoom})">
-      <!-- Edges (non-highlighted first, then highlighted on top) -->
-    {#each visData.edges as edge, edgeIndex (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
+      <!-- Edges (culled to viewport, with invisible hit areas for easier hovering) -->
+    {#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
       {@const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from}
       {@const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to}
       {@const startAnchor = getEdgeAnchor(fromNode, toNode)}
@@ -628,11 +574,19 @@
       {@const pathD = `M ${startX} ${startY} L ${endX} ${endY}`}
       {@const isHighlighted = hoveredNodeId === edge.from.node.id || hoveredNodeId === edge.to.node.id || hoveredEdgeIndex === edgeIndex}
       <g
-        class="edge transition-opacity duration-150"
+        class="edge {isInteracting ? '' : 'transition-opacity duration-150'}"
         style="opacity: {hoveredNodeId && !isHighlighted ? 0.3 : 1}"
-        onmouseenter={() => hoveredEdgeIndex = edgeIndex}
-        onmouseleave={() => hoveredEdgeIndex = null}
+        onmouseenter={() => { if (!dragNodeId) hoveredEdgeIndex = edgeIndex; }}
+        onmouseleave={() => { if (!dragNodeId) hoveredEdgeIndex = null; }}
       >
+        <!-- Invisible wider hit area for easier hover targeting -->
+        <path
+          d={pathD}
+          fill="none"
+          stroke="transparent"
+          stroke-width="12"
+          style="pointer-events: stroke"
+        />
         <path
           d={pathD}
           fill="none"
@@ -643,20 +597,21 @@
           marker-end={edge.direction === 'out'
             ? (isHighlighted ? 'url(#arrow-out-highlight)' : 'url(#arrow-out)')
             : (isHighlighted ? 'url(#arrow-in-highlight)' : 'url(#arrow-in)')}
-          class="transition-all duration-150"
+          class={isInteracting ? '' : 'transition-all duration-150'}
+          style="pointer-events: none"
         />
       </g>
     {/each}
 
-    <!-- Edge labels (rendered after edges so they're on top) -->
-    {#each visData.edges as edge, edgeIndex (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind + '|label')}
+    <!-- Edge labels (rendered after edges so they're on top, culled to viewport) -->
+    {#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind + '|label')}
       {@const isHighlighted = hoveredEdgeIndex === edgeIndex ||
         hoveredNodeId === edge.from.node.id ||
         hoveredNodeId === edge.to.node.id}
       {@const labelMetrics = getEdgeLabelMetrics(edge.kind, isHighlighted)}
-      {@const labelPos = getLabelPosition(edge, edgeIndex, labelMetrics.width)}
+      {@const labelPos = edgeLabelPositions[edgeIndex] ?? { x: 0, y: 0, anchor: 'middle' }}
       <g
-        class="transition-opacity duration-150"
+        class="{isInteracting ? '' : 'transition-opacity duration-150'}"
         style="opacity: {hoveredNodeId && !isHighlighted ? 0.2 : 1}"
       >
         <rect
@@ -667,14 +622,14 @@
           fill="var(--panel-solid)"
           opacity={isHighlighted ? 0.95 : 0.82}
           rx="3"
-          class="transition-all duration-150"
+          class={isInteracting ? '' : 'transition-all duration-150'}
         />
         <text
           x={labelPos.x}
           y={labelPos.y}
           text-anchor={labelPos.anchor}
           dominant-baseline="middle"
-          class="pointer-events-none transition-all duration-150 {isHighlighted
+          class="pointer-events-none {isInteracting ? '' : 'transition-all duration-150'} {isHighlighted
             ? 'text-[11px] font-medium fill-[var(--ink)]'
             : 'text-[9px] fill-[var(--muted)]'}"
         >
@@ -683,13 +638,14 @@
       </g>
     {/each}
 
-    <!-- Nodes -->
-    {#each positionedNodes as visNode (visNode.node.id)}
+    <!-- Nodes (culled to viewport) -->
+    {#each visibleNodes as visNode (visNode.node.id)}
       {@const isHovered = hoveredNodeId === visNode.node.id}
       {@const isRelatedToHover = hoveredNeighborIds?.has(visNode.node.id) ?? false}
       {@const shouldDim = hoveredNodeId && !isHovered && !isRelatedToHover && !visNode.isCenter}
+      {@const isDragging = dragNodeId === visNode.node.id}
       {@const dims = getNodeDimensions(visNode.node, visNode.isCenter)}
-      {@const hoverScale = isHovered && !visNode.isCenter ? 1.06 : 1}
+      {@const hoverScale = isHovered && !visNode.isCenter && !isDragging ? 1.06 : 1}
       {@const nodeWidth = dims.width}
       {@const nodeHeight = dims.height}
       {@const cornerRadius = RECT_CORNER_RADIUS}
@@ -708,7 +664,6 @@
       {@const labelMetrics = getNodeLabelMetrics(nodeWidth, dims.isRect, visNode.isCenter)}
       {@const nodeLabel = truncateName(visNode.node.name, labelMetrics.maxChars)}
       {@const compressLabel = estimateLabelWidth(nodeLabel, labelMetrics.fontSize) > labelMetrics.maxWidth}
-      {@const isDragging = dragNodeId === visNode.node.id}
       {@const link = nodeLink(visNode.node)}
       <a
         href={link.href}
@@ -720,12 +675,12 @@
       <g
         class="node cursor-grab"
         class:cursor-grabbing={isDragging}
-        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1};{isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
+        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1};{isInteracting || isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
         onmousedown={(e) => startNodeDrag(visNode, e)}
         onclick={(e) => handleNodeClick(visNode.node, e)}
-        onmouseenter={(e) => { hoveredNodeId = visNode.node.id; showTooltip(visNode, e); }}
-        onmousemove={(e) => showTooltip(visNode, e)}
-        onmouseleave={() => { hoveredNodeId = null; hideTooltip(); }}
+        onmouseenter={(e) => { if (!dragNodeId) { hoveredNodeId = visNode.node.id; showTooltip(visNode, e); } }}
+        onmousemove={(e) => { if (!dragNodeId) showTooltip(visNode, e); }}
+        onmouseleave={() => { if (!dragNodeId) { hoveredNodeId = null; hideTooltip(); } }}
       >
         {#if dims.isRect}
           <!-- Body fill -->
@@ -757,21 +712,17 @@
             height={nodeHeight}
             rx={cornerRadius}
             fill="none"
-            class="transition-all duration-150 {visNode.isCenter
+            class="{isInteracting ? '' : 'transition-all duration-150'} {visNode.isCenter || isHovered
               ? 'stroke-[var(--accent)] stroke-[3px]'
-              : isHovered
-                ? 'stroke-[var(--accent)] stroke-[3px]'
-                : 'hover:stroke-[var(--accent)] hover:stroke-2'}"
+              : ''}"
           />
         {:else}
           <circle
             r={radius}
             fill={kindColors[visNode.node.kind]}
-            class="transition-all duration-150 {visNode.isCenter
+            class="{isInteracting ? '' : 'transition-all duration-150'} {visNode.isCenter || isHovered
               ? 'stroke-[var(--accent)] stroke-[3px]'
-              : isHovered
-                ? 'stroke-[var(--accent)] stroke-[3px]'
-                : 'hover:stroke-[var(--accent)] hover:stroke-2'}"
+              : ''}"
           />
         {/if}
         <!-- Node name -->
@@ -801,7 +752,7 @@
 
 
     <!-- Empty state hints -->
-    {#if visData.nodes.length === 1}
+    {#if baseScene.nodes.length === 1}
       <text x={CENTER_X} y={CENTER_Y + 80} text-anchor="middle" class="fill-[var(--muted)] text-sm">
         No direct relationships
       </text>

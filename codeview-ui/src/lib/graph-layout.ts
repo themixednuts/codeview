@@ -1,4 +1,5 @@
 import type { Graph, Node, NodeKind } from './graph';
+import type { Point } from './geo';
 
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
@@ -66,6 +67,87 @@ export function getNodeDimensions(node: Node, isCenter: boolean): {
   };
 }
 
+/** Corner radius used for rectangular nodes (must match RECT_CORNER_RADIUS in RelationshipGraph). */
+const ANCHOR_CORNER_RADIUS = 10;
+
+/**
+ * Ray–rounded-rect intersection from the node center toward the target node.
+ * Decomposes the boundary into 4 straight segments (sides inset by corner radius)
+ * and 4 quarter-circle arcs, matching Excalidraw's approach. Intersects the ray
+ * with each component and picks the closest valid hit.
+ */
+function roundedRectAnchor(cx: number, cy: number, hw: number, hh: number, r: number, tx: number, ty: number): Point {
+  const dx = tx - cx;
+  const dy = ty - cy;
+  const len = Math.hypot(dx, dy) || 1;
+  const ux = dx / len;
+  const uy = dy / len;
+
+  // Clamp r so it doesn't exceed half of either dimension
+  const cr = Math.min(r, hw, hh);
+
+  let tBest = Infinity;
+
+  // --- 4 straight segments (sides inset by corner radius) ---
+  // Right: x = hw, y from -(hh-cr) to (hh-cr)
+  if (ux > 0) {
+    const t = hw / ux;
+    const py = uy * t;
+    if (Math.abs(py) <= hh - cr && t > 0) tBest = Math.min(tBest, t);
+  }
+  // Left: x = -hw, y from -(hh-cr) to (hh-cr)
+  if (ux < 0) {
+    const t = -hw / ux;
+    const py = uy * t;
+    if (Math.abs(py) <= hh - cr && t > 0) tBest = Math.min(tBest, t);
+  }
+  // Bottom: y = hh, x from -(hw-cr) to (hw-cr)
+  if (uy > 0) {
+    const t = hh / uy;
+    const px = ux * t;
+    if (Math.abs(px) <= hw - cr && t > 0) tBest = Math.min(tBest, t);
+  }
+  // Top: y = -hh, x from -(hw-cr) to (hw-cr)
+  if (uy < 0) {
+    const t = -hh / uy;
+    const px = ux * t;
+    if (Math.abs(px) <= hw - cr && t > 0) tBest = Math.min(tBest, t);
+  }
+
+  // --- 4 quarter-circle arcs at corners ---
+  // Corner centers at (±(hw-cr), ±(hh-cr)), radius cr
+  // Only accept hits in the outward quadrant of each corner
+  const corners = [
+    { ccx: hw - cr, ccy: hh - cr, sx: 1, sy: 1 },   // bottom-right
+    { ccx: -(hw - cr), ccy: hh - cr, sx: -1, sy: 1 },  // bottom-left
+    { ccx: hw - cr, ccy: -(hh - cr), sx: 1, sy: -1 },  // top-right
+    { ccx: -(hw - cr), ccy: -(hh - cr), sx: -1, sy: -1 }, // top-left
+  ];
+
+  for (const { ccx, ccy, sx, sy } of corners) {
+    // Ray from (0,0): P(t) = t*(ux,uy)
+    // Circle: |P - C|² = cr²  →  t² - 2t(u·C) + |C|² - cr² = 0
+    const dot = ux * ccx + uy * ccy;
+    const cLenSq = ccx * ccx + ccy * ccy;
+    const disc = dot * dot - (cLenSq - cr * cr);
+    if (disc < 0) continue;
+    const sqrtDisc = Math.sqrt(disc);
+    // Check both intersection points
+    for (const t of [dot - sqrtDisc, dot + sqrtDisc]) {
+      if (t <= 0) continue;
+      const px = ux * t;
+      const py = uy * t;
+      // Only accept if in the outward quadrant: (px - ccx) has sign sx, (py - ccy) has sign sy
+      if ((px - ccx) * sx >= -1e-6 && (py - ccy) * sy >= -1e-6 && t < tBest) {
+        tBest = t;
+      }
+    }
+  }
+
+  if (!isFinite(tBest)) return { x: cx, y: cy };
+  return { x: cx + ux * tBest, y: cy + uy * tBest };
+}
+
 export function getEdgeAnchor(fromNode: VisNode, toNode: VisNode): { x: number; y: number } {
   const dims = getNodeDimensions(fromNode.node, fromNode.isCenter);
   const dx = toNode.x - fromNode.x;
@@ -74,24 +156,14 @@ export function getEdgeAnchor(fromNode: VisNode, toNode: VisNode): { x: number; 
     return { x: fromNode.x, y: fromNode.y };
   }
   if (dims.isRect) {
-    const halfWidth = dims.width / 2;
-    const halfHeight = dims.height / 2;
-    const absDx = Math.abs(dx);
-    const absDy = Math.abs(dy);
-    const horizontalBias = 1.4;
-    if (absDx * horizontalBias >= absDy) {
-      const scale = halfWidth / (absDx || 1);
-      return {
-        x: fromNode.x + dx * scale,
-        y: fromNode.y + dy * scale
-      };
-    }
-    const scale = halfHeight / (absDy || 1);
-    return {
-      x: fromNode.x + dx * scale,
-      y: fromNode.y + dy * scale
-    };
+    return roundedRectAnchor(
+      fromNode.x, fromNode.y,
+      dims.width / 2, dims.height / 2,
+      ANCHOR_CORNER_RADIUS,
+      toNode.x, toNode.y
+    );
   }
+  // Circle nodes
   const radius = dims.width / 2;
   const distance = Math.hypot(dx, dy) || 1;
   return {
@@ -682,60 +754,127 @@ function getNodeBoundingBox(node: Node, isCenter: boolean): { width: number; hei
   };
 }
 
+function resolveCollisionPair(
+  a: VisNode, b: VisNode,
+  boxA: { width: number; height: number },
+  boxB: { width: number; height: number },
+  centerId: string
+): boolean {
+  const halfWidthA = boxA.width / 2;
+  const halfHeightA = boxA.height / 2;
+  const halfWidthB = boxB.width / 2;
+  const halfHeightB = boxB.height / 2;
+
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+
+  const overlapX = (halfWidthA + halfWidthB + MIN_NODE_SPACING) - Math.abs(dx);
+  const overlapY = (halfHeightA + halfHeightB + MIN_NODE_SPACING) - Math.abs(dy);
+
+  if (overlapX > 0 && overlapY > 0) {
+    let pushX = 0;
+    let pushY = 0;
+
+    if (overlapX < overlapY) {
+      pushX = dx >= 0 ? overlapX : -overlapX;
+    } else {
+      pushY = dy >= 0 ? overlapY : -overlapY;
+    }
+
+    if (a.node.id === centerId) {
+      b.x += pushX;
+      b.y += pushY;
+    } else if (b.node.id === centerId) {
+      a.x -= pushX;
+      a.y -= pushY;
+    } else {
+      a.x -= pushX * 0.5;
+      a.y -= pushY * 0.5;
+      b.x += pushX * 0.5;
+      b.y += pushY * 0.5;
+    }
+    return true;
+  }
+  return false;
+}
+
 function resolveCollisions(
   visNodes: VisNode[],
   centerId: string,
   iterations: number = 15
 ): void {
-  for (let iter = 0; iter < iterations; iter++) {
-    let moved = false;
-    for (let i = 0; i < visNodes.length; i++) {
-      for (let j = i + 1; j < visNodes.length; j++) {
-        const a = visNodes[i];
-        const b = visNodes[j];
+  const n = visNodes.length;
 
-        const boxA = getNodeBoundingBox(a.node, a.isCenter);
-        const boxB = getNodeBoundingBox(b.node, b.isCenter);
+  // Pre-compute bounding boxes (they don't change between iterations)
+  const boxes = visNodes.map(v => getNodeBoundingBox(v.node, v.isCenter));
 
-        const halfWidthA = boxA.width / 2;
-        const halfHeightA = boxA.height / 2;
-        const halfWidthB = boxB.width / 2;
-        const halfHeightB = boxB.height / 2;
-
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-
-        const overlapX = (halfWidthA + halfWidthB + MIN_NODE_SPACING) - Math.abs(dx);
-        const overlapY = (halfHeightA + halfHeightB + MIN_NODE_SPACING) - Math.abs(dy);
-
-        if (overlapX > 0 && overlapY > 0) {
-          // Push apart along the axis with less overlap
-          let pushX = 0;
-          let pushY = 0;
-
-          if (overlapX < overlapY) {
-            pushX = dx >= 0 ? overlapX : -overlapX;
-          } else {
-            pushY = dy >= 0 ? overlapY : -overlapY;
+  // For small graphs, O(n²) brute force is faster than grid overhead
+  if (n < 30) {
+    for (let iter = 0; iter < iterations; iter++) {
+      let moved = false;
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          if (resolveCollisionPair(visNodes[i], visNodes[j], boxes[i], boxes[j], centerId)) {
+            moved = true;
           }
-
-          if (a.node.id === centerId) {
-            b.x += pushX;
-            b.y += pushY;
-          } else if (b.node.id === centerId) {
-            a.x -= pushX;
-            a.y -= pushY;
-          } else {
-            a.x -= pushX * 0.5;
-            a.y -= pushY * 0.5;
-            b.x += pushX * 0.5;
-            b.y += pushY * 0.5;
-          }
-          moved = true;
         }
       }
+      if (!moved) break;
     }
-    if (!moved) break;
+  } else {
+    // Spatial grid: cell size based on largest node + spacing
+    let maxW = 0, maxH = 0;
+    for (const box of boxes) {
+      if (box.width > maxW) maxW = box.width;
+      if (box.height > maxH) maxH = box.height;
+    }
+    const cellSize = Math.max(maxW, maxH) + MIN_NODE_SPACING;
+
+    for (let iter = 0; iter < iterations; iter++) {
+      let moved = false;
+
+      // Rebuild grid each iteration (positions change)
+      const grid = new Map<string, number[]>();
+      for (let i = 0; i < n; i++) {
+        const v = visNodes[i];
+        const hw = boxes[i].width / 2;
+        const hh = boxes[i].height / 2;
+        // Insert into all overlapping cells
+        const minCX = Math.floor((v.x - hw) / cellSize);
+        const maxCX = Math.floor((v.x + hw) / cellSize);
+        const minCY = Math.floor((v.y - hh) / cellSize);
+        const maxCY = Math.floor((v.y + hh) / cellSize);
+        for (let cx = minCX; cx <= maxCX; cx++) {
+          for (let cy = minCY; cy <= maxCY; cy++) {
+            const key = `${cx},${cy}`;
+            let cell = grid.get(key);
+            if (!cell) {
+              cell = [];
+              grid.set(key, cell);
+            }
+            cell.push(i);
+          }
+        }
+      }
+
+      // Check pairs within each cell (deduplicate via i < j)
+      const checked = new Set<number>();
+      for (const cell of grid.values()) {
+        for (let a = 0; a < cell.length; a++) {
+          for (let b = a + 1; b < cell.length; b++) {
+            const i = cell[a], j = cell[b];
+            const pairKey = i * n + j;
+            if (checked.has(pairKey)) continue;
+            checked.add(pairKey);
+            if (resolveCollisionPair(visNodes[i], visNodes[j], boxes[i], boxes[j], centerId)) {
+              moved = true;
+            }
+          }
+        }
+      }
+
+      if (!moved) break;
+    }
   }
 
   for (const node of visNodes) {
