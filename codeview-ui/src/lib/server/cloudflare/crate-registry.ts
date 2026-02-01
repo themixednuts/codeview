@@ -2,32 +2,70 @@ import { DurableObject } from 'cloudflare:workers';
 import { and, count, desc, eq, inArray, or } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
-import migrations from './db/migrations';
-import { crateStatus, crossEdges, nodeIndex } from './db/schema';
-import { isValidEcosystem, parseCrateKey, parseEdgeKey } from './validation';
+import { getLogger } from '$lib/log';
+import migrations from '$lib/server/db/migrations/migrations';
+import { crateStatus, crossEdges, nodeIndex } from '$lib/server/db/schema';
+import { isValidEcosystem, parseCrateKey, parseEdgeKey } from '$lib/server/validation';
+
+const log = getLogger('registry');
 
 type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 
 export interface CrateStatusResult {
 	status: CrateStatusValue;
 	error?: string;
+	step?: string;
 }
 
 /**
  * CrateRegistry Durable Object — tracks parse status for crates and
- * pushes real-time updates to WebSocket subscribers.
- *
- * Uses Cloudflare Hibernatable WebSockets with tags for efficient fan-out.
+ * pushes real-time updates to SSE subscribers via TransformStream.
  */
 export class CrateRegistry extends DurableObject {
 	private db: DrizzleSqliteDODatabase;
+	private stepMap = new Map<string, string>();
+	private sseWriters = new Map<string, Set<WritableStreamDefaultWriter>>();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage);
 		this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.db, migrations);
+			migrate(this.db, migrations);
 		});
+	}
+
+	private addWriter(tag: string, writer: WritableStreamDefaultWriter): void {
+		let set = this.sseWriters.get(tag);
+		if (!set) {
+			set = new Set();
+			this.sseWriters.set(tag, set);
+		}
+		set.add(writer);
+	}
+
+	private removeWriter(tag: string, writer: WritableStreamDefaultWriter): void {
+		const set = this.sseWriters.get(tag);
+		if (!set) return;
+		set.delete(writer);
+		if (set.size === 0) this.sseWriters.delete(tag);
+	}
+
+	private broadcast(tag: string, data: unknown): void {
+		const set = this.sseWriters.get(tag);
+		if (!set || set.size === 0) return;
+		log.debug`broadcast ${tag} to ${String(set.size)} writer(s)`;
+		const encoder = new TextEncoder();
+		const chunk = encoder.encode(`data: ${JSON.stringify(data)}\n\n`);
+		// Copy to array — removeWriter mutates the Set
+		for (const writer of [...set]) {
+			try {
+				writer.write(chunk).catch(() => {
+					this.removeWriter(tag, writer);
+				});
+			} catch {
+				this.removeWriter(tag, writer);
+			}
+		}
 	}
 
 	async replaceCrossEdges(
@@ -62,23 +100,27 @@ export class CrateRegistry extends DurableObject {
 					eq(crossEdges.sourceName, name),
 					eq(crossEdges.sourceVersion, version)
 				)
-			);
+			)
+			.run();
 
 		if (edges.length > 0) {
-			this.db
-				.insert(crossEdges)
-				.values(
-					edges.map((edge) => ({
-						ecosystem,
-						sourceName: name,
-						sourceVersion: version,
-						fromId: edge.from,
-						toId: edge.to,
-						kind: edge.kind,
-						confidence: edge.confidence
-					}))
-				)
-				.onConflictDoNothing();
+			const BATCH = 10;
+			const rows = edges.map((edge) => ({
+				ecosystem,
+				sourceName: name,
+				sourceVersion: version,
+				fromId: edge.from,
+				toId: edge.to,
+				kind: edge.kind,
+				confidence: edge.confidence
+			}));
+			for (let i = 0; i < rows.length; i += BATCH) {
+				this.db
+					.insert(crossEdges)
+					.values(rows.slice(i, i + BATCH))
+					.onConflictDoNothing()
+					.run();
+			}
 		}
 
 		const now = Date.now();
@@ -103,21 +145,12 @@ export class CrateRegistry extends DurableObject {
 						isExternal,
 						updatedAt: now
 					}
-				});
+				})
+				.run();
 		}
 
 		for (const nodeId of touchedNodes) {
-			const tag = `edge:${nodeId}`;
-			const sockets = this.ctx.getWebSockets(tag);
-			if (sockets.length === 0) continue;
-			const message = JSON.stringify({ type: 'cross-edges', nodeId });
-			for (const ws of sockets) {
-				try {
-					ws.send(message);
-				} catch {
-					// Socket already closed — cleanup handled by runtime
-				}
-			}
+			this.broadcast(`edge:${nodeId}`, { type: 'cross-edges', nodeId });
 		}
 	}
 
@@ -159,17 +192,24 @@ export class CrateRegistry extends DurableObject {
 		const nodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }> = [];
 		if (nodeIds.size === 0) return { edges, nodes };
 
-		const rows = this.db
-			.select({
-				nodeId: nodeIndex.nodeId,
-				name: nodeIndex.name,
-				kind: nodeIndex.kind,
-				visibility: nodeIndex.visibility,
-				isExternal: nodeIndex.isExternal
-			})
-			.from(nodeIndex)
-			.where(inArray(nodeIndex.nodeId, Array.from(nodeIds)))
-			.all();
+		const allIds = Array.from(nodeIds);
+		const QUERY_BATCH = 50;
+		const rows: Array<{ nodeId: string; name: string; kind: string; visibility: string; isExternal: boolean }> = [];
+		for (let i = 0; i < allIds.length; i += QUERY_BATCH) {
+			const batch = allIds.slice(i, i + QUERY_BATCH);
+			const batchRows = this.db
+				.select({
+					nodeId: nodeIndex.nodeId,
+					name: nodeIndex.name,
+					kind: nodeIndex.kind,
+					visibility: nodeIndex.visibility,
+					isExternal: nodeIndex.isExternal
+				})
+				.from(nodeIndex)
+				.where(inArray(nodeIndex.nodeId, batch))
+				.all();
+			rows.push(...batchRows);
+		}
 
 		for (const row of rows) {
 			nodes.push({
@@ -196,10 +236,17 @@ export class CrateRegistry extends DurableObject {
 				)
 			)
 			.get();
-		if (!row) return { status: 'unknown' };
+		if (!row) {
+			log.debug`getStatus ${ecosystem}:${name}:${version} → unknown (no row)`;
+			return { status: 'unknown' };
+		}
+		const stepKey = `${ecosystem}:${name}:${version}`;
+		const step = row.status === 'processing' ? this.stepMap.get(stepKey) : undefined;
+		log.debug`getStatus ${ecosystem}:${name}:${version} → ${row.status} step=${step ?? '(none)'}`;
 		return {
 			status: row.status as CrateStatusValue,
-			...(row.error ? { error: row.error } : {})
+			...(row.error ? { error: row.error } : {}),
+			...(step ? { step } : {})
 		};
 	}
 
@@ -208,9 +255,18 @@ export class CrateRegistry extends DurableObject {
 		name: string,
 		version: string,
 		status: CrateStatusValue,
-		error?: string
+		error?: string,
+		step?: string
 	): Promise<void> {
+		log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'} error=${error ?? '(none)'}`;
 		const now = Date.now();
+		const stepKey = `${ecosystem}:${name}:${version}`;
+		if (status === 'processing' && step) {
+			this.stepMap.set(stepKey, step);
+		} else if (status !== 'processing') {
+			this.stepMap.delete(stepKey);
+		}
+
 		this.db
 			.insert(crateStatus)
 			.values({
@@ -228,47 +284,32 @@ export class CrateRegistry extends DurableObject {
 					error: error ?? null,
 					updatedAt: now
 				}
-			});
+			})
+			.run();
 
-		// Broadcast to all WebSocket subscribers watching this crate
+		// Broadcast to all SSE subscribers watching this crate
 		const tag = `${ecosystem}:${name}:${version}`;
-		const sockets = this.ctx.getWebSockets(tag);
-		const message = JSON.stringify({ status, ...(error ? { error } : {}) });
-		for (const ws of sockets) {
-			try {
-				ws.send(message);
-			} catch {
-				// Socket already closed — will be cleaned up automatically
-			}
-		}
+		const currentStep = this.stepMap.get(stepKey);
+		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}) };
+		log.debug`broadcast ${tag} → ${JSON.stringify(message)}`;
+		this.broadcast(tag, message);
 
 		const processingCount = await this.getProcessingCount(ecosystem);
 		const processingTag = `processing:${ecosystem}`;
-		const processingSockets = this.ctx.getWebSockets(processingTag);
-		if (processingSockets.length > 0) {
-			const update = JSON.stringify({ type: 'processing', count: processingCount });
-			for (const ws of processingSockets) {
-				try {
-					ws.send(update);
-				} catch {
-					// Socket already closed — will be cleaned up automatically
-				}
-			}
-		}
+		this.broadcast(processingTag, { type: 'processing', count: processingCount });
 	}
 
 	/**
-	 * HTTP handler — only accepts WebSocket upgrade requests.
+	 * HTTP handler — returns SSE streams for subscription keys.
 	 * The client passes the subscription key as a query parameter:
-	 *   /ws?key=rust:serde:1.0.219
+	 *   /sse?key=rust:serde:1.0.219
+	 *   /sse?key=processing:rust
+	 *   /sse?key=edge:<nodeId>
 	 */
 	async fetch(request: Request): Promise<Response> {
-		if (request.headers.get('Upgrade') !== 'websocket') {
-			return new Response('Expected WebSocket', { status: 400 });
-		}
-
 		const url = new URL(request.url);
 		const key = url.searchParams.get('key');
+		log.debug`fetch key=${key}`;
 		if (!key) {
 			return new Response('Missing key parameter', { status: 400 });
 		}
@@ -304,25 +345,64 @@ export class CrateRegistry extends DurableObject {
 			return new Response('Invalid key parameter', { status: 400 });
 		}
 
-		const existing = this.ctx.getWebSockets(tag);
-		if (existing.length >= 10) {
+		// Limit concurrent connections per tag
+		const existing = this.sseWriters.get(tag);
+		if (existing && existing.size >= 10) {
 			return new Response('Too many connections for this key', { status: 429 });
 		}
 
-		const pair = new WebSocketPair();
-		// Accept with a tag so getWebSockets(tag) finds this socket
-		this.ctx.acceptWebSocket(pair[1], [tag]);
-
-		// Send current status immediately
+		// Build initial message
+		let initialData: unknown = null;
 		if (keyType === 'crate' && crateData) {
-			const status = await this.getStatus(crateData.ecosystem, crateData.name, crateData.version);
-			pair[1].send(JSON.stringify(status));
+			initialData = await this.getStatus(crateData.ecosystem, crateData.name, crateData.version);
 		} else if (keyType === 'processing' && processingEcosystem) {
-			const count = await this.getProcessingCount(processingEcosystem);
-			pair[1].send(JSON.stringify({ type: 'processing', count }));
+			const cnt = await this.getProcessingCount(processingEcosystem);
+			initialData = { type: 'processing', count: cnt };
+		}
+		// edge type has no initial data — updates arrive when edges change
+
+		const encoder = new TextEncoder();
+		const { readable, writable } = new TransformStream();
+		const writer = writable.getWriter();
+
+		this.addWriter(tag, writer);
+		log.debug`registered writer for tag=${tag}, total writers=${String(this.sseWriters.get(tag)?.size ?? 0)}`;
+
+		// Send initial data after registering — don't await since the readable
+		// side has no consumer until the Response is returned.
+		if (initialData !== null) {
+			const chunk = encoder.encode(`data: ${JSON.stringify(initialData)}\n\n`);
+			log.debug`writing initial data for tag=${tag}: ${JSON.stringify(initialData)}`;
+			writer.write(chunk).catch(() => {});
 		}
 
-		return new Response(null, { status: 101, webSocket: pair[0] });
+		// Clean up writer when the connection closes.
+		// writer.closed settles when the readable side is cancelled (CF production).
+		// request.signal fires when the upstream proxy aborts (wrangler dev).
+		// Both may fire — guard ensures we only run once.
+		const capturedTag = tag;
+		let cleaned = false;
+		const cleanup = () => {
+			if (cleaned) return;
+			cleaned = true;
+			log.debug`writer cleanup for tag=${capturedTag}`;
+			this.removeWriter(capturedTag, writer);
+			writer.close().catch(() => {});
+		};
+		writer.closed.then(cleanup, cleanup);
+		if (request.signal) {
+			request.signal.addEventListener('abort', cleanup, { once: true });
+		}
+
+		log.debug`returning SSE response for tag=${tag}`;
+		return new Response(readable, {
+			headers: {
+				'Content-Type': 'text/event-stream',
+				'Cache-Control': 'no-cache',
+				'Content-Encoding': 'identity',
+				Connection: 'keep-alive'
+			}
+		});
 	}
 
 	async getProcessingCrates(
@@ -349,17 +429,5 @@ export class CrateRegistry extends DurableObject {
 			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, 'processing')))
 			.get();
 		return Number(row?.count ?? 0);
-	}
-
-	async webSocketMessage(_ws: WebSocket, _message: string | ArrayBuffer): Promise<void> {
-		// No client-to-server messages expected after connection
-	}
-
-	async webSocketClose(ws: WebSocket): Promise<void> {
-		ws.close();
-	}
-
-	async webSocketError(_ws: WebSocket, _error: unknown): Promise<void> {
-		// Socket errored — cleanup handled automatically by the runtime
 	}
 }

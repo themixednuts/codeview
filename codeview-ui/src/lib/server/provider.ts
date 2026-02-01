@@ -1,4 +1,3 @@
-import type { RequestEvent } from '@sveltejs/kit';
 import type { Edge, Workspace, CrateGraph } from '$lib/graph';
 import type { CrateIndex, NodeSummary } from '$lib/schema';
 
@@ -7,6 +6,7 @@ export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 export interface CrateStatus {
 	status: CrateStatusValue;
 	error?: string;
+	step?: string;
 }
 
 export interface CrateSummaryResult {
@@ -33,31 +33,24 @@ export interface DataProvider {
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
-	triggerParse(name: string, version: string): Promise<void>;
+	triggerParse(name: string, version: string, force?: boolean): Promise<void>;
 	searchRegistry(query: string): Promise<CrateSummaryResult[]>;
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getCrateVersions(name: string, limit?: number): Promise<string[]>;
+
+	// SSE streaming
+	streamCrateStatus(name: string, version: string, signal: AbortSignal): Promise<Response>;
+	streamProcessingStatus(ecosystem: string, signal: AbortSignal): Promise<Response>;
+	streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response>;
 }
 
-function hasCloudflarePlatform(
-	event: RequestEvent
-): event is RequestEvent & { platform: { env: Env } } {
-	return !!event.platform?.env?.GRAPH_STORE;
-}
-
-let _provider: DataProvider | null = null;
-
-export async function initProvider(event: RequestEvent): Promise<DataProvider> {
-	if (_provider) return _provider;
-
-	if (hasCloudflarePlatform(event)) {
-		const mod = await import('./provider.cloudflare');
-		_provider = mod.createCloudflareProvider(event.platform.env);
-	} else {
-		const mod = await import('./provider.local');
-		_provider = mod.createLocalProvider();
-	}
-
-	return _provider;
-}
+/**
+ * Create the data provider for the current platform.
+ *
+ * `$provider` is a virtual alias resolved at build time via kit.alias in
+ * svelte.config.js — it points to cloudflare/provider.ts or local/provider.ts
+ * depending on PUBLIC_CODEVIEW_PLATFORM. This keeps incompatible platform
+ * APIs (node:fs vs Cloudflare DO/R2) out of the wrong bundle entirely.
+ */
+export { createProvider as initProvider } from '$provider';

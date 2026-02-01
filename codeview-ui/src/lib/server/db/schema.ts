@@ -51,6 +51,19 @@ export const crossEdges = sqliteTable(
 	]
 );
 
+export const crateGraphs = sqliteTable(
+	'crate_graphs',
+	{
+		ecosystem: text('ecosystem').notNull(),
+		name: text('name').notNull(),
+		version: text('version').notNull(),
+		graphJson: text('graph_json').notNull(),
+		indexJson: text('index_json').notNull(),
+		parsedAt: integer('parsed_at').notNull()
+	},
+	(table) => [primaryKey({ columns: [table.ecosystem, table.name, table.version] })]
+);
+
 export const nodeIndex = sqliteTable('node_index', {
 	nodeId: text('node_id').primaryKey(),
 	name: text('name').notNull(),

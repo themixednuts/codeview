@@ -1,0 +1,399 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "id": "54f332ee-8691-4715-bb49-8decd58ac775",
+  "prevIds": [
+    "141c2751-e3d7-4752-acbc-c978a797bea4"
+  ],
+  "ddl": [
+    {
+      "name": "crate_graphs",
+      "entityType": "tables"
+    },
+    {
+      "name": "crate_status",
+      "entityType": "tables"
+    },
+    {
+      "name": "cross_edges",
+      "entityType": "tables"
+    },
+    {
+      "name": "graph_data",
+      "entityType": "tables"
+    },
+    {
+      "name": "node_index",
+      "entityType": "tables"
+    },
+    {
+      "name": "source_cache",
+      "entityType": "tables"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ecosystem",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "graph_json",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "index_json",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "parsed_at",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ecosystem",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "version",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "'unknown'",
+      "generated": null,
+      "name": "status",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "error",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ecosystem",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_name",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_version",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "from_id",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "to_id",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "confidence",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "id",
+      "entityType": "columns",
+      "table": "graph_data"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "json",
+      "entityType": "columns",
+      "table": "graph_data"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_id",
+      "entityType": "columns",
+      "table": "node_index"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "name",
+      "entityType": "columns",
+      "table": "node_index"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "node_index"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "visibility",
+      "entityType": "columns",
+      "table": "node_index"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "is_external",
+      "entityType": "columns",
+      "table": "node_index"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "table": "node_index"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "path",
+      "entityType": "columns",
+      "table": "source_cache"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "content",
+      "entityType": "columns",
+      "table": "source_cache"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "cached_at",
+      "entityType": "columns",
+      "table": "source_cache"
+    },
+    {
+      "columns": [
+        "ecosystem",
+        "name",
+        "version"
+      ],
+      "nameExplicit": false,
+      "name": "crate_graphs_pk",
+      "entityType": "pks",
+      "table": "crate_graphs"
+    },
+    {
+      "columns": [
+        "ecosystem",
+        "name",
+        "version"
+      ],
+      "nameExplicit": false,
+      "name": "crate_status_pk",
+      "entityType": "pks",
+      "table": "crate_status"
+    },
+    {
+      "columns": [
+        "ecosystem",
+        "source_name",
+        "source_version",
+        "from_id",
+        "to_id",
+        "kind",
+        "confidence"
+      ],
+      "nameExplicit": false,
+      "name": "cross_edges_pk",
+      "entityType": "pks",
+      "table": "cross_edges"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "graph_data_pk",
+      "table": "graph_data",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "node_id"
+      ],
+      "nameExplicit": false,
+      "name": "node_index_pk",
+      "table": "node_index",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "path"
+      ],
+      "nameExplicit": false,
+      "name": "source_cache_pk",
+      "table": "source_cache",
+      "entityType": "pks"
+    }
+  ],
+  "renames": []
+}

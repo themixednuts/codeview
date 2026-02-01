@@ -55,10 +55,8 @@ export function createCratesIoAdapter(): RegistryAdapter {
 				);
 				if (!data.version) return null;
 
-				const crateName = name.replace(/-/g, '_');
-
 				// Build docs.rs rustdoc JSON URL
-				const artifactUrl = `https://docs.rs/crate/${name}/${version}/target/doc/${crateName}.json`;
+				const artifactUrl = `https://docs.rs/crate/${name}/${version}/json`;
 
 				// crates.io download URL for source archive
 				const sourceArchiveUrl = `https://crates.io${data.version.dl_path}`;
@@ -99,7 +97,7 @@ export function createCratesIoAdapter(): RegistryAdapter {
 		async listTop(limit = 10) {
 			try {
 				const data = await fetchJson<{ crates: CratesIoCrate[] }>(
-					`${CRATES_IO_API}/crates?sort=downloads&per_page=${limit}`
+					`${CRATES_IO_API}/crates?sort=recent-downloads&per_page=${limit}`
 				);
 				return data.crates.map((c) => ({
 					ecosystem: 'rust' as const,

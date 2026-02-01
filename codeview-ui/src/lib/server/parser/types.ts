@@ -1,3 +1,5 @@
+import type { Node, Edge } from '$lib/graph';
+
 export interface ParseResult {
 	graph: CrateGraphData;
 	externalCrates: ExternalCrateData[];
@@ -7,15 +9,15 @@ export interface CrateGraphData {
 	id: string;
 	name: string;
 	version: string;
-	nodes: unknown[];
-	edges: unknown[];
+	nodes: Node[];
+	edges: Edge[];
 }
 
 export interface ExternalCrateData {
 	id: string;
 	name: string;
 	version?: string | null;
-	nodes: unknown[];
+	nodes: Node[];
 }
 
 /** A map of relative file paths to their source content. */

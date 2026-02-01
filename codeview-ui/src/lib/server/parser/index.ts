@@ -1,6 +1,6 @@
 import type { Ecosystem } from '../registry/types';
 import type { ParserAdapter } from './types';
-import { createRustdocWasmParser } from './rustdoc-wasm';
+import { createRustdocParser } from './rustdoc';
 
 const adapters = new Map<Ecosystem, ParserAdapter>();
 
@@ -10,7 +10,7 @@ export function getParser(ecosystem: Ecosystem): ParserAdapter {
 
 	switch (ecosystem) {
 		case 'rust':
-			adapter = createRustdocWasmParser();
+			adapter = createRustdocParser();
 			break;
 		default:
 			throw new Error(`No parser adapter for ecosystem: ${ecosystem}`);

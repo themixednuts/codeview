@@ -13,7 +13,7 @@ import { getParser } from '../parser/index';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
 import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } from '../provider';
-import { isValidCrateName, isValidVersion, normalizeCrateName } from '../validation';
+import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
 import { sseResponse, sseStreamResponse } from '../sse-proxy';
 import { LocalCache } from './cache';
 
@@ -68,8 +68,24 @@ export function createLocalProvider(): DataProvider {
 	const processingListeners = new Set<(count: number) => void>();
 	const edgeListeners = new Map<string, Set<(data: { type: string; nodeId: string }) => void>>();
 
+	// In-flight parse deduplication
+	const inFlight = new Map<string, Promise<void>>();
+
+	function parseKey(name: string, version: string): string {
+		return `${normalizeCrateName(name)}:${version}`;
+	}
+
+	function startParse(name: string, version: string): void {
+		const key = parseKey(name, version);
+		if (inFlight.has(key)) return;
+		const promise = parseCrate(name, version).finally(() => {
+			inFlight.delete(key);
+		});
+		inFlight.set(key, promise);
+	}
+
 	function statusKey(name: string, version: string): string {
-		return `${name}:${version}`;
+		return `${normalizeCrateName(name)}:${version}`;
 	}
 
 	function emitStatus(name: string, version: string, status: CrateStatus, step?: string): void {
@@ -206,12 +222,12 @@ export function createLocalProvider(): DataProvider {
 			);
 			log.info`Sources for ${name}@${version}: ${sourceFiles ? sourceFiles.size + ' files' : 'none'}`;
 
-			log.info`WASM parse starting for ${name}@${version}`;
+			log.info`Parsing rustdoc for ${name}@${version}`;
 			const t0 = performance.now();
 			const parser = getParser('rust');
 			const srcFiles = sourceFiles ?? undefined;
 			const parseResult = await parser.parse(artifact, name, version, srcFiles);
-			log.info`WASM parse done for ${name}@${version}: ${parseResult.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
+			log.info`Parsed ${name}@${version}: ${parseResult.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
 
 			// Step 5: Build index + cross-edges
 			emitStatus(name, version, { status: 'processing' }, 'indexing');
@@ -221,30 +237,19 @@ export function createLocalProvider(): DataProvider {
 			}
 
 			const nodeById = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
-			for (const rawNode of parseResult.graph.nodes as Array<{
-				id: string;
-				name?: string;
-				kind?: string;
-				visibility?: string;
-				is_external?: boolean;
-			}>) {
-				if (!rawNode?.id) continue;
-				const fallbackName = rawNode.id.split('::').pop() ?? rawNode.id;
-				nodeById.set(rawNode.id, {
-					id: rawNode.id,
-					name: rawNode.name ?? fallbackName,
-					kind: rawNode.kind ?? 'Module',
-					visibility: rawNode.visibility ?? 'Unknown',
-					is_external: rawNode.is_external
+			for (const node of parseResult.graph.nodes) {
+				nodeById.set(node.id, {
+					id: node.id,
+					name: node.name,
+					kind: node.kind,
+					visibility: node.visibility,
+					is_external: node.is_external
 				});
 			}
 
-			const crossEdges = (parseResult.graph.edges as Array<{
-				from: string;
-				to: string;
-				kind: string;
-				confidence: string;
-			}>).filter((edge) => cratePrefix(edge.from) !== cratePrefix(edge.to));
+			const crossEdges = parseResult.graph.edges.filter(
+				(edge) => cratePrefix(edge.from) !== cratePrefix(edge.to)
+			);
 
 			const crossNodeMap = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
 			for (const edge of crossEdges) {
@@ -267,10 +272,8 @@ export function createLocalProvider(): DataProvider {
 				name: string;
 			}): Promise<CrateIndexEntry | null> {
 				const candidates = [
-					ext.name,
-					ext.id,
-					normalizeCrateName(ext.name),
-					normalizeCrateName(ext.id)
+					...crateNameVariants(ext.name),
+					...crateNameVariants(ext.id)
 				].filter((value, index, all) => value && all.indexOf(value) === index);
 
 				for (const candidate of candidates) {
@@ -484,17 +487,10 @@ export function createLocalProvider(): DataProvider {
 				if (found) return { status: 'ready' };
 			}
 
-			// Auto-trigger parse for unknown crates (matches CF behavior)
-			if (isValidCrateName(name) && isValidVersion(version)) {
-				emitStatus(name, version, { status: 'processing' }, 'resolving');
-				parseCrate(name, version);
-				return { status: 'processing' };
-			}
-
 			return { status: 'unknown' };
 		},
 
-		async triggerParse(name: string, version: string) {
+		async triggerParse(name: string, version: string, force?: boolean) {
 			if (isStdCrate(name)) {
 				throw new Error(`${name} is a standard library crate and cannot be parsed on-demand`);
 			}
@@ -503,20 +499,27 @@ export function createLocalProvider(): DataProvider {
 			}
 
 			const lc = getCache();
-			const current = lc.getStatus('rust', name, version);
-			if (current.status === 'processing' || current.status === 'ready') {
-				return;
+
+			if (force) {
+				// Clear in-flight promise so a fresh parse runs
+				const key = parseKey(name, version);
+				inFlight.delete(key);
+			} else {
+				const current = lc.getStatus('rust', name, version);
+				if (current.status === 'processing' || current.status === 'ready') {
+					return;
+				}
+
+				// Also check graph cache
+				if (lc.hasCrate(name, version)) {
+					emitStatus(name, version, { status: 'ready' });
+					return;
+				}
 			}
 
-			// Also check graph cache
-			if (lc.hasCrate(name, version)) {
-				emitStatus(name, version, { status: 'ready' });
-				return;
-			}
-
-			// Fire and forget
+			// Set status atomically BEFORE starting the parse
 			emitStatus(name, version, { status: 'processing' }, 'resolving');
-			parseCrate(name, version);
+			startParse(name, version);
 		},
 
 		async searchRegistry(query: string): Promise<CrateSummaryResult[]> {
@@ -551,11 +554,11 @@ export function createLocalProvider(): DataProvider {
 
 			// Terminal states — single event
 			if (status.status === 'ready' || status.status === 'failed') {
-				return sseResponse(`data: ${JSON.stringify(status)}\n\n`, signal);
+				return sseResponse(`data: ${JSON.stringify(status)}\n\n`, signal, { ttl: 500 });
 			}
 
 			// For unknown crates, auto-trigger parse and stream updates
-			if (status.status === 'unknown') {
+			if (status.status === 'unknown' && isValidCrateName(name) && isValidVersion(version)) {
 				this.triggerParse(name, version);
 			}
 
@@ -593,7 +596,7 @@ export function createLocalProvider(): DataProvider {
 					push(`data: ${JSON.stringify({ type: 'processing', count: c })}\n\n`);
 				});
 				return unsubscribe;
-			}, signal);
+			}, signal, { ttl: 30_000 });
 		},
 
 		async streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response> {
@@ -602,7 +605,7 @@ export function createLocalProvider(): DataProvider {
 					push(`data: ${JSON.stringify(data)}\n\n`);
 				});
 				return unsubscribe;
-			}, signal);
+			}, signal, { ttl: 5_000 });
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
@@ -610,11 +613,11 @@ export function createLocalProvider(): DataProvider {
 			const localVersion = ws?.crates.find(
 				(c) => c.id === name || c.name === name
 			)?.version;
-			let registryVersions = await registry.listVersions(name, limit);
-			// Try hyphen/underscore normalization for Rust crate names
-			if (registryVersions.length === 0) {
-				const fallbackName = normalizeCrateName(name);
-				registryVersions = await registry.listVersions(fallbackName, limit);
+			// Try both hyphen and underscore variants for registry lookup
+			let registryVersions: string[] = [];
+			for (const variant of crateNameVariants(name)) {
+				registryVersions = await registry.listVersions(variant, limit);
+				if (registryVersions.length > 0) break;
 			}
 			if (localVersion && !registryVersions.includes(localVersion)) {
 				return [localVersion, ...registryVersions];

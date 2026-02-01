@@ -3,8 +3,8 @@ import { eq } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import type { WorkspaceOutput } from '$lib/schema';
-import migrations from './db/migrations';
-import { graphData, sourceCache } from './db/schema';
+import migrations from '$lib/server/db/migrations/migrations';
+import { graphData, sourceCache } from '$lib/server/db/schema';
 
 export class GraphStore extends DurableObject {
 	private db: DrizzleSqliteDODatabase;
@@ -13,7 +13,7 @@ export class GraphStore extends DurableObject {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage);
 		this.ctx.blockConcurrencyWhile(async () => {
-			await migrate(this.db, migrations);
+			migrate(this.db, migrations);
 		});
 	}
 
@@ -43,7 +43,8 @@ export class GraphStore extends DurableObject {
 			.onConflictDoUpdate({
 				target: sourceCache.path,
 				set: { content, cachedAt: now }
-			});
+			})
+			.run();
 	}
 
 	async ingestGraph(graphJson: WorkspaceOutput): Promise<void> {
@@ -53,6 +54,7 @@ export class GraphStore extends DurableObject {
 			.onConflictDoUpdate({
 				target: graphData.id,
 				set: { json: graphJson }
-			});
+			})
+			.run();
 	}
 }

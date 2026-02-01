@@ -1,0 +1,33 @@
+name = "codeview-services"
+main = "./src/index.ts"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[durable_objects]
+bindings = [
+  { name = "GRAPH_STORE", class_name = "GraphStore" },
+  { name = "CRATE_REGISTRY", class_name = "CrateRegistry" }
+]
+
+[[workflows]]
+name = "parse-crate"
+binding = "PARSE_CRATE"
+class_name = "ParseCrateWorkflow"
+
+[[r2_buckets]]
+binding = "CRATE_GRAPHS"
+bucket_name = "crate-graphs"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GraphStore", "CrateRegistry"]
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = false
+
+[[rules]]
+type = "Text"
+globs = ["**/*.sql"]
+fallthrough = true
