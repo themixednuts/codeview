@@ -1,0 +1,60 @@
+name: Build Std Rustdoc JSON
+on:
+  schedule:
+    - cron: '0 18 * * 4' # Thursday 6PM UTC (after typical Rust release time)
+    - cron: '0 18 * * 5' # Friday 6PM UTC (fallback)
+  workflow_dispatch: # manual trigger
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get latest stable Rust version
+        id: version
+        run: |
+          VERSION=$(curl -s https://static.rust-lang.org/dist/channel-rust-stable.toml \
+            | grep -m1 '^version = ' | sed 's/version = "\([^ ]*\).*/\1/')
+          echo "rust_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if already in R2
+        id: check
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          if aws s3api head-object --bucket crate-graphs \
+            --key "rust/std/${{ steps.version.outputs.rust_version }}/graph.json" \
+            --endpoint-url "$R2_ENDPOINT" 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install nightly + rust-docs-json
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          rustup toolchain install nightly
+          rustup component add rust-docs-json --toolchain nightly
+
+      - name: Setup Bun
+        if: steps.check.outputs.exists == 'false'
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install deps
+        if: steps.check.outputs.exists == 'false'
+        run: cd codeview-ui && bun install
+
+      - name: Parse and upload std docs
+        if: steps.check.outputs.exists == 'false'
+        env:
+          RUST_VERSION: ${{ steps.version.outputs.rust_version }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: crate-graphs
+        run: bun run codeview-ui/scripts/build-std-docs.ts

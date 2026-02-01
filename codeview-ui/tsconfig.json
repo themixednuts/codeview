@@ -13,5 +13,9 @@
     "sourceMap": true,
     "strict": true,
     "skipLibCheck": true,
-  }
+  },
+  "exclude": [
+    "src/lib/wasm/**",
+    "src/lib/server/cloudflare/workers/cloudflare.d.ts"
+  ]
 }

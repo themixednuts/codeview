@@ -37,6 +37,8 @@
     --danger-border: rgba(180, 35, 24, 0.2);
     --success: #2f855a;
     --grid-line: rgba(38, 28, 20, 0.08);
+    --edge-out: #5b8abf;
+    --edge-out-strong: #3a6fa3;
     --edge-in: #94a3b8;
     --edge-in-strong: #475569;
     --edge-default: #5c6f7c;
@@ -88,6 +90,8 @@
     --danger-border: rgba(255, 180, 173, 0.25);
     --success: #7ce7ac;
     --grid-line: rgba(148, 163, 184, 0.2);
+    --edge-out: #6fa4d6;
+    --edge-out-strong: #8fbde6;
     --edge-in: #94a3b8;
     --edge-in-strong: #cbd5e1;
   }

@@ -7,7 +7,7 @@ fn main() {
     let ui_dir = manifest_dir.parent().unwrap().join("codeview-ui");
     let target = env::var("TARGET").unwrap();
 
-    // Rebuild when UI source changes
+    // Rebuild when UI source, config, or WASM changes
     println!("cargo:rerun-if-changed={}", ui_dir.join("src").display());
     println!(
         "cargo:rerun-if-changed={}",
@@ -20,6 +20,17 @@ fn main() {
     println!(
         "cargo:rerun-if-changed={}",
         ui_dir.join("vite.config.ts").display()
+    );
+
+    // Rebuild when the codeview-rustdoc Rust source changes (triggers wasm:build)
+    let rustdoc_dir = manifest_dir.parent().unwrap().join("codeview-rustdoc");
+    println!(
+        "cargo:rerun-if-changed={}",
+        rustdoc_dir.join("src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        rustdoc_dir.join("Cargo.toml").display()
     );
 
     // @jesterkit/exe-sveltekit builds directly to dist/codeview-server

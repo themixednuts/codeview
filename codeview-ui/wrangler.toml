@@ -1,26 +1,20 @@
 name = "codeview"
 compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
 main = ".svelte-kit/cloudflare/_worker.js"
 assets = { directory = ".svelte-kit/cloudflare", binding = "ASSETS" }
 
 [durable_objects]
 bindings = [
-  { name = "GRAPH_STORE", class_name = "GraphStore" },
-  { name = "CRATE_REGISTRY", class_name = "CrateRegistry" }
+  { name = "GRAPH_STORE", class_name = "GraphStore", script_name = "codeview-services" },
+  { name = "CRATE_REGISTRY", class_name = "CrateRegistry", script_name = "codeview-services" }
 ]
-
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["GraphStore"]
-
-[[migrations]]
-tag = "v2"
-new_sqlite_classes = ["CrateRegistry"]
 
 [[workflows]]
 name = "parse-crate"
 binding = "PARSE_CRATE"
 class_name = "ParseCrateWorkflow"
+script_name = "codeview-services"
 
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"
@@ -35,46 +29,3 @@ simple = { limit = 60, period = 60 }
 name = "RATE_LIMIT_PARSE"
 namespace_id = "1002"
 simple = { limit = 5, period = 60 }
-
-[[ratelimits]]
-name = "RATE_LIMIT_API_ANON"
-namespace_id = "1101"
-simple = { limit = 60, period = 60 }
-
-[[ratelimits]]
-name = "RATE_LIMIT_API_AUTH"
-namespace_id = "1102"
-simple = { limit = 180, period = 60 }
-
-[[ratelimits]]
-name = "RATE_LIMIT_API_PAID"
-namespace_id = "1103"
-simple = { limit = 600, period = 60 }
-
-[[ratelimits]]
-name = "RATE_LIMIT_PARSE_ANON"
-namespace_id = "1201"
-simple = { limit = 5, period = 60 }
-
-[[ratelimits]]
-name = "RATE_LIMIT_PARSE_AUTH"
-namespace_id = "1202"
-simple = { limit = 20, period = 60 }
-
-[[ratelimits]]
-name = "RATE_LIMIT_PARSE_PAID"
-namespace_id = "1203"
-simple = { limit = 60, period = 60 }
-
-[vars]
-# GITHUB_REPO = "owner/repo"
-# GITHUB_REF = "main"
-#
-# Optional rate limit policy overrides:
-# RATE_LIMIT_TIER_OVERRIDE = "anon"
-# RATE_LIMIT_POLICY_API = "anon"
-# RATE_LIMIT_POLICY_PARSE = "anon"
-# RATE_LIMIT_POLICY_WS = "anon"
-
-# Set GITHUB_TOKEN as a secret:
-#   npx wrangler secret put GITHUB_TOKEN

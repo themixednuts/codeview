@@ -1,8 +1,8 @@
 /// <reference path="./cloudflare.d.ts" />
 // See https://svelte.dev/docs/kit/types#app.d.ts
 
-import type { GraphStore } from '$lib/server/graph-store';
-import type { CrateRegistry } from '$lib/server/crate-registry';
+import type { GraphStore } from '$cloudflare/graph-store';
+import type { CrateRegistry } from '$cloudflare/crate-registry';
 import type { Ecosystem } from '$lib/server/registry/types';
 
 declare global {
