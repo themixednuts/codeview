@@ -31,8 +31,8 @@ pub fn ensure_capacity(bytes: usize) {
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub fn extract_graph(json: &[u8], crate_name: &str) -> Result<String, JsValue> {
-    let json_str = std::str::from_utf8(json)
-        .map_err(|e| JsValue::from_str(&format!("invalid UTF-8: {e}")))?;
+    let json_str =
+        std::str::from_utf8(json).map_err(|e| JsValue::from_str(&format!("invalid UTF-8: {e}")))?;
 
     wasm_log!("[wasm] extract_graph: {} bytes", json_str.len());
     let t0 = js_sys::Date::now();
@@ -41,10 +41,14 @@ pub fn extract_graph(json: &[u8], crate_name: &str) -> Result<String, JsValue> {
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     let t1 = js_sys::Date::now();
-    wasm_log!("[wasm] graph built: {} nodes, {} edges, {:.0}ms", graph.nodes.len(), graph.edges.len(), t1 - t0);
+    wasm_log!(
+        "[wasm] graph built: {} nodes, {} edges, {:.0}ms",
+        graph.nodes.len(),
+        graph.edges.len(),
+        t1 - t0
+    );
 
-    let result = serde_json::to_string(&graph)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let result = serde_json::to_string(&graph).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     wasm_log!("[wasm] serialized: {:.0}ms", js_sys::Date::now() - t1);
     Ok(result)
@@ -63,12 +67,16 @@ pub fn extract_graph_with_sources(
     source_files_json: &[u8],
     root_file: &str,
 ) -> Result<String, JsValue> {
-    let json_str = std::str::from_utf8(json)
-        .map_err(|e| JsValue::from_str(&format!("invalid UTF-8: {e}")))?;
+    let json_str =
+        std::str::from_utf8(json).map_err(|e| JsValue::from_str(&format!("invalid UTF-8: {e}")))?;
     let source_files_str = std::str::from_utf8(source_files_json)
         .map_err(|e| JsValue::from_str(&format!("invalid source UTF-8: {e}")))?;
 
-    wasm_log!("[wasm] extract_graph_with_sources: {} bytes rustdoc, {} bytes sources", json_str.len(), source_files_str.len());
+    wasm_log!(
+        "[wasm] extract_graph_with_sources: {} bytes rustdoc, {} bytes sources",
+        json_str.len(),
+        source_files_str.len()
+    );
     let t0 = js_sys::Date::now();
 
     let source_files: std::collections::HashMap<String, String> =
@@ -76,7 +84,15 @@ pub fn extract_graph_with_sources(
             .map_err(|e| JsValue::from_str(&format!("invalid source_files JSON: {e}")))?;
 
     let t1 = js_sys::Date::now();
-    wasm_log!("[wasm] sources parsed: {} files, {:.0}ms", source_files.len(), t1 - t0);
+    wasm_log!(
+        "[wasm] sources parsed: {} files, {:.0}ms",
+        source_files.len(),
+        t1 - t0
+    );
+    wasm_log!(
+        "[wasm] about to call extract_graph_with_source_map with {} bytes rustdoc",
+        json_str.len()
+    );
 
     let graph = crate::extract_graph_with_source_map(
         json_str,
@@ -88,10 +104,14 @@ pub fn extract_graph_with_sources(
     .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     let t2 = js_sys::Date::now();
-    wasm_log!("[wasm] graph built: {} nodes, {} edges, {:.0}ms", graph.nodes.len(), graph.edges.len(), t2 - t1);
+    wasm_log!(
+        "[wasm] graph built: {} nodes, {} edges, {:.0}ms",
+        graph.nodes.len(),
+        graph.edges.len(),
+        t2 - t1
+    );
 
-    let result = serde_json::to_string(&graph)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let result = serde_json::to_string(&graph).map_err(|e| JsValue::from_str(&e.to_string()))?;
 
     wasm_log!("[wasm] serialized: {:.0}ms", js_sys::Date::now() - t2);
     Ok(result)

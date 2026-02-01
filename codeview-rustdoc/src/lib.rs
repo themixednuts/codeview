@@ -18,6 +18,21 @@ use thiserror::Error;
 #[cfg(feature = "wasm")]
 mod wasm;
 
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn console_log(s: &str);
+}
+
+#[cfg(feature = "wasm")]
+macro_rules! wasm_log {
+    ($($arg:tt)*) => { console_log(&format!($($arg)*)) };
+}
+
 #[derive(Debug, Error)]
 pub enum RustdocError {
     #[error("failed to read rustdoc json: {0}")]
@@ -33,8 +48,6 @@ pub enum RustdocError {
     RustdocFailed(std::process::ExitStatus),
     #[error("missing root package in workspace metadata")]
     MissingRootPackage,
-    #[error("missing crate root source file")]
-    MissingCrateRoot,
 }
 
 #[cfg(feature = "native")]
@@ -43,6 +56,8 @@ pub struct RustdocJson {
     pub crate_name: String,
     pub json_path: PathBuf,
     pub manifest_path: PathBuf,
+    /// Path to the crate root source file (lib.rs or main.rs)
+    pub src_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +70,19 @@ impl CallMode {
     fn allow_ambiguous(self) -> bool {
         matches!(self, Self::Ambiguous)
     }
+}
+
+#[cfg(feature = "native")]
+fn is_lib_target(kind: &TargetKind) -> bool {
+    matches!(
+        kind,
+        TargetKind::Lib
+            | TargetKind::RLib
+            | TargetKind::CDyLib
+            | TargetKind::DyLib
+            | TargetKind::StaticLib
+            | TargetKind::ProcMacro
+    )
 }
 
 #[cfg(feature = "native")]
@@ -76,6 +104,15 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         .ok_or(RustdocError::MissingRootPackage)?;
     // Normalize crate name: Cargo uses hyphens but Rust uses underscores internally
     let crate_name = package.name.replace('-', "_");
+    let primary_target = package
+        .targets
+        .iter()
+        .find(|t| t.kind.iter().any(|k| is_lib_target(k)))
+        .or_else(|| {
+            package.targets.iter().find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
+        })
+        .ok_or(RustdocError::MissingRootPackage)?;
+    let src_path = primary_target.src_path.clone().into_std_path_buf();
 
     let status = Command::new("cargo")
         .arg("+nightly")
@@ -100,6 +137,7 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         crate_name,
         json_path,
         manifest_path: manifest_path.to_path_buf(),
+        src_path,
     })
 }
 
@@ -126,16 +164,20 @@ pub fn generate_workspace_rustdoc_json(
         }
 
         // Determine the right target flag: prefer --lib, fall back to first bin
-        let has_lib = package.targets.iter().any(|t| {
-            t.kind
-                .iter()
-                .any(|k| matches!(k, TargetKind::Lib | TargetKind::ProcMacro))
+        let lib_target = package.targets.iter().find(|t| {
+            t.kind.iter().any(|k| is_lib_target(k))
         });
-        let first_bin = package
-            .targets
-            .iter()
-            .find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
-            .map(|t| t.name.clone());
+        let bin_target = package.targets.iter().find(|t| {
+            t.kind.iter().any(|k| matches!(k, TargetKind::Bin))
+        });
+        let primary_target = lib_target.or(bin_target);
+        let Some(primary_target) = primary_target else {
+            if verbose {
+                eprintln!("Warning: no lib or bin target for {}", crate_name);
+            }
+            continue;
+        };
+        let src_path = primary_target.src_path.clone().into_std_path_buf();
 
         let mut cmd = Command::new("cargo");
         cmd.arg("+nightly")
@@ -143,10 +185,10 @@ pub fn generate_workspace_rustdoc_json(
             .arg("--manifest-path")
             .arg(pkg_manifest);
 
-        if has_lib {
+        if lib_target.is_some() {
             cmd.arg("--lib");
-        } else if let Some(bin_name) = &first_bin {
-            cmd.arg("--bin").arg(bin_name);
+        } else {
+            cmd.arg("--bin").arg(&primary_target.name);
         }
 
         // Add user-provided cargo args (e.g. --all-features, --features "uuid")
@@ -191,6 +233,7 @@ pub fn generate_workspace_rustdoc_json(
                 crate_name,
                 json_path,
                 manifest_path: pkg_manifest.to_path_buf(),
+                src_path: src_path.clone(),
             });
         }
     }
@@ -210,24 +253,42 @@ pub fn load_workspace_graph(
     let mut edges = Vec::new();
 
     // Collect crate versions from cargo metadata
-    let mut crate_versions = HashMap::new();
+    let mut all_crate_versions: HashMap<String, String> = HashMap::new();
     let workspace_members: HashSet<String> =
         if let Ok(metadata) = MetadataCommand::new().manifest_path(manifest_path).exec() {
-            for package in metadata.workspace_packages() {
+            // Collect versions for ALL packages (including dependencies)
+            for package in &metadata.packages {
                 let crate_name = package.name.replace('-', "_");
-                crate_versions.insert(crate_name.clone(), package.version.to_string());
+                all_crate_versions.insert(crate_name, package.version.to_string());
             }
-            crate_versions.keys().cloned().collect()
+            // Workspace members are the subset we fully analyze
+            metadata.workspace_packages()
+                .iter()
+                .map(|pkg| pkg.name.replace('-', "_"))
+                .collect()
         } else {
             HashSet::new()
         };
+
+    // Resolve rustc version for std-lib crates (std, core, alloc).
+    // Cargo metadata doesn't include these, so we fall back to `rustc +nightly --version`.
+    let rustc_version: Option<String> = Command::new("rustc")
+        .arg("+nightly")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|out| {
+            let text = String::from_utf8_lossy(&out.stdout);
+            // Output: "rustc 1.XX.0-nightly (hash date)"
+            text.split_whitespace().nth(1).map(|v| v.to_string())
+        });
 
     for rustdoc in rustdoc_jsons {
         let graph = load_graph_from_path_with_sources(
             &rustdoc.json_path,
             &rustdoc.crate_name,
             manifest_path,
-            &rustdoc.manifest_path,
+            &rustdoc.src_path,
             call_mode,
         )?;
 
@@ -291,7 +352,7 @@ pub fn load_workspace_graph(
     for member in &workspace_members {
         let nodes = crate_nodes.remove(member).unwrap_or_default();
         let edges = crate_edges.remove(member).unwrap_or_default();
-        let version = crate_versions
+        let version = all_crate_versions
             .get(member)
             .cloned()
             .unwrap_or_else(|| "0.0.0".to_string());
@@ -306,6 +367,7 @@ pub fn load_workspace_graph(
     crate_graphs.sort_by(|a, b| a.id.cmp(&b.id));
 
     // Build external crate stubs from remaining nodes
+    const STD_CRATES: &[&str] = &["std", "core", "alloc"];
     let mut external_crates = Vec::new();
     let mut remaining_crate_names: Vec<String> = crate_nodes.keys().cloned().collect();
     remaining_crate_names.sort();
@@ -313,9 +375,18 @@ pub fn load_workspace_graph(
         let nodes = crate_nodes.remove(&ext_name).unwrap_or_default();
         // Also include any intra-crate edges for external crates
         let _edges = crate_edges.remove(&ext_name).unwrap_or_default();
+        // For std-lib crates, use the nightly rustc version (cargo metadata doesn't list them)
+        let version = all_crate_versions.get(&ext_name).cloned().or_else(|| {
+            if STD_CRATES.contains(&ext_name.as_str()) {
+                rustc_version.clone()
+            } else {
+                None
+            }
+        });
         external_crates.push(ExternalCrate {
             id: ext_name.clone(),
-            name: ext_name,
+            name: ext_name.clone(),
+            version,
             nodes,
         });
     }
@@ -386,7 +457,7 @@ pub fn load_graph_from_path_with_sources(
     path: &Path,
     crate_name: &str,
     workspace_manifest_path: &Path,
-    crate_manifest_path: &Path,
+    root_file: &Path,
     call_mode: CallMode,
 ) -> Result<Graph, RustdocError> {
     let content = fs::read_to_string(path)?;
@@ -394,17 +465,179 @@ pub fn load_graph_from_path_with_sources(
         &content,
         crate_name,
         workspace_manifest_path,
-        crate_manifest_path,
+        root_file,
         call_mode,
     )
 }
 
+// ---------------------------------------------------------------------------
+// Multi-version rustdoc JSON compatibility layer
+//
+// `rustdoc-types` targets FORMAT_VERSION 57. docs.rs serves JSON from whatever
+// nightly built the crate, so the format version varies (observed: v35–v57+).
+//
+// Strategy:
+//   1. Fast path — `from_str::<Crate>` directly (zero-copy, zero allocation).
+//   2. Slow path — parse to `Value`, apply version-gated in-place fixups,
+//      then `from_value`. Only triggers when the fast path fails.
+// ---------------------------------------------------------------------------
+
+/// Parse rustdoc JSON with transparent format version compatibility.
+///
+/// Attempts zero-copy deserialization first. On failure, falls back to
+/// in-place JSON fixups based on the document's `format_version`.
+fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
+    #[cfg(feature = "wasm")]
+    wasm_log!("[wasm] parse_rustdoc_lenient: starting with {} bytes", json.len());
+    #[cfg(feature = "wasm")]
+    let t0 = js_sys::Date::now();
+
+    // Fast path: zero-copy when the format already matches our target.
+    #[cfg(feature = "wasm")]
+    wasm_log!("[wasm] parse_rustdoc_lenient: attempting fast path");
+    if let Ok(krate) = serde_json::from_str::<rdt::Crate>(json) {
+        #[cfg(feature = "wasm")]
+        wasm_log!("[wasm] rustdoc parsed (fast path): {:.0}ms", js_sys::Date::now() - t0);
+        return Ok(krate);
+    }
+
+    #[cfg(feature = "wasm")]
+    let t1 = js_sys::Date::now();
+
+    // Slow path: parse → fixup → materialize.
+    let mut doc: serde_json::Value = serde_json::from_str(json)?;
+
+    #[cfg(feature = "wasm")]
+    let t2 = js_sys::Date::now();
+
+    let source_version = doc
+        .get("format_version")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0) as u32;
+
+    #[cfg(feature = "wasm")]
+    wasm_log!("[wasm] rustdoc parsed to Value: {:.0}ms (format_version: {})", t2 - t1, source_version);
+
+    compat::upgrade(&mut doc, source_version);
+
+    #[cfg(feature = "wasm")]
+    let t3 = js_sys::Date::now();
+
+    let result = serde_json::from_value(doc).map_err(Into::into);
+
+    #[cfg(feature = "wasm")]
+    wasm_log!("[wasm] rustdoc upgrade + from_value: {:.0}ms", js_sys::Date::now() - t3);
+
+    result
+}
+
+/// In-place JSON fixups for rustdoc format version compatibility.
+///
+/// Each fixup is gated on the source format version and corresponds to a
+/// specific breaking change in `rust-lang/rust/src/rustdoc-json-types`.
+///
+/// Version changelog (breaking changes only):
+///
+/// | Ver | Commit         | Breaking change                                       |
+/// |-----|----------------|-------------------------------------------------------|
+/// | 44  | `8c50f95cf088` | Added required `Crate.target: Target`                 |
+/// | 51  | `7fa8901cd090` | `GenericArgs` → `Option<Box<GenericArgs>>` (backward-compatible) |
+/// | 54  | `078332fdc8e1` | `Item.attrs`: `Vec<String>` → `Vec<Attribute>`        |
+/// | 57  | `361af821ab16` | Added required `ExternalCrate.path: PathBuf`          |
+///
+/// Non-breaking bumps (v45–v46, v48–v50, v52–v53, v55–v56) only changed
+/// attribute pretty-printing or added new enum variants — no fixup needed.
+/// v51 is backward-compatible: old JSON with inline `GenericArgs` objects
+/// deserializes into `Some(Box<GenericArgs>)`.
+mod compat {
+    use serde_json::{json, Value};
+
+    const TARGET: u32 = super::rdt::FORMAT_VERSION;
+
+    /// Apply all version-gated fixups to bring `doc` up to our target schema.
+    pub fn upgrade(doc: &mut Value, source: u32) {
+        if source < 44 && TARGET >= 44 {
+            fixup_crate_target(doc);
+        }
+        if source < 54 && TARGET >= 54 {
+            walk(doc, fixup_string_attrs);
+        }
+        if source < 57 && TARGET >= 57 {
+            fixup_external_crate_path(doc);
+        }
+        // Always: catch unknown Attribute variants from newer nightlies.
+        walk(doc, fixup_unknown_attrs);
+    }
+
+    /// v44: `Crate` gained required `target: Target`. Inject a default.
+    fn fixup_crate_target(doc: &mut Value) {
+        let Value::Object(obj) = doc else { return };
+        obj.entry("target")
+            .or_insert_with(|| json!({"triple": "unknown", "target_features": []}));
+    }
+
+    /// v54: `Item.attrs` changed from `Vec<String>` to `Vec<Attribute>`.
+    /// Wrap each bare string as `{"other": s}` to match the enum layout.
+    fn fixup_string_attrs(map: &mut serde_json::Map<String, Value>) {
+        let Some(Value::Array(attrs)) = map.get_mut("attrs") else { return };
+        for attr in attrs.iter_mut() {
+            if let Value::String(s) = attr {
+                *attr = json!({"other": std::mem::take(s)});
+            }
+        }
+    }
+
+    /// v57: `ExternalCrate` gained required `path: PathBuf`. Inject empty default.
+    fn fixup_external_crate_path(doc: &mut Value) {
+        let Some(Value::Object(ext_crates)) = doc.get_mut("external_crates") else { return };
+        for ec in ext_crates.values_mut() {
+            let Value::Object(obj) = ec else { continue };
+            obj.entry("path").or_insert(Value::String(String::new()));
+        }
+    }
+
+    /// Normalize any `Attribute` variant our `rustdoc-types` can't deserialize.
+    /// Replaces unrecognized values with `{"other": "<json>"}`.
+    fn fixup_unknown_attrs(map: &mut serde_json::Map<String, Value>) {
+        let Some(Value::Array(attrs)) = map.get_mut("attrs") else { return };
+        for attr in attrs.iter_mut() {
+            // Strings are either already fixed by fixup_string_attrs or are
+            // valid unit variant names — let serde handle them.
+            if attr.is_string() {
+                continue;
+            }
+            if serde_json::from_value::<super::rdt::Attribute>(attr.clone()).is_err() {
+                *attr = json!({"other": attr.to_string()});
+            }
+        }
+    }
+
+    /// Recursively visit every JSON object, calling `f` on each.
+    fn walk(value: &mut Value, f: fn(&mut serde_json::Map<String, Value>)) {
+        match value {
+            Value::Object(map) => {
+                f(map);
+                for v in map.values_mut() {
+                    walk(v, f);
+                }
+            }
+            Value::Array(arr) => {
+                for v in arr.iter_mut() {
+                    walk(v, f);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError> {
-    let krate: rdt::Crate = serde_json::from_str(json)?;
+    let krate = parse_rustdoc_lenient(json)?;
     build_graph(&krate, crate_name, BuildGraphOptions {
         workspace_members: None,
         source: None,
         call_mode: CallMode::Strict,
+        skip_external_nodes: true,
     })
 }
 
@@ -419,12 +652,13 @@ pub fn extract_graph_with_source_map(
     root_file: &str,
     call_mode: CallMode,
 ) -> Result<Graph, RustdocError> {
-    let krate: rdt::Crate = serde_json::from_str(json)?;
+    let krate = parse_rustdoc_lenient(json)?;
     let provider = MemorySourceProvider::new(source_files);
     build_graph(&krate, crate_name, BuildGraphOptions {
         workspace_members: None,
         source: Some((Path::new(root_file), &provider)),
         call_mode,
+        skip_external_nodes: true,
     })
 }
 
@@ -433,16 +667,16 @@ pub fn extract_graph_with_sources(
     json: &str,
     crate_name: &str,
     workspace_manifest_path: &Path,
-    crate_manifest_path: &Path,
+    root_file: &Path,
     call_mode: CallMode,
 ) -> Result<Graph, RustdocError> {
-    let krate: rdt::Crate = serde_json::from_str(json)?;
+    let krate = parse_rustdoc_lenient(json)?;
     let workspace_members = get_workspace_members(workspace_manifest_path)?;
-    let root_file = crate_root_source(crate_manifest_path)?;
     build_graph(&krate, crate_name, BuildGraphOptions {
         workspace_members: Some(workspace_members),
-        source: Some((&root_file, &FsSourceProvider)),
+        source: Some((root_file, &FsSourceProvider)),
         call_mode,
+        skip_external_nodes: false,
     })
 }
 
@@ -455,6 +689,10 @@ struct BuildGraphOptions<'a> {
     source: Option<(&'a Path, &'a dyn SourceProvider)>,
     /// Call resolution mode.
     call_mode: CallMode,
+    /// When true, external crate items are excluded from the graph entirely.
+    /// Edges referencing external nodes are still created (as cross-crate references)
+    /// but no Node entries or module hierarchies are built for them.
+    skip_external_nodes: bool,
 }
 
 fn build_graph(
@@ -462,12 +700,19 @@ fn build_graph(
     crate_name: &str,
     opts: BuildGraphOptions<'_>,
 ) -> Result<Graph, RustdocError> {
+    #[cfg(feature = "wasm")]
+    wasm_log!("[wasm] build_graph: starting with {} items in index, {} paths", krate.index.len(), krate.paths.len());
+    
     let mut graph = Graph::new();
     let mut node_cache = HashSet::new();
     let mut edge_cache = HashSet::new();
     let method_ids = collect_method_ids(krate);
     let function_index = build_function_index(krate, &method_ids, crate_name);
     let trait_lookup = build_trait_lookup(krate, crate_name);
+    
+    #[cfg(feature = "wasm")]
+    wasm_log!("[wasm] build_graph: indexes built, {} method_ids, {} function_index entries, {} trait_lookup entries", 
+              method_ids.len(), function_index.callables.len(), trait_lookup.len());
 
     let workspace_members = opts
         .workspace_members
@@ -505,6 +750,13 @@ fn build_graph(
 
         let item_crate_name = crate_name_for_id(krate, summary.crate_id, crate_name);
         let is_external = !workspace_members.contains(&item_crate_name);
+
+        // When skip_external_nodes is set, don't create nodes or module hierarchies
+        // for external crate items — they only need to exist as edge targets.
+        if is_external && opts.skip_external_nodes {
+            continue;
+        }
+
         ensure_crate_node(
             &mut graph,
             &mut node_cache,
@@ -567,15 +819,15 @@ fn build_graph(
                     }
                     rdt::ItemEnum::Enum(e) => {
                         for variant_id in &e.variants {
-                            if let Some(variant_item) = krate.index.get(variant_id) {
-                                if let rdt::ItemEnum::Variant(v) = &variant_item.inner {
-                                    let field_ids: Vec<_> = match &v.kind {
-                                        rdt::VariantKind::Plain => vec![],
-                                        rdt::VariantKind::Tuple(fields) => fields.iter().filter_map(|f| *f).collect(),
-                                        rdt::VariantKind::Struct { fields, .. } => fields.clone(),
-                                    };
-                                    bound_links.extend(extract_field_type_links(&krate.index, &field_ids, krate, crate_name));
-                                }
+                            if let Some(variant_item) = krate.index.get(variant_id)
+                                && let rdt::ItemEnum::Variant(v) = &variant_item.inner
+                            {
+                                let field_ids: Vec<_> = match &v.kind {
+                                    rdt::VariantKind::Plain => vec![],
+                                    rdt::VariantKind::Tuple(fields) => fields.iter().filter_map(|f| *f).collect(),
+                                    rdt::VariantKind::Struct { fields, .. } => fields.clone(),
+                                };
+                                bound_links.extend(extract_field_type_links(&krate.index, &field_ids, krate, crate_name));
                             }
                         }
                     }
@@ -647,6 +899,12 @@ fn build_graph(
             rdt::ItemEnum::Impl(impl_block) => {
                 let item_crate_name = crate_name_for_id(krate, item.crate_id, crate_name);
                 let is_external = !workspace_members.contains(&item_crate_name);
+
+                // Skip external impl blocks entirely when skip_external_nodes is set
+                if is_external && opts.skip_external_nodes {
+                    continue;
+                }
+
                 ensure_crate_node(
                     &mut graph,
                     &mut node_cache,
@@ -1277,11 +1535,31 @@ fn collect_type_links(
                     if let Some(node_id) = resolve_id(krate, crate_name, trait_.id) {
                         links.insert(display, node_id);
                     }
+                    if let Some(args) = &trait_.args {
+                        collect_generic_args_links(args, krate, crate_name, links);
+                    }
                 }
             }
         }
-        rdt::Type::QualifiedPath { self_type, .. } => {
+        rdt::Type::QualifiedPath {
+            self_type,
+            trait_,
+            args,
+            ..
+        } => {
             collect_type_links(self_type, krate, crate_name, links);
+            if let Some(trait_path) = trait_ {
+                let display = clean_path(&trait_path.path);
+                if let Some(node_id) = resolve_id(krate, crate_name, trait_path.id) {
+                    links.insert(display, node_id);
+                }
+                if let Some(args) = &trait_path.args {
+                    collect_generic_args_links(args, krate, crate_name, links);
+                }
+            }
+            if let Some(args) = args.as_deref() {
+                collect_generic_args_links(args, krate, crate_name, links);
+            }
         }
         _ => {}
     }
@@ -1338,10 +1616,10 @@ fn extract_field_type_links(
 ) -> HashMap<String, String> {
     let mut links = HashMap::new();
     for field_id in field_ids {
-        if let Some(item) = index.get(field_id) {
-            if let rdt::ItemEnum::StructField(ty) = &item.inner {
-                collect_type_links(ty, krate, crate_name, &mut links);
-            }
+        if let Some(item) = index.get(field_id)
+            && let rdt::ItemEnum::StructField(ty) = &item.inner
+        {
+            collect_type_links(ty, krate, crate_name, &mut links);
         }
     }
     links
@@ -1360,6 +1638,9 @@ fn collect_bound_links(
             let display = clean_path(&trait_.path);
             if let Some(node_id) = resolve_id(krate, crate_name, trait_.id) {
                 links.insert(display, node_id);
+            }
+            if let Some(args) = &trait_.args {
+                collect_generic_args_links(args, krate, crate_name, &mut links);
             }
         }
     }
@@ -2290,32 +2571,6 @@ fn add_call_edges(
     Ok(())
 }
 
-#[cfg(feature = "native")]
-fn crate_root_source(manifest_path: &Path) -> Result<PathBuf, RustdocError> {
-    let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
-    let package = metadata
-        .root_package()
-        .ok_or(RustdocError::MissingRootPackage)?;
-    let target = package
-        .targets
-        .iter()
-        .find(|target| {
-            target
-                .kind
-                .iter()
-                .any(|kind| matches!(kind, TargetKind::Lib | TargetKind::ProcMacro))
-        })
-        .or_else(|| {
-            package.targets.iter().find(|target| {
-                target
-                    .kind
-                    .iter()
-                    .any(|kind| matches!(kind, TargetKind::Bin))
-            })
-        })
-        .ok_or(RustdocError::MissingCrateRoot)?;
-    Ok(target.src_path.clone().into_std_path_buf())
-}
 
 pub(crate) struct FunctionIndex {
     callables: Vec<String>,

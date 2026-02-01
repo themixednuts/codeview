@@ -3,10 +3,13 @@ name = "codeview-rustdoc"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [features]
 default = ["native"]
 native = ["dep:cargo_metadata"]
-wasm = ["dep:wasm-bindgen"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys"]
 
 [dependencies]
 codeview-core = { path = "../codeview-core" }
@@ -20,3 +23,4 @@ cargo_metadata = { version = "0.23.1", optional = true }
 
 # WASM-only: wasm-bindgen for JS interop
 wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }

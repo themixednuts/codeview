@@ -44,6 +44,9 @@ pub struct ExternalCrate {
     pub id: String,
     /// Display name
     pub name: String,
+    /// Pinned version from cargo metadata (None for std/core/alloc)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// Stub nodes for external items referenced by workspace crates
     pub nodes: Vec<Node>,
 }
@@ -53,8 +56,7 @@ const fn default_version() -> u32 {
 }
 
 /// Internal flat graph used during per-crate graph building.
-/// Not serialized to the output format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
