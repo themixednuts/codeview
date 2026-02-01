@@ -2,11 +2,15 @@ export type MemoOptions<T> = {
 	equals?: (a: T, b: T) => boolean;
 };
 
-export type KeyedMemoOptions<K> = {
+export type KeyedMemoOptions<K, T = unknown> = {
 	equalsKey?: (a: K, b: K) => boolean;
+	/** Optional output equality check. When the key changes but compute produces
+	 *  an equivalent result, the cached reference is returned to prevent
+	 *  downstream re-renders. */
+	equalsValue?: (a: T, b: T) => boolean;
 };
 
-function arrayEqual<T>(
+export function arrayEqual<T>(
 	a: readonly T[],
 	b: readonly T[],
 	equals: (a: T, b: T) => boolean = Object.is
@@ -18,7 +22,7 @@ function arrayEqual<T>(
 	return true;
 }
 
-function setEqual<T>(a: Set<T>, b: Set<T>): boolean {
+export function setEqual<T>(a: Set<T>, b: Set<T>): boolean {
 	if (a.size !== b.size) return false;
 	for (const v of a) {
 		if (!b.has(v)) return false;
@@ -26,7 +30,7 @@ function setEqual<T>(a: Set<T>, b: Set<T>): boolean {
 	return true;
 }
 
-function mapEqual<K, V>(a: Map<K, V>, b: Map<K, V>): boolean {
+export function mapEqual<K, V>(a: Map<K, V>, b: Map<K, V>): boolean {
 	if (a.size !== b.size) return false;
 	for (const [k, v] of a) {
 		if (!b.has(k) || !Object.is(b.get(k), v)) return false;
@@ -117,11 +121,13 @@ export class Memo<T> {
 }
 
 /** Memoized derived value with input-key stabilization.
- *  Skips `compute()` entirely when the key hasn't changed. */
+ *  Skips `compute()` entirely when the key hasn't changed.
+ *  Optionally also stabilizes output (like Memo) when `equalsValue` is provided. */
 export class KeyedMemo<T, K = unknown> {
 	#key: () => K;
 	#compute: () => T;
 	#equalsKey: (a: K, b: K) => boolean;
+	#equalsValue: ((a: T, b: T) => boolean) | null;
 	#hasCached = false;
 	#cachedKey: K = undefined as K;
 	#cachedValue: T = undefined as T;
@@ -131,23 +137,29 @@ export class KeyedMemo<T, K = unknown> {
 		if (this.#hasCached && this.#equalsKey(this.#cachedKey, k)) {
 			return this.#cachedValue;
 		}
-		this.#hasCached = true;
 		this.#cachedKey = k;
-		this.#cachedValue = this.#compute();
-		return this.#cachedValue;
+		const next = this.#compute();
+		if (this.#hasCached && this.#equalsValue?.(this.#cachedValue, next)) {
+			return this.#cachedValue;
+		}
+		this.#hasCached = true;
+		this.#cachedValue = next;
+		return next;
 	});
 
 	constructor(
 		key: () => K,
 		compute: () => T,
-		equalsKeyOrOptions: ((a: K, b: K) => boolean) | KeyedMemoOptions<K> = Object.is
+		equalsKeyOrOptions: ((a: K, b: K) => boolean) | KeyedMemoOptions<K, T> = Object.is
 	) {
 		this.#key = key;
 		this.#compute = compute;
 		if (typeof equalsKeyOrOptions === 'function') {
 			this.#equalsKey = equalsKeyOrOptions;
+			this.#equalsValue = null;
 		} else {
 			this.#equalsKey = equalsKeyOrOptions.equalsKey ?? Object.is;
+			this.#equalsValue = equalsKeyOrOptions.equalsValue ?? null;
 		}
 	}
 }

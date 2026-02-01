@@ -5,8 +5,9 @@
   import { browser } from '$app/environment';
   import { getSource } from '$lib/source.remote';
   import { Memo } from '$lib/reactivity.svelte';
-  import { getContext } from 'svelte';
+  import { isHosted } from '$lib/platform';
   import CodeBlock from './CodeBlock.svelte';
+  import X from '@lucide/svelte/icons/x';
   let {
     span,
     theme = 'light',
@@ -18,7 +19,6 @@
     crateName?: string;
     crateVersion?: string;
   }>();
-  const isHosted = $derived(getContext<() => boolean>('isHosted')?.() ?? false);
 
 
   let source = $state<{ error: string | null; content: string | null } | null>(null);
@@ -130,9 +130,7 @@
           <span class="modal-line">:{span.line}:{span.column}</span>
         </div>
         <button type="button" class="modal-close" onclick={close} aria-label="Close">
-          <svg width="20" height="20" viewBox="0 0 16 16" fill="none">
-            <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-          </svg>
+          <X size={18} />
         </button>
       </header>
       <div class="modal-body" {@attach attachModalBody}>

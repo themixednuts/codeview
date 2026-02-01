@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Memo } from '$lib/reactivity.svelte';
+  import { tooltip } from '$lib/tooltip';
 
   export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
@@ -11,10 +12,10 @@
   let { mode, onModeChange }: Props = $props();
 
   const layouts: { id: LayoutMode; label: string; description: string }[] = [
-    { id: 'ego', label: 'Ego', description: 'Focused view centered on selected node' },
-    { id: 'force', label: 'Force', description: 'Physics-based organic layout' },
-    { id: 'hierarchical', label: 'Hierarchy', description: 'Layered top-down tree' },
-    { id: 'radial', label: 'Radial', description: 'Concentric circles from center' },
+    { id: 'ego', label: 'Ego', description: 'Centers the selected node with direct connections radiating outward in two columns' },
+    { id: 'force', label: 'Force', description: 'Physics simulation arranging nodes by connectivity \u2014 drag to reposition' },
+    { id: 'hierarchical', label: 'Hierarchy', description: 'Top-down tree showing parent-child relationships in ranked layers' },
+    { id: 'radial', label: 'Radial', description: 'Concentric rings with the selected node at center, ordered by distance' },
   ];
 
   let buttonRefs: Record<LayoutMode, HTMLButtonElement | null> = $state({
@@ -56,13 +57,13 @@
 
   {#each layouts as layout (layout.id)}
     <button
-      bind:this={buttonRefs[layout.id]}
       type="button"
       class="relative z-10 badge badge-lg bg-transparent border-transparent text-xs transition-colors {mode === layout.id
         ? 'text-white'
         : 'text-[var(--muted)] hover:text-[var(--ink)]'}"
       onclick={() => handleModeChange(layout.id)}
-      title={layout.description}
+      {@attach tooltip(layout.description)}
+      {@attach (el) => { buttonRefs[layout.id] = el as HTMLButtonElement; return () => { buttonRefs[layout.id] = null; }; }}
     >
       {layout.label}
     </button>

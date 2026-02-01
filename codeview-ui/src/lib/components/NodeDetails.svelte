@@ -2,10 +2,17 @@
   import type { Edge, EdgeKind, Node, NodeKind, Visibility } from '$lib/graph';
   import type { SelectedEdges } from '$lib/ui';
   import { kindColors } from '$lib/tree-constants';
+  import { externalDocsUrl } from '$lib/docs-url';
   import Documentation from './Documentation.svelte';
   import CodeBlock from './CodeBlock.svelte';
   import CollapsibleSection from './CollapsibleSection.svelte';
   import SourceViewer from './SourceViewer.svelte';
+  import { tooltip } from '$lib/tooltip';
+  import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
+  import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
+  import { extLinkModeCtx } from '$lib/context';
+
+  const extLinkMode = $derived(extLinkModeCtx.get());
 
   type MethodGroup = {
     impl: Node;
@@ -27,7 +34,8 @@
     nodeExists,
     nodeMeta,
     crateName,
-    crateVersion
+    crateVersion,
+    crateVersions
   } = $props<{
     selected: Node | null;
     selectedEdges: SelectedEdges;
@@ -43,10 +51,11 @@
     getNodeUrl?: (id: string) => string;
     /** Check if a node exists in the graph */
     nodeExists?: (nodeId: string) => boolean;
-    /** Fetch related node metadata (e.g. is_external) */
-    nodeMeta?: (nodeId: string) => { is_external?: boolean } | undefined;
+    /** Fetch related node metadata (e.g. is_external, kind) */
+    nodeMeta?: (nodeId: string) => { is_external?: boolean; kind?: NodeKind } | undefined;
     crateName?: string;
     crateVersion?: string;
+    crateVersions?: Record<string, string>;
   }>();
 
   const totalImpls = $derived(sourceImpls.length + blanketImpls.length);
@@ -66,15 +75,21 @@
     return nodeMeta?.(nodeId)?.is_external ?? false;
   }
 
-  function docsUrlForNode(nodeId: string): string | null {
-    const parts = nodeId.split('::');
-    if (parts.length === 0) return null;
-    const crate = parts[0];
-    const version = crate === crateName && crateVersion ? crateVersion : 'latest';
-    const path = parts.slice(1).join('/');
-    return path
-      ? `https://docs.rs/${crate}/${version}/${crate}/${path.toLowerCase()}/`
-      : `https://docs.rs/${crate}/${version}/${crate}/`;
+  function externalNodeKind(nodeId: string): NodeKind | undefined {
+    return nodeMeta?.(nodeId)?.kind;
+  }
+
+  function externalLinkHandler(nodeId: string): (e: MouseEvent) => void {
+    const kind = externalNodeKind(nodeId);
+    const crate = crateFromId(nodeId);
+    const version = crate ? crateVersions?.[crate] : undefined;
+    return (e: MouseEvent) => {
+      if (extLinkMode === 'docs') {
+        e.preventDefault();
+        e.stopPropagation();
+        window.open(externalDocsUrl(nodeId, kind, version), '_blank', 'noopener,noreferrer');
+      }
+    };
   }
 
   type BoundSegment = { text: string; nodeId?: string };
@@ -161,6 +176,17 @@
     methodGroups.reduce((total: number, group: MethodGroup) => total + group.methods.length, 0)
   );
 
+  const edgeKindDescriptions: Record<EdgeKind, string> = {
+    Contains: 'This item is a direct child module or member',
+    Defines: 'This item defines or declares the target',
+    UsesType: 'References this type in a signature or field',
+    Implements: 'Implements this trait',
+    CallsStatic: 'Calls this function or method directly',
+    CallsRuntime: 'Calls this via dynamic dispatch (dyn Trait)',
+    Derives: 'Auto-derives this trait via #[derive]',
+    ReExports: 'Re-exports this item via pub use',
+  };
+
   const SIGNATURE_WRAP_COLUMN = 100;
   const TYPE_WRAP_COLUMN = 80;
 
@@ -233,10 +259,11 @@
       {#if seg.nodeId && getNodeUrl}
         {#if isExternalNode(seg.nodeId)}
           <a
-            href={docsUrlForNode(seg.nodeId)}
-            target="_blank"
-            rel="noopener noreferrer"
+            href={getNodeUrl(seg.nodeId)}
+            data-sveltekit-noscroll
+            onclick={externalLinkHandler(seg.nodeId)}
             class="text-[var(--accent)] hover:underline underline-offset-2"
+            title="External dependency"
           >
             {seg.text}
           </a>
@@ -271,10 +298,11 @@
         </a>
       {:else if isExternalNode(implBlock.impl_trait)}
         <a
-          href={docsUrlForNode(implBlock.impl_trait)}
-          target="_blank"
-          rel="noopener noreferrer"
+          href={getNodeUrl?.(implBlock.impl_trait) ?? '#'}
+          data-sveltekit-noscroll
+          onclick={externalLinkHandler(implBlock.impl_trait)}
           class="token-name text-[var(--accent)] hover:underline underline-offset-2"
+          title="Shift+click for external docs"
         >
           {displayNode(implBlock.impl_trait)}
         </a>
@@ -314,17 +342,19 @@
         <div class="flex items-center gap-1">
           <button
             type="button"
-            class="badge badge-sm hover:bg-[var(--panel-strong)] hover:text-[var(--ink)] transition-colors"
+            class="badge badge-sm hover:bg-[var(--panel-strong)] hover:text-[var(--ink)] transition-colors inline-flex items-center gap-1"
             onclick={expandAll}
           >
+            <ChevronsUpDown size={12} />
             Expand all
           </button>
           <span class="text-[var(--muted)]">|</span>
           <button
             type="button"
-            class="badge badge-sm hover:bg-[var(--panel-strong)] hover:text-[var(--ink)] transition-colors"
+            class="badge badge-sm hover:bg-[var(--panel-strong)] hover:text-[var(--ink)] transition-colors inline-flex items-center gap-1"
             onclick={collapseAll}
           >
+            <ChevronsDownUp size={12} />
             Collapse all
           </button>
         </div>
@@ -611,15 +641,15 @@
             {:else}
               {#each selectedEdges.outgoing as edge (edge.kind + '-' + edge.to)}
                 <div>
-                  <span class="badge">
+                  <span class="badge" {@attach tooltip(edgeKindDescriptions[edge.kind as EdgeKind] ?? edge.kind)}>
                     {edgeLabels[edge.kind]}
                   </span>
                 </div>
                 <div>
                   {#if getNodeUrl && !isExternalNode(edge.to)}
                     <a href={getNodeUrl(edge.to)} data-sveltekit-noscroll class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.to)}</a>
-                  {:else if isExternalNode(edge.to)}
-                    <a href={docsUrlForNode(edge.to)} target="_blank" rel="noopener noreferrer" class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.to)}</a>
+                  {:else if isExternalNode(edge.to) && getNodeUrl}
+                    <a href={getNodeUrl(edge.to)} data-sveltekit-noscroll onclick={externalLinkHandler(edge.to)} class="text-[var(--ink)] hover:text-[var(--accent)]" title="Shift+click for external docs">{displayNode(edge.to)}</a>
                   {:else}
                     <span class="text-[var(--ink)]">{displayNode(edge.to)}</span>
                   {/if}
@@ -640,15 +670,15 @@
             {:else}
               {#each selectedEdges.incoming as edge (edge.kind + '-' + edge.from)}
                 <div>
-                  <span class="badge">
+                  <span class="badge" {@attach tooltip(edgeKindDescriptions[edge.kind as EdgeKind] ?? edge.kind)}>
                     {edgeLabels[edge.kind]}
                   </span>
                 </div>
                 <div>
                   {#if getNodeUrl && !isExternalNode(edge.from)}
                     <a href={getNodeUrl(edge.from)} data-sveltekit-noscroll class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.from)}</a>
-                  {:else if isExternalNode(edge.from)}
-                    <a href={docsUrlForNode(edge.from)} target="_blank" rel="noopener noreferrer" class="text-[var(--ink)] hover:text-[var(--accent)]">{displayNode(edge.from)}</a>
+                  {:else if isExternalNode(edge.from) && getNodeUrl}
+                    <a href={getNodeUrl(edge.from)} data-sveltekit-noscroll onclick={externalLinkHandler(edge.from)} class="text-[var(--ink)] hover:text-[var(--accent)]" title="Shift+click for external docs">{displayNode(edge.from)}</a>
                   {:else}
                     <span class="text-[var(--ink)]">{displayNode(edge.from)}</span>
                   {/if}

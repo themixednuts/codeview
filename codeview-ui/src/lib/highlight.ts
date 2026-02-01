@@ -123,6 +123,21 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 // Apply the intra-doc links plugin
 md.use(intraDocLinksPlugin);
 
+// Open external links in a new tab
+const defaultLinkOpen =
+	md.renderer.rules.link_open ||
+	((tokens: any, idx: any, options: any, _env: any, self: any) => self.renderToken(tokens, idx, options));
+
+md.renderer.rules.link_open = (tokens: any, idx: any, options: any, env: any, self: any) => {
+	const token = tokens[idx];
+	const classAttr = token.attrGet('class') ?? '';
+	if (!classAttr.includes('intra-doc-link')) {
+		token.attrSet('target', '_blank');
+		token.attrSet('rel', 'noopener noreferrer');
+	}
+	return defaultLinkOpen(tokens, idx, options, env, self);
+};
+
 // Supported languages - extend this as needed
 export type SupportedLanguage = 'rust' | 'typescript' | 'javascript' | 'json' | 'toml' | 'bash' | 'sql' | 'text';
 

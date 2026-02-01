@@ -2,8 +2,9 @@
   import type { Node, NodeKind } from '$lib/graph';
   import type { Attachment } from 'svelte/attachments';
   import { matchesFilter, type TreeNode } from '$lib/tree-constants';
-  import { Memo } from '$lib/reactivity.svelte';
+  import { Memo, arrayEqual } from '$lib/reactivity.svelte';
   import TreeItem from './TreeItem.svelte';
+  import { perf } from '$lib/perf';
 
   interface FlatNode {
     treeNode: TreeNode;
@@ -19,6 +20,7 @@
     getNodeUrl,
     expandedIds,
     onToggleExpand,
+    onSelectExpand,
     filter,
     kindFilter
   } = $props<{
@@ -27,6 +29,8 @@
     getNodeUrl: (id: string, parent?: string) => string;
     expandedIds: Set<string>;
     onToggleExpand: (id: string) => void;
+    /** Row-click expand logic: expand if collapsed, collapse if already selected+expanded */
+    onSelectExpand: (id: string, isSelected: boolean, isExpanded: boolean, hasChildren: boolean) => void;
     filter: string;
     kindFilter: Set<NodeKind>;
   }>();
@@ -38,33 +42,42 @@
   let containerHeight = $state(400);
 
   // Flatten visible tree nodes.
-  const flatNodes = $derived.by(() => {
-    const t0 = performance.now();
-    const result: FlatNode[] = [];
-    function flatten(nodes: TreeNode[], depth: number, parentId: string | undefined) {
-      for (const treeNode of nodes) {
-        const hasChildren = treeNode.children.length > 0;
-        const isExpanded = expandedIds.has(treeNode.node.id);
+  // Wrapped in Memo to stabilize the reference — prevents downstream rerenders
+  // when the tree/expandedIds signals fire but produce the same flat list.
+  // Snapshot expandedIds into a plain Set once per change to avoid
+  // repeated reactive proxy overhead from SvelteSet.has() inside the loop.
+  const expandedSnapshot = $derived(new Set(expandedIds));
 
-        result.push({
-          treeNode,
-          depth,
-          isExpanded,
-          hasChildren,
-          parentId
-        });
+  const flatNodesMemo = new Memo(() => {
+    return perf.time('derived', 'flatNodes', () => {
+      const expanded = expandedSnapshot;
+      const result: FlatNode[] = [];
+      function flatten(nodes: TreeNode[], depth: number, parentId: string | undefined) {
+        for (const treeNode of nodes) {
+          const hasChildren = treeNode.children.length > 0;
+          const isExpanded = expanded.has(treeNode.node.id);
 
-        if (hasChildren && isExpanded) {
-          flatten(treeNode.children, depth + 1, treeNode.node.id);
+          result.push({
+            treeNode,
+            depth,
+            isExpanded,
+            hasChildren,
+            parentId
+          });
+
+          if (hasChildren && isExpanded) {
+            flatten(treeNode.children, depth + 1, treeNode.node.id);
+          }
         }
       }
-    }
 
-    flatten(tree, 0, undefined);
-    const dt = performance.now() - t0;
-    if (dt > 2) console.log(`[perf:derived] flatNodes ${dt.toFixed(1)}ms (${result.length} items)`);
-    return result;
-  });
+      flatten(tree, 0, undefined);
+      return result;
+    }, {
+      detail: (r) => `${r.length} items`
+    });
+  }, (a, b) => arrayEqual(a, b, (x, y) => x.treeNode === y.treeNode && x.isExpanded === y.isExpanded));
+  const flatNodes = $derived(flatNodesMemo.current);
 
   // Calculate visible range — Memo stabilizes the reference when values unchanged.
   const visibleRangeMemo = new Memo(() => {
@@ -143,16 +156,18 @@
     <div style="height: {totalHeight}px; position: relative;">
       <div style="transform: translateY({offsetY}px);">
         {#each visibleNodes as { treeNode, depth, isExpanded, hasChildren, parentId } (`${parentId ?? 'root'}::${treeNode.node.id}`)}
+          {@const isSel = treeNode.selectable && selected?.id === treeNode.node.id}
           <TreeItem
             node={treeNode.node}
             {depth}
             {hasChildren}
             {isExpanded}
-            isSelected={treeNode.selectable && selected?.id === treeNode.node.id}
+            isSelected={isSel}
             dimmed={!matchesFilter(treeNode.node, filter, kindFilter)}
             selectable={treeNode.selectable}
             href={getNodeUrl(treeNode.node.id, parentId)}
             onToggle={() => { if (hasChildren) onToggleExpand(treeNode.node.id); }}
+            onSelect={() => onSelectExpand(treeNode.node.id, isSel, isExpanded, hasChildren)}
             itemHeight={ITEM_HEIGHT}
           />
         {/each}

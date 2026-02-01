@@ -2,6 +2,7 @@
   import type { Graph, Node } from '$lib/graph';
   import { kindColors } from '$lib/tree-constants';
   import { Memo } from '$lib/reactivity.svelte';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   let { graph, selected, getNodeUrl, parentHint } = $props<{
     graph: Graph;
@@ -69,13 +70,9 @@
     {#if index > 0}
       {#if displayPath.truncated && index === 1}
         <span class="text-[var(--muted)] px-1">...</span>
-        <svg class="w-4 h-4 text-[var(--muted)] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-        </svg>
+        <ChevronRight size={16} class="text-[var(--muted)] flex-shrink-0" />
       {:else}
-        <svg class="w-4 h-4 text-[var(--muted)] flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-        </svg>
+        <ChevronRight size={16} class="text-[var(--muted)] flex-shrink-0" />
       {/if}
     {/if}
 

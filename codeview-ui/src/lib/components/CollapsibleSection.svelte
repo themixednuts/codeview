@@ -1,6 +1,7 @@
 <script lang="ts">
   import { slide } from 'svelte/transition';
   import { untrack } from 'svelte';
+  import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
   let {
     title,
@@ -33,15 +34,9 @@
     onclick={() => isOpen = !isOpen}
   >
     <div class="flex items-center gap-2">
-      <svg
-        class="w-4 h-4 text-[var(--muted)] transition-transform duration-200"
-        class:rotate-90={isOpen}
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
-      </svg>
+      <span class="text-[var(--muted)] transition-transform duration-200" class:rotate-90={isOpen}>
+        <ChevronRight size={16} />
+      </span>
       <h3 class="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">{title}</h3>
       {#if count !== null}
         <span class="badge badge-strong badge-sm text-[var(--muted)]">

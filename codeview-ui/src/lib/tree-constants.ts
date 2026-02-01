@@ -1,31 +1,36 @@
 import type { Node, NodeKind } from '$lib/graph';
+import type { Component } from 'svelte';
+import { kindVisuals } from '$lib/node-visual';
+import Package from '@lucide/svelte/icons/package';
+import FolderCode from '@lucide/svelte/icons/folder-code';
+import Box from '@lucide/svelte/icons/box';
+import Layers from '@lucide/svelte/icons/layers';
+import List from '@lucide/svelte/icons/list';
+import Shield from '@lucide/svelte/icons/shield';
+import ShieldHalf from '@lucide/svelte/icons/shield-half';
+import Puzzle from '@lucide/svelte/icons/puzzle';
+import Braces from '@lucide/svelte/icons/braces';
+import Equal from '@lucide/svelte/icons/equal';
 
-export const kindColors: Record<NodeKind, string> = {
-	Crate: '#e85d04',
-	Module: '#2d6a4f',
-	Struct: '#9d4edd',
-	Union: '#7b2cbf',
-	Enum: '#3a86ff',
-	Trait: '#06d6a0',
-	TraitAlias: '#0db39e',
-	Impl: '#8d99ae',
-	Function: '#f72585',
-	Method: '#b5179e',
-	TypeAlias: '#ff6d00'
-};
+/** Node fill colors — derived from the canonical kindVisuals palette. */
+export const kindColors: Record<NodeKind, string> = Object.fromEntries(
+	(Object.entries(kindVisuals) as [NodeKind, { fill: string; stroke: string }][]).map(
+		([k, v]) => [k, v.fill]
+	)
+) as Record<NodeKind, string>;
 
-export const kindIcons: Record<NodeKind, string> = {
-	Crate: '📦',
-	Module: '📁',
-	Struct: 'S',
-	Union: 'U',
-	Enum: 'E',
-	Trait: 'T',
-	TraitAlias: 'T',
-	Impl: 'I',
-	Function: 'fn',
-	Method: 'fn',
-	TypeAlias: '='
+export const kindIcons: Record<NodeKind, Component> = {
+	Crate: Package,
+	Module: FolderCode,
+	Struct: Box,
+	Union: Layers,
+	Enum: List,
+	Trait: Shield,
+	TraitAlias: ShieldHalf,
+	Impl: Puzzle,
+	Function: Braces,
+	Method: Braces,
+	TypeAlias: Equal
 };
 
 export const kindOrder: Record<NodeKind, number> = {

@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { Edge, EdgeKind, NodeKind } from '$lib/graph';
   import type { LayoutNode, LayoutState } from '$lib/layout';
+  import { getNodeVisual } from '$lib/node-visual';
+  import ZoomIn from '@lucide/svelte/icons/zoom-in';
+  import ZoomOut from '@lucide/svelte/icons/zoom-out';
+  import Maximize from '@lucide/svelte/icons/maximize';
 
   type ResolvePoint = (value: LayoutNode | string | number) => { x: number; y: number };
 
@@ -48,11 +52,13 @@
     for (const node of layout.nodes) {
       const x = node.x ?? 0;
       const y = node.y ?? 0;
-      const r = nodeRadius(node.kind);
-      minX = Math.min(minX, x - r);
-      maxX = Math.max(maxX, x + r);
-      minY = Math.min(minY, y - r);
-      maxY = Math.max(maxY, y + r);
+      const v = getNodeVisual(node.kind, selected?.id === node.id);
+      const hw = v.width / 2;
+      const hh = v.height / 2;
+      minX = Math.min(minX, x - hw);
+      maxX = Math.max(maxX, x + hw);
+      minY = Math.min(minY, y - hh);
+      maxY = Math.max(maxY, y + hh);
     }
 
     const graphWidth = maxX - minX;
@@ -211,6 +217,7 @@
           </g>
           <g>
             {#each layout.nodes as node (node.id)}
+              {@const visual = getNodeVisual(node.kind, selected?.id === node.id)}
               <g
                 class="graph-node"
                 class:selected={selected?.id === node.id}
@@ -225,8 +232,14 @@
                   }
                 }}
               >
-                <circle r={nodeRadius(node.kind)} fill={nodeColor(node.kind)} />
-                <text dy="0.35em" font-size={12 / transform.scale}>{node.name}</text>
+                <path
+                  d={visual.svgPath}
+                  fill={visual.fill}
+                  stroke={visual.stroke}
+                  stroke-width={visual.strokeWidth}
+                  stroke-dasharray={visual.strokeDasharray ?? 'none'}
+                />
+                <text dy="0.35em" font-size={12 / transform.scale} fill={visual.labelColor}>{node.name}</text>
               </g>
             {/each}
           </g>
@@ -239,7 +252,7 @@
           onclick={zoomIn}
           title="Zoom in"
         >
-          +
+          <ZoomIn size={16} />
         </button>
         <button
           type="button"
@@ -247,7 +260,7 @@
           onclick={zoomOut}
           title="Zoom out"
         >
-          −
+          <ZoomOut size={16} />
         </button>
         <button
           type="button"
@@ -255,7 +268,7 @@
           onclick={resetZoom}
           title="Fit to view"
         >
-          ⊡
+          <Maximize size={16} />
         </button>
       </div>
     {:else}

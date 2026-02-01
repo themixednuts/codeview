@@ -119,6 +119,7 @@ export const CrateGraphSchema = v.object({
 export const ExternalCrateSchema = v.object({
 	id: v.string(),
 	name: v.string(),
+	version: v.optional(v.nullable(v.string())),
 	nodes: v.array(NodeSchema)
 });
 
@@ -226,7 +227,8 @@ export const CrateStatusValueSchema = v.picklist(['unknown', 'processing', 'read
 
 export const CrateStatusSchema = v.object({
 	status: CrateStatusValueSchema,
-	error: v.optional(v.string())
+	error: v.optional(v.string()),
+	step: v.optional(v.string())
 });
 
 export const CrateSearchResultSchema = v.object({

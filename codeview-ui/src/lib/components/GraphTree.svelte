@@ -1,11 +1,12 @@
 <script lang="ts">
   import type { Graph, Node, NodeKind } from '$lib/graph';
   import { SvelteSet } from 'svelte/reactivity';
-  import { tick } from 'svelte';
   import { kindOrder, matchesFilter, hasMatchingDescendant, type TreeNode } from '$lib/tree-constants';
   import { KeyedMemo, Memo } from '$lib/reactivity.svelte';
   import TreeItem from './TreeItem.svelte';
   import VirtualTree from './VirtualTree.svelte';
+  import { perf } from '$lib/perf';
+  import { perfTick } from '$lib/perf.svelte';
 
   let {
     graph,
@@ -95,18 +96,19 @@
     () => graph,
     () => {
       if (!graph) return new Map<string, string>();
-      const t0 = performance.now();
-      const map = new Map<string, string>();
-      for (const edge of graph.edges) {
-        if (edge.kind === 'Contains' || edge.kind === 'Defines') {
-          if (!map.has(edge.to)) {
-            map.set(edge.to, edge.from);
+      return perf.time('derived', 'parentMap', () => {
+        const map = new Map<string, string>();
+        for (const edge of graph!.edges) {
+          if (edge.kind === 'Contains' || edge.kind === 'Defines') {
+            if (!map.has(edge.to)) {
+              map.set(edge.to, edge.from);
+            }
           }
         }
-      }
-      const dt = performance.now() - t0;
-      if (dt > 2) console.log(`[perf:derived] parentMap ${dt.toFixed(1)}ms (${map.size} entries)`);
-      return map;
+        return map;
+      }, {
+        detail: (map) => `${map.size} entries`
+      });
     }
   );
   const parentMap = $derived(parentMapMemo.current);
@@ -115,11 +117,9 @@
     () => graph,
     () => {
       if (!graph) return [] as TreeNode[];
-      const t0 = performance.now();
-      const result = buildTree(graph, parentMap);
-      const dt = performance.now() - t0;
-      if (dt > 2) console.log(`[perf:derived] baseTree ${dt.toFixed(1)}ms (${graph.nodes.length}n)`);
-      return result;
+      return perf.time('derived', 'baseTree', () => buildTree(graph!, parentMap), {
+        detail: () => `${graph!.nodes.length}n`
+      });
     }
   );
   const baseTree = $derived(baseTreeMemo.current);
@@ -129,11 +129,7 @@
     if (!normalizedFilter && kindFilter.size === 0) {
       return baseTree;
     }
-    const t0 = performance.now();
-    const result = filterTree(baseTree, normalizedFilter, kindFilter);
-    const dt = performance.now() - t0;
-    if (dt > 2) console.log(`[perf:derived] filterTree ${dt.toFixed(1)}ms`);
-    return result;
+    return perf.time('derived', 'filterTree', () => filterTree(baseTree, normalizedFilter, kindFilter));
   });
 
   const ancestorMemo = new Memo(() => {
@@ -153,14 +149,14 @@
   // Cache expandedIdsForRender to avoid creating a new Set reference when contents
   // haven't changed — a new reference triggers flatNodes in VirtualTree to re-evaluate.
   const expandedForRenderMemo = new Memo(() => {
-    const t0 = performance.now();
-    const ids: string[] = [];
-    for (const id of expandedIds) ids.push(id);
-    for (const id of selectedAncestorIds) ids.push(id);
-    const combined = new Set(ids);
-    const dt = performance.now() - t0;
-    if (dt > 2) console.log(`[perf:derived] expandedIdsForRender ${dt.toFixed(1)}ms (${combined.size} ids)`);
-    return combined;
+    return perf.time('derived', 'expandedIdsForRender', () => {
+      const ids: string[] = [];
+      for (const id of expandedIds) ids.push(id);
+      for (const id of selectedAncestorIds) ids.push(id);
+      return new Set(ids);
+    }, {
+      detail: (s) => `${s.size} ids`
+    });
   });
   const expandedIdsForRender = $derived(expandedForRenderMemo.current);
 
@@ -180,6 +176,16 @@
       expandedIds.delete(id);
     } else {
       expandedIds.add(id);
+    }
+  }
+
+  /** Row-click logic: expand collapsed parents, collapse re-clicked active parents */
+  function selectExpand(id: string, isSelected: boolean, isExpanded: boolean, hasChildren: boolean) {
+    if (!hasChildren) return;
+    if (!isExpanded) {
+      expandedIds.add(id);
+    } else if (isSelected) {
+      expandedIds.delete(id);
     }
   }
 
@@ -204,10 +210,7 @@
     const gid = graph?.nodes[0]?.id ?? '';
     if (gid !== lastGraphId) {
       lastGraphId = gid;
-      const t0 = performance.now();
-      tick().then(() => {
-        console.log(`[perf:render] GraphTree tick ${(performance.now() - t0).toFixed(0)}ms`);
-      });
+      perfTick('render', 'GraphTree tick');
     }
   });
 
@@ -245,6 +248,7 @@
         {getNodeUrl}
         expandedIds={expandedIdsForRender}
         onToggleExpand={toggleExpand}
+        onSelectExpand={selectExpand}
         filter={normalizedFilter}
         {kindFilter}
       />
@@ -288,6 +292,10 @@
     selectable={item.selectable}
     href={getNodeUrl(item.node.id, parentId)}
     onToggle={() => { if (hasChildren) toggleExpand(item.node.id); }}
+    onSelect={() => {
+      if (hasChildren && !isExpanded) expandedIds.add(item.node.id);
+      else if (hasChildren && isSelected && isExpanded) expandedIds.delete(item.node.id);
+    }}
   />
   {#if hasChildren && isExpanded}
     {#each item.children as child (child.node.id)}

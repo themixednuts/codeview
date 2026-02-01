@@ -6,7 +6,11 @@
     type DocLinks
   } from '$lib/highlight';
   import { goto } from '$app/navigation';
+  import { externalDocsUrl } from '$lib/docs-url';
   import CodeBlock from './CodeBlock.svelte';
+  import { extLinkModeCtx } from '$lib/context';
+
+  const extLinkMode = $derived(extLinkModeCtx.get());
 
   let {
     docs,
@@ -43,6 +47,9 @@
   /**
    * Handle clicks on the documentation container.
    * Uses event delegation to catch clicks on intra-doc links.
+   *
+   * When extLinkMode is 'docs', opens external docs in a new tab.
+   * Otherwise navigates within codeview.
    */
   function handleClick(event: MouseEvent) {
     const target = event.target as HTMLElement;
@@ -55,26 +62,15 @@
     const nodeId = link.dataset.nodeId;
     if (!nodeId) return;
 
-    // Check if node exists in our graph
-    const exists = nodeExists?.(nodeId) ?? false;
+    if (extLinkMode === 'docs') {
+      // Documentation links don't carry kind info, so externalDocsUrl uses fallback path
+      window.open(externalDocsUrl(nodeId), '_blank', 'noopener,noreferrer');
+      return;
+    }
 
-    if (exists && getNodeUrl) {
-      // Internal navigation
+    // Navigate within codeview
+    if (getNodeUrl) {
       goto(getNodeUrl(nodeId), { noScroll: true });
-    } else {
-      // External link - open docs.rs
-      // Convert node ID like "postgres::client::Client" to docs.rs URL
-      const parts = nodeId.split('::');
-      if (parts.length >= 1) {
-        const crateName = parts[0];
-        const path = parts.slice(1).join('/');
-        // docs.rs format: https://docs.rs/crate/latest/crate/path/struct.Name.html
-        // We don't know the item type, so link to the search or module
-        const docsUrl = path
-          ? `https://docs.rs/${crateName}/latest/${crateName}/${path.toLowerCase()}/`
-          : `https://docs.rs/${crateName}/latest/${crateName}/`;
-        window.open(docsUrl, '_blank', 'noopener,noreferrer');
-      }
     }
   }
 </script>

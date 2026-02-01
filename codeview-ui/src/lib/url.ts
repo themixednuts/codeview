@@ -1,3 +1,5 @@
+import { isStdCrate } from '$lib/std-crates';
+
 /**
  * Convert a node ID to a URL path using a version lookup map.
  * e.g. nodeUrl("drizzle_core::builder::OrderByClause", { drizzle_core: "0.1.4" })
@@ -6,7 +8,7 @@
 export function nodeUrl(nodeId: string, crateVersions: Record<string, string>): string {
 	const parts = nodeId.split('::');
 	const crate = parts[0];
-	const version = crateVersions[crate] ?? 'latest';
+	const version = crateVersions[crate] ?? (isStdCrate(crate) ? 'stable' : 'latest');
 	const path = parts.slice(1).join('/');
 	return path ? `/${crate}/${version}/${path}` : `/${crate}/${version}`;
 }

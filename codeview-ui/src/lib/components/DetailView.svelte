@@ -8,22 +8,25 @@
   import { getNodeDetail } from '$lib/graph.remote';
   import { CrossEdgeUpdatesConnection } from '$lib/graph-updates.svelte';
   import { Memo } from '$lib/reactivity.svelte';
+  import { onDestroy } from 'svelte';
+  import { perf } from '$lib/perf';
+  import { isHosted } from '$lib/platform';
   import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
   import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
   import LayoutSwitcher from '$lib/components/LayoutSwitcher.svelte';
   import NodeDetails from '$lib/components/NodeDetails.svelte';
 
-  import { getContext } from 'svelte';
+  import { themeCtx, getNodeUrlCtx, graphForDisplayCtx, crateVersionsCtx } from '$lib/context';
 
   let { nodeId, parentHint } = $props<{
     nodeId: string;
     parentHint?: string;
   }>();
 
-  const theme = $derived(getContext<() => 'light' | 'dark'>('theme')());
-  const isHosted = $derived(getContext<() => boolean>('isHosted')());
-  const getNodeUrl = $derived(getContext<() => (id: string, parent?: string) => string>('getNodeUrl')());
-  const graphForDisplay = $derived(getContext<() => { nodes: Node[]; edges: Edge[] } | null>('graphForDisplay')());
+  const theme = $derived(themeCtx.get());
+  const getNodeUrl = $derived(getNodeUrlCtx.get());
+  const graphForDisplay = $derived(graphForDisplayCtx.get());
+  const crateVersions = $derived(crateVersionsCtx.get());
 
   const crateName = $derived(page.params.crate);
   const crateVersion = $derived(page.params.version);
@@ -31,10 +34,10 @@
   const refreshToken = $derived(edgeUpdates.updateTick);
 
   $effect(() => {
-    if (!isHosted || !nodeId) return;
+    if (!nodeId || !isHosted) return;
     edgeUpdates.connect(nodeId);
-    return () => edgeUpdates.destroy();
   });
+  onDestroy(() => edgeUpdates.destroy());
 
   const detail: NodeDetail | null = $derived(
     await getNodeDetail({ nodeId, version: crateVersion, refresh: refreshToken })
@@ -97,10 +100,10 @@
 
   const selectedEdgesMemo = new Memo<SelectedEdges>(() => {
     if (!detail) return { incoming: [], outgoing: [] };
-    return {
-      incoming: detail.edges.filter((e) => e.to === detail.node.id),
-      outgoing: detail.edges.filter((e) => e.from === detail.node.id)
-    };
+    return perf.time('derived', 'selectedEdges', () => ({
+      incoming: detail!.edges.filter((e) => e.to === detail!.node.id),
+      outgoing: detail!.edges.filter((e) => e.from === detail!.node.id)
+    }), { detail: (r) => `${r.incoming.length}in ${r.outgoing.length}out` });
   });
   const selectedEdges = $derived(selectedEdgesMemo.current);
 
@@ -113,7 +116,7 @@
     return detail?.relatedNodes.some((n) => n.id === nodeId) ?? false;
   }
 
-  function nodeMeta(nodeId: string): { is_external?: boolean } | undefined {
+  function nodeMeta(nodeId: string): { is_external?: boolean; kind?: NodeKind } | undefined {
     return detail?.relatedNodes.find((n) => n.id === nodeId);
   }
 
@@ -121,21 +124,21 @@
   const relationshipGraphMemo = new Memo(
     () => {
       if (!detail) return null;
-      const t0 = performance.now();
-      const allNodes = [detail.node, ...detail.relatedNodes.map((n) => ({
-        ...n,
-        span: undefined,
-        attrs: [],
-        fields: undefined,
-        variants: undefined,
-        signature: undefined,
-        generics: undefined,
-        docs: undefined,
-      } as Node))];
-      const result = { nodes: allNodes, edges: detail.edges } as Graph;
-      const dt = performance.now() - t0;
-      if (dt > 2) console.log(`[perf:derived] relationshipGraph ${dt.toFixed(1)}ms (${allNodes.length}n ${detail.edges.length}e)`);
-      return result;
+      return perf.time('derived', 'relationshipGraph', () => {
+        const allNodes = [detail!.node, ...detail!.relatedNodes.map((n) => ({
+          ...n,
+          span: undefined,
+          attrs: [],
+          fields: undefined,
+          variants: undefined,
+          signature: undefined,
+          generics: undefined,
+          docs: undefined,
+        } as Node))];
+        return { nodes: allNodes, edges: detail!.edges } as Graph;
+      }, {
+        detail: (r) => `${r.nodes.length}n ${r.edges.length}e`
+      });
     },
     (a, b) => a === b || (a != null && b != null && a.nodes.length === b.nodes.length && a.edges === b.edges)
   );
@@ -155,15 +158,17 @@
 
   const implBlocksMemo = new Memo(() => {
     if (!detail || !selected) return [] as Node[];
-    const relatedMap = new Map(detail.relatedNodes.map((n) => [n.id, n as Node]));
-    const blocks: Node[] = [];
-    for (const edge of detail.edges) {
-      if (edge.kind === 'Defines' && edge.from === selected.id) {
-        const target = relatedMap.get(edge.to);
-        if (target && isTraitImpl(target)) blocks.push(target);
+    return perf.time('derived', 'implBlocks', () => {
+      const relatedMap = new Map(detail!.relatedNodes.map((n) => [n.id, n as Node]));
+      const blocks: Node[] = [];
+      for (const edge of detail!.edges) {
+        if (edge.kind === 'Defines' && edge.from === selected!.id) {
+          const target = relatedMap.get(edge.to);
+          if (target && isTraitImpl(target)) blocks.push(target);
+        }
       }
-    }
-    return blocks;
+      return blocks;
+    }, { detail: (r) => `${r.length} impls` });
   });
   const implBlocks = $derived(implBlocksMemo.current);
 
@@ -180,7 +185,7 @@
     if (!detail) return { incoming: [], outgoing: [] };
     const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(selected?.kind ?? '');
     if (!isTypeNode) return selectedEdges;
-    return {
+    return perf.time('derived', 'detailFilteredEdges', () => ({
       outgoing: selectedEdges.outgoing.filter((e) => {
         if (e.kind === 'Defines' && implBlockIds.has(e.to)) return false;
         return true;
@@ -189,42 +194,44 @@
         if (e.kind === 'UsesType' && implBlockIds.has(e.from)) return false;
         return true;
       })
-    };
+    }), { detail: (r) => `${r.incoming.length}in ${r.outgoing.length}out` });
   });
   const filteredEdges = $derived(filteredEdgesMemo.current);
 
   const methodGroupsMemo = new Memo(() => {
     if (!detail || !selected) return [] as MethodGroup[];
-    const relatedMap = new Map(detail.relatedNodes.map((n) => [n.id, n as Node]));
+    return perf.time('derived', 'methodGroups', () => {
+      const relatedMap = new Map(detail!.relatedNodes.map((n) => [n.id, n as Node]));
 
-    const inherentImpls: Node[] = [];
-    for (const edge of detail.edges) {
-      if (edge.kind === 'Defines' && edge.from === selected.id) {
-        const target = relatedMap.get(edge.to);
-        if (target && isInherentImpl(target)) inherentImpls.push(target);
-      }
-    }
-
-    const groups = new Map<string, MethodGroup>();
-    for (const impl of inherentImpls) {
-      groups.set(impl.id, { impl, methods: [] });
-    }
-
-    for (const edge of detail.edges) {
-      if ((edge.kind === 'Contains' || edge.kind === 'Defines') && groups.has(edge.from)) {
-        const target = relatedMap.get(edge.to);
-        if (target && (target.kind === 'Method' || target.kind === 'Function')) {
-          groups.get(edge.from)?.methods.push(target);
+      const inherentImpls: Node[] = [];
+      for (const edge of detail!.edges) {
+        if (edge.kind === 'Defines' && edge.from === selected!.id) {
+          const target = relatedMap.get(edge.to);
+          if (target && isInherentImpl(target)) inherentImpls.push(target);
         }
       }
-    }
 
-    return Array.from(groups.values())
-      .filter((g) => g.methods.length > 0)
-      .map((g) => {
-        g.methods.sort((a, b) => a.name.localeCompare(b.name));
-        return g;
-      });
+      const groups = new Map<string, MethodGroup>();
+      for (const impl of inherentImpls) {
+        groups.set(impl.id, { impl, methods: [] });
+      }
+
+      for (const edge of detail!.edges) {
+        if ((edge.kind === 'Contains' || edge.kind === 'Defines') && groups.has(edge.from)) {
+          const target = relatedMap.get(edge.to);
+          if (target && (target.kind === 'Method' || target.kind === 'Function')) {
+            groups.get(edge.from)?.methods.push(target);
+          }
+        }
+      }
+
+      return Array.from(groups.values())
+        .filter((g) => g.methods.length > 0)
+        .map((g) => {
+          g.methods.sort((a, b) => a.name.localeCompare(b.name));
+          return g;
+        });
+    }, { detail: (r) => `${r.length} groups, ${r.reduce((s, g) => s + g.methods.length, 0)} methods` });
   });
   const methodGroups = $derived(methodGroupsMemo.current);
 </script>
@@ -243,8 +250,7 @@
       {/if}
 
       <!-- Layout Switcher -->
-      <div class="flex items-center justify-between">
-        <h2 class="text-sm font-medium text-[var(--muted)]">Relationship Graph</h2>
+      <div class="flex items-center justify-end">
         <LayoutSwitcher mode={layoutMode} onModeChange={setLayoutMode} />
       </div>
 
@@ -288,6 +294,7 @@
           {nodeMeta}
           {crateName}
           {crateVersion}
+          {crateVersions}
         />
         {#snippet failed(error, reset)}
           <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger)]">

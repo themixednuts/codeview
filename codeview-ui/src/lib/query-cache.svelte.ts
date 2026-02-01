@@ -80,13 +80,13 @@ export function cached<Q extends { current: unknown; loading: boolean }>(
 						Promise.resolve(_cache.get(key) as Q['current']).then(onFulfilled, onRejected);
 				}
 				// Otherwise forward to the real .then() (first visit or already resolved)
-				const thenFn = Reflect.get(target, prop, receiver);
+				const thenFn = Reflect.get(target, prop, target);
 				if (typeof thenFn === 'function') return thenFn.bind(target);
 				return thenFn;
 			}
 
 			// Forward everything else: .refresh(), .error, etc.
-			const value = Reflect.get(target, prop, receiver);
+			const value = Reflect.get(target, prop, target);
 			// Bind functions so they execute on the original target
 			if (typeof value === 'function') return value.bind(target);
 			return value;

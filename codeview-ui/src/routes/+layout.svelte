@@ -2,17 +2,19 @@
   import '../app.css';
   import { browser } from '$app/environment';
   import { afterNavigate, onNavigate } from '$app/navigation';
-  import { getHostedMode, getProcessingCrates } from '$lib/graph.remote';
+  import { getProcessingCrates } from '$lib/graph.remote';
   import { ProcessingStatusConnection } from '$lib/processing-status.svelte';
-  import { onMount, setContext } from 'svelte';
+  import { isHosted } from '$lib/platform';
+  import { onMount } from 'svelte';
+  import { perf } from '$lib/perf';
+  import { themeCtx, extLinkModeCtx, type Theme, type ExternalLinkMode } from '$lib/context';
 
-  let navStart = 0;
+  let navSpan: ReturnType<typeof perf.begin> | null = null;
 
   onNavigate((navigation) => {
-    navStart = performance.now();
     const from = navigation.from?.url?.pathname ?? '';
     const to = navigation.to?.url?.pathname ?? '';
-    console.log(`[perf:nav] start ${from} → ${to}`);
+    navSpan = perf.begin('nav', `${from} → ${to}`);
 
     // View transitions disabled — they block on `navigation.complete` which includes
     // async data fetching (getNodeDetail). Cross-crate navs were taking 16+ seconds
@@ -21,22 +23,19 @@
   });
 
   afterNavigate(() => {
-    if (navStart > 0) {
-      const dt = performance.now() - navStart;
-      console.log(`[perf:nav] afterNavigate ${dt.toFixed(0)}ms`);
-      navStart = 0;
+    if (navSpan) {
+      navSpan.end();
+      navSpan = null;
     }
   });
 
   let { children } = $props();
-  const hostedQuery = getHostedMode();
-  const isHosted = $derived(hostedQuery.current ?? false);
 
   const processingConn = new ProcessingStatusConnection();
   const processingCount = $derived(processingConn.count);
   let showProcessing = $state(false);
   const processingListQuery = $derived(
-    isHosted && showProcessing ? getProcessingCrates({ refresh: processingCount }) : null
+    showProcessing ? getProcessingCrates({ refresh: processingCount }) : null
   );
   const processingCrates = $derived(processingListQuery?.current ?? []);
   const processingLoading = $derived(processingListQuery?.loading ?? false);
@@ -47,8 +46,24 @@
     return () => processingConn.destroy();
   });
 
-  type Theme = 'light' | 'dark';
   const THEME_KEY = 'codeview-theme';
+  const EXT_LINK_KEY = 'codeview-ext-link-mode';
+
+  function getInitialExtLinkMode(): ExternalLinkMode {
+    if (!browser) return 'codeview';
+    const stored = localStorage.getItem(EXT_LINK_KEY);
+    if (stored === 'codeview' || stored === 'docs') return stored;
+    return 'codeview';
+  }
+
+  let extLinkMode = $state<ExternalLinkMode>('codeview');
+
+  extLinkModeCtx.set(() => extLinkMode);
+
+  function toggleExtLinkMode() {
+    extLinkMode = extLinkMode === 'codeview' ? 'docs' : 'codeview';
+    if (browser) localStorage.setItem(EXT_LINK_KEY, extLinkMode);
+  }
 
   function getInitialTheme(): Theme {
     if (!browser) return 'light';
@@ -59,8 +74,7 @@
 
   let theme = $state<Theme>('light');
 
-  setContext('theme', () => theme);
-  setContext('isHosted', () => isHosted);
+  themeCtx.set(() => theme);
 
   function applyTheme(next: Theme) {
     theme = next;
@@ -75,6 +89,7 @@
 
   onMount(() => {
     applyTheme(getInitialTheme());
+    extLinkMode = getInitialExtLinkMode();
   });
 </script>
 
@@ -89,7 +104,7 @@
   >
     <a href="/" class="text-base font-semibold tracking-tight text-[var(--ink)]">Codeview</a>
     <div class="flex items-center gap-2">
-      {#if isHosted && processingCount > 0}
+      {#if processingCount > 0}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="relative"
@@ -124,6 +139,19 @@
           {/if}
         </div>
       {/if}
+      <button
+        type="button"
+        class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]"
+        aria-pressed={extLinkMode === 'docs'}
+        title={extLinkMode === 'docs' ? 'External links open docs.rs — click to use codeview' : 'External links stay in codeview — click to use docs.rs'}
+        onclick={toggleExtLinkMode}
+      >
+        <span
+          class="h-2 w-2 rounded-full"
+          style="background-color: {extLinkMode === 'docs' ? 'var(--accent)' : 'var(--muted)'}"
+        ></span>
+        <span>{extLinkMode === 'docs' ? 'docs.rs' : 'Codeview'}</span>
+      </button>
       <button
         type="button"
         class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]"

@@ -1,84 +1,67 @@
-type GraphUpdateMessage = {
-	type?: string;
-	nodeId?: string;
-};
+import { getLogger } from '$lib/log';
+import { SSEConnection } from '$lib/sse';
 
 /**
- * Reactive WebSocket connection for cross-crate edge updates.
+ * Delay before opening the SSE connection (ms).
+ * Prevents zombie connections during rapid back/forward navigation —
+ * if the user navigates away within this window, no connection is opened.
+ */
+const CONNECT_DELAY_MS = 1_500;
+
+/**
+ * Reactive SSE connection for cross-crate edge updates.
  * Emits a monotonically increasing tick when updates arrive.
  */
-export class CrossEdgeUpdatesConnection {
+export class CrossEdgeUpdatesConnection extends SSEConnection {
 	updateTick = $state(0);
 
-	#ws: WebSocket | null = null;
-	#reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-	#reconnectAttempts = 0;
+	protected readonly log = getLogger('graph-updates');
 	#nodeId = '';
-	#destroyed = false;
+	#connectTimer: ReturnType<typeof setTimeout> | null = null;
+
+	protected get tag() {
+		return `edge:${this.#nodeId}`;
+	}
+
+	protected get endpoint() {
+		const key = `edge:${this.#nodeId}`;
+		return `/api/graph-updates/sse?key=${encodeURIComponent(key)}`;
+	}
 
 	connect(nodeId: string) {
-		if (this.#nodeId === nodeId && this.#ws) return;
-		this.#cleanup();
+		if (this.#nodeId === nodeId && this.connected) return;
+		this.#cancelPending();
+		this.close();
+		this.activate();
 		this.#nodeId = nodeId;
-		this.#destroyed = false;
-		this.#reconnectAttempts = 0;
-		this.#openSocket();
+		// Delay opening to avoid zombie connections on rapid navigation
+		this.#connectTimer = setTimeout(() => {
+			this.#connectTimer = null;
+			this.open();
+		}, CONNECT_DELAY_MS);
 	}
 
-	destroy() {
-		this.#destroyed = true;
-		this.#cleanup();
-	}
-
-	#openSocket() {
-		if (this.#destroyed || !this.#nodeId) return;
-		const key = `edge:${this.#nodeId}`;
-		const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-		const url = `${protocol}//${window.location.host}/api/graph-updates/ws?key=${encodeURIComponent(key)}`;
-		const ws = new WebSocket(url);
-		this.#ws = ws;
-
-		ws.onmessage = (event) => {
-			try {
-				const data = JSON.parse(event.data) as GraphUpdateMessage;
-				if (data.type && data.type !== 'cross-edges') return;
-			} catch {
-				// ignore parse errors
-			}
-			this.updateTick += 1;
-			this.#reconnectAttempts = 0;
-		};
-
-		ws.onerror = () => {
-			ws.close();
-			this.#ws = null;
-			this.#scheduleReconnect();
-		};
-
-		ws.onclose = () => {
-			this.#ws = null;
-			this.#scheduleReconnect();
-		};
-	}
-
-	#scheduleReconnect() {
-		if (this.#destroyed || this.#reconnectTimer) return;
-		const delay = Math.min(1000 * 2 ** this.#reconnectAttempts, 30_000);
-		this.#reconnectAttempts++;
-		this.#reconnectTimer = setTimeout(() => {
-			this.#reconnectTimer = null;
-			this.#openSocket();
-		}, delay);
-	}
-
-	#cleanup() {
-		if (this.#reconnectTimer) {
-			clearTimeout(this.#reconnectTimer);
-			this.#reconnectTimer = null;
+	#cancelPending() {
+		if (this.#connectTimer !== null) {
+			clearTimeout(this.#connectTimer);
+			this.#connectTimer = null;
 		}
-		if (this.#ws) {
-			this.#ws.close();
-			this.#ws = null;
-		}
+	}
+
+	override destroy() {
+		this.#cancelPending();
+		super.destroy();
+	}
+
+	protected override close() {
+		this.#cancelPending();
+		super.close();
+	}
+
+	protected onData(data: unknown) {
+		const msg = data as { type?: string; nodeId?: string };
+		if (msg.type && msg.type !== 'cross-edges') return;
+		this.updateTick += 1;
+		this.log.debug`update ${this.tag} tick=${String(this.updateTick)}`;
 	}
 }
