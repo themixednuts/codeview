@@ -29,8 +29,8 @@
     getNodeUrl: (id: string, parent?: string) => string;
     expandedIds: Set<string>;
     onToggleExpand: (id: string) => void;
-    /** Row-click expand logic: expand if collapsed, collapse if already selected+expanded */
-    onSelectExpand: (id: string, isSelected: boolean, isExpanded: boolean, hasChildren: boolean) => void;
+    /** Row-click expand logic: toggle for non-selectable nodes */
+    onSelectExpand: (id: string, isSelected: boolean, isExpanded: boolean, hasChildren: boolean, selectable: boolean) => void;
     filter: string;
     kindFilter: Set<NodeKind>;
   }>();
@@ -167,7 +167,7 @@
             selectable={treeNode.selectable}
             href={getNodeUrl(treeNode.node.id, parentId)}
             onToggle={() => { if (hasChildren) onToggleExpand(treeNode.node.id); }}
-            onSelect={() => onSelectExpand(treeNode.node.id, isSel, isExpanded, hasChildren)}
+            onSelect={() => onSelectExpand(treeNode.node.id, isSel, isExpanded, hasChildren, treeNode.selectable)}
             itemHeight={ITEM_HEIGHT}
           />
         {/each}

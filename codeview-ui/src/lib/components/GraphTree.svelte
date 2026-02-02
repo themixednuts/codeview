@@ -179,13 +179,19 @@
     }
   }
 
-  /** Row-click logic: expand collapsed parents, collapse re-clicked active parents */
-  function selectExpand(id: string, isSelected: boolean, isExpanded: boolean, hasChildren: boolean) {
-    if (!hasChildren) return;
-    if (!isExpanded) {
-      expandedIds.add(id);
-    } else if (isSelected) {
+  /** Row-click logic: toggle only for non-selectable nodes. */
+  function selectExpand(
+    id: string,
+    _isSelected: boolean,
+    isExpanded: boolean,
+    hasChildren: boolean,
+    selectable: boolean
+  ) {
+    if (selectable || !hasChildren) return;
+    if (isExpanded) {
       expandedIds.delete(id);
+    } else {
+      expandedIds.add(id);
     }
   }
 
@@ -293,8 +299,10 @@
     href={getNodeUrl(item.node.id, parentId)}
     onToggle={() => { if (hasChildren) toggleExpand(item.node.id); }}
     onSelect={() => {
-      if (hasChildren && !isExpanded) expandedIds.add(item.node.id);
-      else if (hasChildren && isSelected && isExpanded) expandedIds.delete(item.node.id);
+      if (!item.selectable && hasChildren) {
+        if (isExpanded) expandedIds.delete(item.node.id);
+        else expandedIds.add(item.node.id);
+      }
     }}
   />
   {#if hasChildren && isExpanded}
