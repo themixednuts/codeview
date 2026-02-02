@@ -2,17 +2,17 @@
   import { Debounced } from 'runed';
   import { Loader2Icon } from '@lucide/svelte';
   import { getCrates, getTopCrates, searchRegistry } from '$lib/graph.remote';
-  import { cached } from '$lib/query-cache.svelte';
+  import { cached, cacheKey } from '$lib/query-cache.svelte';
 
   const workspaceCrates = $derived(
-    (await cached('workspaceCrates', getCrates())).map((crate) => ({
+    (await cached(cacheKey('workspaceCrates'), getCrates())).map((crate) => ({
       id: crate.id,
       name: crate.name,
       version: crate.version
     }))
   );
   const topCrates = $derived(
-    (await cached('topCrates', getTopCrates())).map((crate) => ({
+    (await cached(cacheKey('topCrates'), getTopCrates())).map((crate) => ({
       id: crate.name,
       name: crate.name,
       version: crate.version,

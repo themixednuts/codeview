@@ -5,7 +5,7 @@
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
   import { getCrates, getCrateIndex, getCrateTree, getCrateVersions, searchNodes, triggerStdInstall } from '$lib/graph.remote';
-  import { cached } from '$lib/query-cache.svelte';
+  import { cached, cacheKey } from '$lib/query-cache.svelte';
   import { nodeUrl } from '$lib/url';
   import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import { onDestroy } from 'svelte';
@@ -39,15 +39,15 @@
   // --- Existing workspace/crate loading (works when status is 'ready') ---
 
   // Load workspace crate list (for switcher + version map)
-  const cratesQuery = cached('workspaceCrates', getCrates());
+  const cratesQuery = cached(cacheKey('workspaceCrates'), getCrates());
 
   // Hosted fallback: load lightweight crate index for cross-crate navigation
   const indexQuery = $derived(
-    crateName && version ? cached(`index:${crateName}@${version}`, getCrateIndex({ name: crateName, version })) : null
+    crateName && version ? cached(cacheKey('index', crateName, version), getCrateIndex({ name: crateName, version })) : null
   );
 
   // Versions list for current crate (hosted uses registry)
-  const versionsQuery = $derived(crateName ? cached(`versions:${crateName}`, getCrateVersions(crateName)) : null);
+  const versionsQuery = $derived(crateName ? cached(cacheKey('versions', crateName), getCrateVersions(crateName)) : null);
 
   const crateVersionsMemo = new KeyedMemo(
     () => keyOf(crateName, version, cratesQuery.current, indexQuery?.current),
@@ -129,7 +129,7 @@
 
   // Load the current crate's tree
   const treeQuery = $derived(
-    crateName && version ? cached(`tree:${crateName}@${version}`, getCrateTree({ name: crateName, version })) : null
+    crateName && version ? cached(cacheKey('tree', crateName, version), getCrateTree({ name: crateName, version })) : null
   );
 
   // When status transitions to 'ready', refresh the tree and index queries

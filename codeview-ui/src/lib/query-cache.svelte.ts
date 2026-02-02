@@ -30,7 +30,56 @@
  * @see https://github.com/sveltejs/kit/discussions/13897
  */
 
-const _cache = new Map<string, unknown>();
+type CacheEntry = {
+	value: unknown;
+	storedAt: number;
+};
+
+const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX_ENTRIES = 200;
+
+const _cache = new Map<string, CacheEntry>();
+
+export type CacheKeyPart = string | number | boolean | null | undefined;
+
+export function cacheKey(...parts: CacheKeyPart[]): string {
+	return parts.map((part) => encodeURIComponent(String(part ?? ''))).join('|');
+}
+
+function isExpired(entry: CacheEntry, now: number) {
+	return now - entry.storedAt > CACHE_TTL_MS;
+}
+
+function readCache(key: string): unknown | undefined {
+	const entry = _cache.get(key);
+	if (!entry) return undefined;
+	const now = Date.now();
+	if (isExpired(entry, now)) {
+		_cache.delete(key);
+		return undefined;
+	}
+	// Touch for LRU.
+	_cache.delete(key);
+	_cache.set(key, entry);
+	return entry.value;
+}
+
+function writeCache(key: string, value: unknown) {
+	_cache.set(key, { value, storedAt: Date.now() });
+	pruneCache();
+}
+
+function pruneCache() {
+	const now = Date.now();
+	for (const [key, entry] of _cache) {
+		if (isExpired(entry, now)) _cache.delete(key);
+	}
+	while (_cache.size > CACHE_MAX_ENTRIES) {
+		const oldestKey = _cache.keys().next().value as string | undefined;
+		if (!oldestKey) break;
+		_cache.delete(oldestKey);
+	}
+}
 
 /**
  * Wrap a SvelteKit query proxy with stale-while-revalidate caching.
@@ -54,30 +103,34 @@ export function cached<Q extends { current: unknown; loading: boolean }>(
 		get(target, prop, receiver) {
 			if (prop === 'current') {
 				const fresh = target.current;
+				const cachedValue = readCache(key);
+				const hasCache = cachedValue !== undefined;
 
 				// Query has resolved — always use fresh result (never stale)
 				if (!target.loading) {
-					if (fresh !== undefined) _cache.set(key, fresh);
+					if (fresh !== undefined) writeCache(key, fresh);
 					return fresh;
 				}
 
 				// Still loading — serve cached data if we have it
-				if (_cache.has(key)) return _cache.get(key) as Q['current'];
+				if (hasCache) return cachedValue as Q['current'];
 				return fresh; // undefined (no cache yet — first visit)
 			}
 
 			if (prop === 'loading') {
 				// Suppress loading state when cache can fill the gap
-				return target.loading && !_cache.has(key);
+				const cachedValue = readCache(key);
+				return target.loading && cachedValue === undefined;
 			}
 
 			if (prop === 'then') {
 				// When cached data is available and the raw query is still loading,
 				// resolve the thenable immediately so `await` doesn't block and
 				// <svelte:boundary pending> is never shown on back-navigation.
-				if (target.loading && _cache.has(key)) {
+				const cachedValue = readCache(key);
+				if (target.loading && cachedValue !== undefined) {
 					return (onFulfilled?: (v: Q['current']) => unknown, onRejected?: (e: unknown) => unknown) =>
-						Promise.resolve(_cache.get(key) as Q['current']).then(onFulfilled, onRejected);
+						Promise.resolve(cachedValue as Q['current']).then(onFulfilled, onRejected);
 				}
 				// Otherwise forward to the real .then() (first visit or already resolved)
 				const thenFn = Reflect.get(target, prop, target);
