@@ -54,6 +54,8 @@ pub enum RustdocError {
 #[derive(Debug, Clone)]
 pub struct RustdocJson {
     pub crate_name: String,
+    /// The name rustdoc uses internally (may differ from crate_name for binary crates)
+    pub rustdoc_name: String,
     pub json_path: PathBuf,
     pub manifest_path: PathBuf,
     /// Path to the crate root source file (lib.rs or main.rs)
@@ -104,15 +106,23 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         .ok_or(RustdocError::MissingRootPackage)?;
     // Normalize crate name: Cargo uses hyphens but Rust uses underscores internally
     let crate_name = package.name.replace('-', "_");
-    let primary_target = package
-        .targets
-        .iter()
-        .find(|t| t.kind.iter().any(|k| is_lib_target(k)))
+    let lib_target = package.targets.iter().find(|t| {
+        t.kind.iter().any(|k| is_lib_target(k))
+    });
+    let primary_target = lib_target
         .or_else(|| {
             package.targets.iter().find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
         })
         .ok_or(RustdocError::MissingRootPackage)?;
     let src_path = primary_target.src_path.clone().into_std_path_buf();
+
+    // For lib crates the rustdoc name matches the crate name; for binary crates
+    // rustdoc uses the target (binary) name which may differ from the package name.
+    let rustdoc_name = if lib_target.is_some() {
+        crate_name.clone()
+    } else {
+        primary_target.name.replace('-', "_")
+    };
 
     let status = Command::new("cargo")
         .arg("+nightly")
@@ -130,11 +140,12 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
     }
 
     let target_dir = metadata.target_directory.into_std_path_buf();
-    let crate_file = format!("{crate_name}.json");
+    let crate_file = format!("{rustdoc_name}.json");
     let json_path = target_dir.join("doc").join(crate_file);
 
     Ok(RustdocJson {
         crate_name,
+        rustdoc_name,
         json_path,
         manifest_path: manifest_path.to_path_buf(),
         src_path,
@@ -225,12 +236,20 @@ pub fn generate_workspace_rustdoc_json(
             }
         }
 
-        let crate_file = format!("{}.json", crate_name.replace('-', "_"));
+        // For lib crates the rustdoc name matches the crate name; for binary crates
+        // rustdoc uses the target (binary) name which may differ from the package name.
+        let rustdoc_name = if lib_target.is_some() {
+            crate_name.replace('-', "_")
+        } else {
+            primary_target.name.replace('-', "_")
+        };
+        let crate_file = format!("{rustdoc_name}.json");
         let json_path = target_dir.join("doc").join(crate_file);
 
         if json_path.exists() {
             results.push(RustdocJson {
                 crate_name,
+                rustdoc_name,
                 json_path,
                 manifest_path: pkg_manifest.to_path_buf(),
                 src_path: src_path.clone(),
@@ -284,12 +303,18 @@ pub fn load_workspace_graph(
         });
 
     for rustdoc in rustdoc_jsons {
+        let rustdoc_name_opt = if rustdoc.rustdoc_name != rustdoc.crate_name {
+            Some(rustdoc.rustdoc_name.as_str())
+        } else {
+            None
+        };
         let graph = load_graph_from_path_with_sources(
             &rustdoc.json_path,
             &rustdoc.crate_name,
             manifest_path,
             &rustdoc.src_path,
             call_mode,
+            rustdoc_name_opt,
         )?;
 
         // Merge nodes, preferring nodes with more complete data
@@ -459,6 +484,7 @@ pub fn load_graph_from_path_with_sources(
     workspace_manifest_path: &Path,
     root_file: &Path,
     call_mode: CallMode,
+    rustdoc_name: Option<&str>,
 ) -> Result<Graph, RustdocError> {
     let content = fs::read_to_string(path)?;
     extract_graph_with_sources(
@@ -467,6 +493,7 @@ pub fn load_graph_from_path_with_sources(
         workspace_manifest_path,
         root_file,
         call_mode,
+        rustdoc_name,
     )
 }
 
@@ -638,6 +665,7 @@ pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError
         source: None,
         call_mode: CallMode::Strict,
         skip_external_nodes: true,
+        rustdoc_name: None,
     })
 }
 
@@ -659,6 +687,7 @@ pub fn extract_graph_with_source_map(
         source: Some((Path::new(root_file), &provider)),
         call_mode,
         skip_external_nodes: true,
+        rustdoc_name: None,
     })
 }
 
@@ -669,6 +698,7 @@ pub fn extract_graph_with_sources(
     workspace_manifest_path: &Path,
     root_file: &Path,
     call_mode: CallMode,
+    rustdoc_name: Option<&str>,
 ) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
     let workspace_members = get_workspace_members(workspace_manifest_path)?;
@@ -677,6 +707,7 @@ pub fn extract_graph_with_sources(
         source: Some((root_file, &FsSourceProvider)),
         call_mode,
         skip_external_nodes: false,
+        rustdoc_name: rustdoc_name.map(|s| s.to_string()),
     })
 }
 
@@ -693,6 +724,9 @@ struct BuildGraphOptions<'a> {
     /// Edges referencing external nodes are still created (as cross-crate references)
     /// but no Node entries or module hierarchies are built for them.
     skip_external_nodes: bool,
+    /// The name rustdoc uses internally for the root crate. For binary crates this may
+    /// differ from `crate_name` (e.g. crate "codeview_cli" has rustdoc name "codeview").
+    rustdoc_name: Option<String>,
 }
 
 fn build_graph(
@@ -702,7 +736,29 @@ fn build_graph(
 ) -> Result<Graph, RustdocError> {
     #[cfg(feature = "wasm")]
     wasm_log!("[wasm] build_graph: starting with {} items in index, {} paths", krate.index.len(), krate.paths.len());
-    
+
+    // For binary crates, rustdoc uses the binary target name (e.g. "codeview") as the
+    // first path segment, but we want to use the package/crate name (e.g. "codeview_cli").
+    // Normalize paths for root crate items (crate_id == 0) so all downstream code works
+    // without needing to know about the mismatch.
+    let owned_krate;
+    let krate = if let Some(ref rdn) = opts.rustdoc_name {
+        let mut patched = krate.clone();
+        for summary in patched.paths.values_mut() {
+            if summary.crate_id == 0 {
+                if let Some(first) = summary.path.first_mut() {
+                    if first.as_str() == rdn.as_str() {
+                        *first = crate_name.to_string();
+                    }
+                }
+            }
+        }
+        owned_krate = patched;
+        &owned_krate
+    } else {
+        krate
+    };
+
     let mut graph = Graph::new();
     let mut node_cache = HashSet::new();
     let mut edge_cache = HashSet::new();
