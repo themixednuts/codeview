@@ -1144,7 +1144,7 @@ function attributeToString(attr: Attribute): string | null {
 				return '#[no_mangle]';
 			default:
 				// Pre-v54: plain strings are the attribute text itself
-				return attr;
+				return cleanTraceAttrs(attr);
 		}
 	}
 	if ('must_use' in attr) {
@@ -1157,8 +1157,13 @@ function attributeToString(attr: Attribute): string | null {
 		const joined = attr.target_feature.enable.map((f) => `enable = "${f}"`).join(', ');
 		return `#[target_feature(${joined})]`;
 	}
-	if ('other' in attr) return attr.other;
+	if ('other' in attr) return cleanTraceAttrs(attr.other);
 	return null;
+}
+
+/** Clean up compiler-internal trace attributes left by `#[cfg]`/`#[cfg_attr]` expansion. */
+function cleanTraceAttrs(value: string): string {
+	return value.replace(/<cfg_attr_trace>/g, 'cfg_attr').replace(/<cfg_trace>/g, 'cfg');
 }
 
 function formatRepr(repr: { kind: string; align?: number | null; packed?: number | null; int?: string | null }): string {

@@ -2486,8 +2486,17 @@ fn attribute_to_string(attr: &rdt::Attribute) -> Option<String> {
                 .join(", ");
             Some(format!("#[target_feature({joined})]"))
         }
-        rdt::Attribute::Other(value) => Some(value.clone()),
+        rdt::Attribute::Other(value) => Some(clean_trace_attrs(value)),
     }
+}
+
+/// Clean up compiler-internal trace attributes left by `#[cfg]`/`#[cfg_attr]` expansion.
+/// Rustdoc emits `<cfg_attr_trace>` and `<cfg_trace>` as internal markers; convert them
+/// back to the user-facing `cfg_attr` / `cfg` names.
+fn clean_trace_attrs(value: &str) -> String {
+    value
+        .replace("<cfg_attr_trace>", "cfg_attr")
+        .replace("<cfg_trace>", "cfg")
 }
 
 fn format_repr(repr: &rdt::AttributeRepr) -> String {
