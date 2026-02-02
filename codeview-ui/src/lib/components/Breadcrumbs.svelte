@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Graph, Node } from '$lib/graph';
-  import { kindColors } from '$lib/tree-constants';
+  import { kindColors } from '$lib/tree';
   import { Memo } from '$lib/reactivity.svelte';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Edge, EdgeKind, NodeKind } from '$lib/graph';
   import type { LayoutNode, LayoutState } from '$lib/layout';
-  import { getNodeVisual } from '$lib/node-visual';
+  import { getNodeVisual } from '$lib/visual';
   import { Loader2Icon } from '@lucide/svelte';
   import ZoomIn from '@lucide/svelte/icons/zoom-in';
   import ZoomOut from '@lucide/svelte/icons/zoom-out';

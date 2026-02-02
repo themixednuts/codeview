@@ -1,6 +1,6 @@
 import { Result } from 'better-result';
 import type { ParserAdapter, ParseResult } from './types';
-import { resolveRootFileForCrate } from './cargo-manifest';
+import { resolveRootFileForCrate } from './manifest';
 
 // vite-plugin-wasm-esm handles init: readFile in SSR, fetch in client.
 const { extract_graph, extract_graph_with_sources, ensure_capacity } = await import('codeview-rustdoc');

@@ -1,4 +1,4 @@
-import { isStdCrate } from '$lib/std-crates';
+import { isStdCrate } from '$lib/std';
 
 /**
  * Convert a node ID to a URL path using a version lookup map.

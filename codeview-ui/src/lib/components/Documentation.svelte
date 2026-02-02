@@ -6,7 +6,7 @@
     type DocLinks
   } from '$lib/highlight';
   import { goto } from '$app/navigation';
-  import { externalDocsUrl } from '$lib/docs-url';
+  import { externalDocsUrl } from '$lib/docs';
   import CodeBlock from './CodeBlock.svelte';
   import { extLinkModeCtx } from '$lib/context';
 

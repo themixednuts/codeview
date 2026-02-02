@@ -1,5 +1,5 @@
 import type { Graph, Node } from './graph';
-import { getNodeVisual, isRectLike } from './node-visual';
+import { getNodeVisual, isRectLike } from './visual';
 import { getPerfLogger } from './log';
 
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';

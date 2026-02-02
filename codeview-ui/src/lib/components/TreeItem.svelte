@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Node, NodeKind } from '$lib/graph';
-  import { kindColors, kindIcons } from '$lib/tree-constants';
+  import { kindColors, kindIcons } from '$lib/tree';
   import ChevronRight from '@lucide/svelte/icons/chevron-right';
   import ChevronDown from '@lucide/svelte/icons/chevron-down';
 

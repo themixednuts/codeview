@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { Edge, EdgeKind, Node, NodeKind, Visibility } from '$lib/graph';
   import type { SelectedEdges } from '$lib/ui';
-  import { kindColors } from '$lib/tree-constants';
-  import { externalDocsUrl } from '$lib/docs-url';
+  import { kindColors } from '$lib/tree';
+  import { externalDocsUrl } from '$lib/docs';
   import Documentation from './Documentation.svelte';
   import CodeBlock from './CodeBlock.svelte';
   import CollapsibleSection from './CollapsibleSection.svelte';

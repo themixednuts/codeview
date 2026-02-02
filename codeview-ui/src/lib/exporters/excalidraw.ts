@@ -1,8 +1,8 @@
 import type { GraphRenderer, GraphScene, SceneGroup } from '$lib/renderers/graph';
 import type { VisNode, VisEdge } from '$lib/graph-layout';
-import type { LabelPosition } from '$lib/graph-label-layout';
-import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/node-visual';
-import type { NodeVisual } from '$lib/node-visual';
+import type { LabelPosition } from '$lib/labels';
+import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/visual';
+import type { NodeVisual } from '$lib/visual';
 
 // ---------------------------------------------------------------------------
 // Excalidraw types (subset needed for export)

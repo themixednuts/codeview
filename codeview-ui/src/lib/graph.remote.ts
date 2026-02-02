@@ -1,7 +1,7 @@
 import { getRequestEvent, query, command } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { initProvider } from '$lib/server/provider';
-import { checkRateLimitPolicy } from '$cloudflare/rate-limit';
+import { checkRateLimitPolicy } from '$cloudflare/ratelimit';
 import { isValidCrateName, isValidVersion, sanitizeSearchQuery } from './server/validation';
 import { perf } from './perf';
 import type { Node, Workspace } from '$lib/graph';

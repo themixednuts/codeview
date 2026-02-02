@@ -6,8 +6,8 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { getNodeDetail } from '$lib/graph.remote';
-  import { cached, cacheKey } from '$lib/query-cache.svelte';
-  import { CrossEdgeUpdatesConnection } from '$lib/graph-updates.svelte';
+  import { cached, cacheKey } from '$lib/cache.svelte';
+  import { CrossEdgeUpdatesConnection } from '$lib/updates.svelte';
   import { Memo } from '$lib/reactivity.svelte';
   import { onDestroy } from 'svelte';
   import { perf } from '$lib/perf';

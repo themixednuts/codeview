@@ -3,7 +3,7 @@
   import { browser } from '$app/environment';
   import { afterNavigate, onNavigate } from '$app/navigation';
   import { getProcessingCrates } from '$lib/graph.remote';
-  import { ProcessingStatusConnection } from '$lib/processing-status.svelte';
+  import { ProcessingStatusConnection } from '$lib/processing.svelte';
   import { isHosted } from '$lib/platform';
   import { onMount } from 'svelte';
   import { perf } from '$lib/perf';

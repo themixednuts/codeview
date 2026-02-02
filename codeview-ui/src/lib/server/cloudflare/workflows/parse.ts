@@ -1,14 +1,14 @@
 import { Result } from 'better-result';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { decompress } from 'fzstd';
-import type { CrateRegistry } from '$cloudflare/crate-registry';
+import type { CrateRegistry } from '$cloudflare/registry';
 import { getRegistry } from '$lib/server/registry/index';
 import { getParser } from '$lib/server/parser/index';
 import { getSourceAdapter } from '$lib/server/sources/index';
 import { fetchSourcesWithProviders } from '$lib/server/sources/runner';
 import type { Ecosystem } from '$lib/server/registry/types';
 import { getLogger } from '$lib/log';
-import { isStdCrate } from '$lib/std-crates';
+import { isStdCrate } from '$lib/std';
 import { normalizeCrateName } from '$lib/server/validation';
 
 const log = getLogger('workflow');
@@ -25,7 +25,7 @@ interface ParseCrateParams {
  * Run `bun run cf:types:services` to regenerate the source-of-truth types.
  */
 type ServicesEnv = Omit<Env, 'GRAPH_STORE' | 'CRATE_REGISTRY' | 'PARSE_CRATE'> & {
-	GRAPH_STORE: DurableObjectNamespace<import('../graph-store').GraphStore>;
+	GRAPH_STORE: DurableObjectNamespace<import('../store').GraphStore>;
 	CRATE_REGISTRY: DurableObjectNamespace<CrateRegistry>;
 	CRATE_GRAPHS: R2Bucket;
 	PARSE_CRATE: Workflow<{ ecosystem: Ecosystem; name: string; version: string }>;

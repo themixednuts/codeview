@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Node, NodeKind } from '$lib/graph';
   import type { Attachment } from 'svelte/attachments';
-  import { matchesFilter, type TreeNode } from '$lib/tree-constants';
+  import { matchesFilter, type TreeNode } from '$lib/tree';
   import { Memo, arrayEqual } from '$lib/reactivity.svelte';
   import TreeItem from './TreeItem.svelte';
   import { perf } from '$lib/perf';

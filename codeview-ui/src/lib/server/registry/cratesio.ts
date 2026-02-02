@@ -54,7 +54,7 @@ async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonPar
 /** Extract "owner/repo" from a GitHub URL, or return undefined. */
 function extractGitHubRepo(url: string | null | undefined): string | undefined {
 	if (!url) return undefined;
-	const match = url.match(/github\.com\/([^/]+\/[^/]+?)(?:\.git)?(?:\/|$)/);
+	const match = url.match(/github\.com\/([^\/]+\/[^\/]+?)(?:\.git)?(?:\/|$)/);
 	return match?.[1];
 }
 

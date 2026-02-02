@@ -6,9 +6,9 @@ import { setupLogging } from '$lib/log';
 
 await setupLogging();
 
-export { GraphStore } from '$cloudflare/graph-store';
-export { CrateRegistry } from '$cloudflare/crate-registry';
-export { ParseCrateWorkflow } from '$cloudflare/workflows/parse-crate';
+export { GraphStore } from '$cloudflare/store';
+export { CrateRegistry } from '$cloudflare/registry';
+export { ParseCrateWorkflow } from '$cloudflare/workflows/parse';
 
 // Default fetch handler (required by Workers runtime, but all traffic
 // goes through the SvelteKit worker — this is only the DO host).

@@ -1,5 +1,5 @@
 import type { NodeKind } from '$lib/graph';
-import { isStdCrate } from '$lib/std-crates';
+import { isStdCrate } from '$lib/std';
 
 /** Map NodeKind to the rustdoc URL kind prefix (e.g. struct.Foo.html) */
 function kindPrefix(kind: NodeKind): string | null {

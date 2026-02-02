@@ -5,16 +5,16 @@
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
   import { getCrates, getCrateIndex, getCrateTree, getCrateVersions, searchNodes, triggerStdInstall } from '$lib/graph.remote';
-  import { cached, cacheKey } from '$lib/query-cache.svelte';
+  import { cached, cacheKey } from '$lib/cache.svelte';
   import { nodeUrl } from '$lib/url';
   import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import { onDestroy } from 'svelte';
   import GraphTree from '$lib/components/GraphTree.svelte';
   import { Loader2Icon } from '@lucide/svelte';
-  import { CrateStatusConnection } from '$lib/crate-status.svelte';
+  import { CrateStatusConnection } from '$lib/status.svelte';
   import { perf } from '$lib/perf';
   import { perfTick } from '$lib/perf.svelte';
-  import { kindColors, kindIcons } from '$lib/tree-constants';
+  import { kindColors, kindIcons } from '$lib/tree';
 
   let { children } = $props();
   const theme = $derived(themeCtx.get());

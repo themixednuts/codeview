@@ -1,6 +1,6 @@
 import type { Node, NodeKind } from '$lib/graph';
 import type { Component } from 'svelte';
-import { kindVisuals } from '$lib/node-visual';
+import { kindVisuals } from '$lib/visual';
 import Package from '@lucide/svelte/icons/package';
 import FolderCode from '@lucide/svelte/icons/folder-code';
 import Box from '@lucide/svelte/icons/box';

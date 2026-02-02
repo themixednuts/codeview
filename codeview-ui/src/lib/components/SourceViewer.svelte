@@ -5,7 +5,7 @@
   import { page } from '$app/state';
   import { browser } from '$app/environment';
   import { getSource } from '$lib/source.remote';
-  import { cached, cacheKey } from '$lib/query-cache.svelte';
+  import { cached, cacheKey } from '$lib/cache.svelte';
   import { Memo } from '$lib/reactivity.svelte';
   import { isHosted } from '$lib/platform';
   import CodeBlock from './CodeBlock.svelte';

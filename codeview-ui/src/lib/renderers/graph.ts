@@ -1,8 +1,8 @@
 import type { Edge, EdgeKind, Graph, Node } from '$lib/graph';
 import type { LayoutMode, VisEdge, VisNode } from '$lib/graph-layout';
-import type { LabelPosition, SimilarityInfo } from '$lib/graph-label-layout';
+import type { LabelPosition, SimilarityInfo } from '$lib/labels';
 import { computeLayout } from '$lib/graph-layout';
-import { getLabelProvider, computeAllLabelPositions } from '$lib/graph-label-layout';
+import { getLabelProvider, computeAllLabelPositions } from '$lib/labels';
 
 /**
  * A logical group of scene elements that belong together.

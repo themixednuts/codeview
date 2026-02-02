@@ -7,7 +7,7 @@
 
 import { Result } from 'better-result';
 import type { ParserAdapter, ParseResult, SourceFiles } from './types';
-import { resolveRootFileForCrate } from './cargo-manifest';
+import { resolveRootFileForCrate } from './manifest';
 import { getLogger } from '$lib/log';
 import { JsonParseError } from '../errors';
 
@@ -51,7 +51,7 @@ import type {
 	AssocItemConstraintKind,
 	Term,
 	Visibility as RdtVisibility
-} from './rustdoc-types';
+} from './rustdoc.types';
 
 // ---------------------------------------------------------------------------
 // Module-level constants — regex patterns and keyword set

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Graph, Node, NodeKind } from '$lib/graph';
   import { SvelteSet } from 'svelte/reactivity';
-  import { kindOrder, matchesFilter, hasMatchingDescendant, type TreeNode } from '$lib/tree-constants';
+  import { kindOrder, matchesFilter, hasMatchingDescendant, type TreeNode } from '$lib/tree';
   import { KeyedMemo, Memo } from '$lib/reactivity.svelte';
   import TreeItem from './TreeItem.svelte';
   import VirtualTree from './VirtualTree.svelte';

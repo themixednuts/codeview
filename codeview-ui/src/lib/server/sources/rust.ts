@@ -6,12 +6,12 @@ import type {
 	SourceRequest,
 	SourceFetchOutcome
 } from './types';
-import { fetchSourceArchive } from '../parser/source-archive';
+import { fetchSourceArchive } from '../parser/archive';
 import {
 	collectManifests,
 	filterSourceFilesForManifest,
 	selectManifestForCrate
-} from '../parser/cargo-manifest';
+} from '../parser/manifest';
 
 type RepoInfo =
 	| { host: 'github'; owner: string; repo: string }

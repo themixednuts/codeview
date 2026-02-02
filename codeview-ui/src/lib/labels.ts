@@ -1,5 +1,5 @@
 import type { LayoutMode, VisEdge, VisNode } from './graph-layout';
-import { getVisNodeEdgeAnchor } from './node-visual';
+import { getVisNodeEdgeAnchor } from './visual';
 
 export type LabelPosition = { x: number; y: number; anchor: string };
 export type SimilarityInfo = { group: number[]; indexOf: number };

@@ -1,6 +1,6 @@
 import { Result } from 'better-result';
 import type { Ecosystem, RegistryAdapter } from './types';
-import { createCratesIoAdapter } from './crates-io';
+import { createCratesIoAdapter } from './cratesio';
 import { UnsupportedEcosystemError } from '../errors';
 
 const adapters = new Map<Ecosystem, RegistryAdapter>();

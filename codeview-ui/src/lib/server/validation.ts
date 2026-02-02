@@ -1,4 +1,4 @@
-import { isRustChannel } from '$lib/std-crates';
+import { isRustChannel } from '$lib/std';
 
 const CRATE_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
 const VERSION_RE = /^\d{1,10}\.\d{1,10}\.\d{1,10}(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;

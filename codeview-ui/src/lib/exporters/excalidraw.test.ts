@@ -10,7 +10,7 @@ import {
 import type { VisNode, VisEdge } from '$lib/graph-layout';
 import type { Node } from '$lib/graph';
 import type { GraphScene, SceneGroup } from '$lib/renderers/graph';
-import type { LabelPosition } from '$lib/graph-label-layout';
+import type { LabelPosition } from '$lib/labels';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
