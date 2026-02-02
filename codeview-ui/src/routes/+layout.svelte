@@ -8,6 +8,7 @@
   import { onMount } from 'svelte';
   import { perf } from '$lib/perf';
   import { themeCtx, extLinkModeCtx, type Theme, type ExternalLinkMode } from '$lib/context';
+  import { Loader2Icon } from '@lucide/svelte';
 
   let navSpan: ReturnType<typeof perf.begin> | null = null;
 
@@ -37,8 +38,6 @@
   const processingListQuery = $derived(
     showProcessing ? getProcessingCrates({ refresh: processingCount }) : null
   );
-  const processingCrates = $derived(processingListQuery?.current ?? []);
-  const processingLoading = $derived(processingListQuery?.loading ?? false);
 
   $effect(() => {
     if (!browser || !isHosted) return;
@@ -121,17 +120,28 @@
               <div class="px-2 pb-1 text-[10px] uppercase tracking-wider text-[var(--muted)]">
                 Background parses
               </div>
-              {#if processingLoading}
-                <div class="px-2 py-2 text-xs text-[var(--muted)]">Loading...</div>
-              {:else if processingCrates.length > 0}
-                <div class="space-y-1">
-                  {#each processingCrates as crate (crate.name)}
-                    <div class="flex items-center justify-between gap-2 rounded-[var(--radius-chip)] corner-squircle bg-[var(--panel)] px-2 py-1">
-                      <span class="text-xs font-medium text-[var(--ink)] truncate">{crate.name}</span>
-                      <span class="badge badge-sm">{crate.version}</span>
+              {#if processingListQuery}
+                <svelte:boundary>
+                  {#snippet pending()}
+                    <div class="flex items-center gap-2 px-2 py-2 text-xs text-[var(--muted)]">
+                      <Loader2Icon class="animate-spin" size={12} />
+                      Loading...
                     </div>
-                  {/each}
-                </div>
+                  {/snippet}
+                  {@const crates = await processingListQuery}
+                  {#if crates && crates.length > 0}
+                    <div class="space-y-1">
+                      {#each crates as crate (crate.name)}
+                        <div class="flex items-center justify-between gap-2 rounded-[var(--radius-chip)] corner-squircle bg-[var(--panel)] px-2 py-1">
+                          <span class="text-xs font-medium text-[var(--ink)] truncate">{crate.name}</span>
+                          <span class="badge badge-sm">{crate.version}</span>
+                        </div>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="px-2 py-2 text-xs text-[var(--muted)]">No active parses</div>
+                  {/if}
+                </svelte:boundary>
               {:else}
                 <div class="px-2 py-2 text-xs text-[var(--muted)]">No active parses</div>
               {/if}

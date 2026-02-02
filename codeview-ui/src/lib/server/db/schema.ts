@@ -20,6 +20,7 @@ export const crateStatus = sqliteTable(
 		version: text('version').notNull(),
 		status: text('status').notNull().default('unknown'),
 		error: text('error'),
+		lastStep: text('last_step'),
 		updatedAt: integer('updated_at').notNull()
 	},
 	(table) => [primaryKey({ columns: [table.ecosystem, table.name, table.version] })]

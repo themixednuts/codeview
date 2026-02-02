@@ -62,10 +62,26 @@ export class LocalCache {
 
 		// Reset zombie statuses from a crashed/killed parse process.
 		// Keep "failed" rows so users see what failed and can retry explicitly.
-		this.db
-			.delete(crateStatus)
+		const zombies = this.db
+			.select({
+				name: crateStatus.name,
+				version: crateStatus.version,
+				lastStep: crateStatus.lastStep,
+			})
+			.from(crateStatus)
 			.where(eq(crateStatus.status, "processing"))
-			.run();
+			.all();
+		if (zombies.length > 0) {
+			for (const z of zombies) {
+				console.log(
+					`[cache] Cleaning zombie: ${z.name}@${z.version} (was on step: ${z.lastStep ?? "unknown"})`,
+				);
+			}
+			this.db
+				.delete(crateStatus)
+				.where(eq(crateStatus.status, "processing"))
+				.run();
+		}
 	}
 
 	// ── Crate graph storage ──
@@ -157,7 +173,7 @@ export class LocalCache {
 	getStatus(ecosystem: string, name: string, version: string): CrateStatusResult {
 		const n = this.norm(name);
 		const row = this.db
-			.select({ status: crateStatus.status, error: crateStatus.error })
+			.select({ status: crateStatus.status, error: crateStatus.error, lastStep: crateStatus.lastStep })
 			.from(crateStatus)
 			.where(
 				and(
@@ -168,8 +184,11 @@ export class LocalCache {
 			)
 			.get();
 		if (!row) return { status: "unknown" };
+		// Prefer in-memory step (most up-to-date), fall back to DB
 		const stepKey = `${ecosystem}:${n}:${version}`;
-		const step = row.status === "processing" ? this.stepMap.get(stepKey) : undefined;
+		const step = row.status === "processing"
+			? (this.stepMap.get(stepKey) ?? row.lastStep ?? undefined)
+			: undefined;
 		return {
 			status: row.status as CrateStatusValue,
 			...(row.error ? { error: row.error } : {}),
@@ -202,6 +221,7 @@ export class LocalCache {
 				version,
 				status,
 				error: error ?? null,
+				lastStep: step ?? null,
 				updatedAt: now,
 			})
 			.onConflictDoUpdate({
@@ -209,6 +229,7 @@ export class LocalCache {
 				set: {
 					status,
 					error: error ?? null,
+					lastStep: step ?? null,
 					updatedAt: now,
 				},
 			})

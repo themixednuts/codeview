@@ -1,9 +1,10 @@
 import m0000 from './undefined/migration.sql';
 import m0001 from './undefined/migration.sql';
+import m0002 from './undefined/migration.sql';
 
   export default {
     migrations: {
-      "undefined": m0001
+      "undefined": m0002
 }
   }
   

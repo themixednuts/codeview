@@ -1,5 +1,6 @@
 <script lang="ts">
   import { Debounced } from 'runed';
+  import { Loader2Icon } from '@lucide/svelte';
   import { getCrates, getTopCrates, searchRegistry } from '$lib/graph.remote';
   import { cached } from '$lib/query-cache.svelte';
 
@@ -32,9 +33,6 @@
   const searchQuery = $derived(
     debouncedTerm.length >= 2 ? searchRegistry(debouncedTerm) : null
   );
-  const searchResults = $derived(searchQuery?.current ?? []);
-  const searchLoading = $derived(isDebouncing || (searchQuery?.loading ?? false));
-  const limitedSearchResults = $derived(searchResults.slice(0, 6));
   const showSearchResults = $derived(searchTerm.length >= 2);
 </script>
 
@@ -52,27 +50,41 @@
         <div
           class="absolute left-0 right-0 z-30 mt-2 rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-3 shadow-[var(--shadow-soft)]"
         >
-          {#if searchLoading}
-            <p class="text-xs text-[var(--muted)]">Searching...</p>
-          {:else if limitedSearchResults.length > 0}
-            <div class="space-y-1">
-              {#each limitedSearchResults as result (result.name)}
-                <a
-                  href={`/${result.name}/${result.version}`}
-                  class="block rounded-[var(--radius-chip)] corner-squircle px-3 py-2 hover:bg-[var(--panel-strong)] transition-colors"
-                >
-                  <div class="flex items-center justify-between gap-2">
-                    <p class="text-sm font-medium text-[var(--ink)]">{result.name}</p>
-                    <span class="badge badge-sm">{result.version}</span>
-                  </div>
-                  {#if result.description}
-                    <p class="text-xs text-[var(--muted)] mt-1">{result.description}</p>
-                  {/if}
-                </a>
-              {/each}
-            </div>
-          {:else}
-            <p class="text-xs text-[var(--muted)]">No matches found.</p>
+          {#if isDebouncing}
+            <p class="flex items-center gap-2 text-xs text-[var(--muted)]">
+              <Loader2Icon class="animate-spin" size={12} />
+              Searching...
+            </p>
+          {:else if searchQuery}
+            <svelte:boundary>
+              {#snippet pending()}
+                <p class="flex items-center gap-2 text-xs text-[var(--muted)]">
+                  <Loader2Icon class="animate-spin" size={12} />
+                  Searching...
+                </p>
+              {/snippet}
+              {@const results = (await searchQuery).slice(0, 6)}
+              {#if results.length > 0}
+                <div class="space-y-1">
+                  {#each results as result (result.name)}
+                    <a
+                      href={`/${result.name}/${result.version}`}
+                      class="block rounded-[var(--radius-chip)] corner-squircle px-3 py-2 hover:bg-[var(--panel-strong)] transition-colors"
+                    >
+                      <div class="flex items-center justify-between gap-2">
+                        <p class="text-sm font-medium text-[var(--ink)]">{result.name}</p>
+                        <span class="badge badge-sm">{result.version}</span>
+                      </div>
+                      {#if result.description}
+                        <p class="text-xs text-[var(--muted)] mt-1">{result.description}</p>
+                      {/if}
+                    </a>
+                  {/each}
+                </div>
+              {:else}
+                <p class="text-xs text-[var(--muted)]">No matches found.</p>
+              {/if}
+            </svelte:boundary>
           {/if}
         </div>
       {/if}
