@@ -585,7 +585,7 @@ function formatType(ty: Type): string {
 		return result;
 	}
 	if ('dyn_trait' in ty) {
-		const traits = ty.dyn_trait.traits.map((p) => cleanPath(p.trait_.path));
+		const traits = ty.dyn_trait.traits.map((p) => p.trait_?.path ? cleanPath(p.trait_.path) : 'Trait');
 		return `dyn ${traits.join(' + ')}`;
 	}
 	if ('generic' in ty) return ty.generic;
@@ -1079,7 +1079,7 @@ function implNodeName(krate: RustdocCrate, defaultCrateName: string, implBlock: 
 
 	if (implBlock.trait_) {
 		const traitName = resolveId(krate, defaultCrateName, implBlock.trait_.id)?.split('::').pop()
-			?? implBlock.trait_.path.split('::').pop()
+			?? implBlock.trait_.path?.split('::').pop()
 			?? 'Trait';
 		return `impl ${traitName} for ${typeName}`;
 	}
@@ -1213,8 +1213,10 @@ function walkType(ty: Type, v: TypeVisitor): void {
 		if (ty.resolved_path.args) walkGenericArgs(ty.resolved_path.args, v);
 	} else if ('dyn_trait' in ty) {
 		for (const poly of ty.dyn_trait.traits) {
-			v.onTraitBound?.(poly.trait_.id, poly.trait_.path, poly.trait_.args);
-			if (poly.trait_.args) walkGenericArgs(poly.trait_.args, v);
+			if (poly.trait_) {
+				v.onTraitBound?.(poly.trait_.id, poly.trait_.path, poly.trait_.args);
+				if (poly.trait_.args) walkGenericArgs(poly.trait_.args, v);
+			}
 			walkGenericParamDefs(poly.generic_params, v);
 		}
 	} else if ('function_pointer' in ty) {
