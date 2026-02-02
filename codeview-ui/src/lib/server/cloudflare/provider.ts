@@ -193,6 +193,10 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			]);
 		},
 
+		async triggerStdInstall(_name: string, _version: string) {
+			throw new Error('std crate installation is not available in hosted mode');
+		},
+
 		async searchRegistry(query: string) {
 			const registry = getRegistry('rust');
 			const results = await registry.search(query);

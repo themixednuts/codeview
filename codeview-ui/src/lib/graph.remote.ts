@@ -139,36 +139,39 @@ export const getNodeDetail = query(NodeDetailInputSchema, async ({ nodeId, versi
 			const cratePrefix = nodeId.split('::')[0];
 			const crate = ws.crates.find((c) => c.id === cratePrefix);
 
-			const allNodes = getAllNodes(ws);
-			const node = allNodes.get(nodeId);
-			if (!node) return null;
+			if (crate) {
+				const allNodes = getAllNodes(ws);
+				const node = allNodes.get(nodeId);
+				if (!node) return null;
 
-			// Collect edges: from the crate's internal edges + cross-crate indexed edges
-			const { bySrc, byDst } = getCrossEdgesByNode(ws);
-			const edges = [
-				...(crate?.edges.filter((e) => e.from === nodeId || e.to === nodeId) ?? []),
-				...(bySrc.get(nodeId) ?? []),
-				...(byDst.get(nodeId) ?? [])
-			];
+				// Collect edges: from the crate's internal edges + cross-crate indexed edges
+				const { bySrc, byDst } = getCrossEdgesByNode(ws);
+				const edges = [
+					...(crate.edges.filter((e) => e.from === nodeId || e.to === nodeId)),
+					...(bySrc.get(nodeId) ?? []),
+					...(byDst.get(nodeId) ?? [])
+				];
 
-			// Related nodes referenced by those edges
-			const relatedIds = new Set<string>();
-			for (const e of edges) {
-				relatedIds.add(e.from);
-				relatedIds.add(e.to);
+				// Related nodes referenced by those edges
+				const relatedIds = new Set<string>();
+				for (const e of edges) {
+					relatedIds.add(e.from);
+					relatedIds.add(e.to);
+				}
+				relatedIds.delete(nodeId);
+
+				const relatedNodes: NodeSummary[] = [];
+				for (const id of relatedIds) {
+					const n = allNodes.get(id);
+					if (n) relatedNodes.push(summarizeNode(n));
+				}
+
+				return { node, edges, relatedNodes };
 			}
-			relatedIds.delete(nodeId);
-
-			const relatedNodes: NodeSummary[] = [];
-			for (const id of relatedIds) {
-				const n = allNodes.get(id);
-				if (n) relatedNodes.push(summarizeNode(n));
-			}
-
-			return { node, edges, relatedNodes };
+			// Not a workspace crate — fall through to universal path
 		}
 
-		// Hosted fallback: load crate graph from R2
+		// Universal path: load crate graph by ref (works for local SQLite + hosted R2)
 		const cratePrefix = nodeId.split('::')[0];
 		const graph = await loadCrateGraphByRef(cratePrefix, version);
 		if (!graph) return null;
@@ -233,19 +236,24 @@ export const searchNodes = query(
 		const lower = q.toLowerCase();
 
 		if (ws) {
-			const results: NodeSummary[] = [];
-			for (const c of ws.crates) {
-				if (crateId && c.id !== crateId) continue;
-				for (const n of c.nodes) {
-					if (
-						!n.is_external &&
-						(n.name.toLowerCase().includes(lower) || n.id.toLowerCase().includes(lower))
-					) {
-						results.push(summarizeNode(n));
+			// If scoped to a specific crate that isn't in the workspace, fall through
+			const isWorkspaceCrate = !crateId || ws.crates.some((c) => c.id === crateId);
+			if (isWorkspaceCrate) {
+				const results: NodeSummary[] = [];
+				for (const c of ws.crates) {
+					if (crateId && c.id !== crateId) continue;
+					for (const n of c.nodes) {
+						if (
+							!n.is_external &&
+							(n.name.toLowerCase().includes(lower) || n.id.toLowerCase().includes(lower))
+						) {
+							results.push(summarizeNode(n));
+						}
 					}
 				}
+				return results;
 			}
-			return results;
+			// Not a workspace crate — fall through to universal path
 		}
 
 		if (!crateId) return [];
@@ -315,6 +323,18 @@ export const triggerCrateParse = command(
 		// }
 		const provider = await initProvider(event);
 		await provider.triggerParse(name, version, force);
+	}
+);
+
+/** Trigger std crate install + parse (local mode, requires user consent). */
+export const triggerStdInstall = command(
+	CrateKeySchema,
+	async (nameVersion: string): Promise<void> => {
+		const [rawName, rawVersion] = nameVersion.split('@');
+		const name = rawName ?? '';
+		const version = rawVersion ?? 'stable';
+		const provider = await initProvider(getRequestEvent());
+		await provider.triggerStdInstall(name, version);
 	}
 );
 

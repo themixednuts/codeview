@@ -5,12 +5,13 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { browser } from '$app/environment';
-  import { getCrates, getCrateIndex, getCrateTree, getCrateVersions, searchNodes } from '$lib/graph.remote';
+  import { getCrates, getCrateIndex, getCrateTree, getCrateVersions, searchNodes, triggerStdInstall } from '$lib/graph.remote';
   import { cached } from '$lib/query-cache.svelte';
   import { nodeUrl } from '$lib/url';
   import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import { onDestroy } from 'svelte';
   import GraphTree from '$lib/components/GraphTree.svelte';
+  import { Loader2Icon } from '@lucide/svelte';
   import { CrateStatusConnection } from '$lib/crate-status.svelte';
   import { perf } from '$lib/perf';
   import { perfTick } from '$lib/perf.svelte';
@@ -79,7 +80,6 @@
   const otherCratesMemo = new KeyedMemo(
     () => keyOf(crateName, cratesQuery.current, indexQuery?.current),
     () => {
-      if (cratesQuery.loading) return [];
       if (cratesQuery.current && cratesQuery.current.length > 0) {
         return cratesQuery.current.filter((c) => c.id !== crateName && c.name !== crateName);
       }
@@ -146,7 +146,7 @@
   const treeGraphMemo = new KeyedMemo(
     () => keyOf(crateName, treeQuery?.current),
     () => {
-      if (!treeQuery || treeQuery.loading || !treeQuery.current) return null;
+      if (!treeQuery?.current) return null;
       return perf.time('derived', 'treeGraph', () => ({
         nodes: treeQuery.current!.nodes as Node[],
         edges: treeQuery.current!.edges
@@ -296,7 +296,10 @@
   <!-- Status overlay for processing/failed states -->
   {#if statusConn.status === 'unknown' && !treeGraph}
     <div class="flex flex-1 items-center justify-center">
-      <div class="text-sm text-[var(--muted)]">Loading...</div>
+      <div class="flex items-center gap-2 text-sm text-[var(--muted)]">
+        <Loader2Icon class="animate-spin" size={16} />
+        Loading {crateName}...
+      </div>
     </div>
   {:else if statusConn.status === 'processing'}
     <div class="flex flex-1 items-center justify-center">
@@ -305,6 +308,48 @@
         <div class="mb-2 text-sm text-[var(--muted)]">{stepLabel}</div>
         <div class="mx-auto h-1 w-48 overflow-hidden rounded-full bg-[var(--panel-border)]">
           <div class="h-full rounded-full bg-[var(--accent)] transition-all duration-500" style="width: {stepPercent}%"></div>
+        </div>
+      </div>
+    </div>
+  {:else if statusConn.status === 'failed' && statusConn.action === 'install_std_docs'}
+    <div class="flex flex-1 items-center justify-center">
+      <div class="text-center max-w-md">
+        <div class="mb-2 text-lg font-semibold text-[var(--ink)]">Install std docs for {crateName}?</div>
+        <div class="mb-4 text-sm text-[var(--muted)]">
+          The rustdoc JSON for <code class="rounded bg-[var(--panel-strong)] px-1 py-0.5 text-xs">{crateName} {version}</code> is not installed locally.
+          {#if statusConn.installedVersion}
+            Your current toolchain has version <code class="rounded bg-[var(--panel-strong)] px-1 py-0.5 text-xs">{statusConn.installedVersion}</code>.
+          {/if}
+          This will run <code class="rounded bg-[var(--panel-strong)] px-1 py-0.5 text-xs">rustup component add rust-docs-json</code>.
+        </div>
+        <div class="flex items-center justify-center gap-3">
+          <button
+            type="button"
+            class="rounded-[var(--radius-control)] corner-squircle bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
+            onclick={async () => {
+              if (!crateName || !version) return;
+              statusConn.status = 'processing';
+              statusConn.step = 'resolving';
+              statusConn.action = undefined;
+              statusConn.error = null;
+              try {
+                await triggerStdInstall(`${crateName}@${version}`);
+                statusConn.connect(crateName, version);
+              } catch (err) {
+                statusConn.status = 'failed';
+                statusConn.error = err instanceof Error ? err.message : String(err);
+              }
+            }}
+          >
+            Install
+          </button>
+          <button
+            type="button"
+            class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 text-sm text-[var(--muted)] hover:text-[var(--ink)] transition-colors"
+            onclick={() => history.back()}
+          >
+            Go back
+          </button>
         </div>
       </div>
     </div>
@@ -395,46 +440,62 @@
       <div class="flex-1 overflow-auto">
         {#if filter && searchQuery}
           <!-- Server-side search results -->
-          {#if searchQuery.loading}
-            <div class="p-4 text-sm text-[var(--muted)]">Searching...</div>
-          {:else if searchQuery.current && searchQuery.current.length > 0}
-            <div class="p-2">
-              <div class="px-2 pb-1 text-xs text-[var(--muted)]">{searchQuery.current.length} result{searchQuery.current.length === 1 ? '' : 's'}</div>
-              {#each searchQuery.current as node (node.id)}
-                {@const isSelected = selectedNodeId === node.id}
-                {@const KindIcon = kindIcons[node.kind]}
-                <a
-                  href={getNodeUrl(node.id)}
-                  data-sveltekit-noscroll
-                  class="flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1.5 text-sm hover:bg-[var(--panel-strong)] {isSelected
-                    ? 'bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]'
-                    : ''}"
-                >
-                  <span
-                    class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-white"
-                    style="background-color: {kindColors[node.kind]}"
-                  ><KindIcon size={12} strokeWidth={2.5} /></span>
-                  <span class="min-w-0 flex-1">
-                    <span class="block truncate font-medium text-[var(--ink)]">{node.name}</span>
-                    <span class="block truncate text-xs text-[var(--muted)]">{node.id}</span>
-                  </span>
-                </a>
-              {/each}
-            </div>
-          {:else}
-            <div class="p-4 text-sm text-[var(--muted)]">No results for "{filter}"</div>
-          {/if}
-        {:else if treeQuery?.loading}
-          <div class="p-4 text-sm text-[var(--muted)]">Loading tree...</div>
-        {:else if graphForDisplay}
           <svelte:boundary>
-            <GraphTree
-              graph={graphForDisplay}
-              selected={selectedNode}
-              {getNodeUrl}
-              filter=""
-              {kindFilter}
-            />
+            {#snippet pending()}
+              <div class="flex items-center gap-2 p-4 text-sm text-[var(--muted)]">
+                <Loader2Icon class="animate-spin" size={16} />
+                Searching...
+              </div>
+            {/snippet}
+            {@const results = await searchQuery}
+            {#if results && results.length > 0}
+              <div class="p-2">
+                <div class="px-2 pb-1 text-xs text-[var(--muted)]">{results.length} result{results.length === 1 ? '' : 's'}</div>
+                {#each results as node (node.id)}
+                  {@const isSelected = selectedNodeId === node.id}
+                  {@const KindIcon = kindIcons[node.kind]}
+                  <a
+                    href={getNodeUrl(node.id)}
+                    data-sveltekit-noscroll
+                    class="flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1.5 text-sm hover:bg-[var(--panel-strong)] {isSelected
+                      ? 'bg-[var(--accent)]/10 ring-1 ring-inset ring-[var(--accent)]'
+                      : ''}"
+                  >
+                    <span
+                      class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-white"
+                      style="background-color: {kindColors[node.kind]}"
+                    ><KindIcon size={12} strokeWidth={2.5} /></span>
+                    <span class="min-w-0 flex-1">
+                      <span class="block truncate font-medium text-[var(--ink)]">{node.name}</span>
+                      <span class="block truncate text-xs text-[var(--muted)]">{node.id}</span>
+                    </span>
+                  </a>
+                {/each}
+              </div>
+            {:else}
+              <div class="p-4 text-sm text-[var(--muted)]">No results for "{filter}"</div>
+            {/if}
+          </svelte:boundary>
+        {:else if treeQuery}
+          <svelte:boundary>
+            {#snippet pending()}
+              <div class="flex items-center gap-2 p-4 text-sm text-[var(--muted)]">
+                <Loader2Icon class="animate-spin" size={16} />
+                Loading tree...
+              </div>
+            {/snippet}
+            {@const _tree = await treeQuery}
+            {#if graphForDisplay}
+              <GraphTree
+                graph={graphForDisplay}
+                selected={selectedNode}
+                {getNodeUrl}
+                filter=""
+                {kindFilter}
+              />
+            {:else}
+              <div class="p-4 text-sm text-[var(--muted)]">No data available</div>
+            {/if}
             {#snippet failed(error, reset)}
               <div class="p-4 text-sm text-[var(--danger)]">
                 <p class="font-medium">Failed to render tree</p>

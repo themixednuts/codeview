@@ -17,6 +17,8 @@ export class CrateStatusConnection extends SSEConnection {
 	status = $state<CrateStatusValue>('unknown');
 	error = $state<string | null>(null);
 	step = $state<string | null>(null);
+	action = $state<'install_std_docs' | undefined>(undefined);
+	installedVersion = $state<string | undefined>(undefined);
 
 	protected readonly log = getLogger('status');
 	#name = '';
@@ -40,6 +42,8 @@ export class CrateStatusConnection extends SSEConnection {
 		this.status = 'unknown';
 		this.error = null;
 		this.step = null;
+		this.action = undefined;
+		this.installedVersion = undefined;
 		this.open();
 	}
 
@@ -48,6 +52,8 @@ export class CrateStatusConnection extends SSEConnection {
 		this.log.debug`msg ${this.tag} status=${msg.status} step=${msg.step ?? '-'}${msg.error ? ` error=${msg.error}` : ''}`;
 		this.status = msg.status;
 		this.error = msg.error ?? null;
+		this.action = msg.action;
+		this.installedVersion = msg.installedVersion;
 
 		// Only advance step forward — never retract
 		const incoming = msg.step ?? null;

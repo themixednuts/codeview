@@ -5,7 +5,7 @@ import { decompress } from 'fzstd';
 import type { Workspace, CrateGraph, Confidence, EdgeKind, NodeKind, Visibility } from '$lib/graph';
 import type { CrateIndex } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
-import { isStdCrate } from '$lib/std-crates';
+import { isStdCrate, STD_JSON_CRATES } from '$lib/std-crates';
 import { getLogger } from '$lib/log';
 import { createCratesIoAdapter } from '../registry/crates-io';
 import { getRegistry } from '../registry/index';
@@ -16,6 +16,9 @@ import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } fro
 import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
 import { sseResponse, sseStreamResponse } from '../sse-proxy';
 import { LocalCache } from './cache';
+import { WorkflowEntrypoint, runWorkflow } from './workflow';
+import type { WorkflowStep, WorkflowEvent } from './workflow';
+import { findStdJson, installStdDocs, detectSysroot } from './sysroot';
 
 const log = getLogger('local');
 
@@ -155,204 +158,424 @@ export function createLocalProvider(): DataProvider {
 		};
 	}
 
-	async function parseCrate(name: string, version: string): Promise<void> {
-		log.info`Parsing ${name}@${version}`;
-		try {
-			// Step 1: Check cache
-			const lc = getCache();
-			if (lc.hasCrate(name, version)) {
+	// ── Workflow-based parse pipeline ──
+
+	type ParseCrateParams = {
+		name: string;
+		version: string;
+	};
+
+	class ParseCrateWorkflow extends WorkflowEntrypoint<ParseCrateParams> {
+		async run(event: WorkflowEvent<ParseCrateParams>, step: WorkflowStep): Promise<void> {
+			const { name, version } = event.payload;
+			log.info`Parsing ${name}@${version}`;
+
+			// check-existing: bail early if already cached
+			const cached = await step.do('check-existing', async () => {
+				const lc = getCache();
+				return lc.hasCrate(name, version);
+			});
+			if (cached) {
 				emitStatus(name, version, { status: 'ready' });
 				return;
 			}
 
-			// Step 2: Resolving
-			emitStatus(name, version, { status: 'processing' }, 'resolving');
-
-			const reg = getRegistry('rust');
-			const meta = await reg.resolve(name, version);
-			if (!meta) {
-				emitStatus(name, version, {
-					status: 'failed',
-					error: `Package not found: ${name}@${version}`
-				});
-				return;
-			}
-
-			// Step 3: Fetching
-			log.info`Fetching rustdoc for ${name}@${version}`;
-			emitStatus(name, version, { status: 'processing' }, 'fetching');
-
-			const artifactUrl = meta.artifactUrl ?? `https://docs.rs/crate/${name}/${version}/json`;
-			const artifactRes = await fetch(artifactUrl, {
-				headers: { 'User-Agent': USER_AGENT }
+			// set-status-resolving
+			await step.do('set-status-resolving', async () => {
+				emitStatus(name, version, { status: 'processing' }, 'resolving');
 			});
-			if (!artifactRes.ok) {
-				emitStatus(name, version, {
-					status: 'failed',
-					error: `Failed to fetch artifact: ${artifactRes.status} ${artifactRes.statusText}`
-				});
-				return;
-			}
 
-			let artifact: Uint8Array;
-			const contentType = artifactRes.headers.get('content-type') ?? '';
-			if (contentType.includes('zstd')) {
-				const compressed = new Uint8Array(await artifactRes.arrayBuffer());
-				artifact = decompress(compressed);
-			} else {
-				artifact = new Uint8Array(await artifactRes.arrayBuffer());
-			}
+			// resolve-metadata: registry lookup
+			const meta = await step.do(
+				'resolve-metadata',
+				{ retries: { limit: 2, delayMs: 2000, backoff: 'exponential' } },
+				async () => {
+					const reg = getRegistry('rust');
+					const resolved = await reg.resolve(name, version);
+					if (!resolved) {
+						throw new Error(`Package not found: ${name}@${version}`);
+					}
+					return resolved;
+				}
+			);
+
+			// set-status-fetching
+			await step.do('set-status-fetching', async () => {
+				log.info`Fetching rustdoc for ${name}@${version}`;
+				emitStatus(name, version, { status: 'processing' }, 'fetching');
+			});
+
+			// fetch-artifact: download + decompress
+			const artifact = await step.do(
+				'fetch-artifact',
+				{ retries: { limit: 2, delayMs: 3000, backoff: 'exponential' } },
+				async () => {
+					const artifactUrl = meta.artifactUrl ?? `https://docs.rs/crate/${name}/${version}/json`;
+					const artifactRes = await fetch(artifactUrl, {
+						headers: { 'User-Agent': USER_AGENT }
+					});
+					if (!artifactRes.ok) {
+						throw new Error(
+							`Failed to fetch artifact: ${artifactRes.status} ${artifactRes.statusText}`
+						);
+					}
+
+					const contentType = artifactRes.headers.get('content-type') ?? '';
+					if (contentType.includes('zstd')) {
+						const compressed = new Uint8Array(await artifactRes.arrayBuffer());
+						return decompress(compressed);
+					}
+					return new Uint8Array(await artifactRes.arrayBuffer());
+				}
+			);
 			log.info`Fetched ${name}@${version}: ${(artifact.byteLength / 1024 / 1024).toFixed(1)} MB`;
 
-			// Step 4: Parsing
-			emitStatus(name, version, { status: 'processing' }, 'parsing');
-
-			log.info`Fetching sources for ${name}@${version}`;
-			const sourceAdapter = getSourceAdapter('rust');
-			const providers = sourceAdapter.getProviders({
-				ecosystem: 'rust',
-				name,
-				version,
-				metadata: meta
-			});
-			const sourceFiles = await fetchSourcesWithProviders(
-				providers,
-				{ ecosystem: 'rust', name, version, metadata: meta },
-				{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT }
-			);
-			log.info`Sources for ${name}@${version}: ${sourceFiles ? sourceFiles.size + ' files' : 'none'}`;
-
-			log.info`Parsing rustdoc for ${name}@${version}`;
-			const t0 = performance.now();
-			const parser = getParser('rust');
-			const srcFiles = sourceFiles ?? undefined;
-			const parseResult = await parser.parse(artifact, name, version, srcFiles);
-			log.info`Parsed ${name}@${version}: ${parseResult.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
-
-			// Step 5: Build index + cross-edges
-			emitStatus(name, version, { status: 'processing' }, 'indexing');
-
-			function cratePrefix(id: string): string {
-				return id.split('::')[0] ?? id;
-			}
-
-			const nodeById = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
-			for (const node of parseResult.graph.nodes) {
-				nodeById.set(node.id, {
-					id: node.id,
-					name: node.name,
-					kind: node.kind,
-					visibility: node.visibility,
-					is_external: node.is_external
-				});
-			}
-
-			const crossEdges = parseResult.graph.edges.filter(
-				(edge) => cratePrefix(edge.from) !== cratePrefix(edge.to)
-			);
-
-			const crossNodeMap = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
-			for (const edge of crossEdges) {
-				const fromNode = nodeById.get(edge.from);
-				const toNode = nodeById.get(edge.to);
-				if (fromNode) crossNodeMap.set(fromNode.id, fromNode);
-				if (toNode) crossNodeMap.set(toNode.id, toNode);
-			}
-
-			const latestCache = new Map<string, string | null>();
-			async function getLatestVersion(candidate: string): Promise<string | null> {
-				if (latestCache.has(candidate)) return latestCache.get(candidate)!;
-				const resolved = await reg.getLatestVersion(candidate);
-				latestCache.set(candidate, resolved);
-				return resolved;
-			}
-
-			async function resolveExternalEntry(ext: {
-				id: string;
-				name: string;
-			}): Promise<CrateIndexEntry | null> {
-				const candidates = [
-					...crateNameVariants(ext.name),
-					...crateNameVariants(ext.id)
-				].filter((value, index, all) => value && all.indexOf(value) === index);
-
-				for (const candidate of candidates) {
-					const latest = await getLatestVersion(candidate);
-					if (latest) {
-						return { id: ext.id, name: candidate, version: latest, is_external: true };
-					}
-				}
-				return null;
-			}
-
-			const externalCrates: { id: string; name: string }[] = [];
-			const seenExternal = new Set<string>();
-			for (const c of parseResult.externalCrates) {
-				if (seenExternal.has(c.id)) continue;
-				seenExternal.add(c.id);
-				if (isStdCrate(c.name) || isStdCrate(c.id)) continue;
-				externalCrates.push({ id: c.id, name: c.name });
-			}
-			const externalEntries = await mapWithConcurrency(
-				externalCrates,
-				VERSION_LOOKUP_CONCURRENCY,
-				resolveExternalEntry
-			);
-			const filteredExternal = externalEntries.filter(
-				(e): e is CrateIndexEntry => e !== null
-			);
-
-			const index: CrateIndex = {
-				name,
-				version,
-				crates: [
-					{
-						id: parseResult.graph.id,
+			// parse-rustdoc: parse JSON → graph
+			const parseResult = await step.do(
+				'parse-rustdoc',
+				{ retries: { limit: 1, delayMs: 1000, backoff: 'linear' } },
+				async () => {
+					log.info`Fetching sources for ${name}@${version}`;
+					const sourceAdapter = getSourceAdapter('rust');
+					const providers = sourceAdapter.getProviders({
+						ecosystem: 'rust',
 						name,
 						version,
-						is_external: false
-					},
-					...filteredExternal
-				]
-			};
+						metadata: meta
+					});
+					const sourceFiles = await fetchSourcesWithProviders(
+						providers,
+						{ ecosystem: 'rust', name, version, metadata: meta },
+						{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT }
+					);
+					log.info`Sources for ${name}@${version}: ${sourceFiles ? sourceFiles.size + ' files' : 'none'}`;
 
-			// Step 6: Store to SQLite
-			emitStatus(name, version, { status: 'processing' }, 'storing');
-
-			const graph = {
-				id: parseResult.graph.id,
-				name: parseResult.graph.name,
-				version: parseResult.graph.version,
-				nodes: parseResult.graph.nodes,
-				edges: parseResult.graph.edges
-			};
-			lc.putCrate(name, version, graph, index);
-
-			// Store cross-edges
-			const touchedNodes = new Set<string>();
-			for (const edge of crossEdges) {
-				touchedNodes.add(edge.from);
-				touchedNodes.add(edge.to);
-			}
-			lc.replaceCrossEdges(
-				'rust', name, version,
-				crossEdges,
-				Array.from(crossNodeMap.values())
+					log.info`Parsing rustdoc for ${name}@${version}`;
+					const t0 = performance.now();
+					const parser = getParser('rust');
+					const srcFiles = sourceFiles ?? undefined;
+					const result = await parser.parse(artifact, name, version, srcFiles);
+					log.info`Parsed ${name}@${version}: ${result.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
+					return result;
+				}
 			);
 
-			// Notify edge listeners
-			for (const nodeId of touchedNodes) {
-				emitEdgeUpdate(nodeId);
+			// set-status-indexing
+			await step.do('set-status-indexing', async () => {
+				emitStatus(name, version, { status: 'processing' }, 'indexing');
+			});
+
+			// index-cross-edges: build cross-crate edge index + resolve external versions
+			const { crossEdgesList, crossNodeList, index } = await step.do(
+				'index-cross-edges',
+				{ retries: { limit: 1, delayMs: 1000, backoff: 'linear' } },
+				async () => {
+					function cratePrefix(id: string): string {
+						return id.split('::')[0] ?? id;
+					}
+
+					const nodeById = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
+					for (const node of parseResult.graph.nodes) {
+						nodeById.set(node.id, {
+							id: node.id,
+							name: node.name,
+							kind: node.kind,
+							visibility: node.visibility,
+							is_external: node.is_external
+						});
+					}
+
+					const edgesOut = parseResult.graph.edges.filter(
+						(edge) => cratePrefix(edge.from) !== cratePrefix(edge.to)
+					);
+
+					const nodeMap = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
+					for (const edge of edgesOut) {
+						const fromNode = nodeById.get(edge.from);
+						const toNode = nodeById.get(edge.to);
+						if (fromNode) nodeMap.set(fromNode.id, fromNode);
+						if (toNode) nodeMap.set(toNode.id, toNode);
+					}
+
+					const reg = getRegistry('rust');
+					const latestCacheLocal = new Map<string, string | null>();
+					async function getLatestVersionLocal(candidate: string): Promise<string | null> {
+						if (latestCacheLocal.has(candidate)) return latestCacheLocal.get(candidate)!;
+						const resolved = await reg.getLatestVersion(candidate);
+						latestCacheLocal.set(candidate, resolved);
+						return resolved;
+					}
+
+					async function resolveExternalEntry(ext: {
+						id: string;
+						name: string;
+					}): Promise<CrateIndexEntry | null> {
+						const candidates = [
+							...crateNameVariants(ext.name),
+							...crateNameVariants(ext.id)
+						].filter((value, idx, all) => value && all.indexOf(value) === idx);
+
+						for (const candidate of candidates) {
+							const latest = await getLatestVersionLocal(candidate);
+							if (latest) {
+								return { id: ext.id, name: candidate, version: latest, is_external: true };
+							}
+						}
+						return null;
+					}
+
+					const externalCrates: { id: string; name: string }[] = [];
+					const seenExternal = new Set<string>();
+					for (const c of parseResult.externalCrates) {
+						if (seenExternal.has(c.id)) continue;
+						seenExternal.add(c.id);
+						if (isStdCrate(c.name) || isStdCrate(c.id)) continue;
+						externalCrates.push({ id: c.id, name: c.name });
+					}
+					const externalEntries = await mapWithConcurrency(
+						externalCrates,
+						VERSION_LOOKUP_CONCURRENCY,
+						resolveExternalEntry
+					);
+					const filteredExternal = externalEntries.filter(
+						(e): e is CrateIndexEntry => e !== null
+					);
+
+					const idx: CrateIndex = {
+						name,
+						version,
+						crates: [
+							{
+								id: parseResult.graph.id,
+								name,
+								version,
+								is_external: false
+							},
+							...filteredExternal
+						]
+					};
+
+					return {
+						crossEdgesList: edgesOut,
+						crossNodeList: Array.from(nodeMap.values()),
+						index: idx
+					};
+				}
+			);
+
+			// store-graph: write to SQLite
+			await step.do(
+				'store-graph',
+				{ retries: { limit: 2, delayMs: 1000, backoff: 'linear' } },
+				async () => {
+					emitStatus(name, version, { status: 'processing' }, 'storing');
+
+					const lc = getCache();
+					const graph = {
+						id: parseResult.graph.id,
+						name: parseResult.graph.name,
+						version: parseResult.graph.version,
+						nodes: parseResult.graph.nodes,
+						edges: parseResult.graph.edges
+					};
+					lc.putCrate(name, version, graph, index);
+
+					lc.replaceCrossEdges(
+						'rust', name, version,
+						crossEdgesList,
+						crossNodeList
+					);
+				}
+			);
+
+			// fanout-dependencies: trigger parses for external crates
+			await step.do('fanout-dependencies', async () => {
+				const touchedNodes = new Set<string>();
+				for (const edge of crossEdgesList) {
+					touchedNodes.add(edge.from);
+					touchedNodes.add(edge.to);
+				}
+				for (const nodeId of touchedNodes) {
+					emitEdgeUpdate(nodeId);
+				}
+				log.info`Parsed and cached ${name}@${version}`;
+			});
+
+			// set-status-ready
+			await step.do('set-status-ready', async () => {
+				emitStatus(name, version, { status: 'ready' });
+			});
+		}
+	}
+
+	async function parseCrate(name: string, version: string): Promise<void> {
+		const workflow = new ParseCrateWorkflow();
+		const result = await runWorkflow(workflow, { name, version }, {
+			onStepStart(stepName) {
+				log.info`[workflow] step started: ${stepName} for ${name}@${version}`;
+			},
+			onStepError(stepName, error, attempt) {
+				log.error`[workflow] step "${stepName}" failed (attempt ${String(attempt)}): ${error.message}`;
+			}
+		});
+
+		if (!result.ok) {
+			log.error`Failed to parse ${name}@${version}: ${result.error} (step: ${result.failedStep})`;
+			emitStatus(name, version, { status: 'failed', error: result.error }, result.failedStep);
+		}
+	}
+
+	// ── Std crate parse pipeline ──
+
+	type ParseStdCrateParams = {
+		name: string;
+		version: string;
+		installConsent: boolean;
+	};
+
+	class ParseStdCrateWorkflow extends WorkflowEntrypoint<ParseStdCrateParams> {
+		async run(event: WorkflowEvent<ParseStdCrateParams>, step: WorkflowStep): Promise<void> {
+			const { name, version, installConsent } = event.payload;
+			log.info`Parsing std crate ${name}@${version} (installConsent=${String(installConsent)})`;
+
+			// check-existing
+			const cached = await step.do('check-existing', async () => {
+				const lc = getCache();
+				return lc.hasCrate(name, version);
+			});
+			if (cached) {
+				emitStatus(name, version, { status: 'ready' });
+				return;
 			}
 
-			log.info`Parsed and cached ${name}@${version}`;
+			// set-status-resolving
+			await step.do('set-status-resolving', async () => {
+				emitStatus(name, version, { status: 'processing' }, 'resolving');
+			});
 
-			// Step 7: Ready
-			emitStatus(name, version, { status: 'ready' });
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			log.error`Failed to parse ${name}@${version}: ${msg}`;
-			emitStatus(name, version, { status: 'failed', error: msg });
+			// detect-sysroot: find JSON path
+			const stdInfo = await step.do('detect-sysroot', async () => {
+				return findStdJson(name, version);
+			});
+
+			// If not available and we have install consent, install the component
+			if (!stdInfo.available && installConsent) {
+				await step.do('install-component', async () => {
+					emitStatus(name, version, { status: 'processing' }, 'fetching');
+					const toolchain = versionToToolchainForInstall(version);
+					await installStdDocs(toolchain);
+				});
+
+				// Re-check after install
+				const afterInstall = await step.do('recheck-sysroot', async () => {
+					return findStdJson(name, version);
+				});
+				if (!afterInstall.available) {
+					throw new Error(`rust-docs-json installed but ${name}.json not found`);
+				}
+				stdInfo.available = afterInstall.available;
+				stdInfo.jsonPath = afterInstall.jsonPath;
+			}
+
+			if (!stdInfo.available || !stdInfo.jsonPath) {
+				throw new Error(`Std JSON not available for ${name}@${version}`);
+			}
+
+			// read-json
+			const artifact = await step.do('read-json', async () => {
+				emitStatus(name, version, { status: 'processing' }, 'fetching');
+				const content = await readFile(stdInfo.jsonPath!, 'utf-8');
+				return content;
+			});
+			log.info`Read std JSON for ${name}@${version}: ${(artifact.length / 1024 / 1024).toFixed(1)} MB`;
+
+			// parse-rustdoc
+			const parseResult = await step.do('parse-rustdoc', async () => {
+				log.info`Parsing rustdoc for std crate ${name}@${version}`;
+				emitStatus(name, version, { status: 'processing' }, 'parsing');
+				const t0 = performance.now();
+				const parser = getParser('rust');
+				const result = await parser.parse(artifact, name, version);
+				log.info`Parsed ${name}@${version}: ${result.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
+				return result;
+			});
+
+			// store-graph
+			await step.do('store-graph', async () => {
+				emitStatus(name, version, { status: 'processing' }, 'storing');
+				const lc = getCache();
+				const graph = {
+					id: parseResult.graph.id,
+					name: parseResult.graph.name,
+					version: parseResult.graph.version,
+					nodes: parseResult.graph.nodes,
+					edges: parseResult.graph.edges,
+				};
+				const index: CrateIndex = {
+					name,
+					version,
+					crates: [{ id: parseResult.graph.id, name, version, is_external: false }],
+				};
+				lc.putCrate(name, version, graph, index);
+			});
+
+			// set-status-ready
+			await step.do('set-status-ready', async () => {
+				log.info`Parsed and cached std crate ${name}@${version}`;
+				emitStatus(name, version, { status: 'ready' });
+			});
+		}
+	}
+
+	function versionToToolchainForInstall(version: string): string {
+		if (version === 'nightly' || version === 'stable' || version === 'beta') return version;
+		if (version.includes('-nightly')) return 'nightly';
+		if (version.includes('-beta')) return 'beta';
+		return 'stable';
+	}
+
+	function startStdParse(name: string, version: string, installConsent: boolean): void {
+		const key = parseKey(name, version);
+		if (inFlight.has(key)) return;
+		const promise = parseStdCrate(name, version, installConsent).finally(() => {
+			inFlight.delete(key);
+		});
+		inFlight.set(key, promise);
+	}
+
+	async function parseStdCrate(name: string, version: string, installConsent: boolean): Promise<void> {
+		const workflow = new ParseStdCrateWorkflow();
+		const result = await runWorkflow(workflow, { name, version, installConsent }, {
+			onStepStart(stepName) {
+				log.info`[std-workflow] step started: ${stepName} for ${name}@${version}`;
+			},
+			onStepError(stepName, error, attempt) {
+				log.error`[std-workflow] step "${stepName}" failed (attempt ${String(attempt)}): ${error.message}`;
+			}
+		});
+
+		if (!result.ok) {
+			log.error`Failed to parse std ${name}@${version}: ${result.error} (step: ${result.failedStep})`;
+			emitStatus(name, version, { status: 'failed', error: result.error }, result.failedStep);
+		}
+	}
+
+	function autoTriggerStdCrates(crates: Array<{ name: string; version: string; is_external?: boolean }>): void {
+		const lc = getCache();
+		for (const c of crates) {
+			if (!isStdCrate(c.name) || !STD_JSON_CRATES.includes(c.name)) continue;
+			if (lc.hasCrate(c.name, c.version)) continue;
+			const key = parseKey(c.name, c.version);
+			if (inFlight.has(key)) continue;
+			// Fire-and-forget: try to parse from sysroot (no install consent)
+			findStdJson(c.name, c.version).then((info) => {
+				if (info.available) {
+					log.info`Auto-triggering std crate parse: ${c.name}@${c.version}`;
+					startStdParse(c.name, c.version, false);
+				}
+			}).catch(() => {
+				// Silently ignore — sysroot detection failure is non-fatal
+			});
 		}
 	}
 
@@ -437,6 +660,10 @@ export function createLocalProvider(): DataProvider {
 					const current = crates.find(
 						(c) => c.id === name || c.name === name
 					);
+
+					// Fire-and-forget: auto-trigger std crate parsing for available sysroot JSON
+					autoTriggerStdCrates(crates);
+
 					return {
 						name: current?.name ?? name,
 						version: current?.version ?? version,
@@ -468,6 +695,30 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async getCrateStatus(name: string, version: string): Promise<CrateStatus> {
+			if (isStdCrate(name)) {
+				// Check cache first
+				const lc = getCache();
+				if (lc.hasCrate(name, version)) return { status: 'ready' };
+				const dbStatus = lc.getStatus('rust', name, version);
+				if (dbStatus.status !== 'unknown') return dbStatus;
+
+				// Check sysroot availability
+				try {
+					const stdInfo = await findStdJson(name, version);
+					if (stdInfo.available) return { status: 'unknown' }; // auto-triggerable
+
+					// Mismatch — needs user consent to install
+					return {
+						status: 'failed',
+						error: `std ${version} not installed. Available: ${stdInfo.installedVersion ?? 'none'}`,
+						action: 'install_std_docs',
+						installedVersion: stdInfo.installedVersion,
+					};
+				} catch {
+					return { status: 'failed', error: `Failed to detect sysroot for ${name}` };
+				}
+			}
+
 			// Check SQLite status first
 			try {
 				const lc = getCache();
@@ -492,7 +743,19 @@ export function createLocalProvider(): DataProvider {
 
 		async triggerParse(name: string, version: string, force?: boolean) {
 			if (isStdCrate(name)) {
-				throw new Error(`${name} is a standard library crate and cannot be parsed on-demand`);
+				// Check if sysroot JSON is available (no install consent)
+				const stdInfo = await findStdJson(name, version);
+				if (!stdInfo.available) {
+					throw new Error(`${name}@${version} not available in sysroot`);
+				}
+				const lc = getCache();
+				if (!force && lc.hasCrate(name, version)) {
+					emitStatus(name, version, { status: 'ready' });
+					return;
+				}
+				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				startStdParse(name, version, false);
+				return;
 			}
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				throw new Error('Invalid crate name or version');
@@ -520,6 +783,19 @@ export function createLocalProvider(): DataProvider {
 			// Set status atomically BEFORE starting the parse
 			emitStatus(name, version, { status: 'processing' }, 'resolving');
 			startParse(name, version);
+		},
+
+		async triggerStdInstall(name: string, version: string) {
+			if (!isStdCrate(name)) {
+				throw new Error(`${name} is not a standard library crate`);
+			}
+			const lc = getCache();
+			if (lc.hasCrate(name, version)) {
+				emitStatus(name, version, { status: 'ready' });
+				return;
+			}
+			emitStatus(name, version, { status: 'processing' }, 'resolving');
+			startStdParse(name, version, true);
 		},
 
 		async searchRegistry(query: string): Promise<CrateSummaryResult[]> {
@@ -559,7 +835,12 @@ export function createLocalProvider(): DataProvider {
 
 			// For unknown crates, auto-trigger parse and stream updates
 			if (status.status === 'unknown' && isValidCrateName(name) && isValidVersion(version)) {
-				this.triggerParse(name, version);
+				try {
+					this.triggerParse(name, version);
+				} catch {
+					// Std crates and other non-parseable crates — return unknown status
+					return sseResponse(`data: ${JSON.stringify(status)}\n\n`, signal, { ttl: 500 });
+				}
 			}
 
 			// Stream updates

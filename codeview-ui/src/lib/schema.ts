@@ -228,7 +228,9 @@ export const CrateStatusValueSchema = v.picklist(['unknown', 'processing', 'read
 export const CrateStatusSchema = v.object({
 	status: CrateStatusValueSchema,
 	error: v.optional(v.string()),
-	step: v.optional(v.string())
+	step: v.optional(v.string()),
+	action: v.optional(v.picklist(['install_std_docs'])),
+	installedVersion: v.optional(v.string())
 });
 
 export const CrateSearchResultSchema = v.object({

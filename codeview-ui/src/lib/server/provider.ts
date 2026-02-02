@@ -7,6 +7,8 @@ export interface CrateStatus {
 	status: CrateStatusValue;
 	error?: string;
 	step?: string;
+	action?: 'install_std_docs';
+	installedVersion?: string;
 }
 
 export interface CrateSummaryResult {
@@ -34,6 +36,7 @@ export interface DataProvider {
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
 	triggerParse(name: string, version: string, force?: boolean): Promise<void>;
+	triggerStdInstall(name: string, version: string): Promise<void>;
 	searchRegistry(query: string): Promise<CrateSummaryResult[]>;
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
