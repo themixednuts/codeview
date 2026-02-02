@@ -2,6 +2,7 @@
   import type { Edge, EdgeKind, NodeKind } from '$lib/graph';
   import type { LayoutNode, LayoutState } from '$lib/layout';
   import { getNodeVisual } from '$lib/node-visual';
+  import { Loader2Icon } from '@lucide/svelte';
   import ZoomIn from '@lucide/svelte/icons/zoom-in';
   import ZoomOut from '@lucide/svelte/icons/zoom-out';
   import Maximize from '@lucide/svelte/icons/maximize';
@@ -280,7 +281,10 @@
     {/if}
     {#if loading}
       <div class="absolute inset-0 grid place-content-center bg-[var(--panel-muted)] text-sm text-[var(--muted)]">
-        Loading graph data...
+        <div class="flex items-center gap-2">
+          <Loader2Icon class="animate-spin" size={16} />
+          Loading graph data...
+        </div>
       </div>
     {/if}
   </div>

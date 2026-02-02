@@ -1,5 +1,5 @@
-import type { Graph, Node, NodeKind } from './graph';
-import type { Point } from './geo';
+import type { Graph, Node } from './graph';
+import { getNodeVisual, isRectLike } from './node-visual';
 
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
@@ -35,142 +35,9 @@ export const FLOW_ROW_GAP = 18;
 export const MAX_NODES_PER_COLUMN = 18;
 export const FORCE_RADIUS = 180;
 export const RADIAL_RADIUS = 180;
-export const CIRCLE_RADIUS = 24;
-export const CENTER_CIRCLE_RADIUS = 34;
-export const RECT_NODE_WIDTH = 132;
-export const RECT_NODE_HEIGHT = 44;
 export const MIN_NODE_SPACING = 16;
 export const LABEL_CHAR_WIDTH = 6.6; // Approximate width per character at base font size
 export const ARROWHEAD_LENGTH = 12;
-
-export const RECT_NODE_KINDS = new Set<NodeKind>(['Struct', 'Enum', 'Union']);
-
-export function getNodeDimensions(node: Node, isCenter: boolean): {
-  width: number;
-  height: number;
-  isRect: boolean;
-} {
-  const isRect = RECT_NODE_KINDS.has(node.kind);
-  if (isRect) {
-    const scale = isCenter ? 1.12 : 1;
-    return {
-      width: RECT_NODE_WIDTH * scale,
-      height: RECT_NODE_HEIGHT * scale,
-      isRect
-    };
-  }
-  const radius = isCenter ? CENTER_CIRCLE_RADIUS : CIRCLE_RADIUS;
-  return {
-    width: radius * 2,
-    height: radius * 2,
-    isRect
-  };
-}
-
-/** Corner radius used for rectangular nodes (must match RECT_CORNER_RADIUS in RelationshipGraph). */
-const ANCHOR_CORNER_RADIUS = 10;
-
-/**
- * Ray–rounded-rect intersection from the node center toward the target node.
- * Decomposes the boundary into 4 straight segments (sides inset by corner radius)
- * and 4 quarter-circle arcs, matching Excalidraw's approach. Intersects the ray
- * with each component and picks the closest valid hit.
- */
-function roundedRectAnchor(cx: number, cy: number, hw: number, hh: number, r: number, tx: number, ty: number): Point {
-  const dx = tx - cx;
-  const dy = ty - cy;
-  const len = Math.hypot(dx, dy) || 1;
-  const ux = dx / len;
-  const uy = dy / len;
-
-  // Clamp r so it doesn't exceed half of either dimension
-  const cr = Math.min(r, hw, hh);
-
-  let tBest = Infinity;
-
-  // --- 4 straight segments (sides inset by corner radius) ---
-  // Right: x = hw, y from -(hh-cr) to (hh-cr)
-  if (ux > 0) {
-    const t = hw / ux;
-    const py = uy * t;
-    if (Math.abs(py) <= hh - cr && t > 0) tBest = Math.min(tBest, t);
-  }
-  // Left: x = -hw, y from -(hh-cr) to (hh-cr)
-  if (ux < 0) {
-    const t = -hw / ux;
-    const py = uy * t;
-    if (Math.abs(py) <= hh - cr && t > 0) tBest = Math.min(tBest, t);
-  }
-  // Bottom: y = hh, x from -(hw-cr) to (hw-cr)
-  if (uy > 0) {
-    const t = hh / uy;
-    const px = ux * t;
-    if (Math.abs(px) <= hw - cr && t > 0) tBest = Math.min(tBest, t);
-  }
-  // Top: y = -hh, x from -(hw-cr) to (hw-cr)
-  if (uy < 0) {
-    const t = -hh / uy;
-    const px = ux * t;
-    if (Math.abs(px) <= hw - cr && t > 0) tBest = Math.min(tBest, t);
-  }
-
-  // --- 4 quarter-circle arcs at corners ---
-  // Corner centers at (±(hw-cr), ±(hh-cr)), radius cr
-  // Only accept hits in the outward quadrant of each corner
-  const corners = [
-    { ccx: hw - cr, ccy: hh - cr, sx: 1, sy: 1 },   // bottom-right
-    { ccx: -(hw - cr), ccy: hh - cr, sx: -1, sy: 1 },  // bottom-left
-    { ccx: hw - cr, ccy: -(hh - cr), sx: 1, sy: -1 },  // top-right
-    { ccx: -(hw - cr), ccy: -(hh - cr), sx: -1, sy: -1 }, // top-left
-  ];
-
-  for (const { ccx, ccy, sx, sy } of corners) {
-    // Ray from (0,0): P(t) = t*(ux,uy)
-    // Circle: |P - C|² = cr²  →  t² - 2t(u·C) + |C|² - cr² = 0
-    const dot = ux * ccx + uy * ccy;
-    const cLenSq = ccx * ccx + ccy * ccy;
-    const disc = dot * dot - (cLenSq - cr * cr);
-    if (disc < 0) continue;
-    const sqrtDisc = Math.sqrt(disc);
-    // Check both intersection points
-    for (const t of [dot - sqrtDisc, dot + sqrtDisc]) {
-      if (t <= 0) continue;
-      const px = ux * t;
-      const py = uy * t;
-      // Only accept if in the outward quadrant: (px - ccx) has sign sx, (py - ccy) has sign sy
-      if ((px - ccx) * sx >= -1e-6 && (py - ccy) * sy >= -1e-6 && t < tBest) {
-        tBest = t;
-      }
-    }
-  }
-
-  if (!isFinite(tBest)) return { x: cx, y: cy };
-  return { x: cx + ux * tBest, y: cy + uy * tBest };
-}
-
-export function getEdgeAnchor(fromNode: VisNode, toNode: VisNode): { x: number; y: number } {
-  const dims = getNodeDimensions(fromNode.node, fromNode.isCenter);
-  const dx = toNode.x - fromNode.x;
-  const dy = toNode.y - fromNode.y;
-  if (dx === 0 && dy === 0) {
-    return { x: fromNode.x, y: fromNode.y };
-  }
-  if (dims.isRect) {
-    return roundedRectAnchor(
-      fromNode.x, fromNode.y,
-      dims.width / 2, dims.height / 2,
-      ANCHOR_CORNER_RADIUS,
-      toNode.x, toNode.y
-    );
-  }
-  // Circle nodes
-  const radius = dims.width / 2;
-  const distance = Math.hypot(dx, dy) || 1;
-  return {
-    x: fromNode.x + (dx / distance) * radius,
-    y: fromNode.y + (dy / distance) * radius
-  };
-}
 
 export function computeLayout(graph: Graph, selected: Node, mode: LayoutMode): { nodes: VisNode[]; edges: VisEdge[] } {
   const t0 = performance.now();
@@ -260,9 +127,9 @@ function computeEgoLayout(graph: Graph, selected: Node): { nodes: VisNode[]; edg
   const inArray = Array.from(incomingNodes.values()).slice(0, MAX_NODES_PER_COLUMN);
   const outArray = Array.from(outgoingNodes.values()).slice(0, MAX_NODES_PER_COLUMN);
 
-  const centerDims = getNodeDimensions(selected, true);
-  const incomingWidths = inArray.map((entry) => getNodeDimensions(entry.node, false).width);
-  const outgoingWidths = outArray.map((entry) => getNodeDimensions(entry.node, false).width);
+  const centerDims = getNodeVisual(selected.kind, true);
+  const incomingWidths = inArray.map((entry) => getNodeVisual(entry.node.kind, false).width);
+  const outgoingWidths = outArray.map((entry) => getNodeVisual(entry.node.kind, false).width);
   const maxIncomingWidth = incomingWidths.length > 0 ? Math.max(...incomingWidths) : 0;
   const maxOutgoingWidth = outgoingWidths.length > 0 ? Math.max(...outgoingWidths) : 0;
   const leftX = CENTER_X - (centerDims.width / 2 + FLOW_COLUMN_GAP + maxIncomingWidth / 2);
@@ -274,7 +141,7 @@ function computeEgoLayout(graph: Graph, selected: Node): { nodes: VisNode[]; edg
     x: number
   ): VisNode[] {
     if (entries.length === 0) return [];
-    const heights = entries.map((entry) => getNodeDimensions(entry.node, false).height);
+    const heights = entries.map((entry) => getNodeVisual(entry.node.kind, false).height);
     const totalHeight = heights.reduce((sum, height) => sum + height, 0)
       + Math.max(0, entries.length - 1) * FLOW_ROW_GAP;
     let cursorY = CENTER_Y - totalHeight / 2;
@@ -393,8 +260,8 @@ function computeForceLayout(graph: Graph, selected: Node): { nodes: VisNode[]; e
         const dy = posB.y - posA.y;
         const dist = Math.max(1, Math.hypot(dx, dy));
 
-        const radiusA = nodeRadii.get(a.id) || CIRCLE_RADIUS;
-        const radiusB = nodeRadii.get(b.id) || CIRCLE_RADIUS;
+        const radiusA = nodeRadii.get(a.id) || 24;
+        const radiusB = nodeRadii.get(b.id) || 24;
         const minDist = radiusA + radiusB + MIN_NODE_SPACING;
         const repulsionScale = Math.max(1, minDist / 40);
         const repulsion = baseRepulsion * repulsionScale;
@@ -561,7 +428,7 @@ function computeHierarchicalLayout(graph: Graph, selected: Node): { nodes: VisNo
       }];
     }
 
-    const widths = nodes.map(n => getNodeDimensions(n, false).width);
+    const widths = nodes.map(n => getNodeVisual(n.kind, false).width);
     const totalWidth = widths.reduce((sum, w) => sum + w, 0) + (nodes.length - 1) * MIN_NODE_SPACING;
     let cursor = CENTER_X - totalWidth / 2;
 
@@ -730,27 +597,21 @@ function formatEdgeKinds(kinds: string[]): string {
   return Array.from(new Set(kinds)).join(', ');
 }
 
-function getEffectiveRadius(node: Node, isCenter: boolean): number {
-  const dims = getNodeDimensions(node, isCenter);
-  return Math.max(dims.width, dims.height) / 2;
-}
-
 function getNodeBoundingBox(node: Node, isCenter: boolean): { width: number; height: number } {
-  const dims = getNodeDimensions(node, isCenter);
-  const fontSize = isCenter ? 14 : 11;
+  const visual = getNodeVisual(node.kind, isCenter);
   const labelWidth = node.name.length * LABEL_CHAR_WIDTH;
 
-  // For rect nodes, label is inside; for circles, it may extend
-  const effectiveWidth = dims.isRect
-    ? dims.width
-    : Math.max(dims.width, labelWidth + 8);
+  // For rect-like shapes, label is inside; for others, it may extend
+  const effectiveWidth = isRectLike(visual.shape)
+    ? visual.width
+    : Math.max(visual.width, labelWidth + 8);
 
   // Add arrowhead padding since edges connect to this node
   const withArrowPadding = effectiveWidth + ARROWHEAD_LENGTH;
 
   return {
     width: withArrowPadding,
-    height: dims.height
+    height: visual.height
   };
 }
 

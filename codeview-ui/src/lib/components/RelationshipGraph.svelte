@@ -8,9 +8,8 @@
     CENTER_Y,
     LAYOUT_HEIGHT,
     LAYOUT_WIDTH,
-    getEdgeAnchor,
-    getNodeDimensions
   } from '$lib/graph-layout';
+  import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/node-visual';
   import {
     buildBaseScene,
     buildNodeMap,
@@ -42,8 +41,6 @@
 
   const WIDTH = LAYOUT_WIDTH;
   const HEIGHT = LAYOUT_HEIGHT;
-  const RECT_CORNER_RADIUS = 10;
-  const HEADER_HEIGHT = 18;
   const GRID_SIZE = 32;
   const EDGE_NODE_PADDING = 10;
   const HOVER_RING = 4;
@@ -252,13 +249,13 @@
     Derives: '#8b5cf6'
   };
 
-  function getNodeLabelMetrics(nodeWidth: number, isRect: boolean, isCenter: boolean): {
+  function getNodeLabelMetrics(nodeWidth: number, hasHeader: boolean, isCenter: boolean): {
     maxChars: number;
     maxWidth: number;
     fontSize: number;
   } {
     const fontSize = isCenter ? 14 : 11;
-    const padding = isRect ? 20 : (isCenter ? 16 : 12);
+    const padding = hasHeader ? 20 : (isCenter ? 16 : 12);
     const maxWidth = Math.max(24, nodeWidth - padding);
     const maxChars = Math.max(4, Math.floor(maxWidth / (fontSize * LABEL_CHAR_RATIO)));
     return { maxChars, maxWidth, fontSize };
@@ -315,9 +312,9 @@
   }));
 
   function isNodeVisible(node: VisNode): boolean {
-    const dims = getNodeDimensions(node.node, node.isCenter);
-    const hw = dims.width / 2;
-    const hh = dims.height / 2;
+    const visual = getNodeVisual(node.node.kind, node.isCenter);
+    const hw = visual.width / 2;
+    const hh = visual.height / 2;
     return (
       node.x + hw >= visibleBounds.minX &&
       node.x - hw <= visibleBounds.maxX &&
@@ -562,8 +559,8 @@
     {#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
       {@const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from}
       {@const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to}
-      {@const startAnchor = getEdgeAnchor(fromNode, toNode)}
-      {@const endAnchor = getEdgeAnchor(toNode, fromNode)}
+      {@const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode)}
+      {@const endAnchor = getVisNodeEdgeAnchor(toNode, fromNode)}
       {@const dx = endAnchor.x - startAnchor.x}
       {@const dy = endAnchor.y - startAnchor.y}
       {@const len = Math.hypot(dx, dy) || 1}
@@ -644,24 +641,12 @@
       {@const isRelatedToHover = hoveredNeighborIds?.has(visNode.node.id) ?? false}
       {@const shouldDim = hoveredNodeId && !isHovered && !isRelatedToHover && !visNode.isCenter}
       {@const isDragging = dragNodeId === visNode.node.id}
-      {@const dims = getNodeDimensions(visNode.node, visNode.isCenter)}
+      {@const visual = getNodeVisual(visNode.node.kind, visNode.isCenter)}
       {@const hoverScale = isHovered && !visNode.isCenter && !isDragging ? 1.06 : 1}
-      {@const nodeWidth = dims.width}
-      {@const nodeHeight = dims.height}
-      {@const cornerRadius = RECT_CORNER_RADIUS}
-      {@const headerHeight = dims.isRect
-        ? Math.min(HEADER_HEIGHT + (visNode.isCenter ? 2 : 0), nodeHeight - 12)
-        : Math.min(HEADER_HEIGHT, nodeHeight)}
-      {@const rectX = -nodeWidth / 2}
-      {@const rectY = -nodeHeight / 2}
-      {@const headerRadius = Math.min(cornerRadius, headerHeight)}
-      {@const headerDividerY = rectY + headerHeight}
-      {@const bodyCenterY = headerDividerY + (nodeHeight - headerHeight) / 2}
-      {@const headerPath = dims.isRect
-        ? `M ${rectX + headerRadius} ${rectY} H ${rectX + nodeWidth - headerRadius} A ${headerRadius} ${headerRadius} 0 0 1 ${rectX + nodeWidth} ${rectY + headerRadius} V ${headerDividerY} H ${rectX} V ${rectY + headerRadius} A ${headerRadius} ${headerRadius} 0 0 1 ${rectX + headerRadius} ${rectY} Z`
-        : ''}
-      {@const radius = nodeWidth / 2}
-      {@const labelMetrics = getNodeLabelMetrics(nodeWidth, dims.isRect, visNode.isCenter)}
+      {@const hasHeader = visual.headerHeight > 0}
+      {@const headerDividerY = -visual.height / 2 + visual.headerHeight}
+      {@const bodyCenterY = headerDividerY + (visual.height - visual.headerHeight) / 2}
+      {@const labelMetrics = getNodeLabelMetrics(visual.width, hasHeader, visNode.isCenter)}
       {@const nodeLabel = truncateName(visNode.node.name, labelMetrics.maxChars)}
       {@const compressLabel = estimateLabelWidth(nodeLabel, labelMetrics.fontSize) > labelMetrics.maxWidth}
       {@const link = nodeLink(visNode.node)}
@@ -682,52 +667,33 @@
         onmousemove={(e) => { if (!dragNodeId) showTooltip(visNode, e); }}
         onmouseleave={() => { if (!dragNodeId) { hoveredNodeId = null; hideTooltip(); } }}
       >
-        {#if dims.isRect}
-          <!-- Body fill -->
-          <rect
-            x={rectX}
-            y={rectY}
-            width={nodeWidth}
-            height={nodeHeight}
-            rx={cornerRadius}
-            fill={kindColors[visNode.node.kind]}
-            opacity="0.88"
-          />
-          <!-- Header fill -->
-          <path d={headerPath} fill={kindColors[visNode.node.kind]} opacity="0.96" />
-          <!-- Divider line -->
+        <!-- Body fill -->
+        <path d={visual.svgPath} fill={visual.fill} opacity="0.88" />
+        <!-- Header fill (rect-like shapes only) -->
+        {#if visual.headerPath}
+          <path d={visual.headerPath} fill={visual.fill} opacity="0.96" />
           <line
-            x1={rectX + 6}
-            x2={rectX + nodeWidth - 6}
+            x1={-visual.width / 2 + 6}
+            x2={visual.width / 2 - 6}
             y1={headerDividerY}
             y2={headerDividerY}
             stroke="rgba(255,255,255,0.25)"
             stroke-width="1"
           />
-          <!-- Stroke overlay -->
-          <rect
-            x={rectX}
-            y={rectY}
-            width={nodeWidth}
-            height={nodeHeight}
-            rx={cornerRadius}
-            fill="none"
-            class="{isInteracting ? '' : 'transition-all duration-150'} {visNode.isCenter || isHovered
-              ? 'stroke-[var(--accent)] stroke-[3px]'
-              : ''}"
-          />
-        {:else}
-          <circle
-            r={radius}
-            fill={kindColors[visNode.node.kind]}
-            class="{isInteracting ? '' : 'transition-all duration-150'} {visNode.isCenter || isHovered
-              ? 'stroke-[var(--accent)] stroke-[3px]'
-              : ''}"
-          />
         {/if}
+        <!-- Stroke overlay -->
+        <path
+          d={visual.svgPath}
+          fill="none"
+          stroke-width={visual.strokeWidth}
+          stroke-dasharray={visual.strokeDasharray ?? 'none'}
+          class="{isInteracting ? '' : 'transition-all duration-150'} {visNode.isCenter || isHovered
+            ? 'stroke-[var(--accent)] stroke-[3px]'
+            : ''}"
+        />
         <!-- Node name -->
         <text
-          y={dims.isRect ? rectY + headerHeight / 2 : (visNode.isCenter ? -3 : 0)}
+          y={hasHeader ? -visual.height / 2 + visual.headerHeight / 2 : (visNode.isCenter ? -3 : 0)}
           text-anchor="middle"
           dominant-baseline="middle"
           textLength={compressLabel ? labelMetrics.maxWidth : null}
@@ -736,10 +702,10 @@
         >
           {nodeLabel}
         </text>
-        <!-- Kind label for center node -->
-        {#if dims.isRect || visNode.isCenter}
+        <!-- Kind label for header shapes or center node -->
+        {#if hasHeader || visNode.isCenter}
           <text
-            y={dims.isRect ? bodyCenterY : 14}
+            y={hasHeader ? bodyCenterY : 14}
             text-anchor="middle"
             class="fill-white/70 text-[10px] pointer-events-none"
           >

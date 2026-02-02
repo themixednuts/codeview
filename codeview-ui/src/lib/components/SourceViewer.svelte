@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Span } from '$lib/graph';
+  import { Loader2Icon } from '@lucide/svelte';
   import { pushState } from '$app/navigation';
   import { page } from '$app/state';
   import { browser } from '$app/environment';
@@ -117,7 +118,7 @@
 >
   <span class="token-name">{span.file}</span><span class="token-meta">:{span.line}:{span.column}</span>
   {#if loading}
-    <span class="loading-indicator"></span>
+    <Loader2Icon class="inline-block animate-spin" size={12} />
   {/if}
 </button>
 
@@ -170,19 +171,6 @@
     color: var(--accent);
   }
 
-  .loading-indicator {
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border: 1.5px solid var(--muted);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.6s linear infinite;
-  }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
 
   .modal-backdrop {
     position: fixed;

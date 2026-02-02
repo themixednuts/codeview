@@ -12,6 +12,7 @@
   import { perf } from '$lib/perf';
   import { isHosted } from '$lib/platform';
   import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
+  import { Loader2Icon } from '@lucide/svelte';
   import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
   import LayoutSwitcher from '$lib/components/LayoutSwitcher.svelte';
   import NodeDetails from '$lib/components/NodeDetails.svelte';
@@ -315,7 +316,10 @@
 
   {#snippet pending()}
     <div class="flex h-full items-center justify-center">
-      <div class="text-sm text-[var(--muted)]">Loading...</div>
+      <div class="flex items-center gap-2 text-sm text-[var(--muted)]">
+        <Loader2Icon class="animate-spin" size={16} />
+        Loading...
+      </div>
     </div>
   {/snippet}
 

@@ -1,5 +1,5 @@
 import type { LayoutMode, VisEdge, VisNode } from './graph-layout';
-import { getEdgeAnchor } from './graph-layout';
+import { getVisNodeEdgeAnchor } from './node-visual';
 
 export type LabelPosition = { x: number; y: number; anchor: string };
 export type SimilarityInfo = { group: number[]; indexOf: number };
@@ -28,8 +28,8 @@ const EDGE_NODE_PADDING = 10;
 const egoLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, similarity } = ctx;
-    const startAnchor = getEdgeAnchor(fromNode, toNode);
-    const endAnchor = getEdgeAnchor(toNode, fromNode);
+    const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
+    const endAnchor = getVisNodeEdgeAnchor(toNode, fromNode);
     const gapX = (startAnchor.x + endAnchor.x) / 2;
     const midY = (startAnchor.y + endAnchor.y) / 2;
 
@@ -45,8 +45,8 @@ const egoLabelProvider: LabelPositionProvider = {
 const hierarchicalLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, labelWidth, similarity } = ctx;
-    const startAnchor = getEdgeAnchor(fromNode, toNode);
-    const endAnchor = getEdgeAnchor(toNode, fromNode);
+    const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
+    const endAnchor = getVisNodeEdgeAnchor(toNode, fromNode);
     const gapY = (startAnchor.y + endAnchor.y) / 2;
     const midX = (startAnchor.x + endAnchor.x) / 2;
 
@@ -62,8 +62,8 @@ const hierarchicalLabelProvider: LabelPositionProvider = {
 const radialLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, similarity } = ctx;
-    const startAnchor = getEdgeAnchor(fromNode, toNode);
-    const endAnchor = getEdgeAnchor(toNode, fromNode);
+    const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
+    const endAnchor = getVisNodeEdgeAnchor(toNode, fromNode);
     const midX = (startAnchor.x + endAnchor.x) / 2;
     const midY = (startAnchor.y + endAnchor.y) / 2;
     const edgeDx = endAnchor.x - startAnchor.x;
@@ -88,8 +88,8 @@ const radialLabelProvider: LabelPositionProvider = {
 const forceLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, labelWidth, similarity } = ctx;
-    const startAnchor = getEdgeAnchor(fromNode, toNode);
-    const endAnchor = getEdgeAnchor(toNode, fromNode);
+    const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
+    const endAnchor = getVisNodeEdgeAnchor(toNode, fromNode);
     const edgeDx = endAnchor.x - startAnchor.x;
     const edgeDy = endAnchor.y - startAnchor.y;
     const len = Math.hypot(edgeDx, edgeDy);

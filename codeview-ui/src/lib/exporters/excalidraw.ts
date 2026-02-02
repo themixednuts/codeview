@@ -1,8 +1,7 @@
 import type { GraphRenderer, GraphScene, SceneGroup } from '$lib/renderers/graph';
 import type { VisNode, VisEdge } from '$lib/graph-layout';
 import type { LabelPosition } from '$lib/graph-label-layout';
-import { getEdgeAnchor } from '$lib/graph-layout';
-import { getNodeVisual } from '$lib/node-visual';
+import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/node-visual';
 import type { NodeVisual } from '$lib/node-visual';
 
 // ---------------------------------------------------------------------------
@@ -221,8 +220,8 @@ export function edgeToExcalidraw(edge: VisEdge, nodeMap: Map<string, VisNode>, g
   const fromNode = nodeMap.get(edge.from.node.id) ?? edge.from;
   const toNode = nodeMap.get(edge.to.node.id) ?? edge.to;
 
-  const startAnchor = getEdgeAnchor(fromNode, toNode);
-  const endAnchor = getEdgeAnchor(toNode, fromNode);
+  const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
+  const endAnchor = getVisNodeEdgeAnchor(toNode, fromNode);
 
   const relX = endAnchor.x - startAnchor.x;
   const relY = endAnchor.y - startAnchor.y;

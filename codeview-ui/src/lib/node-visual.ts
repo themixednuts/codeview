@@ -1,4 +1,5 @@
 import type { NodeKind } from '$lib/graph';
+import type { Point } from '$lib/geo';
 import { rectangleIntersectLineSegment, ellipseSegmentInterceptPoints } from '$lib/geo';
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,8 @@ export type NodeVisual = {
   strokeDasharray?: string;
   cornerRadius: number;
   svgPath: string;
+  headerPath: string;
+  headerHeight: number;
   labelFontSize: number;
   labelColor: string;
 };
@@ -178,20 +181,49 @@ export function nodeSvgPath(shape: NodeShape, w: number, h: number, cr: number):
 }
 
 // ---------------------------------------------------------------------------
+// Header path builder (for rect-like shapes with a header band)
+// ---------------------------------------------------------------------------
+
+const BASE_HEADER_HEIGHT = 18;
+
+function buildHeaderPath(shape: NodeShape, w: number, h: number, cr: number, isCenter: boolean): { headerPath: string; headerHeight: number } {
+  if (!isHeaderShape(shape)) {
+    return { headerPath: '', headerHeight: 0 };
+  }
+
+  const hw = w / 2;
+  const hh = h / 2;
+  const hHeight = Math.min(BASE_HEADER_HEIGHT + (isCenter ? 2 : 0), h - 12);
+  const r = Math.min(cr, hw, hh);
+  const headerR = Math.min(r, hHeight);
+  const topY = -hh;
+  const headerBottomY = topY + hHeight;
+
+  const headerPath =
+    `M ${-hw + headerR} ${topY}` +
+    ` H ${hw - headerR} A ${headerR} ${headerR} 0 0 1 ${hw} ${topY + headerR}` +
+    ` V ${headerBottomY}` +
+    ` H ${-hw}` +
+    ` V ${topY + headerR} A ${headerR} ${headerR} 0 0 1 ${-hw + headerR} ${topY}` +
+    ` Z`;
+
+  return { headerPath, headerHeight: hHeight };
+}
+
+// ---------------------------------------------------------------------------
 // Main API
 // ---------------------------------------------------------------------------
 
-/**
- * Get full visual descriptor for a node kind + center flag.
- * Deterministic — safe to call in tight loops and derived computations.
- */
-export function getNodeVisual(kind: NodeKind, isCenter: boolean): NodeVisual {
+const visualCache = new Map<string, NodeVisual>();
+
+function buildNodeVisual(kind: NodeKind, isCenter: boolean): NodeVisual {
   const spec = BASE_SPECS[kind];
   const scale = isCenter ? CENTER_SCALE : 1;
   const w = Math.round(spec.width * scale);
   const h = Math.round(spec.height * scale);
   const cr = spec.cornerRadius;
   const colors = kindVisuals[kind];
+  const { headerPath, headerHeight } = buildHeaderPath(spec.shape, w, h, cr, isCenter);
 
   return {
     shape: spec.shape,
@@ -203,9 +235,25 @@ export function getNodeVisual(kind: NodeKind, isCenter: boolean): NodeVisual {
     strokeDasharray: spec.strokeDasharray,
     cornerRadius: cr,
     svgPath: nodeSvgPath(spec.shape, w, h, cr),
+    headerPath,
+    headerHeight,
     labelFontSize: isCenter ? 14 : 11,
     labelColor: '#ffffff',
   };
+}
+
+/**
+ * Get full visual descriptor for a node kind + center flag.
+ * Deterministic and cached — safe to call in tight loops and derived computations.
+ */
+export function getNodeVisual(kind: NodeKind, isCenter: boolean): NodeVisual {
+  const key = `${kind}:${isCenter}`;
+  let v = visualCache.get(key);
+  if (!v) {
+    v = buildNodeVisual(kind, isCenter);
+    visualCache.set(key, v);
+  }
+  return v;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,4 +368,17 @@ export function isRectLike(shape: NodeShape): boolean {
 
 export function isHeaderShape(shape: NodeShape): boolean {
   return shape === 'rect' || shape === 'rounded-rect' || shape === 'chamfered-rect';
+}
+
+// ---------------------------------------------------------------------------
+// Convenience anchor for VisNode pairs
+// ---------------------------------------------------------------------------
+
+/**
+ * Compute the edge anchor point on the perimeter of `from` in the direction of `to`.
+ * Drop-in replacement for the old `getEdgeAnchor(from, to)` from graph-layout.ts.
+ */
+export function getVisNodeEdgeAnchor(from: { node: { kind: NodeKind }; isCenter: boolean; x: number; y: number }, to: { x: number; y: number }): Point {
+  const visual = getNodeVisual(from.node.kind, from.isCenter);
+  return shapeEdgeAnchor(visual, from.x, from.y, to.x, to.y);
 }
