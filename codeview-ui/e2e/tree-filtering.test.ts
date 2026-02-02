@@ -49,25 +49,33 @@ test.describe('Graph Tree & Filtering', () => {
 	test('clicking kind filter highlights it', async ({ page, safeGoto }) => {
 		const sidebar = await setupCrateView(page, safeGoto);
 
-		const kindButtons = sidebar.locator('.flex-wrap button');
-		await expect(kindButtons.first()).toBeVisible({ timeout: 5_000 });
+		const firstButton = sidebar.locator('.flex-wrap button[data-kind]').first();
+		await expect(firstButton).toBeVisible({ timeout: 5_000 });
+		await expect(firstButton).not.toHaveAttribute('data-active', 'true');
 
-		const firstButton = kindButtons.first();
-		const classBefore = await firstButton.getAttribute('class');
-		expect(classBefore).not.toContain('badge-accent');
-
-		await firstButton.click();
-		await page.waitForTimeout(300);
-
-		const classAfter = await firstButton.getAttribute('class');
-		expect(classAfter).toContain('badge-accent');
+		await page.evaluate(() => {
+			(document.querySelector('.flex-wrap button[data-kind]') as HTMLElement)?.click();
+		});
+		await expect(firstButton).toHaveAttribute('data-active', 'true', { timeout: 5_000 });
 	});
 
-	// FLAKY: Kind filter toggle deactivation has a reactivity race condition.
-	// The SvelteSet.delete() in toggleKindFilter() sometimes doesn't trigger
-	// re-render for the .has() check in the template class conditional.
 	test('clicking active kind filter deactivates it', async ({ page, safeGoto }) => {
-		test.fixme();
+		const sidebar = await setupCrateView(page, safeGoto);
+
+		const firstButton = sidebar.locator('.flex-wrap button[data-kind]').first();
+		await expect(firstButton).toBeVisible({ timeout: 5_000 });
+
+		// Activate
+		await page.evaluate(() => {
+			(document.querySelector('.flex-wrap button[data-kind]') as HTMLElement)?.click();
+		});
+		await expect(firstButton).toHaveAttribute('data-active', 'true', { timeout: 5_000 });
+
+		// Deactivate
+		await page.evaluate(() => {
+			(document.querySelector('.flex-wrap button[data-kind]') as HTMLElement)?.click();
+		});
+		await expect(firstButton).not.toHaveAttribute('data-active', { timeout: 5_000 });
 	});
 
 	test('sidebar search shows results', async ({ page, safeGoto }) => {

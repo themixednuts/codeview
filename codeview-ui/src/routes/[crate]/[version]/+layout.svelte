@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { Node, NodeKind } from '$lib/graph';
-  import { SvelteSet } from 'svelte/reactivity';
   import { themeCtx, getNodeUrlCtx, crateVersionsCtx, graphForDisplayCtx } from '$lib/context';
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
@@ -164,12 +163,13 @@
   // Server-side search when there's a query
   const searchQuery = $derived(filter ? searchNodes({ crate: crateName, version, q: filter }) : null);
 
-  const kindFilter = new SvelteSet<NodeKind>();
-
   const nodeKindOrder: NodeKind[] = [
     'Crate', 'Module', 'Struct', 'Enum', 'Trait', 'Impl',
     'Function', 'Method', 'TypeAlias', 'Union', 'TraitAlias'
   ];
+
+  let activeKinds: NodeKind[] = $state([]);
+  const kindFilter = $derived(new Set(activeKinds));
 
   const kindLabels: Record<NodeKind, string> = {
     Crate: 'Crate', Module: 'Module', Struct: 'Struct', Union: 'Union',
@@ -237,10 +237,10 @@
   const stats = $derived(statsMemo.current);
 
   function toggleKindFilter(kind: NodeKind) {
-    if (kindFilter.has(kind)) {
-      kindFilter.delete(kind);
+    if (activeKinds.includes(kind)) {
+      activeKinds = activeKinds.filter((k) => k !== kind);
     } else {
-      kindFilter.add(kind);
+      activeKinds = [...activeKinds, kind];
     }
   }
 
@@ -426,7 +426,9 @@
         {#each stats.kindCounts as { kind, count } (kind)}
           <button
             type="button"
-            class="badge badge-sm transition-colors {kindFilter.has(kind)
+            data-kind={kind}
+            data-active={activeKinds.includes(kind) ? 'true' : undefined}
+            class="badge badge-sm transition-colors {activeKinds.includes(kind)
               ? 'badge-accent'
               : 'hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]'}"
             onclick={() => toggleKindFilter(kind)}

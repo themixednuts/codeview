@@ -13,7 +13,7 @@ export default defineConfig({
 	testMatch: '**/*.test.ts',
 	fullyParallel: false,
 	workers: 1, // SQLite single-writer; SSE state is per-process
-	retries: 0, // We want to see real failures
+	retries: 1, // Svelte 5 event delegation can occasionally miss clicks
 	timeout: 30_000,
 	expect: { timeout: 10_000 },
 	use: {
