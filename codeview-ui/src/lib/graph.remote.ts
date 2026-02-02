@@ -1,7 +1,6 @@
 import { getRequestEvent, query, command } from '$app/server';
 import { error } from '@sveltejs/kit';
 import { initProvider } from '$lib/server/provider';
-import { checkRateLimitPolicy } from '$cloudflare/ratelimit';
 import { isValidCrateName, isValidVersion, sanitizeSearchQuery } from './server/validation';
 import { perf } from './perf';
 import type { Node, Workspace } from '$lib/graph';
@@ -335,17 +334,12 @@ export const triggerCrateParse = command(
 		if (!isValidCrateName(name) || !isValidVersion(version)) {
 			throw error(400, 'Invalid crate name or version');
 		}
-		const event = getRequestEvent();
-		// TODO: re-enable rate limiting for production
-		// const allowed = await checkRateLimitPolicy(event, 'parse');
-		// if (!allowed) {
-		// 	throw error(429, 'Rate limit exceeded');
-		// }
-		const provider = await initProvider(event);
+		const provider = await initProvider(getRequestEvent());
 		const result = await provider.triggerParse(name, version, force);
 		if (result.isErr()) {
 			const err = result.error;
-			throw error(422, err.message);
+			const status = err._tag === 'RateLimitError' ? 429 : 422;
+			throw error(status, err.message);
 		}
 	}
 );

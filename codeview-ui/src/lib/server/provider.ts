@@ -1,7 +1,7 @@
 import type { Result } from 'better-result';
 import type { Edge, Workspace, CrateGraph } from '$lib/graph';
 import type { CrateIndex, NodeSummary } from '$lib/schema';
-import type { ValidationError, NotAvailableError } from './errors';
+import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
 
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 
@@ -37,7 +37,7 @@ export interface DataProvider {
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
-	triggerParse(name: string, version: string, force?: boolean): Promise<Result<void, ValidationError | NotAvailableError>>;
+	triggerParse(name: string, version: string, force?: boolean): Promise<Result<void, ValidationError | NotAvailableError | RateLimitError>>;
 	triggerStdInstall(name: string, version: string): Promise<Result<void, ValidationError | NotAvailableError>>;
 	searchRegistry(query: string): Promise<CrateSummaryResult[]>;
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;

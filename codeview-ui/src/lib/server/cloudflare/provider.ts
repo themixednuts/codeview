@@ -9,7 +9,8 @@ import type { GraphStore } from '$cloudflare/store';
 import type { CrateRegistry } from '$cloudflare/registry';
 import type { Ecosystem } from '../registry/types';
 import { getRegistry } from '../registry/index';
-import { ValidationError, NotAvailableError } from '../errors';
+import { ValidationError, NotAvailableError, RateLimitError } from '../errors';
+import { checkRateLimitPolicy } from './ratelimit';
 import { isValidCrateName, isValidVersion, crateNameVariants } from '../validation';
 import { getLogger } from '$lib/log';
 
@@ -48,7 +49,7 @@ function proxyDO(
 	);
 }
 
-export function createCloudflareProvider(env: AppEnv): DataProvider {
+export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): DataProvider {
 	const graphStub = env.GRAPH_STORE.get(env.GRAPH_STORE.idFromName('default'));
 
 	const registryStub = env.CRATE_REGISTRY.get(env.CRATE_REGISTRY.idFromName('global'));
@@ -187,6 +188,13 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
 
+			if (event) {
+				const allowed = await checkRateLimitPolicy(event, 'parse');
+				if (!allowed) {
+					return Result.err(new RateLimitError({ message: 'Rate limit exceeded' }));
+				}
+			}
+
 			if (!force) {
 				const current = await registryStub.getStatus('rust', name, version);
 				if (current.status === 'processing' || current.status === 'ready') return Result.ok(undefined);
@@ -269,5 +277,5 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 /** Build-time entry point — imported via the `$provider` alias (see vite.config.js). */
 export function createProvider(event: RequestEvent): DataProvider {
 	const env = (event.platform as { env: AppEnv }).env;
-	return createCloudflareProvider(env);
+	return createCloudflareProvider(env, event);
 }

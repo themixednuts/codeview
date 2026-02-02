@@ -41,6 +41,11 @@ export class WorkflowStepError extends TaggedError('WorkflowStepError')<{
 	failedStep: string;
 }>() {}
 
+/** Rate limit exceeded. */
+export class RateLimitError extends TaggedError('RateLimitError')<{
+	message: string;
+}>() {}
+
 /** Source fetch exceeded size limit. */
 export class SourceOverLimitError extends TaggedError('SourceOverLimitError')<{
 	message: string;
