@@ -24,6 +24,10 @@ opencode.json
 # Generated data
 /codeview-ui/graph.json
 
+# Playwright
+/codeview-ui/test-results/
+/codeview-ui/playwright-report/
+
 # Temp/test data
 /tmp
 nul
