@@ -655,14 +655,13 @@
         data-sveltekit-noscroll={link.external ? undefined : true}
         target={link.external ? '_blank' : undefined}
         rel={link.external ? 'noopener noreferrer' : undefined}
+        onclick={(e) => handleNodeClick(visNode.node, e)}
       >
-      <!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
       <g
         class="node cursor-grab"
         class:cursor-grabbing={isDragging}
         style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1};{isInteracting || isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
         onmousedown={(e) => startNodeDrag(visNode, e)}
-        onclick={(e) => handleNodeClick(visNode.node, e)}
         onmouseenter={(e) => { if (!dragNodeId) { hoveredNodeId = visNode.node.id; showTooltip(visNode, e); } }}
         onmousemove={(e) => { if (!dragNodeId) showTooltip(visNode, e); }}
         onmouseleave={() => { if (!dragNodeId) { hoveredNodeId = null; hideTooltip(); } }}

@@ -45,8 +45,23 @@
     onToggle();
   }
 
+  function handleChevronKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      onToggle();
+    }
+  }
+
   function handleRowClick() {
     onSelect();
+  }
+
+  function handleRowKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onSelect();
+    }
   }
 </script>
 
@@ -65,6 +80,7 @@
       <span
         class="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--muted)] cursor-pointer hover:text-[var(--ink)]"
         onclick={handleChevronClick}
+        onkeydown={handleChevronKeydown}
         role="button"
         tabindex="-1"
       >
@@ -91,16 +107,19 @@
     {/if}
   </a>
 {:else}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
     class="flex w-full items-center gap-2 rounded-[var(--radius-chip)] corner-squircle box-border px-2 py-1 text-sm leading-none hover:bg-[var(--panel-strong)] {dimmed ? 'opacity-50' : ''} {hasChildren ? 'cursor-pointer' : ''}"
     {style}
     onclick={handleRowClick}
+    onkeydown={handleRowKeydown}
+    role="button"
+    tabindex="0"
   >
     {#if hasChildren}
       <span
         class="flex h-4 w-4 shrink-0 items-center justify-center text-[var(--muted)] cursor-pointer hover:text-[var(--ink)]"
         onclick={handleChevronClick}
+        onkeydown={handleChevronKeydown}
         role="button"
         tabindex="-1"
       >

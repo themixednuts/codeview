@@ -51,7 +51,7 @@
    * When extLinkMode is 'docs', opens external docs in a new tab.
    * Otherwise navigates within codeview.
    */
-  function handleClick(event: MouseEvent) {
+  function handleClick(event: Event) {
     const target = event.target as HTMLElement;
     const link = target.closest('a.intra-doc-link') as HTMLAnchorElement | null;
 
@@ -73,10 +73,20 @@
       goto(getNodeUrl(nodeId), { noScroll: true });
     }
   }
+
+  function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter' || event.key === ' ') {
+      handleClick(event);
+    }
+  }
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="documentation space-y-3" onclick={handleClick}>
+<div
+  class="documentation space-y-3"
+  role="presentation"
+  onclick={handleClick}
+  onkeydown={handleKeydown}
+>
   {#each highlightedSegments as segment, i (i)}
     {#if segment.type === 'text'}
       <div class="documentation-text prose prose-sm text-[var(--ink)]">
