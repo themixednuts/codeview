@@ -30,6 +30,10 @@
  * @see https://github.com/sveltejs/kit/discussions/13897
  */
 
+import { getLogger } from '$lib/log';
+
+const log = getLogger('cache');
+
 type CacheEntry = {
 	value: unknown;
 	storedAt: number;
@@ -82,15 +86,36 @@ function pruneCache() {
 }
 
 /**
+ * Create a synchronous thenable that calls onFulfilled immediately.
+ *
+ * Unlike `Promise.resolve(v).then(fn)` which schedules `fn` as a microtask,
+ * this invokes `fn` within the `.then()` call itself. Svelte's boundary
+ * detects the synchronous callback and skips the pending state entirely.
+ */
+function syncThenable<T>(value: T) {
+	return (onFulfilled?: ((v: T) => unknown) | null, onRejected?: ((e: unknown) => unknown) | null) => {
+		try {
+			const result = onFulfilled ? onFulfilled(value) : value;
+			return Promise.resolve(result);
+		} catch (err) {
+			if (onRejected) return Promise.resolve(onRejected(err));
+			return Promise.reject(err);
+		}
+	};
+}
+
+/**
  * Wrap a SvelteKit query proxy with stale-while-revalidate caching.
  *
- * The returned Proxy intercepts `.current` and `.loading`:
- *  - `.current`: returns fresh data when the query has resolved; falls back to
- *    the last cached value while the query is still loading.
- *  - `.loading`: suppressed (returns false) when cached data is available.
+ * The returned Proxy intercepts `.current`, `.loading`, and `.then()`:
  *
- * All other properties (.refresh(), .error, Symbol.toPrimitive, then(), etc.)
- * are forwarded to the underlying query via Reflect.get.
+ *  - `.current`: returns fresh data when resolved; falls back to the last
+ *    cached value while the query is still loading.
+ *  - `.loading`: suppressed (returns false) when cached data is available.
+ *  - `.then()`: resolves synchronously from cache when possible; forwards
+ *    to the real thenable (causing boundary suspension) only on first visit.
+ *
+ * All other properties (.refresh(), .error, etc.) are forwarded via Reflect.get.
  *
  * Uses a plain Map (not SvelteMap) — Svelte's reactivity is driven by the
  * underlying query proxy's signals, not by cache writes.
@@ -99,12 +124,13 @@ export function cached<Q extends { current: unknown; loading: boolean }>(
 	key: string,
 	query: Q
 ): Q {
+	// Readable label for logging (decode URI components)
+	const tag = key.split('|').slice(1).map(decodeURIComponent).join('/') || key;
+
 	return new Proxy(query, {
 		get(target, prop, receiver) {
 			if (prop === 'current') {
 				const fresh = target.current;
-				const cachedValue = readCache(key);
-				const hasCache = cachedValue !== undefined;
 
 				// Query has resolved — always use fresh result (never stale)
 				if (!target.loading) {
@@ -113,44 +139,62 @@ export function cached<Q extends { current: unknown; loading: boolean }>(
 				}
 
 				// Still loading — serve cached data if we have it
-				if (hasCache) return cachedValue as Q['current'];
+				const cachedValue = readCache(key);
+				if (cachedValue !== undefined) return cachedValue as Q['current'];
 				return fresh; // undefined (no cache yet — first visit)
 			}
 
 			if (prop === 'loading') {
+				if (!target.loading) return false;
 				// Suppress loading state when cache can fill the gap
-				const cachedValue = readCache(key);
-				return target.loading && cachedValue === undefined;
+				return readCache(key) === undefined;
 			}
 
 			if (prop === 'then') {
-				// When the query has already resolved, resolve immediately with
-				// fresh data. This prevents $derived re-evaluation (triggered by
-				// the query's reactive signals) from creating a new thenable that
-				// causes <svelte:boundary> to re-suspend and flash stale content.
-				if (!target.loading && target.current !== undefined) {
-					return (onFulfilled?: (v: Q['current']) => unknown, onRejected?: (e: unknown) => unknown) =>
-						Promise.resolve(target.current as Q['current']).then(onFulfilled, onRejected);
-				}
-
-				// Still loading but have cache — resolve immediately so `await`
-				// doesn't block and <svelte:boundary pending> is never shown on
-				// back-navigation.
 				const cachedValue = readCache(key);
-				if (cachedValue !== undefined) {
-					return (onFulfilled?: (v: Q['current']) => unknown, onRejected?: (e: unknown) => unknown) =>
-						Promise.resolve(cachedValue as Q['current']).then(onFulfilled, onRejected);
+				const hasCache = cachedValue !== undefined;
+
+				// Resolved + cache exists → serve fresh data synchronously.
+				// The cache check guards against SvelteKit query proxies that
+				// carry stale .current from a previous parameter set before the
+				// new fetch starts — if we've never cached this key, .current
+				// belongs to a different query.
+				if (!target.loading && target.current !== undefined && hasCache) {
+					writeCache(key, target.current);
+					log.debug`.then [${tag}] → sync (resolved + cached)`;
+					return syncThenable(target.current as Q['current']);
 				}
 
-				// First visit, no cache — forward to real .then() (will suspend)
+				// Loading + cache exists → serve cached data synchronously so
+				// <svelte:boundary pending> is never shown on back-navigation.
+				if (hasCache) {
+					log.debug`.then [${tag}] → sync (loading, from cache)`;
+					return syncThenable(cachedValue as Q['current']);
+				}
+
+				// No cache — first visit or stale query proxy. Forward to the
+				// real thenable so the boundary suspends until correct data
+				// arrives. Wrap resolution to populate cache for subsequent
+				// reactive re-evaluations.
+				log.debug`.then [${tag}] → suspend (no cache)`;
 				const thenFn = Reflect.get(target, prop, target);
-				if (typeof thenFn === 'function') return thenFn.bind(target);
+				if (typeof thenFn === 'function') {
+					const bound = thenFn.bind(target);
+					return (onFulfilled?: ((v: Q['current']) => unknown) | null, onRejected?: ((e: unknown) => unknown) | null) =>
+						bound(
+							(value: Q['current']) => {
+								if (value !== undefined) writeCache(key, value);
+								log.debug`.then [${tag}] resolved → cached`;
+								return onFulfilled ? onFulfilled(value) : value;
+							},
+							onRejected
+						);
+				}
 				return thenFn;
 			}
 
 			// Forward everything else: .refresh(), .error, etc.
 			const value = Reflect.get(target, prop, target);
-			// Bind functions so they execute on the original target
 			if (typeof value === 'function') return value.bind(target);
 			return value;
 		}

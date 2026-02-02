@@ -19,6 +19,7 @@
   import NodeDetails from '$lib/components/NodeDetails.svelte';
 
   import { themeCtx, getNodeUrlCtx, graphForDisplayCtx, crateVersionsCtx } from '$lib/context';
+  import { getLogger } from '$lib/log';
 
   let { nodeId, parentHint } = $props<{
     nodeId: string;
@@ -41,12 +42,24 @@
   });
   onDestroy(() => edgeUpdates.destroy());
 
+  const log = getLogger('detail-view');
+
   const detail: NodeDetail | null = $derived(
     await cached(
       cacheKey('nodeDetail', nodeId, crateVersion),
       getNodeDetail({ nodeId, version: crateVersion, refresh: refreshToken })
     )
   );
+
+  // Log every time detail resolves (tracks the actual value Svelte renders)
+  $effect(() => {
+    const name = detail?.node?.name ?? '(null)';
+    const id = detail?.node?.id ?? '';
+    log.debug`detail resolved: "${name}" (${id}) — requested nodeId="${nodeId}"`;
+    if (detail && detail.node.id !== nodeId) {
+      log.warn`MISMATCH: detail.node.id="${detail.node.id}" ≠ nodeId="${nodeId}"`;
+    }
+  });
 
   const VALID_LAYOUTS: LayoutMode[] = ['ego', 'force', 'hierarchical', 'radial'];
   const layoutParam = $derived(page.url.searchParams.get('layout'));
