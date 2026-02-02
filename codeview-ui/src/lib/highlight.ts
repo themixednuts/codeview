@@ -7,7 +7,7 @@ export type DocLinks = Record<string, string>;
 
 // Configure markdown-it: disable code blocks (we use Shiki), enable linkify
 const md = new MarkdownIt({
-  html: false,        // Disable HTML tags in source
+  html: true,         // Allow HTML tags in source (common in Rust docs)
   linkify: true,      // Auto-convert URLs to links
   typographer: true   // Smart quotes, dashes, etc.
 }).disable(['code', 'fence']);  // We handle code blocks separately with Shiki
