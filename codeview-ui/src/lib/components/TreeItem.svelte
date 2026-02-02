@@ -36,8 +36,9 @@
   const kind = $derived(node.kind as NodeKind);
   const KindIcon = $derived(kindIcons[kind]);
   const heightStyle = $derived(itemHeight ? `height: ${itemHeight}px; ` : '');
+  const cvStyle = $derived(itemHeight ? '' : 'content-visibility: auto; contain-intrinsic-size: auto 32px; ');
   const paddingStyle = $derived(`padding-left: ${depth * 16 + 8}px`);
-  const style = $derived(`${heightStyle}${paddingStyle}`);
+  const style = $derived(`${cvStyle}${heightStyle}${paddingStyle}`);
 
   function handleChevronClick(e: MouseEvent) {
     e.preventDefault();

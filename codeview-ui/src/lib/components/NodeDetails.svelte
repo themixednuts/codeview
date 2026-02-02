@@ -280,7 +280,7 @@
 {/snippet}
 
 {#snippet implRow(implBlock: Node)}
-  <div class="flex flex-wrap items-center gap-2 text-sm">
+  <div class="flex flex-wrap items-center gap-2 text-sm [content-visibility:auto] [contain-intrinsic-size:auto_28px]">
     <span class="badge">impl</span>
     {#if implBlock.generics && implBlock.generics.length > 0}
       {#each implBlock.generics as generic (generic)}
@@ -456,7 +456,7 @@
       >
         <div class="space-y-3">
           {#each selected.variants as variant (variant.name)}
-            <div class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] overflow-hidden">
+            <div class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_44px]">
               <div class="flex items-center justify-between gap-2 border-b border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-2">
                 <code class="token-name">{variant.name}</code>
                 {#if variant.fields.length > 0}
@@ -508,7 +508,7 @@
       >
         <div class="space-y-6">
           {#each methodGroups as group (group.impl.id)}
-            <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] overflow-hidden">
+            <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] overflow-hidden [content-visibility:auto] [contain-intrinsic-size:auto_120px]">
               <div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
                 <div class="flex items-center gap-2">
                   <span class="badge">impl</span>
@@ -540,7 +540,7 @@
               <div>
                 {#each group.methods as method, index (method.id)}
                   <div
-                    class={`bg-[var(--panel-solid)] px-3 py-3 ${index ? 'border-t border-[var(--panel-border)]' : ''}`}
+                    class={`bg-[var(--panel-solid)] px-3 py-3 [content-visibility:auto] [contain-intrinsic-size:auto_80px] ${index ? 'border-t border-[var(--panel-border)]' : ''}`}
                   >
                     <div class="flex flex-wrap items-center gap-2">
                       {#if method.visibility === 'Public'}
