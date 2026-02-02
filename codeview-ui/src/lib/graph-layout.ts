@@ -1,5 +1,6 @@
 import type { Graph, Node } from './graph';
 import { getNodeVisual, isRectLike } from './node-visual';
+import { getPerfLogger } from './log';
 
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
@@ -59,7 +60,7 @@ export function computeLayout(graph: Graph, selected: Node, mode: LayoutMode): {
       result = computeEgoLayout(graph, selected);
   }
   const dt = performance.now() - t0;
-  console.log(`[perf:layout] ${mode} ${dt.toFixed(1)}ms (${graph.nodes.length}n ${graph.edges.length}e → ${result.nodes.length}n ${result.edges.length}e)`);
+  getPerfLogger('layout').debug`${mode} ${dt.toFixed(1)}ms (${String(graph.nodes.length)}n ${String(graph.edges.length)}e → ${String(result.nodes.length)}n ${String(result.edges.length)}e)`;
   return result;
 }
 
