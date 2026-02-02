@@ -172,6 +172,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 	const methodIds = collectMethodIds(krate);
 	const functionIndex = buildFunctionIndex(krate, methodIds, crateName);
 	const traitLookup = buildTraitLookup(krate, crateName);
+	let skippedItems = 0;
 
 	const workspaceMembers = new Set([crateName]);
 
@@ -179,6 +180,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 
 	// Process paths → create nodes + module hierarchy + Contains edges
 	for (const [itemIdStr, summary] of Object.entries(krate.paths)) {
+	  try {
 		const itemId = Number(itemIdStr);
 		const isMethod = methodIds.has(itemId);
 		const nodeKind = mapItemKind(summary.kind, isMethod);
@@ -255,6 +257,10 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 		if (parentId && parentId !== nodeId) {
 			pushEdge(graph, edgeCache, parentId, nodeId, 'Contains', 'Static');
 		}
+	  } catch (err) {
+		skippedItems++;
+		console.warn(`[rustdoc-ts] skipped path item ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`);
+	  }
 	}
 
 	// Build item_to_parent map from module children
@@ -269,10 +275,15 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 	}
 
 	// Re-export edges
-	addUseImportEdges(graph, edgeCache, krate, crateName, itemToParent);
+	try {
+		addUseImportEdges(graph, edgeCache, krate, crateName, itemToParent);
+	} catch (err) {
+		console.warn(`[rustdoc-ts] failed to build re-export edges: ${err instanceof Error ? err.message : String(err)}`);
+	}
 
-	// Process impl blocks
+	// Process impl blocks and type references
 	for (const [itemIdStr, item] of Object.entries(krate.index)) {
+	  try {
 		const itemId = Number(itemIdStr);
 
 		if ('impl' in item.inner) {
@@ -284,13 +295,13 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 
 			ensureCrateNode(graph, nodeCache, itemCrateName, 'Public', isExternal);
 			const implId = implNodeId(itemCrateName, itemId);
-			const implTraitId = implBlock.trait_
-				? resolveId(krate, crateName, implBlock.trait_.id)
+			const implTraitId = implBlock.trait
+				? resolveId(krate, crateName, implBlock.trait.id)
 				: null;
 
 			if (!nodeCache.has(implId)) {
 				const name = implNodeName(krate, crateName, implBlock);
-				const implType: ImplType | null = implBlock.trait_ ? 'Trait' : 'Inherent';
+				const implType: ImplType | null = implBlock.trait ? 'Trait' : 'Inherent';
 				graph.nodes.push({
 					id: implId,
 					name,
@@ -321,15 +332,15 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 			}
 
 			// Defines edge from type to impl
-			const forId = typeToId(implBlock.for_);
+			const forId = typeToId(implBlock.for);
 			if (forId !== null) {
 				const typeNodeId = resolveId(krate, crateName, forId);
 				if (typeNodeId) {
 					pushEdge(graph, edgeCache, typeNodeId, implId, 'Defines', 'Static');
 
 					// Implements edge from type to trait
-					if (implBlock.trait_) {
-						const traitNodeId = resolveId(krate, crateName, implBlock.trait_.id);
+					if (implBlock.trait) {
+						const traitNodeId = resolveId(krate, crateName, implBlock.trait.id);
 						if (traitNodeId) {
 							pushEdge(graph, edgeCache, typeNodeId, traitNodeId, 'Implements', 'Static');
 						}
@@ -339,6 +350,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 
 			// Process impl items (methods, types, constants)
 			for (const assocId of implBlock.items) {
+			  try {
 				const assocItem = krate.index[assocId];
 				if (!assocItem) continue;
 
@@ -385,6 +397,10 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 				}
 
 				pushEdge(graph, edgeCache, implId, assocNodeId, 'Defines', 'Static');
+			  } catch (err) {
+				skippedItems++;
+				console.warn(`[rustdoc-ts] skipped impl item ${assocId} in ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`);
+			  }
 			}
 
 			// Continue to collect type IDs below (impl is handled as owner)
@@ -422,39 +438,51 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 			collectGenericsIds(inner.trait_alias.generics, typeIds);
 			collectBoundsIds(inner.trait_alias.params, typeIds);
 		} else if ('type_alias' in inner) {
-			collectTypeIds(inner.type_alias.type_, typeIds);
+			collectTypeIds(inner.type_alias.type, typeIds);
 			collectGenericsIds(inner.type_alias.generics, typeIds);
 		} else if ('function' in inner) {
 			collectSignatureIds(inner.function.sig, typeIds);
 			collectGenericsIds(inner.function.generics, typeIds);
 		} else if ('impl' in inner) {
 			collectGenericsIds(inner.impl.generics, typeIds);
-			collectTypeIds(inner.impl.for_, typeIds);
-			if (inner.impl.trait_) {
-				typeIds.add(inner.impl.trait_.id);
-				if (inner.impl.trait_.args) {
-					collectGenericArgsIds(inner.impl.trait_.args, typeIds);
+			collectTypeIds(inner.impl.for, typeIds);
+			if (inner.impl.trait) {
+				typeIds.add(inner.impl.trait.id);
+				if (inner.impl.trait.args) {
+					collectGenericArgsIds(inner.impl.trait.args, typeIds);
 				}
 			}
 		} else if ('constant' in inner) {
-			collectTypeIds(inner.constant.type_, typeIds);
+			collectTypeIds(inner.constant.type, typeIds);
 		} else if ('static' in inner) {
-			collectTypeIds(inner.static.type_, typeIds);
+			collectTypeIds(inner.static.type, typeIds);
 		}
 
 		addUsesEdges(graph, edgeCache, ownerId, typeIds, krate, crateName);
 		addDerivesEdges(graph, edgeCache, ownerId, item.attrs, traitLookup);
+	  } catch (err) {
+		skippedItems++;
+		console.warn(`[rustdoc-ts] skipped index item ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`);
+	  }
 	}
 
 	// Call edges from source files
 	if (opts.source) {
-		addCallEdges(
-			graph,
-			edgeCache,
-			opts.source.rootFile,
-			functionIndex,
-			opts.source.sourceFiles
-		);
+		try {
+			addCallEdges(
+				graph,
+				edgeCache,
+				opts.source.rootFile,
+				functionIndex,
+				opts.source.sourceFiles
+			);
+		} catch (err) {
+			console.warn(`[rustdoc-ts] failed to build call edges: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	if (skippedItems > 0) {
+		console.warn(`[rustdoc-ts] completed with ${skippedItems} skipped item(s) due to parse errors`);
 	}
 
 	return graph;
@@ -585,7 +613,7 @@ function formatType(ty: Type): string {
 		return result;
 	}
 	if ('dyn_trait' in ty) {
-		const traits = ty.dyn_trait.traits.map((p) => p.trait_?.path ? cleanPath(p.trait_.path) : 'Trait');
+		const traits = ty.dyn_trait.traits.map((p) => p.trait?.path ? cleanPath(p.trait.path) : 'Trait');
 		return `dyn ${traits.join(' + ')}`;
 	}
 	if ('generic' in ty) return ty.generic;
@@ -600,21 +628,21 @@ function formatType(ty: Type): string {
 		return `(${inner.join(', ')})`;
 	}
 	if ('slice' in ty) return `[${formatType(ty.slice)}]`;
-	if ('array' in ty) return `[${formatType(ty.array.type_)}; ${ty.array.len}]`;
-	if ('pat' in ty) return formatType(ty.pat.type_);
+	if ('array' in ty) return `[${formatType(ty.array.type)}; ${ty.array.len}]`;
+	if ('pat' in ty) return formatType(ty.pat.type);
 	if ('impl_trait' in ty) {
 		const boundStrs = ty.impl_trait
-			.filter((b): b is { trait_bound: any } => 'trait_bound' in b && !!b.trait_bound?.trait_?.path)
-			.map((b) => cleanPath(b.trait_bound.trait_.path));
+			.filter((b): b is { trait_bound: any } => 'trait_bound' in b && !!b.trait_bound?.trait?.path)
+			.map((b) => cleanPath(b.trait_bound.trait.path));
 		return `impl ${boundStrs.join(' + ')}`;
 	}
 	if ('raw_pointer' in ty) {
 		const mut = ty.raw_pointer.is_mutable ? 'mut' : 'const';
-		return `*${mut} ${formatType(ty.raw_pointer.type_)}`;
+		return `*${mut} ${formatType(ty.raw_pointer.type)}`;
 	}
 	if ('borrowed_ref' in ty) {
 		const mut = ty.borrowed_ref.is_mutable ? 'mut ' : '';
-		return `&${mut}${formatType(ty.borrowed_ref.type_)}`;
+		return `&${mut}${formatType(ty.borrowed_ref.type)}`;
 	}
 	if ('qualified_path' in ty) {
 		return `<${formatType(ty.qualified_path.self_type)}>::${ty.qualified_path.name}`;
@@ -768,7 +796,7 @@ function itemGenerics(item: Item): Generics | null {
 function formatBoundsStr(bounds: GenericBound[]): string[] {
 	return bounds
 		.map((b) => {
-			if ('trait_bound' in b) return b.trait_bound?.trait_?.path ? cleanPath(b.trait_bound.trait_.path) : null;
+			if ('trait_bound' in b) return b.trait_bound?.trait?.path ? cleanPath(b.trait_bound.trait.path) : null;
 			if ('outlives' in b) return b.outlives;
 			return null;
 		})
@@ -786,7 +814,7 @@ function extractGenerics(generics: Generics): string[] | null {
 			return s;
 		}
 		if ('lifetime' in kind) return p.name;
-		if ('const' in kind) return `const ${p.name}: ${formatType(kind.const.type_)}`;
+		if ('const' in kind) return `const ${p.name}: ${formatType(kind.const.type)}`;
 		return p.name;
 	});
 	return params.length > 0 ? params : null;
@@ -796,7 +824,7 @@ function extractWhereClause(generics: Generics): string[] | null {
 	const predicates: string[] = [];
 	for (const pred of generics.where_predicates) {
 		if ('bound_predicate' in pred) {
-			const ty = formatType(pred.bound_predicate.type_);
+			const ty = formatType(pred.bound_predicate.type);
 			const boundStrs = formatBoundsStr(pred.bound_predicate.bounds);
 			if (boundStrs.length > 0) predicates.push(`${ty}: ${boundStrs.join(' + ')}`);
 		} else if ('lifetime_predicate' in pred) {
@@ -1072,14 +1100,14 @@ function implNodeId(crateName: string, id: Id): string {
 }
 
 function implNodeName(krate: RustdocCrate, defaultCrateName: string, implBlock: Impl): string {
-	const forId = typeToId(implBlock.for_);
+	const forId = typeToId(implBlock.for);
 	const typeName = forId !== null
 		? (resolveId(krate, defaultCrateName, forId)?.split('::').pop() ?? 'type')
 		: 'type';
 
-	if (implBlock.trait_) {
-		const traitName = resolveId(krate, defaultCrateName, implBlock.trait_.id)?.split('::').pop()
-			?? implBlock.trait_.path?.split('::').pop()
+	if (implBlock.trait) {
+		const traitName = resolveId(krate, defaultCrateName, implBlock.trait.id)?.split('::').pop()
+			?? implBlock.trait.path?.split('::').pop()
 			?? 'Trait';
 		return `impl ${traitName} for ${typeName}`;
 	}
@@ -1213,9 +1241,9 @@ function walkType(ty: Type, v: TypeVisitor): void {
 		if (ty.resolved_path.args) walkGenericArgs(ty.resolved_path.args, v);
 	} else if ('dyn_trait' in ty) {
 		for (const poly of ty.dyn_trait.traits) {
-			if (poly.trait_) {
-				v.onTraitBound?.(poly.trait_.id, poly.trait_.path, poly.trait_.args);
-				if (poly.trait_.args) walkGenericArgs(poly.trait_.args, v);
+			if (poly.trait) {
+				v.onTraitBound?.(poly.trait.id, poly.trait.path, poly.trait.args);
+				if (poly.trait.args) walkGenericArgs(poly.trait.args, v);
 			}
 			walkGenericParamDefs(poly.generic_params, v);
 		}
@@ -1227,20 +1255,20 @@ function walkType(ty: Type, v: TypeVisitor): void {
 	} else if ('slice' in ty) {
 		walkType(ty.slice, v);
 	} else if ('array' in ty) {
-		walkType(ty.array.type_, v);
+		walkType(ty.array.type, v);
 	} else if ('pat' in ty) {
-		walkType(ty.pat.type_, v);
+		walkType(ty.pat.type, v);
 	} else if ('impl_trait' in ty) {
 		walkBounds(ty.impl_trait, v);
 	} else if ('raw_pointer' in ty) {
-		walkType(ty.raw_pointer.type_, v);
+		walkType(ty.raw_pointer.type, v);
 	} else if ('borrowed_ref' in ty) {
-		walkType(ty.borrowed_ref.type_, v);
+		walkType(ty.borrowed_ref.type, v);
 	} else if ('qualified_path' in ty) {
 		walkType(ty.qualified_path.self_type, v);
-		if (ty.qualified_path.trait_) {
-			v.onQualifiedTrait?.(ty.qualified_path.trait_.id, ty.qualified_path.trait_.args);
-			if (ty.qualified_path.trait_.args) walkGenericArgs(ty.qualified_path.trait_.args, v);
+		if (ty.qualified_path.trait) {
+			v.onQualifiedTrait?.(ty.qualified_path.trait.id, ty.qualified_path.trait.args);
+			if (ty.qualified_path.trait.args) walkGenericArgs(ty.qualified_path.trait.args, v);
 		}
 		if (ty.qualified_path.args) walkGenericArgs(ty.qualified_path.args, v);
 	}
@@ -1266,9 +1294,9 @@ function walkGenericArgs(args: GenericArgs, v: TypeVisitor): void {
 
 function walkBounds(bounds: GenericBound[], v: TypeVisitor): void {
 	for (const bound of bounds) {
-		if ('trait_bound' in bound && bound.trait_bound?.trait_) {
-			v.onTraitBound?.(bound.trait_bound.trait_.id, bound.trait_bound.trait_.path, bound.trait_bound.trait_.args);
-			if (bound.trait_bound.trait_.args) walkGenericArgs(bound.trait_bound.trait_.args, v);
+		if ('trait_bound' in bound && bound.trait_bound?.trait) {
+			v.onTraitBound?.(bound.trait_bound.trait.id, bound.trait_bound.trait.path, bound.trait_bound.trait.args);
+			if (bound.trait_bound.trait.args) walkGenericArgs(bound.trait_bound.trait.args, v);
 			if (bound.trait_bound.generic_params) walkGenericParamDefs(bound.trait_bound.generic_params, v);
 		}
 	}
@@ -1290,7 +1318,7 @@ function walkGenericParamDefs(params: GenericParamDef[], v: TypeVisitor): void {
 			walkBounds(kind.type.bounds, v);
 			if (kind.type.default) walkType(kind.type.default, v);
 		} else if ('const' in kind) {
-			walkType(kind.const.type_, v);
+			walkType(kind.const.type, v);
 		}
 	}
 }
@@ -1299,7 +1327,7 @@ function walkGenerics(generics: Generics, v: TypeVisitor): void {
 	walkGenericParamDefs(generics.params, v);
 	for (const pred of generics.where_predicates) {
 		if ('bound_predicate' in pred) {
-			walkType(pred.bound_predicate.type_, v);
+			walkType(pred.bound_predicate.type, v);
 			walkBounds(pred.bound_predicate.bounds, v);
 			walkGenericParamDefs(pred.bound_predicate.generic_params, v);
 		} else if ('eq_predicate' in pred) {

@@ -129,14 +129,14 @@ export type ItemEnum =
 	| { trait_alias: TraitAlias }
 	| { impl: Impl }
 	| { type_alias: TypeAlias }
-	| { constant: { type_: Type; const_: Constant } }
+	| { constant: { type: Type; const: Constant } }
 	| { static: Static }
 	| { extern_type: Record<string, never> }
 	| { macro: string }
 	| { proc_macro: ProcMacro }
 	| { primitive: Primitive }
-	| { assoc_const: { type_: Type; value: string | null } }
-	| { assoc_type: { generics: Generics; bounds: GenericBound[]; type_: Type | null } };
+	| { assoc_const: { type: Type; value: string | null } }
+	| { assoc_type: { generics: Generics; bounds: GenericBound[]; type: Type | null } };
 
 // ---------------------------------------------------------------------------
 // ItemKind (string enum, used in paths)
@@ -282,8 +282,8 @@ export interface Impl {
 	is_unsafe: boolean;
 	generics: Generics;
 	provided_trait_methods: string[];
-	trait_: Path | null;
-	for_: Type;
+	trait: Path | null;
+	for: Type;
 	items: Id[];
 	is_negative: boolean;
 	is_synthetic: boolean;
@@ -295,12 +295,12 @@ export interface Impl {
 // ---------------------------------------------------------------------------
 
 export interface TypeAlias {
-	type_: Type;
+	type: Type;
 	generics: Generics;
 }
 
 export interface Static {
-	type_: Type;
+	type: Type;
 	is_mutable: boolean;
 	expr: string;
 	is_unsafe: boolean;
@@ -338,13 +338,13 @@ export type Type =
 	| { function_pointer: FunctionPointer }
 	| { tuple: Type[] }
 	| { slice: Type }
-	| { array: { type_: Type; len: string } }
-	| { pat: { type_: Type; __pat_unstable_do_not_use: string } }
+	| { array: { type: Type; len: string } }
+	| { pat: { type: Type; __pat_unstable_do_not_use: string } }
 	| { impl_trait: GenericBound[] }
 	| 'infer'
-	| { raw_pointer: { is_mutable: boolean; type_: Type } }
-	| { borrowed_ref: { lifetime: string | null; is_mutable: boolean; type_: Type } }
-	| { qualified_path: { name: string; args: GenericArgs | null; self_type: Type; trait_: Path | null } };
+	| { raw_pointer: { is_mutable: boolean; type: Type } }
+	| { borrowed_ref: { lifetime: string | null; is_mutable: boolean; type: Type } }
+	| { qualified_path: { name: string; args: GenericArgs | null; self_type: Type; trait: Path | null } };
 
 export interface Path {
 	path: string;
@@ -358,7 +358,7 @@ export interface DynTrait {
 }
 
 export interface PolyTrait {
-	trait_: Path;
+	trait: Path;
 	generic_params: GenericParamDef[];
 }
 
@@ -385,15 +385,15 @@ export interface GenericParamDef {
 export type GenericParamDefKind =
 	| { lifetime: { outlives: string[] } }
 	| { type: { bounds: GenericBound[]; default: Type | null; is_synthetic: boolean } }
-	| { const: { type_: Type; default: string | null } };
+	| { const: { type: Type; default: string | null } };
 
 export type WherePredicate =
-	| { bound_predicate: { type_: Type; bounds: GenericBound[]; generic_params: GenericParamDef[] } }
+	| { bound_predicate: { type: Type; bounds: GenericBound[]; generic_params: GenericParamDef[] } }
 	| { lifetime_predicate: { lifetime: string; outlives: string[] } }
 	| { eq_predicate: { lhs: Type; rhs: Term } };
 
 export type GenericBound =
-	| { trait_bound: { trait_: Path; generic_params: GenericParamDef[]; modifier: TraitBoundModifier } }
+	| { trait_bound: { trait: Path; generic_params: GenericParamDef[]; modifier: TraitBoundModifier } }
 	| { outlives: string }
 	| { use: PreciseCapturingArg[] };
 
