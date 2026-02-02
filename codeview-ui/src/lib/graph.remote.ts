@@ -34,6 +34,13 @@ async function loadCrateGraphByRef(
 	return provider.loadCrateGraph(name, version ?? 'latest');
 }
 
+type Provider = Awaited<ReturnType<typeof initProvider>>;
+type NodeDetailInput = {
+	nodeId: string;
+	version?: string;
+	refresh?: number;
+};
+
 // Cached lookup structures (built once from the cached workspace)
 let _allNodesCache: Map<string, Node> | null = null;
 let _edgesBySrcCache: Map<string, Workspace['cross_crate_edges']> | null = null;
@@ -76,6 +83,92 @@ function summarizeNode(n: Node): NodeSummary {
 		id: n.id, name: n.name, kind: n.kind, visibility: n.visibility, is_external: n.is_external,
 		...(n.kind === 'Impl' ? { impl_trait: n.impl_trait, generics: n.generics, where_clause: n.where_clause, bound_links: n.bound_links } : {})
 	};
+}
+
+async function resolveNodeDetail(
+	input: NodeDetailInput,
+	provider: Provider,
+	workspace: Workspace | null
+): Promise<NodeDetail | null> {
+	const { nodeId, version } = input;
+	return perf.timeAsync('server', `getNodeDetail(${nodeId})`, async () => {
+		const cratePrefix = nodeId.split('::')[0];
+
+		if (workspace) {
+			const crate = workspace.crates.find((c) => c.id === cratePrefix);
+			if (crate) {
+				const allNodes = getAllNodes(workspace);
+				const node = allNodes.get(nodeId);
+				if (!node) return null;
+
+				// Collect edges: from the crate's internal edges + cross-crate indexed edges
+				const { bySrc, byDst } = getCrossEdgesByNode(workspace);
+				const edges = [
+					...(crate.edges.filter((e) => e.from === nodeId || e.to === nodeId)),
+					...(bySrc.get(nodeId) ?? []),
+					...(byDst.get(nodeId) ?? [])
+				];
+
+				// Related nodes referenced by those edges
+				const relatedIds = new Set<string>();
+				for (const e of edges) {
+					relatedIds.add(e.from);
+					relatedIds.add(e.to);
+				}
+				relatedIds.delete(nodeId);
+
+				const relatedNodes: NodeSummary[] = [];
+				for (const id of relatedIds) {
+					const n = allNodes.get(id);
+					if (n) relatedNodes.push(summarizeNode(n));
+				}
+
+				return { node, edges, relatedNodes };
+			}
+			// Not a workspace crate — fall through to universal path
+		}
+
+		// Universal path: load crate graph by ref (works for local SQLite + hosted R2)
+		const graph = await provider.loadCrateGraph(cratePrefix, version ?? 'latest');
+		if (!graph) return null;
+
+		const nodesById = new Map<string, Node>();
+		for (const n of graph.nodes) nodesById.set(n.id, n);
+		const node = nodesById.get(nodeId);
+		if (!node) return null;
+
+		const edges = graph.edges.filter((e) => e.from === nodeId || e.to === nodeId);
+		const crossData = await provider.getCrossEdgeData(nodeId);
+		const edgeKey = (e: { from: string; to: string; kind: string; confidence: string }) =>
+			`${e.from}|${e.to}|${e.kind}|${e.confidence}`;
+		const edgeKeys = new Set(edges.map((e) => edgeKey(e)));
+		for (const e of crossData.edges) {
+			if (!edgeKeys.has(edgeKey(e))) {
+				edges.push(e);
+				edgeKeys.add(edgeKey(e));
+			}
+		}
+		const relatedIds = new Set<string>();
+		for (const e of edges) {
+			relatedIds.add(e.from);
+			relatedIds.add(e.to);
+		}
+		relatedIds.delete(nodeId);
+
+		const relatedNodesMap = new Map<string, NodeSummary>();
+		for (const id of relatedIds) {
+			const n = nodesById.get(id);
+			if (n) relatedNodesMap.set(id, summarizeNode(n));
+		}
+		for (const n of crossData.nodes) {
+			if (!relatedNodesMap.has(n.id)) relatedNodesMap.set(n.id, n);
+		}
+		const relatedNodes = Array.from(relatedNodesMap.values());
+
+		return { node, edges, relatedNodes };
+	}, {
+		detail: (r) => r ? `${r.edges.length}e ${r.relatedNodes.length}r` : 'null'
+	});
 }
 
 /** Get list of workspace crates (for index page + switcher) */
@@ -131,90 +224,17 @@ export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Pro
 });
 
 /** Get full node detail + all edges (for the detail panel) */
-export const getNodeDetail = query(NodeDetailInputSchema, async ({ nodeId, version }): Promise<NodeDetail | null> => {
-	return perf.timeAsync('server', `getNodeDetail(${nodeId})`, async () => {
-		const ws = await loadWorkspace();
-		if (ws) {
-			// Determine which crate the node belongs to
-			const cratePrefix = nodeId.split('::')[0];
-			const crate = ws.crates.find((c) => c.id === cratePrefix);
-
-			if (crate) {
-				const allNodes = getAllNodes(ws);
-				const node = allNodes.get(nodeId);
-				if (!node) return null;
-
-				// Collect edges: from the crate's internal edges + cross-crate indexed edges
-				const { bySrc, byDst } = getCrossEdgesByNode(ws);
-				const edges = [
-					...(crate.edges.filter((e) => e.from === nodeId || e.to === nodeId)),
-					...(bySrc.get(nodeId) ?? []),
-					...(byDst.get(nodeId) ?? [])
-				];
-
-				// Related nodes referenced by those edges
-				const relatedIds = new Set<string>();
-				for (const e of edges) {
-					relatedIds.add(e.from);
-					relatedIds.add(e.to);
-				}
-				relatedIds.delete(nodeId);
-
-				const relatedNodes: NodeSummary[] = [];
-				for (const id of relatedIds) {
-					const n = allNodes.get(id);
-					if (n) relatedNodes.push(summarizeNode(n));
-				}
-
-				return { node, edges, relatedNodes };
-			}
-			// Not a workspace crate — fall through to universal path
-		}
-
-		// Universal path: load crate graph by ref (works for local SQLite + hosted R2)
-		const cratePrefix = nodeId.split('::')[0];
-		const graph = await loadCrateGraphByRef(cratePrefix, version);
-		if (!graph) return null;
-
-		const nodesById = new Map<string, Node>();
-		for (const n of graph.nodes) nodesById.set(n.id, n);
-		const node = nodesById.get(nodeId);
-		if (!node) return null;
-
-		const edges = graph.edges.filter((e) => e.from === nodeId || e.to === nodeId);
+export const getNodeDetail = query.batch(
+	NodeDetailInputSchema,
+	async (inputs): Promise<((input: NodeDetailInput, index: number) => NodeDetail | null)> => {
 		const provider = await initProvider(getRequestEvent());
-		const crossData = await provider.getCrossEdgeData(nodeId);
-		const edgeKey = (e: { from: string; to: string; kind: string; confidence: string }) =>
-			`${e.from}|${e.to}|${e.kind}|${e.confidence}`;
-		const edgeKeys = new Set(edges.map((e) => edgeKey(e)));
-		for (const e of crossData.edges) {
-			if (!edgeKeys.has(edgeKey(e))) {
-				edges.push(e);
-				edgeKeys.add(edgeKey(e));
-			}
-		}
-		const relatedIds = new Set<string>();
-		for (const e of edges) {
-			relatedIds.add(e.from);
-			relatedIds.add(e.to);
-		}
-		relatedIds.delete(nodeId);
-
-		const relatedNodesMap = new Map<string, NodeSummary>();
-		for (const id of relatedIds) {
-			const n = nodesById.get(id);
-			if (n) relatedNodesMap.set(id, summarizeNode(n));
-		}
-		for (const n of crossData.nodes) {
-			if (!relatedNodesMap.has(n.id)) relatedNodesMap.set(n.id, n);
-		}
-		const relatedNodes = Array.from(relatedNodesMap.values());
-
-		return { node, edges, relatedNodes };
-	}, {
-		detail: (r) => r ? `${r.edges.length}e ${r.relatedNodes.length}r` : 'null'
-	});
-});
+		const workspace = await provider.loadWorkspace();
+		const results = await Promise.all(
+			inputs.map((input) => resolveNodeDetail(input, provider, workspace))
+		);
+		return (_input, index) => results[index] ?? null;
+	}
+);
 
 /** Get available versions for a crate */
 export const getCrateVersions = query(NodeIdSchema, async (crateName: string): Promise<string[]> => {

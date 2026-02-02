@@ -6,6 +6,7 @@
   import { page } from '$app/state';
   import { goto } from '$app/navigation';
   import { getNodeDetail } from '$lib/graph.remote';
+  import { cached, cacheKey } from '$lib/query-cache.svelte';
   import { CrossEdgeUpdatesConnection } from '$lib/graph-updates.svelte';
   import { Memo } from '$lib/reactivity.svelte';
   import { onDestroy } from 'svelte';
@@ -41,7 +42,10 @@
   onDestroy(() => edgeUpdates.destroy());
 
   const detail: NodeDetail | null = $derived(
-    await getNodeDetail({ nodeId, version: crateVersion, refresh: refreshToken })
+    await cached(
+      cacheKey('nodeDetail', nodeId, crateVersion),
+      getNodeDetail({ nodeId, version: crateVersion, refresh: refreshToken })
+    )
   );
 
   const VALID_LAYOUTS: LayoutMode[] = ['ego', 'force', 'hierarchical', 'radial'];

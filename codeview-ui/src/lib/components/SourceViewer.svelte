@@ -5,6 +5,7 @@
   import { page } from '$app/state';
   import { browser } from '$app/environment';
   import { getSource } from '$lib/source.remote';
+  import { cached, cacheKey } from '$lib/query-cache.svelte';
   import { Memo } from '$lib/reactivity.svelte';
   import { isHosted } from '$lib/platform';
   import CodeBlock from './CodeBlock.svelte';
@@ -22,29 +23,31 @@
   }>();
 
 
-  let source = $state<{ error: string | null; content: string | null } | null>(null);
-  let loading = $state(false);
+  let modalBody = $state<HTMLDivElement | null>(null);
+  let lastScrollKey: string | null = null;
 
   /** Unique key for this span */
   const spanKey = $derived(`${span.file}:${span.line}:${span.end_line ?? span.line}`);
 
   const isOpen = $derived(browser && page.state?.sourceSpanKey === spanKey);
 
-  async function open() {
+  const sourceQuery = $derived(
+    isOpen
+      ? cached(
+          cacheKey('source', crateName ?? 'workspace', span.file),
+          getSource({ file: span.file })
+        )
+      : null
+  );
+  const isLoading = $derived(sourceQuery?.loading ?? false);
+  const sourcePreview = $derived(sourceQuery?.current ?? null);
+
+  function open() {
     if (isHosted && crateName) {
       const targetVersion = crateVersion ?? 'latest';
       const url = docsSourceUrl(crateName, targetVersion, span.file);
       window.open(url, '_blank', 'noopener,noreferrer');
       return;
-    }
-    if (!source) {
-      loading = true;
-      try {
-        source = await getSource({ file: span.file });
-      } catch {
-        source = { error: 'Failed to fetch source', content: null };
-      }
-      loading = false;
     }
     pushState('', { ...page.state, sourceSpanKey: spanKey });
   }
@@ -70,20 +73,8 @@
   });
   const highlightRange = $derived(highlightRangeMemo.current);
 
-  // Auto-fetch source when state opens this modal
-  $effect(() => {
-    if (isOpen && !source && !loading) {
-      loading = true;
-      getSource({ file: span.file })
-        .then((result) => { source = result; })
-        .catch(() => { source = { error: 'Failed to fetch source', content: null }; })
-        .finally(() => { loading = false; });
-    }
-  });
-
-  // Scroll to highlighted line when modal body mounts
-  function attachModalBody(container: HTMLDivElement) {
-    // Wait for CodeBlock to render, then scroll
+  // Scroll to highlighted line when content is ready
+  function scrollToHighlight(container: HTMLDivElement) {
     requestAnimationFrame(() => {
       const firstHighlighted = container.querySelector('.line.highlighted');
       if (firstHighlighted) {
@@ -93,6 +84,17 @@
       }
     });
   }
+
+  $effect(() => {
+    if (!isOpen) {
+      lastScrollKey = null;
+      return;
+    }
+    if (!modalBody || !sourcePreview?.content) return;
+    if (lastScrollKey === spanKey) return;
+    lastScrollKey = spanKey;
+    scrollToHighlight(modalBody);
+  });
 
   function langFromFile(file: string): 'rust' | 'toml' | 'json' | 'text' {
     if (file.endsWith('.rs')) return 'rust';
@@ -117,12 +119,12 @@
   title="View source"
 >
   <span class="token-name">{span.file}</span><span class="token-meta">:{span.line}:{span.column}</span>
-  {#if loading}
+  {#if isLoading}
     <Loader2Icon class="inline-block animate-spin" size={12} />
   {/if}
 </button>
 
-{#if isOpen && source}
+{#if isOpen}
   <div class="modal-backdrop" role="presentation" onclick={handleBackdropClick}>
     <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Source: {span.file}">
       <header class="modal-header">
@@ -134,19 +136,36 @@
           <X size={18} />
         </button>
       </header>
-      <div class="modal-body" {@attach attachModalBody}>
-        {#if source.error}
-          <p class="source-error">{source.error}</p>
-        {:else if source.content}
-          <CodeBlock
-            code={source.content}
-            lang={langFromFile(span.file)}
-            {theme}
-            startLine={1}
-            highlightLines={highlightRange}
-            showLineNumbers={true}
-          />
-        {/if}
+      <div class="modal-body" bind:this={modalBody}>
+        <svelte:boundary>
+          {@const result = sourceQuery ? await sourceQuery : null}
+          {#if result?.error}
+            <p class="source-error">{result.error}</p>
+          {:else if result?.content}
+            <CodeBlock
+              code={result.content}
+              lang={langFromFile(span.file)}
+              {theme}
+              startLine={1}
+              highlightLines={highlightRange}
+              showLineNumbers={true}
+            />
+          {:else}
+            <p class="source-error">Source unavailable.</p>
+          {/if}
+          {#snippet pending()}
+            <div class="flex items-center gap-2 p-4 text-xs text-[var(--muted)]">
+              <Loader2Icon class="animate-spin" size={12} />
+              Loading source...
+            </div>
+          {/snippet}
+          {#snippet failed(error, reset)}
+            <div class="p-4 text-xs text-[var(--danger)]">
+              <p>Failed to load source</p>
+              <button type="button" class="mt-2 text-[var(--accent)] hover:underline" onclick={reset}>Retry</button>
+            </div>
+          {/snippet}
+        </svelte:boundary>
       </div>
     </div>
   </div>

@@ -40,4 +40,8 @@ declare global {
 	}
 }
 
+declare module '$env/static/public' {
+	export const PUBLIC_CODEVIEW_PLATFORM: string;
+}
+
 export {};
