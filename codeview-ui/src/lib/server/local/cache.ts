@@ -1,4 +1,5 @@
 /// <reference types="@types/bun" />
+import { Result } from "better-result";
 import { Database } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { formatToMillis, type MigrationMeta } from "drizzle-orm/migrator";
@@ -13,6 +14,9 @@ import { crateGraphs, crateStatus, crossEdges, nodeIndex } from "../db/schema";
 import { normalizeCrateName } from "../validation";
 import type { CrateGraph } from "$lib/graph";
 import type { CrateIndex } from "$lib/schema";
+import { getLogger } from "$lib/log";
+
+const log = getLogger('cache');
 
 const sqlModules = import.meta.glob("../db/migrations/*/migration.sql", {
 	query: "?raw",
@@ -73,9 +77,7 @@ export class LocalCache {
 			.all();
 		if (zombies.length > 0) {
 			for (const z of zombies) {
-				console.log(
-					`[cache] Cleaning zombie: ${z.name}@${z.version} (was on step: ${z.lastStep ?? "unknown"})`,
-				);
+				log.debug`Cleaning zombie: ${z.name}@${z.version} (was on step: ${z.lastStep ?? "unknown"})`;
 			}
 			this.db
 				.delete(crateStatus)
@@ -116,11 +118,12 @@ export class LocalCache {
 			)
 			.get();
 		if (!row) return null;
-		try {
-			return JSON.parse(row.graphJson) as CrateGraph;
-		} catch {
+		const result = Result.try(() => JSON.parse(row.graphJson) as CrateGraph);
+		if (result.isErr()) {
+			log.error`Failed to parse cached graph for ${n}@${version}`;
 			return null;
 		}
+		return result.value;
 	}
 
 	getIndex(name: string, version: string): CrateIndex | null {
@@ -137,11 +140,12 @@ export class LocalCache {
 			)
 			.get();
 		if (!row) return null;
-		try {
-			return JSON.parse(row.indexJson) as CrateIndex;
-		} catch {
+		const result = Result.try(() => JSON.parse(row.indexJson) as CrateIndex);
+		if (result.isErr()) {
+			log.error`Failed to parse cached index for ${n}@${version}`;
 			return null;
 		}
+		return result.value;
 	}
 
 	putCrate(name: string, version: string, graph: object, index: object): void {

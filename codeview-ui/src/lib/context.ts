@@ -1,3 +1,4 @@
+import { panic } from 'better-result';
 import { getContext, setContext, hasContext } from 'svelte';
 import type { Edge, Node } from '$lib/graph';
 
@@ -31,7 +32,7 @@ class ReactiveContext<T> {
 	get(): T {
 		const getter = getContext<(() => T) | undefined>(this.#key);
 		if (getter === undefined) {
-			throw new Error(`Context "${this.#name}" not found`);
+			panic(`Context "${this.#name}" not found`);
 		}
 		return getter();
 	}

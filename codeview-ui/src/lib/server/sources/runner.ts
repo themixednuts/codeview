@@ -6,6 +6,7 @@ import type {
 } from './types';
 import type { SourceFetchPolicy } from './types';
 import { defaultSourcePolicy } from './policy';
+import { SourceOverLimitError } from '../errors';
 
 export async function fetchSourcesWithProviders(
 	group: SourceProviderGroup,
@@ -95,7 +96,7 @@ async function raceFallbacks(
 		attemptProvider(provider, request, context, policy, group, 'fallback').then((result) => {
 			if (result.outcome.status === 'ok') return result.outcome.files;
 			if (result.outcome.status === 'over-limit') {
-				throw new OverLimitError();
+				throw new SourceOverLimitError({ message: 'Source fetch exceeded size limit' });
 			}
 			throw new Error(
 				result.outcome.status === 'error' ? result.outcome.message : 'Source not found'
@@ -111,18 +112,11 @@ async function raceFallbacks(
 	}
 }
 
-class OverLimitError extends Error {
-	constructor() {
-		super('Source fetch exceeded size limit');
-		this.name = 'OverLimitError';
-	}
-}
-
 function isOverLimitError(err: unknown): boolean {
-	if (err instanceof OverLimitError) return true;
+	if (SourceOverLimitError.is(err)) return true;
 	if (err instanceof AggregateError) {
 		for (const inner of err.errors) {
-			if (inner instanceof OverLimitError) return true;
+			if (SourceOverLimitError.is(inner)) return true;
 		}
 	}
 	return false;

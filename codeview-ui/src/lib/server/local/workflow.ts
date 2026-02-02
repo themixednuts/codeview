@@ -1,3 +1,6 @@
+import { Result } from 'better-result';
+import { WorkflowStepError } from '../errors';
+
 /** Mirrors Cloudflare's retry config shape */
 export type WorkflowRetryConfig = {
 	limit: number;
@@ -32,10 +35,6 @@ export interface WorkflowRunnerOptions {
 	onStepError?: (stepName: string, error: Error, attempt: number) => void;
 }
 
-export type WorkflowResult =
-	| { ok: true }
-	| { ok: false; error: string; failedStep: string };
-
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -53,7 +52,7 @@ export async function runWorkflow<TParams>(
 	workflow: WorkflowEntrypoint<TParams>,
 	params: TParams,
 	options?: WorkflowRunnerOptions
-): Promise<WorkflowResult> {
+): Promise<Result<void, WorkflowStepError>> {
 	let currentStep = '';
 
 	const step: WorkflowStep = {
@@ -97,9 +96,9 @@ export async function runWorkflow<TParams>(
 
 	try {
 		await workflow.run({ payload: params }, step);
-		return { ok: true };
+		return Result.ok(undefined);
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		return { ok: false, error: msg, failedStep: currentStep };
+		return Result.err(new WorkflowStepError({ message: msg, failedStep: currentStep }));
 	}
 }

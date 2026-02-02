@@ -322,7 +322,11 @@ export const triggerCrateParse = command(
 		// 	throw error(429, 'Rate limit exceeded');
 		// }
 		const provider = await initProvider(event);
-		await provider.triggerParse(name, version, force);
+		const result = await provider.triggerParse(name, version, force);
+		if (result.isErr()) {
+			const err = result.error;
+			throw error(422, err.message);
+		}
 	}
 );
 
@@ -334,7 +338,11 @@ export const triggerStdInstall = command(
 		const name = rawName ?? '';
 		const version = rawVersion ?? 'stable';
 		const provider = await initProvider(getRequestEvent());
-		await provider.triggerStdInstall(name, version);
+		const result = await provider.triggerStdInstall(name, version);
+		if (result.isErr()) {
+			const err = result.error;
+			throw error(422, err.message);
+		}
 	}
 );
 

@@ -1,5 +1,9 @@
+import { Result } from 'better-result';
 import type { RateLimit } from '@cloudflare/workers-types';
 import type { RequestEvent } from '@sveltejs/kit';
+import { getLogger } from '$lib/log';
+
+const log = getLogger('rate-limit');
 
 export type RateLimitTier = 'anon' | 'auth' | 'paid';
 export type RateLimitScope = 'api' | 'parse' | 'ws';
@@ -43,13 +47,15 @@ export async function checkRateLimit(
 	key: string
 ): Promise<boolean> {
 	if (!limiter) return true;
-	try {
+	const result = await Result.tryPromise(async () => {
 		const { success } = await limiter.limit({ key });
 		return success;
-	} catch (err) {
-		console.warn('Rate limit check failed', err);
+	});
+	if (result.isErr()) {
+		log.warn`Rate limit check failed: ${result.error}`;
 		return true;
 	}
+	return result.value;
 }
 
 export function resolveRateLimitTier(

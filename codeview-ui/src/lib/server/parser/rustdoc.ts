@@ -5,8 +5,13 @@
  * implementation. Handles format versions v35–v57+.
  */
 
+import { Result } from 'better-result';
 import type { ParserAdapter, ParseResult, SourceFiles } from './types';
 import { resolveRootFileForCrate } from './cargo-manifest';
+import { getLogger } from '$lib/log';
+import { JsonParseError } from '../errors';
+
+const log = getLogger('rustdoc');
 import type {
 	Node,
 	Edge,
@@ -83,7 +88,9 @@ export function createRustdocParser(): ParserAdapter {
 
 			const t0 = performance.now();
 
-			const krate = parseRustdocLenient(json);
+			const krateResult = parseRustdocLenient(json);
+			if (krateResult.isErr()) throw krateResult.error;
+			const krate = krateResult.value;
 			let graph: Graph;
 			if (sourceFiles && sourceFiles.size > 0) {
 				const rootFile = resolveRootFileForCrate(name, sourceFiles) ?? 'src/lib.rs';
@@ -96,9 +103,7 @@ export function createRustdocParser(): ParserAdapter {
 			}
 
 			const elapsed = performance.now() - t0;
-			console.log(
-				`[rustdoc-ts] parsed ${crateName}: ${graph.nodes.length} nodes, ${graph.edges.length} edges in ${elapsed.toFixed(0)}ms`
-			);
+			log.info`parsed ${crateName}: ${String(graph.nodes.length)} nodes, ${String(graph.edges.length)} edges in ${elapsed.toFixed(0)}ms`;
 
 			// Extract external crates from rustdoc metadata
 			const externalCrates = Object.values(krate.external_crates)
@@ -128,8 +133,12 @@ export function createRustdocParser(): ParserAdapter {
 // Lenient JSON parsing with format version compatibility
 // ---------------------------------------------------------------------------
 
-function parseRustdocLenient(json: string): RustdocCrate {
-	const doc = JSON.parse(json) as RustdocCrate;
+function parseRustdocLenient(json: string): Result<RustdocCrate, JsonParseError> {
+	const parseResult = Result.try(() => JSON.parse(json) as RustdocCrate);
+	if (parseResult.isErr()) {
+		return Result.err(new JsonParseError({ message: 'Failed to parse rustdoc JSON' }));
+	}
+	const doc = parseResult.value;
 	const version = doc.format_version ?? 0;
 
 	// v44+: ensure target field exists
@@ -150,7 +159,7 @@ function parseRustdocLenient(json: string): RustdocCrate {
 		}
 	}
 
-	return doc;
+	return Result.ok(doc);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,7 +268,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 		}
 	  } catch (err) {
 		skippedItems++;
-		console.warn(`[rustdoc-ts] skipped path item ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`);
+		log.warn`skipped path item ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`;
 	  }
 	}
 
@@ -278,7 +287,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 	try {
 		addUseImportEdges(graph, edgeCache, krate, crateName, itemToParent);
 	} catch (err) {
-		console.warn(`[rustdoc-ts] failed to build re-export edges: ${err instanceof Error ? err.message : String(err)}`);
+		log.warn`failed to build re-export edges: ${err instanceof Error ? err.message : String(err)}`;
 	}
 
 	// Process impl blocks and type references
@@ -399,7 +408,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 				pushEdge(graph, edgeCache, implId, assocNodeId, 'Defines', 'Static');
 			  } catch (err) {
 				skippedItems++;
-				console.warn(`[rustdoc-ts] skipped impl item ${assocId} in ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`);
+				log.warn`skipped impl item ${assocId} in ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`;
 			  }
 			}
 
@@ -462,7 +471,7 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 		addDerivesEdges(graph, edgeCache, ownerId, item.attrs, traitLookup);
 	  } catch (err) {
 		skippedItems++;
-		console.warn(`[rustdoc-ts] skipped index item ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`);
+		log.warn`skipped index item ${itemIdStr}: ${err instanceof Error ? err.message : String(err)}`;
 	  }
 	}
 
@@ -477,12 +486,12 @@ function buildGraph(krate: RustdocCrate, crateName: string, opts: BuildGraphOpti
 				opts.source.sourceFiles
 			);
 		} catch (err) {
-			console.warn(`[rustdoc-ts] failed to build call edges: ${err instanceof Error ? err.message : String(err)}`);
+			log.warn`failed to build call edges: ${err instanceof Error ? err.message : String(err)}`;
 		}
 	}
 
 	if (skippedItems > 0) {
-		console.warn(`[rustdoc-ts] completed with ${skippedItems} skipped item(s) due to parse errors`);
+		log.warn`completed with ${skippedItems} skipped item(s) due to parse errors`;
 	}
 
 	return graph;

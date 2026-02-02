@@ -1,3 +1,4 @@
+import { Result } from 'better-result';
 import type { ParserAdapter, ParseResult } from './types';
 import { resolveRootFileForCrate } from './cargo-manifest';
 
@@ -38,7 +39,10 @@ export function createRustdocWasmParser(): ParserAdapter {
 				for (const [path, content] of sourceFiles) {
 					sourcesObj[path] = content;
 				}
-				const sourcesBytes = textEncoder.encode(JSON.stringify(sourcesObj));
+				const sourcesStrResult = Result.try(() => JSON.stringify(sourcesObj));
+				if (sourcesStrResult.isErr()) throw sourcesStrResult.error;
+				const sourcesStr = sourcesStrResult.value;
+				const sourcesBytes = textEncoder.encode(sourcesStr);
 				const rootFile = resolveRootFileForCrate(name, sourceFiles) ?? 'src/lib.rs';
 
 				resultJson = extract_graph_with_sources(
@@ -48,7 +52,9 @@ export function createRustdocWasmParser(): ParserAdapter {
 				resultJson = extract_graph(jsonBytes, crateName);
 			}
 
-			const graph = JSON.parse(resultJson);
+			const graphResult = Result.try(() => JSON.parse(resultJson));
+			if (graphResult.isErr()) throw graphResult.error;
+			const graph = graphResult.value;
 
 			return {
 				graph: {

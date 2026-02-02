@@ -1,3 +1,4 @@
+import { Result } from 'better-result';
 import { DurableObject } from 'cloudflare:workers';
 import { and, count, desc, eq, inArray, or } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
@@ -54,8 +55,13 @@ export class CrateRegistry extends DurableObject {
 		const set = this.sseWriters.get(tag);
 		if (!set || set.size === 0) return;
 		log.debug`broadcast ${tag} to ${String(set.size)} writer(s)`;
+		const jsonResult = Result.try(() => JSON.stringify(data));
+		if (jsonResult.isErr()) {
+			log.error`Failed to serialize broadcast data for ${tag}`;
+			return;
+		}
 		const encoder = new TextEncoder();
-		const chunk = encoder.encode(`data: ${JSON.stringify(data)}\n\n`);
+		const chunk = encoder.encode(`data: ${jsonResult.value}\n\n`);
 		// Copy to array — removeWriter mutates the Set
 		for (const writer of [...set]) {
 			try {
@@ -291,7 +297,8 @@ export class CrateRegistry extends DurableObject {
 		const tag = `${ecosystem}:${name}:${version}`;
 		const currentStep = this.stepMap.get(stepKey);
 		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}) };
-		log.debug`broadcast ${tag} → ${JSON.stringify(message)}`;
+		const msgJson = Result.try(() => JSON.stringify(message)).unwrapOr('{}');
+		log.debug`broadcast ${tag} → ${msgJson}`;
 		this.broadcast(tag, message);
 
 		const processingCount = await this.getProcessingCount(ecosystem);
@@ -371,8 +378,9 @@ export class CrateRegistry extends DurableObject {
 		// Send initial data after registering — don't await since the readable
 		// side has no consumer until the Response is returned.
 		if (initialData !== null) {
-			const chunk = encoder.encode(`data: ${JSON.stringify(initialData)}\n\n`);
-			log.debug`writing initial data for tag=${tag}: ${JSON.stringify(initialData)}`;
+			const initJson = Result.try(() => JSON.stringify(initialData)).unwrapOr('{}');
+			const chunk = encoder.encode(`data: ${initJson}\n\n`);
+			log.debug`writing initial data for tag=${tag}: ${initJson}`;
 			writer.write(chunk).catch(() => {});
 		}
 

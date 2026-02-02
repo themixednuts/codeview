@@ -1,3 +1,4 @@
+import { Result } from 'better-result';
 import type { Logger } from '@logtape/logtape';
 
 /**
@@ -53,16 +54,15 @@ export abstract class SSEConnection implements Disposable {
 	}
 
 	async #read(controller: AbortController) {
-		let response: Response;
-		try {
-			response = await fetch(this.endpoint, { signal: controller.signal });
-		} catch (err) {
+		const fetchResult = await Result.tryPromise(() => fetch(this.endpoint, { signal: controller.signal }));
+		if (fetchResult.isErr()) {
 			if (controller.signal.aborted) return;
-			this.log.warn`fetch error ${this.tag}: ${String(err)}`;
+			this.log.warn`fetch error ${this.tag}: ${fetchResult.error}`;
 			if (this.#abort === controller) this.#abort = null;
 			return;
 		}
 
+		const response = fetchResult.value;
 		if (!response.ok || !response.body) {
 			this.log.warn`bad response ${this.tag}: ${String(response.status)}`;
 			if (this.#abort === controller) this.#abort = null;
@@ -88,10 +88,11 @@ export abstract class SSEConnection implements Disposable {
 
 					for (const line of event.split('\n')) {
 						if (line.startsWith('data: ')) {
-							try {
-								this.onData(JSON.parse(line.slice(6)));
-							} catch (err) {
-								this.log.warn`parse error ${this.tag}: ${String(err)}`;
+							const parseResult = Result.try(() => JSON.parse(line.slice(6)));
+							if (parseResult.isErr()) {
+								this.log.warn`parse error ${this.tag}: ${parseResult.error}`;
+							} else {
+								this.onData(parseResult.value);
 							}
 						}
 						// SSE comments (`: ...`) are silently ignored

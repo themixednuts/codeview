@@ -1,3 +1,4 @@
+import { Result } from 'better-result';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { decompress } from 'fzstd';
 import type { CrateRegistry } from '$cloudflare/crate-registry';
@@ -113,8 +114,9 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 				'resolve-metadata',
 				{ retries: { limit: 2, delay: '1 second', backoff: 'exponential' } },
 				async () => {
-					const registry = getRegistry(ecosystem);
-					const meta = await registry.resolve(name, version);
+					const registryResult = getRegistry(ecosystem);
+					if (registryResult.isErr()) throw registryResult.error;
+					const meta = await registryResult.value.resolve(name, version);
 					if (!meta) throw new Error(`Package not found: ${name}@${version}`);
 					return meta;
 				}
@@ -132,7 +134,9 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 				'fetch-parse-store',
 				{ retries: { limit: 2, delay: '2 seconds', backoff: 'exponential' } },
 				async () => {
-					const parser = getParser(ecosystem);
+					const parserResult = getParser(ecosystem);
+					if (parserResult.isErr()) throw parserResult.error;
+					const parser = parserResult.value;
 					const artifactUrl =
 						metadata.artifactUrl ??
 						`https://docs.rs/crate/${name}/${version}/json`;
@@ -159,7 +163,9 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 					log.debug`${name}@${version} → parsing`;
 					await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'parsing');
 
-					const sourceAdapter = getSourceAdapter(ecosystem);
+					const sourceAdapterResult = getSourceAdapter(ecosystem);
+					if (sourceAdapterResult.isErr()) throw sourceAdapterResult.error;
+					const sourceAdapter = sourceAdapterResult.value;
 					const providers = sourceAdapter.getProviders({
 						ecosystem,
 						name,
@@ -217,7 +223,9 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 						if (toNode) crossNodeMap.set(toNode.id, toNode);
 					}
 
-					const registry = getRegistry(ecosystem);
+					const registryResult2 = getRegistry(ecosystem);
+					if (registryResult2.isErr()) throw registryResult2.error;
+					const registry = registryResult2.value;
 					const latestCache = new Map<string, string | null>();
 
 					async function getLatestVersion(candidate: string): Promise<string | null> {
@@ -284,7 +292,9 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 					log.debug`${name}@${version} → storing`;
 					await registryStub.setStatus(ecosystem, name, version, 'processing', undefined, 'storing');
 					const parsedAt = new Date().toISOString();
-					const graphJson = JSON.stringify(parseResult.graph);
+					const graphJsonResult = Result.try(() => JSON.stringify(parseResult.graph));
+					if (graphJsonResult.isErr()) throw graphJsonResult.error;
+					const graphJson = graphJsonResult.value;
 					const indexKey = `${ecosystem}/${name}/${version}/index.json`;
 					const crossEdgeKey = `${ecosystem}/${name}/${version}/_cross-edges.json`;
 					const crossEdgePayload: CrossEdgeStepResult = {
@@ -293,6 +303,13 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 						externalCrates: filteredExternal,
 						hasSources: sourceFiles !== null
 					};
+
+					const indexJsonResult = Result.try(() => JSON.stringify(index));
+					if (indexJsonResult.isErr()) throw indexJsonResult.error;
+					const indexJson = indexJsonResult.value;
+					const crossEdgeJsonResult = Result.try(() => JSON.stringify(crossEdgePayload));
+					if (crossEdgeJsonResult.isErr()) throw crossEdgeJsonResult.error;
+					const crossEdgeJson = crossEdgeJsonResult.value;
 
 					await Promise.all([
 						this.env.CRATE_GRAPHS.put(r2Key, graphJson, {
@@ -305,11 +322,11 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 								hasSources: sourceFiles ? 'true' : 'false'
 							}
 						}),
-						this.env.CRATE_GRAPHS.put(indexKey, JSON.stringify(index), {
+						this.env.CRATE_GRAPHS.put(indexKey, indexJson, {
 							httpMetadata: { contentType: 'application/json' },
 							customMetadata: { ecosystem, name, version, parsedAt }
 						}),
-						this.env.CRATE_GRAPHS.put(crossEdgeKey, JSON.stringify(crossEdgePayload), {
+						this.env.CRATE_GRAPHS.put(crossEdgeKey, crossEdgeJson, {
 							httpMetadata: { contentType: 'application/json' }
 						})
 					]);
@@ -331,7 +348,7 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 					const crossEdgeKey = `${ecosystem}/${name}/${version}/_cross-edges.json`;
 					const obj = await this.env.CRATE_GRAPHS.get(crossEdgeKey);
 					if (!obj) {
-						console.warn(`[workflow] ${name}@${version} no cross-edge data found, skipping`);
+						log.warn`${name}@${version} no cross-edge data found, skipping`;
 						return;
 					}
 					const crossEdgeData = await obj.json<CrossEdgeStepResult>();
@@ -365,7 +382,7 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 						]);
 					});
 				} catch (err) {
-					console.warn('Fanout parse scheduling failed:', err);
+					log.warn`Fanout parse scheduling failed: ${err}`;
 				}
 			});
 

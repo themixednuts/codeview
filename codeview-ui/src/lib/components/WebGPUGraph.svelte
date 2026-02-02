@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { Result } from 'better-result';
   import { onMount, onDestroy } from 'svelte';
   import { base } from '$app/paths';
   import type { Graph, Node } from '$lib/graph';
+  import { WasmLoadError } from '$lib/errors';
 
   interface Props {
     graph: Graph | null;
@@ -47,18 +49,21 @@
     }
   }
 
-  async function loadWasmModule() {
-    try {
+  async function loadWasmModule(): Promise<Result<any, WasmLoadError>> {
+    const result = await Result.tryPromise(async () => {
       const wasm = await import(/* @vite-ignore */ wasmModuleUrl);
       if (typeof wasm.default === 'function') {
         await wasm.default();
       }
       return wasm;
-    } catch (error) {
-      throw new Error(
-        'WebGPU module not found. Build with "wasm-pack build codeview-render --target web --features web" and copy "codeview-render/pkg" to "codeview-ui/static/wasm/codeview-render".'
-      );
+    });
+    if (result.isErr()) {
+      return Result.err(new WasmLoadError({
+        message: 'WebGPU module not found. Build with "wasm-pack build codeview-render --target web --features web" and copy "codeview-render/pkg" to "codeview-ui/static/wasm/codeview-render".',
+        cause: result.error
+      }));
     }
+    return Result.ok(result.value);
   }
 
   // Try to load the WASM module
@@ -67,13 +72,18 @@
     initError = null;
     fallbackTriggered = false;
 
-    try {
+    const initResult = await Result.tryPromise(async () => {
       if (!canvas || !container) {
         requestAnimationFrame(initRenderer);
         return;
       }
       // Dynamic import of the WASM module
-      const wasm = await loadWasmModule();
+      const wasmResult = await loadWasmModule();
+      if (wasmResult.isErr()) {
+        triggerFallback(wasmResult.error.message);
+        return;
+      }
+      const wasm = wasmResult.value;
 
       // Check if WebGPU is available
       isWebGPUAvailable = wasm.isWebGPUAvailable();
@@ -97,7 +107,10 @@
 
       // Load graph if available
       if (graph) {
-        renderer.loadGraph(JSON.stringify(graph));
+        const graphJson = Result.try(() => JSON.stringify(graph));
+        if (graphJson.isOk()) {
+          renderer.loadGraph(graphJson.value);
+        }
       }
 
       // Set initial layout mode
@@ -117,8 +130,11 @@
       frameId = requestAnimationFrame(renderLoop);
 
       loading = false;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to initialize WebGPU renderer';
+    });
+
+    if (initResult.isErr()) {
+      const err = initResult.error;
+      const message = err instanceof Error ? err.message : 'Failed to initialize WebGPU renderer';
       triggerFallback(message);
     }
   }
@@ -239,7 +255,10 @@
   // Watch for graph changes
   $effect(() => {
     if (renderer && graph) {
-      renderer.loadGraph(JSON.stringify(graph));
+      const graphJson = Result.try(() => JSON.stringify(graph));
+      if (graphJson.isOk()) {
+        renderer.loadGraph(graphJson.value);
+      }
     }
   });
 

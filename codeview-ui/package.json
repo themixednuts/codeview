@@ -55,6 +55,7 @@
     "@logtape/logtape": "^2.0.2",
     "@lucide/svelte": "^0.563.1",
     "@shikijs/transformers": "^3.22.0",
+    "better-result": "^2.7.0",
     "d3-force": "^3.0.0",
     "drizzle-orm": "^1.0.0-beta.9-e89174b",
     "fzstd": "^0.1.1",

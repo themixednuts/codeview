@@ -1,3 +1,4 @@
+import { Result } from 'better-result';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
@@ -13,6 +14,7 @@ import { getParser } from '../parser/index';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
 import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } from '../provider';
+import { ValidationError, NotAvailableError } from '../errors';
 import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
 import { sseResponse, sseStreamResponse } from '../sse-proxy';
 import { LocalCache } from './cache';
@@ -190,8 +192,9 @@ export function createLocalProvider(): DataProvider {
 				'resolve-metadata',
 				{ retries: { limit: 2, delayMs: 2000, backoff: 'exponential' } },
 				async () => {
-					const reg = getRegistry('rust');
-					const resolved = await reg.resolve(name, version);
+					const regResult = getRegistry('rust');
+					if (regResult.isErr()) throw regResult.error;
+					const resolved = await regResult.value.resolve(name, version);
 					if (!resolved) {
 						throw new Error(`Package not found: ${name}@${version}`);
 					}
@@ -236,7 +239,9 @@ export function createLocalProvider(): DataProvider {
 				{ retries: { limit: 1, delayMs: 1000, backoff: 'linear' } },
 				async () => {
 					log.info`Fetching sources for ${name}@${version}`;
-					const sourceAdapter = getSourceAdapter('rust');
+					const sourceAdapterResult = getSourceAdapter('rust');
+					if (sourceAdapterResult.isErr()) throw sourceAdapterResult.error;
+					const sourceAdapter = sourceAdapterResult.value;
 					const providers = sourceAdapter.getProviders({
 						ecosystem: 'rust',
 						name,
@@ -252,7 +257,9 @@ export function createLocalProvider(): DataProvider {
 
 					log.info`Parsing rustdoc for ${name}@${version}`;
 					const t0 = performance.now();
-					const parser = getParser('rust');
+					const parserResult = getParser('rust');
+					if (parserResult.isErr()) throw parserResult.error;
+					const parser = parserResult.value;
 					const srcFiles = sourceFiles ?? undefined;
 					const result = await parser.parse(artifact, name, version, srcFiles);
 					log.info`Parsed ${name}@${version}: ${result.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
@@ -297,7 +304,9 @@ export function createLocalProvider(): DataProvider {
 						if (toNode) nodeMap.set(toNode.id, toNode);
 					}
 
-					const reg = getRegistry('rust');
+					const regResult2 = getRegistry('rust');
+					if (regResult2.isErr()) throw regResult2.error;
+					const reg = regResult2.value;
 					const latestCacheLocal = new Map<string, string | null>();
 					async function getLatestVersionLocal(candidate: string): Promise<string | null> {
 						if (latestCacheLocal.has(candidate)) return latestCacheLocal.get(candidate)!;
@@ -419,9 +428,10 @@ export function createLocalProvider(): DataProvider {
 			}
 		});
 
-		if (!result.ok) {
-			log.error`Failed to parse ${name}@${version}: ${result.error} (step: ${result.failedStep})`;
-			emitStatus(name, version, { status: 'failed', error: result.error }, result.failedStep);
+		if (result.isErr()) {
+			const err = result.error;
+			log.error`Failed to parse ${name}@${version}: ${err.message} (step: ${err.failedStep})`;
+			emitStatus(name, version, { status: 'failed', error: err.message }, err.failedStep);
 		}
 	}
 
@@ -494,7 +504,9 @@ export function createLocalProvider(): DataProvider {
 				log.info`Parsing rustdoc for std crate ${name}@${version}`;
 				emitStatus(name, version, { status: 'processing' }, 'parsing');
 				const t0 = performance.now();
-				const parser = getParser('rust');
+				const parserResult = getParser('rust');
+				if (parserResult.isErr()) throw parserResult.error;
+				const parser = parserResult.value;
 				const result = await parser.parse(artifact, name, version);
 				log.info`Parsed ${name}@${version}: ${result.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
 				return result;
@@ -554,9 +566,10 @@ export function createLocalProvider(): DataProvider {
 			}
 		});
 
-		if (!result.ok) {
-			log.error`Failed to parse std ${name}@${version}: ${result.error} (step: ${result.failedStep})`;
-			emitStatus(name, version, { status: 'failed', error: result.error }, result.failedStep);
+		if (result.isErr()) {
+			const err = result.error;
+			log.error`Failed to parse std ${name}@${version}: ${err.message} (step: ${err.failedStep})`;
+			emitStatus(name, version, { status: 'failed', error: err.message }, err.failedStep);
 		}
 	}
 
@@ -584,15 +597,18 @@ export function createLocalProvider(): DataProvider {
 			if (cached) return cached;
 			const graphPath = process.env.CODEVIEW_GRAPH;
 			if (!graphPath) return null;
-			try {
-				const content = await readFile(graphPath, 'utf-8');
-				const raw = JSON.parse(content);
-				cached = parseWorkspace(raw) as Workspace;
-				return cached;
-			} catch (err) {
-				console.error('Failed to load workspace:', err);
+			const readResult = await Result.tryPromise(() => readFile(graphPath, 'utf-8'));
+			if (readResult.isErr()) {
+				log.error`Failed to read workspace file: ${readResult.error}`;
 				return null;
 			}
+			const parseResult = Result.try(() => JSON.parse(readResult.value));
+			if (parseResult.isErr()) {
+				log.error`Failed to parse workspace JSON`;
+				return null;
+			}
+			cached = parseWorkspace(parseResult.value) as Workspace;
+			return cached;
 		},
 
 		async loadSourceFile(file: string) {
@@ -746,19 +762,19 @@ export function createLocalProvider(): DataProvider {
 				// Check if sysroot JSON is available (no install consent)
 				const stdInfo = await findStdJson(name, version);
 				if (!stdInfo.available) {
-					throw new Error(`${name}@${version} not available in sysroot`);
+					return Result.err(new NotAvailableError({ message: `${name}@${version} not available in sysroot` }));
 				}
 				const lc = getCache();
 				if (!force && lc.hasCrate(name, version)) {
 					emitStatus(name, version, { status: 'ready' });
-					return;
+					return Result.ok(undefined);
 				}
 				emitStatus(name, version, { status: 'processing' }, 'resolving');
 				startStdParse(name, version, false);
-				return;
+				return Result.ok(undefined);
 			}
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
-				throw new Error('Invalid crate name or version');
+				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
 
 			const lc = getCache();
@@ -770,32 +786,34 @@ export function createLocalProvider(): DataProvider {
 			} else {
 				const current = lc.getStatus('rust', name, version);
 				if (current.status === 'processing' || current.status === 'ready') {
-					return;
+					return Result.ok(undefined);
 				}
 
 				// Also check graph cache
 				if (lc.hasCrate(name, version)) {
 					emitStatus(name, version, { status: 'ready' });
-					return;
+					return Result.ok(undefined);
 				}
 			}
 
 			// Set status atomically BEFORE starting the parse
 			emitStatus(name, version, { status: 'processing' }, 'resolving');
 			startParse(name, version);
+			return Result.ok(undefined);
 		},
 
 		async triggerStdInstall(name: string, version: string) {
 			if (!isStdCrate(name)) {
-				throw new Error(`${name} is not a standard library crate`);
+				return Result.err(new ValidationError({ message: `${name} is not a standard library crate` }));
 			}
 			const lc = getCache();
 			if (lc.hasCrate(name, version)) {
 				emitStatus(name, version, { status: 'ready' });
-				return;
+				return Result.ok(undefined);
 			}
 			emitStatus(name, version, { status: 'processing' }, 'resolving');
 			startStdParse(name, version, true);
+			return Result.ok(undefined);
 		},
 
 		async searchRegistry(query: string): Promise<CrateSummaryResult[]> {
@@ -830,16 +848,17 @@ export function createLocalProvider(): DataProvider {
 
 			// Terminal states — single event
 			if (status.status === 'ready' || status.status === 'failed') {
-				return sseResponse(`data: ${JSON.stringify(status)}\n\n`, signal, { ttl: 500 });
+				const statusJson = Result.try(() => JSON.stringify(status)).unwrapOr('{"status":"unknown"}');
+				return sseResponse(`data: ${statusJson}\n\n`, signal, { ttl: 500 });
 			}
 
 			// For unknown crates, auto-trigger parse and stream updates
 			if (status.status === 'unknown' && isValidCrateName(name) && isValidVersion(version)) {
-				try {
-					this.triggerParse(name, version);
-				} catch {
+				const triggerResult = await this.triggerParse(name, version);
+				if (triggerResult.isErr()) {
 					// Std crates and other non-parseable crates — return unknown status
-					return sseResponse(`data: ${JSON.stringify(status)}\n\n`, signal, { ttl: 500 });
+					const statusJson = Result.try(() => JSON.stringify(status)).unwrapOr('{"status":"unknown"}');
+					return sseResponse(`data: ${statusJson}\n\n`, signal, { ttl: 500 });
 				}
 			}
 
@@ -849,7 +868,8 @@ export function createLocalProvider(): DataProvider {
 				const lc = getCache();
 				const current = lc.getStatus('rust', name, version);
 				if (current.status !== 'unknown') {
-					push(`data: ${JSON.stringify(current)}\n\n`);
+					const json = Result.try(() => JSON.stringify(current)).unwrapOr('{"status":"unknown"}');
+					push(`data: ${json}\n\n`);
 					if (current.status === 'ready' || current.status === 'failed') {
 						close();
 						return () => {};
@@ -857,7 +877,8 @@ export function createLocalProvider(): DataProvider {
 				}
 
 				const unsubscribe = subscribe(name, version, (s) => {
-					push(`data: ${JSON.stringify(s)}\n\n`);
+					const json = Result.try(() => JSON.stringify(s)).unwrapOr('{"status":"unknown"}');
+					push(`data: ${json}\n\n`);
 					if (s.status === 'ready' || s.status === 'failed') {
 						close();
 					}
@@ -870,11 +891,13 @@ export function createLocalProvider(): DataProvider {
 			return sseStreamResponse((push, _close) => {
 				// Send current count immediately
 				const lc = getCache();
-				const count = lc.getProcessingCount('rust');
-				push(`data: ${JSON.stringify({ type: 'processing', count })}\n\n`);
+				const cnt = lc.getProcessingCount('rust');
+				const json = Result.try(() => JSON.stringify({ type: 'processing', count: cnt })).unwrapOr('{"type":"processing","count":0}');
+				push(`data: ${json}\n\n`);
 
 				const unsubscribe = subscribeProcessing((c) => {
-					push(`data: ${JSON.stringify({ type: 'processing', count: c })}\n\n`);
+					const json = Result.try(() => JSON.stringify({ type: 'processing', count: c })).unwrapOr('{"type":"processing","count":0}');
+					push(`data: ${json}\n\n`);
 				});
 				return unsubscribe;
 			}, signal, { ttl: 30_000 });
@@ -883,7 +906,8 @@ export function createLocalProvider(): DataProvider {
 		async streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response> {
 			return sseStreamResponse((push, _close) => {
 				const unsubscribe = subscribeEdge(nodeId, (data) => {
-					push(`data: ${JSON.stringify(data)}\n\n`);
+					const json = Result.try(() => JSON.stringify(data)).unwrapOr('{}');
+					push(`data: ${json}\n\n`);
 				});
 				return unsubscribe;
 			}, signal, { ttl: 5_000 });
