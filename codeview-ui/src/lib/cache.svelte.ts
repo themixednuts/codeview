@@ -124,15 +124,25 @@ export function cached<Q extends { current: unknown; loading: boolean }>(
 			}
 
 			if (prop === 'then') {
-				// When cached data is available and the raw query is still loading,
-				// resolve the thenable immediately so `await` doesn't block and
-				// <svelte:boundary pending> is never shown on back-navigation.
+				// When the query has already resolved, resolve immediately with
+				// fresh data. This prevents $derived re-evaluation (triggered by
+				// the query's reactive signals) from creating a new thenable that
+				// causes <svelte:boundary> to re-suspend and flash stale content.
+				if (!target.loading && target.current !== undefined) {
+					return (onFulfilled?: (v: Q['current']) => unknown, onRejected?: (e: unknown) => unknown) =>
+						Promise.resolve(target.current as Q['current']).then(onFulfilled, onRejected);
+				}
+
+				// Still loading but have cache — resolve immediately so `await`
+				// doesn't block and <svelte:boundary pending> is never shown on
+				// back-navigation.
 				const cachedValue = readCache(key);
-				if (target.loading && cachedValue !== undefined) {
+				if (cachedValue !== undefined) {
 					return (onFulfilled?: (v: Q['current']) => unknown, onRejected?: (e: unknown) => unknown) =>
 						Promise.resolve(cachedValue as Q['current']).then(onFulfilled, onRejected);
 				}
-				// Otherwise forward to the real .then() (first visit or already resolved)
+
+				// First visit, no cache — forward to real .then() (will suspend)
 				const thenFn = Reflect.get(target, prop, target);
 				if (typeof thenFn === 'function') return thenFn.bind(target);
 				return thenFn;
