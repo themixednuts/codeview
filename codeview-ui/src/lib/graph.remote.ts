@@ -20,25 +20,30 @@ import {
 	type CrateSearchResult
 } from '$lib/schema';
 
-async function loadWorkspace(): Promise<Workspace | null> {
-	const provider = await initProvider(getRequestEvent());
-	return provider.loadWorkspace();
-}
-
-async function loadCrateGraphByRef(
-	name: string,
-	version?: string
-): Promise<import('$lib/graph').CrateGraph | null> {
-	const provider = await initProvider(getRequestEvent());
-	return provider.loadCrateGraph(name, version ?? 'latest');
-}
-
 type Provider = Awaited<ReturnType<typeof initProvider>>;
 type NodeDetailInput = {
 	nodeId: string;
 	version?: string;
 	refresh?: number;
 };
+
+async function getProvider(provider?: Provider): Promise<Provider> {
+	return provider ?? initProvider(getRequestEvent());
+}
+
+async function loadWorkspace(provider?: Provider): Promise<Workspace | null> {
+	const resolved = await getProvider(provider);
+	return resolved.loadWorkspace();
+}
+
+async function loadCrateGraphByRef(
+	name: string,
+	version?: string,
+	provider?: Provider
+): Promise<import('$lib/graph').CrateGraph | null> {
+	const resolved = await getProvider(provider);
+	return resolved.loadCrateGraph(name, version ?? 'latest');
+}
 
 // Cached lookup structures (built once from the cached workspace)
 let _allNodesCache: Map<string, Node> | null = null;
@@ -183,13 +188,13 @@ export const getCrates = query(async (): Promise<CrateSummary[]> => {
 
 /** Get a hosted-friendly list of top crates (registry-backed). */
 export const getTopCrates = query(async (): Promise<CrateSearchResult[]> => {
-	const provider = await initProvider(getRequestEvent());
+	const provider = await getProvider();
 	return provider.getTopCrates(10);
 });
 
 /** Get currently processing crates (cloud mode). */
 export const getProcessingCrates = query(ProcessingInputSchema, async (): Promise<CrateSearchResult[]> => {
-	const provider = await initProvider(getRequestEvent());
+	const provider = await getProvider();
 	return provider.getProcessingCrates(20);
 });
 
@@ -197,7 +202,8 @@ export const getProcessingCrates = query(ProcessingInputSchema, async (): Promis
 export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Promise<CrateTree | null> => {
 	return perf.timeAsync('server', `getCrateTree(${name})`, async () => {
 		// Workspace crates are already in memory
-		const ws = await loadWorkspace();
+		const provider = await getProvider();
+		const ws = await loadWorkspace(provider);
 		const wsCrate = ws?.crates.find((c) => c.id === name) ?? null;
 		if (wsCrate) {
 			const internalNodes = wsCrate.nodes.filter((n) => !n.is_external);
@@ -209,12 +215,11 @@ export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Pro
 		}
 
 		// Try pre-computed tree first (avoids loading full graph for sidebar)
-		const provider = await initProvider(getRequestEvent());
 		const tree = await provider.loadCrateTree(name, version ?? 'latest');
 		if (tree) return tree;
 
 		// Fallback: load full graph and compute tree
-		const graph = await loadCrateGraphByRef(name, version);
+		const graph = await loadCrateGraphByRef(name, version, provider);
 		if (!graph) return null;
 
 		const internalNodes = graph.nodes.filter((n) => !n.is_external);
@@ -232,7 +237,7 @@ export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Pro
 export const getNodeDetail = query.batch(
 	NodeDetailInputSchema,
 	async (inputs): Promise<((input: NodeDetailInput, index: number) => NodeDetail | null)> => {
-		const provider = await initProvider(getRequestEvent());
+		const provider = await getProvider();
 		const workspace = await provider.loadWorkspace();
 		const results = await Promise.all(
 			inputs.map((input) => resolveNodeDetail(input, provider, workspace))
@@ -243,13 +248,13 @@ export const getNodeDetail = query.batch(
 
 /** Get available versions for a crate */
 export const getCrateVersions = query(NodeIdSchema, async (crateName: string): Promise<string[]> => {
-	const provider = await initProvider(getRequestEvent());
+	const provider = await getProvider();
 	return await provider.getCrateVersions(crateName, 20);
 });
 
 /** Get a lightweight crate index for hosted mode (external crate list + versions). */
 export const getCrateIndex = query(CrateRefSchema, async ({ name, version }): Promise<CrateIndex | null> => {
-	const provider = await initProvider(getRequestEvent());
+	const provider = await getProvider();
 	return await provider.loadCrateIndex(name, version ?? 'latest');
 });
 
@@ -257,7 +262,8 @@ export const getCrateIndex = query(CrateRefSchema, async ({ name, version }): Pr
 export const searchNodes = query(
 	SearchNodesInputSchema,
 	async ({ crate: crateId, version, q }: { crate?: string; version?: string; q: string }): Promise<NodeSummary[]> => {
-		const ws = await loadWorkspace();
+		const provider = await getProvider();
+		const ws = await loadWorkspace(provider);
 		const lower = q.toLowerCase();
 
 		if (ws) {
@@ -282,7 +288,7 @@ export const searchNodes = query(
 		}
 
 		if (!crateId) return [];
-		const graph = await loadCrateGraphByRef(crateId, version);
+		const graph = await loadCrateGraphByRef(crateId, version, provider);
 		if (!graph) return [];
 		return graph.nodes
 			.filter(
@@ -313,17 +319,32 @@ export const checkNodeExists = query(
 
 const CrateKeySchema = NodeIdSchema; // reuse string schema for name param
 
+function parseCrateRef(
+	nameVersion: string,
+	options: { defaultVersion?: string; allowForce?: boolean } = {}
+): { name: string; version: string; force: boolean } {
+	const defaultVersion = options.defaultVersion ?? 'latest';
+	let force = false;
+	let key = nameVersion;
+	if (options.allowForce && key.endsWith('!force')) {
+		force = true;
+		key = key.slice(0, -'!force'.length);
+	}
+	const [rawName, rawVersion] = key.split('@');
+	const name = rawName ?? '';
+	const version = rawVersion ?? defaultVersion;
+	if (!isValidCrateName(name) || !isValidVersion(version)) {
+		throw error(400, 'Invalid crate name or version');
+	}
+	return { name, version, force };
+}
+
 /** Get the parse status of a crate (cloud mode). */
 export const getCrateStatus = query(
 	CrateKeySchema,
 	async (nameVersion: string): Promise<CrateStatus> => {
-		const [rawName, rawVersion] = nameVersion.split('@');
-		const name = rawName ?? '';
-		const version = rawVersion ?? 'latest';
-		if (!isValidCrateName(name) || !isValidVersion(version)) {
-			throw error(400, 'Invalid crate name or version');
-		}
-		const provider = await initProvider(getRequestEvent());
+		const { name, version } = parseCrateRef(nameVersion);
+		const provider = await getProvider();
 		return provider.getCrateStatus(name, version);
 	}
 );
@@ -332,15 +353,8 @@ export const getCrateStatus = query(
 export const triggerCrateParse = command(
 	CrateKeySchema,
 	async (nameVersion: string): Promise<void> => {
-		const force = nameVersion.endsWith('!force');
-		const key = force ? nameVersion.slice(0, -'!force'.length) : nameVersion;
-		const [rawName, rawVersion] = key.split('@');
-		const name = rawName ?? '';
-		const version = rawVersion ?? 'latest';
-		if (!isValidCrateName(name) || !isValidVersion(version)) {
-			throw error(400, 'Invalid crate name or version');
-		}
-		const provider = await initProvider(getRequestEvent());
+		const { name, version, force } = parseCrateRef(nameVersion, { allowForce: true });
+		const provider = await getProvider();
 		const result = await provider.triggerParse(name, version, force);
 		if (result.isErr()) {
 			const err = result.error;
@@ -354,10 +368,8 @@ export const triggerCrateParse = command(
 export const triggerStdInstall = command(
 	CrateKeySchema,
 	async (nameVersion: string): Promise<void> => {
-		const [rawName, rawVersion] = nameVersion.split('@');
-		const name = rawName ?? '';
-		const version = rawVersion ?? 'stable';
-		const provider = await initProvider(getRequestEvent());
+		const { name, version } = parseCrateRef(nameVersion, { defaultVersion: 'stable' });
+		const provider = await getProvider();
 		const result = await provider.triggerStdInstall(name, version);
 		if (result.isErr()) {
 			const err = result.error;
@@ -372,7 +384,7 @@ export const searchRegistry = query(
 	async (q: string): Promise<CrateSearchResult[]> => {
 		const queryText = sanitizeSearchQuery(q);
 		if (!queryText) return [];
-		const provider = await initProvider(getRequestEvent());
+		const provider = await getProvider();
 		return provider.searchRegistry(queryText);
 	}
 );
@@ -381,13 +393,8 @@ export const searchRegistry = query(
 export const loadCrateGraph = query(
 	CrateKeySchema,
 	async (nameVersion: string): Promise<CrateTree | null> => {
-		const [rawName, rawVersion] = nameVersion.split('@');
-		const name = rawName ?? '';
-		const version = rawVersion ?? 'latest';
-		if (!isValidCrateName(name) || !isValidVersion(version)) {
-			throw error(400, 'Invalid crate name or version');
-		}
-		const provider = await initProvider(getRequestEvent());
+		const { name, version } = parseCrateRef(nameVersion);
+		const provider = await getProvider();
 		const graph = await provider.loadCrateGraph(name, version);
 		if (!graph) return null;
 
