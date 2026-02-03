@@ -154,9 +154,9 @@
             <p class="source-error">Source unavailable.</p>
           {/if}
           {#snippet pending()}
-            <div class="flex items-center gap-2 p-4 text-xs text-[var(--muted)]">
+            <div class="flex items-center gap-2 p-4">
               <Loader2Icon class="animate-spin" size={12} />
-              Loading source...
+              <span class="text-xs text-[var(--muted)]">Loading source...</span>
             </div>
           {/snippet}
           {#snippet failed(error, reset)}
