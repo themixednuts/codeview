@@ -16,6 +16,7 @@
     computeSceneLabels,
   } from '$lib/renderers/graph';
   import { perf } from '$lib/perf';
+  import { SvelteMap } from 'svelte/reactivity';
 
   let {
     graph,
@@ -62,7 +63,9 @@
   let containerEl = $state<HTMLDivElement | null>(null);
   let svgEl = $state<SVGSVGElement | null>(null);
   let dragNodeId = $state<string | null>(null);
-  let dragOffsets = $state.raw<Record<string, DragOffset>>({});
+  // SvelteMap provides granular reactivity: only the dragged node's offset triggers updates,
+  // avoiding re-evaluation of all derived computations when a single entry changes.
+  let dragOffsets = new SvelteMap<string, DragOffset>();
   let dragStart = { x: 0, y: 0 };
   let dragStartScreen = { x: 0, y: 0 };
   let dragNodeStart = { x: 0, y: 0 };
@@ -130,8 +133,9 @@
   }
 
   function handleMouseLeave() {
-    isPanning = false;
-    if (!dragNodeId) {
+    // Don't stop panning/dragging on leave — let global handlers track outside the viewport
+    // Only stop if not actively interacting
+    if (!dragNodeId && !isPanning) {
       isInteracting = false;
     }
     tooltipNode = null;
@@ -141,7 +145,7 @@
     zoom = 1;
     panX = 0;
     panY = 0;
-    dragOffsets = {};
+    dragOffsets.clear();
   }
 
   function zoomIn() {
@@ -191,7 +195,7 @@
     dragStart = getWorldPoint(e);
     dragStartScreen = { x: e.clientX, y: e.clientY };
     dragNodeStart = { x: visNode.x, y: visNode.y };
-    const offset = dragOffsets[visNode.node.id] ?? { x: 0, y: 0 };
+    const offset = dragOffsets.get(visNode.node.id) ?? { x: 0, y: 0 };
     dragBasePos = { x: visNode.x - offset.x, y: visNode.y - offset.y };
   }
 
@@ -208,9 +212,9 @@
       const dy = world.y - dragStart.y;
       const nextX = dragNodeStart.x + dx;
       const nextY = dragNodeStart.y + dy;
-      // Mutate-and-reassign: avoid spreading 100s of entries every frame
-      dragOffsets[dragNodeId!] = { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y };
-      dragOffsets = dragOffsets;
+      perf.frame('interact', 'dragOffset.set', () => {
+        dragOffsets.set(dragNodeId!, { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y });
+      });
     });
   }
 
@@ -223,15 +227,25 @@
     isInteracting = false;
   }
 
+  // Global handlers allow drag/pan to continue when the cursor moves outside the SVG container.
   function handleGlobalMouseMove(e: MouseEvent) {
     if (dragNodeId) {
       updateNodeDrag(e);
+    } else if (isPanning) {
+      const cur = screenToSvg(e.clientX, e.clientY);
+      const start = screenToSvg(panStartX, panStartY);
+      panX = panStartPanX + (cur.x - start.x);
+      panY = panStartPanY + (cur.y - start.y);
     }
   }
 
   function handleGlobalMouseUp() {
     if (dragNodeId) {
       endNodeDrag();
+    }
+    if (isPanning) {
+      isPanning = false;
+      isInteracting = false;
     }
   }
 
@@ -302,7 +316,7 @@
   let positionedNodes = $derived.by(() => {
     return perf.frame('derived', 'positionedNodes', () =>
       baseScene.nodes.map((node) => {
-        const offset = dragOffsets[node.node.id];
+        const offset = dragOffsets.get(node.node.id);
         if (!offset) return node;
         return { ...node, x: node.x + offset.x, y: node.y + offset.y };
       })
