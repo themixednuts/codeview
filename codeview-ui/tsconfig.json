@@ -6,7 +6,7 @@
     ],
     "moduleResolution": "bundler",
     "allowJs": true,
-    "checkJs": true,
+    "checkJs": false,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
@@ -14,8 +14,25 @@
     "strict": true,
     "skipLibCheck": true,
   },
+  "include": [
+    ".svelte-kit/ambient.d.ts",
+    ".svelte-kit/non-ambient.d.ts",
+    ".svelte-kit/types/**/$types.d.ts",
+    "vite.config.js",
+    "vite.config.ts",
+    "src/**/*.js",
+    "src/**/*.ts",
+    "src/**/*.svelte",
+    "tests/**/*.js",
+    "tests/**/*.ts",
+    "tests/**/*.svelte"
+  ],
   "exclude": [
     "src/lib/wasm/**",
-    "src/lib/server/cloudflare/workers/cloudflare.d.ts"
+    "src/lib/server/cloudflare/workers/cloudflare.d.ts",
+    "src/lib/server/cloudflare/workers/dist/**",
+    ".svelte-kit/output/**",
+    ".svelte-kit/cloudflare/**",
+    ".svelte-kit/cloudflare-tmp/**"
   ]
 }

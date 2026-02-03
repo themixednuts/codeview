@@ -1,1 +1,3 @@
 src/lib/wasm/
+src/lib/server/cloudflare/workers/dist/
+src/lib/server/db/migrations/migrations.js
