@@ -37,6 +37,9 @@
     --danger-border: rgba(180, 35, 24, 0.2);
     --success: #2f855a;
     --grid-line: rgba(38, 28, 20, 0.08);
+    --bracket-depth-0: #c45123;
+    --bracket-depth-1: #4a7aa8;
+    --bracket-depth-2: #6d4f80;
     --edge-out: #5b8abf;
     --edge-out-strong: #3a6fa3;
     --edge-in: #94a3b8;
@@ -90,6 +93,9 @@
     --danger-border: rgba(255, 180, 173, 0.25);
     --success: #7ce7ac;
     --grid-line: rgba(148, 163, 184, 0.2);
+    --bracket-depth-0: #f08a5d;
+    --bracket-depth-1: #6fa4d6;
+    --bracket-depth-2: #9b7cb5;
     --edge-out: #6fa4d6;
     --edge-out-strong: #8fbde6;
     --edge-in: #94a3b8;
@@ -201,6 +207,39 @@
 
   .badge-code {
     font-family: var(--font-code);
+  }
+
+  .generic-bracket {
+    display: inline-flex;
+    align-items: center;
+    align-self: center;
+    padding: 0 1px;
+  }
+
+  .generic-bracket::after {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 6px;
+    border-top: 2px solid var(--bracket-color);
+  }
+
+  .generic-open::after {
+    border-left: 2px solid var(--bracket-color);
+    transform: rotate(-45deg);
+  }
+
+  .generic-close::after {
+    border-right: 2px solid var(--bracket-color);
+    transform: rotate(45deg);
+  }
+
+  .generic-sep {
+    color: var(--muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    font-family: var(--font-code);
+    align-self: center;
   }
 
   .token-name {

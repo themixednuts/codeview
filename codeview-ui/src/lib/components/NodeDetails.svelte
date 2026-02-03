@@ -132,6 +132,48 @@
     return segments;
   }
 
+  type TypeToken =
+    | { kind: 'text'; text: string }
+    | { kind: 'open'; depth: number }
+    | { kind: 'close'; depth: number }
+    | { kind: 'comma' };
+
+  /**
+   * Tokenize a type string into segments: bare text, angle-bracket openers/closers, and commas.
+   * e.g. "HashMap<String, Vec<u8>>" →
+   *   [{kind:'text',text:'HashMap'}, {kind:'open',depth:0}, {kind:'text',text:'String'},
+   *    {kind:'comma'}, {kind:'text',text:' Vec'}, {kind:'open',depth:1}, {kind:'text',text:'u8'},
+   *    {kind:'close',depth:1}, {kind:'close',depth:0}]
+   */
+  function tokenizeType(text: string): TypeToken[] {
+    const tokens: TypeToken[] = [];
+    let depth = 0;
+    let buf = '';
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '<') {
+        if (buf) { tokens.push({ kind: 'text', text: buf }); buf = ''; }
+        tokens.push({ kind: 'open', depth });
+        depth++;
+      } else if (ch === '>') {
+        if (buf) { tokens.push({ kind: 'text', text: buf }); buf = ''; }
+        depth = Math.max(0, depth - 1);
+        tokens.push({ kind: 'close', depth });
+      } else if (ch === ',' && depth > 0) {
+        if (buf) { tokens.push({ kind: 'text', text: buf }); buf = ''; }
+        tokens.push({ kind: 'comma' });
+      } else {
+        buf += ch;
+      }
+    }
+    if (buf) tokens.push({ kind: 'text', text: buf });
+    return tokens;
+  }
+
+  function hasGenerics(text: string): boolean {
+    return text.includes('<') && text.includes('>');
+  }
+
   // Track collapsible section refs for expand/collapse all
   let signatureRef = $state<CollapsibleSection | null>(null);
   let fieldsRef = $state<CollapsibleSection | null>(null);
@@ -253,30 +295,50 @@
 
 </script>
 
-{#snippet linkedBadge(text: string, links: Record<string, string> | undefined, strong: boolean)}
-  <code class="badge {strong ? 'badge-strong' : ''} badge-code">
-    {#each splitBoundSegments(text, links) as seg, index (index)}
-      {#if seg.nodeId && getNodeUrl}
-        {#if isExternalNode(seg.nodeId)}
-          <a
-            href={getNodeUrl(seg.nodeId)}
-            data-sveltekit-noscroll
-            onclick={externalLinkHandler(seg.nodeId)}
-            class="text-[var(--accent)] hover:underline underline-offset-2"
-            title="External dependency"
-          >
-            {seg.text}
-          </a>
-        {:else}
-          <a href={getNodeUrl(seg.nodeId)} data-sveltekit-noscroll class="text-[var(--accent)] hover:underline underline-offset-2">
-            {seg.text}
-          </a>
-        {/if}
+{#snippet segmentLinks(segs: BoundSegment[])}
+  {#each segs as seg, index (index)}
+    {#if seg.nodeId && getNodeUrl}
+      {#if isExternalNode(seg.nodeId)}
+        <a
+          href={getNodeUrl(seg.nodeId)}
+          data-sveltekit-noscroll
+          onclick={externalLinkHandler(seg.nodeId)}
+          class="text-[var(--accent)] hover:underline underline-offset-2"
+          title="External dependency"
+        >
+          {seg.text}
+        </a>
       {:else}
-        {seg.text}
+        <a href={getNodeUrl(seg.nodeId)} data-sveltekit-noscroll class="text-[var(--accent)] hover:underline underline-offset-2">
+          {seg.text}
+        </a>
+      {/if}
+    {:else}
+      {seg.text}
+    {/if}
+  {/each}
+{/snippet}
+
+{#snippet linkedBadge(text: string, links: Record<string, string> | undefined, strong: boolean)}
+  {#if hasGenerics(text)}
+    {#each tokenizeType(text) as token}
+      {#if token.kind === 'text' && token.text.trim()}
+        <code class="badge {strong ? 'badge-strong' : ''} badge-code">
+          {@render segmentLinks(splitBoundSegments(token.text.trim(), links))}
+        </code>
+      {:else if token.kind === 'open'}
+        <span class="generic-bracket generic-open" style="--bracket-color: var(--bracket-depth-{token.depth % 3})"></span>
+      {:else if token.kind === 'close'}
+        <span class="generic-bracket generic-close" style="--bracket-color: var(--bracket-depth-{token.depth % 3})"></span>
+      {:else if token.kind === 'comma'}
+        <span class="generic-sep">,</span>
       {/if}
     {/each}
-  </code>
+  {:else}
+    <code class="badge {strong ? 'badge-strong' : ''} badge-code">
+      {@render segmentLinks(splitBoundSegments(text, links))}
+    </code>
+  {/if}
 {/snippet}
 
 {#snippet implRow(implBlock: Node)}
@@ -439,7 +501,7 @@
               {/if}
               <code class="badge badge-strong badge-code">{field.name}</code>
               <span class="text-[var(--muted)]">:</span>
-              {@render linkedBadge(formatTypeName(field.type_name), selected.bound_links, false)}
+              {@render linkedBadge(field.type_name, selected.bound_links, false)}
             </div>
           {/each}
         </div>
@@ -476,7 +538,7 @@
                       {/if}
                       <code class="badge badge-strong badge-code">{field.name}</code>
                       <span class="text-[var(--muted)]">:</span>
-                      {@render linkedBadge(formatTypeName(field.type_name), selected.bound_links, false)}
+                      {@render linkedBadge(field.type_name, selected.bound_links, false)}
                     </div>
                   {/each}
                 </div>
