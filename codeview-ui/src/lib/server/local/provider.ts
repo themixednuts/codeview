@@ -645,6 +645,11 @@ export function createLocalProvider(): DataProvider {
 			return lc.getGraph(name, _version);
 		},
 
+		async loadCrateTree(name: string, _version: string) {
+			const lc = getCache();
+			return lc.getTree(name, _version);
+		},
+
 		async loadCrateIndex(name: string, version: string): Promise<CrateIndex | null> {
 			const ws = await this.loadWorkspace();
 			if (ws) {

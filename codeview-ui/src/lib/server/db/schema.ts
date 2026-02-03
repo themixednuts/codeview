@@ -60,6 +60,7 @@ export const crateGraphs = sqliteTable(
 		version: text('version').notNull(),
 		graphJson: text('graph_json').notNull(),
 		indexJson: text('index_json').notNull(),
+		treeJson: text('tree_json'),
 		parsedAt: integer('parsed_at').notNull()
 	},
 	(table) => [primaryKey({ columns: [table.ecosystem, table.name, table.version] })]

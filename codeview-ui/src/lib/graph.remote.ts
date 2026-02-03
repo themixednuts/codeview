@@ -196,27 +196,33 @@ export const getProcessingCrates = query(ProcessingInputSchema, async (): Promis
 /** Get crate tree structure (nodes + Contains/Defines edges for one crate) */
 export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Promise<CrateTree | null> => {
 	return perf.timeAsync('server', `getCrateTree(${name})`, async () => {
+		// Workspace crates are already in memory
 		const ws = await loadWorkspace();
-		let crate = ws?.crates.find((c) => c.id === name) ?? null;
-		if (!crate) {
-			const graph = await loadCrateGraphByRef(name, version);
-			if (!graph) return null;
-			crate = graph;
+		const wsCrate = ws?.crates.find((c) => c.id === name) ?? null;
+		if (wsCrate) {
+			const internalNodes = wsCrate.nodes.filter((n) => !n.is_external);
+			const internalIds = new Set(internalNodes.map((n) => n.id));
+			const treeEdges = wsCrate.edges.filter(
+				(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
+			);
+			return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
 		}
 
-		// Exclude external crate nodes — they only exist for cross-edge references
-		const internalNodes = crate.nodes.filter((n) => !n.is_external);
-		const internalIds = new Set(internalNodes.map((n) => n.id));
+		// Try pre-computed tree first (avoids loading full graph for sidebar)
+		const provider = await initProvider(getRequestEvent());
+		const tree = await provider.loadCrateTree(name, version ?? 'latest');
+		if (tree) return tree;
 
-		// Only return tree-relevant edges between internal nodes
-		const treeEdges = crate.edges.filter(
+		// Fallback: load full graph and compute tree
+		const graph = await loadCrateGraphByRef(name, version);
+		if (!graph) return null;
+
+		const internalNodes = graph.nodes.filter((n) => !n.is_external);
+		const internalIds = new Set(internalNodes.map((n) => n.id));
+		const treeEdges = graph.edges.filter(
 			(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
 		);
-
-		return {
-			nodes: internalNodes.map(summarizeNode),
-			edges: treeEdges
-		};
+		return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
 	}, {
 		detail: (r) => r ? `${r.nodes.length}n ${r.edges.length}e` : 'null'
 	});

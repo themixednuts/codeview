@@ -1,6 +1,6 @@
 import type { Result } from 'better-result';
 import type { Edge, Workspace, CrateGraph } from '$lib/graph';
-import type { CrateIndex, NodeSummary } from '$lib/schema';
+import type { CrateIndex, CrateTree, NodeSummary } from '$lib/schema';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
 
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
@@ -34,6 +34,7 @@ export interface DataProvider {
 
 	// Cloud multi-crate mode
 	loadCrateGraph(name: string, version: string): Promise<CrateGraph | null>;
+	loadCrateTree(name: string, version: string): Promise<CrateTree | null>;
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;

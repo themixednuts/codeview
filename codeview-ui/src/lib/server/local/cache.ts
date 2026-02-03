@@ -5,15 +5,15 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import { formatToMillis, type MigrationMeta } from "drizzle-orm/migrator";
 import type { SQLiteSyncDialect } from "drizzle-orm/sqlite-core/dialect";
 import type { SQLiteSession } from "drizzle-orm/sqlite-core/session";
-import { and, count, desc, eq, inArray, or } from "drizzle-orm";
+import { and, count, desc, eq, inArray, or, sql } from "drizzle-orm";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { crateGraphs, crateStatus, crossEdges, nodeIndex } from "../db/schema";
 import { normalizeCrateName } from "../validation";
-import type { CrateGraph } from "$lib/graph";
-import type { CrateIndex } from "$lib/schema";
+import type { CrateGraph, Node } from "$lib/graph";
+import type { CrateIndex, CrateTree } from "$lib/schema";
 import { getLogger } from "$lib/log";
 
 const log = getLogger('cache');
@@ -45,6 +45,32 @@ export interface CrateStatusResult {
 	status: CrateStatusValue;
 	error?: string;
 	step?: string;
+}
+
+/** LRU in-memory cache for parsed CrateGraphs. Avoids re-reading + re-parsing
+ *  the same large JSON blob when multiple server functions need the same graph
+ *  within a short window (e.g. getCrateTree + getNodeDetail on page load). */
+const GRAPH_CACHE_MAX = 4;
+const graphCache = new Map<string, CrateGraph>();
+
+function getCachedGraph(key: string): CrateGraph | undefined {
+	const val = graphCache.get(key);
+	if (val) {
+		// Move to end (most recently used)
+		graphCache.delete(key);
+		graphCache.set(key, val);
+	}
+	return val;
+}
+
+function setCachedGraph(key: string, graph: CrateGraph): void {
+	graphCache.delete(key);
+	graphCache.set(key, graph);
+	// Evict oldest if over limit
+	if (graphCache.size > GRAPH_CACHE_MAX) {
+		const oldest = graphCache.keys().next().value!;
+		graphCache.delete(oldest);
+	}
 }
 
 export class LocalCache {
@@ -105,7 +131,16 @@ export class LocalCache {
 	}
 
 	getGraph(name: string, version: string): CrateGraph | null {
+		const t0 = performance.now();
 		const n = this.norm(name);
+		const cacheKey = `${n}@${version}`;
+
+		const cached = getCachedGraph(cacheKey);
+		if (cached) {
+			log.info`getGraph ${cacheKey}: mem-cache hit`;
+			return cached;
+		}
+
 		const row = this.db
 			.select({ graphJson: crateGraphs.graphJson })
 			.from(crateGraphs)
@@ -118,12 +153,17 @@ export class LocalCache {
 			)
 			.get();
 		if (!row) return null;
+		const t1 = performance.now();
 		const result = Result.try(() => JSON.parse(row.graphJson) as CrateGraph);
+		const t2 = performance.now();
 		if (result.isErr()) {
 			log.error`Failed to parse cached graph for ${n}@${version}`;
 			return null;
 		}
-		return result.value;
+		const g = result.value;
+		setCachedGraph(cacheKey, g);
+		log.info`getGraph ${cacheKey}: sqlite=${(t1 - t0).toFixed(0)}ms, json=${(t2 - t1).toFixed(0)}ms (${(row.graphJson.length / 1e6).toFixed(1)}MB), ${String(g.nodes.length)}n ${String(g.edges.length)}e`;
+		return g;
 	}
 
 	getIndex(name: string, version: string): CrateIndex | null {
@@ -148,9 +188,33 @@ export class LocalCache {
 		return result.value;
 	}
 
+	getTree(name: string, version: string): CrateTree | null {
+		const n = this.norm(name);
+		const row = this.db
+			.select({ treeJson: crateGraphs.treeJson })
+			.from(crateGraphs)
+			.where(
+				and(
+					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.name, n),
+					eq(crateGraphs.version, version),
+				),
+			)
+			.get();
+		const treeJson = row?.treeJson;
+		if (!treeJson) return null;
+		const result = Result.try(() => JSON.parse(treeJson) as CrateTree);
+		if (result.isErr()) {
+			log.error`Failed to parse cached tree for ${n}@${version}`;
+			return null;
+		}
+		return result.value;
+	}
+
 	putCrate(name: string, version: string, graph: object, index: object): void {
 		const n = this.norm(name);
 		const now = Date.now();
+		const treeJson = JSON.stringify(computeTreeSummary(graph as CrateGraph));
 		this.db
 			.insert(crateGraphs)
 			.values({
@@ -159,6 +223,7 @@ export class LocalCache {
 				version,
 				graphJson: JSON.stringify(graph),
 				indexJson: JSON.stringify(index),
+				treeJson,
 				parsedAt: now,
 			})
 			.onConflictDoUpdate({
@@ -166,6 +231,7 @@ export class LocalCache {
 				set: {
 					graphJson: JSON.stringify(graph),
 					indexJson: JSON.stringify(index),
+					treeJson,
 					parsedAt: now,
 				},
 			})
@@ -300,30 +366,33 @@ export class LocalCache {
 			}
 		}
 
-		const now = Date.now();
-		for (const node of nodes) {
-			const isExternal = Boolean(node.is_external);
-			this.db
-				.insert(nodeIndex)
-				.values({
-					nodeId: node.id,
-					name: node.name,
-					kind: node.kind,
-					visibility: node.visibility,
-					isExternal,
-					updatedAt: now,
-				})
-				.onConflictDoUpdate({
-					target: nodeIndex.nodeId,
-					set: {
-						name: node.name,
-						kind: node.kind,
-						visibility: node.visibility,
-						isExternal,
-						updatedAt: now,
-					},
-				})
-				.run();
+		if (nodes.length > 0) {
+			const now = Date.now();
+			const BATCH = 100;
+			const rows = nodes.map((node) => ({
+				nodeId: node.id,
+				name: node.name,
+				kind: node.kind,
+				visibility: node.visibility,
+				isExternal: Boolean(node.is_external),
+				updatedAt: now,
+			}));
+			for (let i = 0; i < rows.length; i += BATCH) {
+				this.db
+					.insert(nodeIndex)
+					.values(rows.slice(i, i + BATCH))
+					.onConflictDoUpdate({
+						target: nodeIndex.nodeId,
+						set: {
+							name: sql`excluded.name`,
+							kind: sql`excluded.kind`,
+							visibility: sql`excluded.visibility`,
+							isExternal: sql`excluded.is_external`,
+							updatedAt: sql`excluded.updated_at`,
+						},
+					})
+					.run();
+			}
 		}
 	}
 
@@ -393,4 +462,20 @@ export class LocalCache {
 
 		return { edges, nodes: resultNodes };
 	}
+}
+
+function summarizeNode(n: Node): CrateTree['nodes'][number] {
+	return {
+		id: n.id, name: n.name, kind: n.kind, visibility: n.visibility, is_external: n.is_external,
+		...(n.kind === 'Impl' ? { impl_trait: n.impl_trait, generics: n.generics, where_clause: n.where_clause, bound_links: n.bound_links } : {})
+	};
+}
+
+function computeTreeSummary(graph: CrateGraph): CrateTree {
+	const internalNodes = graph.nodes.filter((n) => !n.is_external);
+	const internalIds = new Set(internalNodes.map((n) => n.id));
+	const treeEdges = graph.edges.filter(
+		(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
+	);
+	return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
 }

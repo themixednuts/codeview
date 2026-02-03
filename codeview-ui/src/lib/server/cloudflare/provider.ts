@@ -1,7 +1,7 @@
 import { Result } from 'better-result';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Confidence, CrateGraph, EdgeKind, NodeKind, Visibility, Workspace } from '$lib/graph';
-import type { CrateIndex } from '$lib/schema';
+import type { CrateIndex, CrateTree } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, isRustChannel } from '$lib/std';
 import type { CrossEdgeData, DataProvider } from '../provider';
@@ -119,6 +119,21 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			const result = await Result.tryPromise(() => obj.json<CrateGraph>());
 			if (result.isErr()) {
 				log.error`Failed to parse crate graph from R2 (${key}): ${result.error}`;
+				return null;
+			}
+			return result.value;
+		},
+
+		async loadCrateTree(name: string, version: string): Promise<CrateTree | null> {
+			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
+			if (!resolved) return null;
+
+			const key = `rust/${name}/${resolved}/tree.json`;
+			const obj = await env.CRATE_GRAPHS.get(key);
+			if (!obj) return null;
+			const result = await Result.tryPromise(() => obj.json<CrateTree>());
+			if (result.isErr()) {
+				log.error`Failed to parse crate tree from R2 (${key}): ${result.error}`;
 				return null;
 			}
 			return result.value;

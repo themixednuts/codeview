@@ -311,6 +311,32 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 					if (crossEdgeJsonResult.isErr()) throw crossEdgeJsonResult.error;
 					const crossEdgeJson = crossEdgeJsonResult.value;
 
+					// Pre-compute tree summary (internal nodes + Contains/Defines edges)
+					const treeKey = `${ecosystem}/${name}/${version}/tree.json`;
+					const allNodes = parseResult.graph.nodes as Array<{
+						id: string; name: string; kind: string; visibility: string;
+						is_external?: boolean; impl_trait?: string | null;
+						generics?: string[] | null; where_clause?: string[] | null;
+						bound_links?: Record<string, string> | null;
+					}>;
+					const internalNodes = allNodes.filter((n) => !n.is_external);
+					const internalIds = new Set(internalNodes.map((n) => n.id));
+					const treeEdges = (parseResult.graph.edges as Array<{
+						from: string; to: string; kind: string; confidence: string;
+					}>).filter(
+						(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
+					);
+					const treeSummary = {
+						nodes: internalNodes.map((n) => ({
+							id: n.id, name: n.name, kind: n.kind, visibility: n.visibility,
+							...(n.kind === 'Impl' ? { impl_trait: n.impl_trait, generics: n.generics, where_clause: n.where_clause, bound_links: n.bound_links } : {})
+						})),
+						edges: treeEdges,
+					};
+					const treeJsonResult = Result.try(() => JSON.stringify(treeSummary));
+					if (treeJsonResult.isErr()) throw treeJsonResult.error;
+					const treeJson = treeJsonResult.value;
+
 					await Promise.all([
 						this.env.CRATE_GRAPHS.put(r2Key, graphJson, {
 							httpMetadata: { contentType: 'application/json' },
@@ -328,6 +354,10 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 						}),
 						this.env.CRATE_GRAPHS.put(crossEdgeKey, crossEdgeJson, {
 							httpMetadata: { contentType: 'application/json' }
+						}),
+						this.env.CRATE_GRAPHS.put(treeKey, treeJson, {
+							httpMetadata: { contentType: 'application/json' },
+							customMetadata: { ecosystem, name, version, parsedAt }
 						})
 					]);
 				}
