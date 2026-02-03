@@ -1,5 +1,6 @@
 name = "codeview-services"
-main = "./src/index.ts"
+main = "./dist/index.js"
+no_bundle = true
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
