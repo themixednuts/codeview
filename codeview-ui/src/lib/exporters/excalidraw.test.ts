@@ -4,13 +4,20 @@ import {
   edgeToExcalidraw,
   labelToExcalidraw,
   excalidrawRenderer,
+  renderExcalidraw,
   nodeShapeId,
   edgeArrowId,
+  edgeLabelId,
+  arrowheadForEdgeKind,
 } from './excalidraw';
 import type { VisNode, VisEdge } from '$lib/graph-layout';
 import type { Node } from '$lib/graph';
 import type { GraphScene, SceneGroup } from '$lib/renderers/graph';
 import type { LabelPosition } from '$lib/labels';
+import type {
+  ExcalidrawTextElement,
+  ExcalidrawArrowElement,
+} from '@excalidraw/excalidraw/element/types';
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -67,8 +74,9 @@ describe('nodeToExcalidraw', () => {
     expect(shape.roundness).toEqual({ type: 3, value: 2 });
 
     expect(text.type).toBe('text');
-    expect(text.text).toBe('MyStruct');
-    expect(text.containerId).toBe(shape.id);
+    const txt = text as ExcalidrawTextElement;
+    expect(txt.text).toBe('MyStruct');
+    expect(txt.containerId).toBe(shape.id);
   });
 
   it('returns a pill (rectangle) for a Function node', () => {
@@ -86,7 +94,7 @@ describe('nodeToExcalidraw', () => {
     const [shape, text] = nodeToExcalidraw(vis);
 
     expect(shape.boundElements).toContainEqual({ id: text.id, type: 'text' });
-    expect(text.containerId).toBe(shape.id);
+    expect((text as ExcalidrawTextElement).containerId).toBe(shape.id);
   });
 
   it('produces deterministic IDs from node identity', () => {
@@ -112,6 +120,69 @@ describe('nodeToExcalidraw', () => {
     expect(shape.groupIds).toEqual([]);
     expect(text.groupIds).toEqual([]);
   });
+
+  it('returns a diamond for a Trait node', () => {
+    const vis = makeVisNode('crate::T', 'T', 'Trait');
+    const [shape] = nodeToExcalidraw(vis);
+    expect(shape.type).toBe('diamond');
+  });
+
+  it('returns dashed strokeStyle for a Union node', () => {
+    const vis = makeVisNode('crate::U', 'U', 'Union');
+    const [shape] = nodeToExcalidraw(vis);
+    expect((shape as Record<string, unknown>).strokeStyle).toBe('dashed');
+  });
+
+  it('returns solid strokeStyle for non-Union nodes', () => {
+    const vis = makeVisNode('crate::S', 'S', 'Struct');
+    const [shape] = nodeToExcalidraw(vis);
+    expect((shape as Record<string, unknown>).strokeStyle).toBe('solid');
+  });
+
+  it('includes customData on shape element', () => {
+    const vis = makeVisNode('crate::MyStruct', 'MyStruct', 'Struct');
+    const [shape] = nodeToExcalidraw(vis);
+    const cd = (shape as Record<string, unknown>).customData as Record<string, unknown>;
+    expect(cd).toMatchObject({
+      nodeId: 'crate::MyStruct',
+      kind: 'Struct',
+      visibility: 'Public',
+    });
+  });
+
+  it('includes customData on text element', () => {
+    const vis = makeVisNode('crate::MyStruct', 'MyStruct', 'Struct');
+    const [, text] = nodeToExcalidraw(vis);
+    const cd = (text as Record<string, unknown>).customData as Record<string, unknown>;
+    expect(cd).toMatchObject({
+      nodeId: 'crate::MyStruct',
+      elementRole: 'label',
+    });
+  });
+
+  it('sets link when baseUrl option is provided', () => {
+    const vis = makeVisNode('crate::MyStruct', 'MyStruct', 'Struct');
+    const [shape] = nodeToExcalidraw(vis, [], {
+      baseUrl: 'https://codeview.codes',
+      crateVersions: { crate: '0.1.0' },
+    });
+    expect(shape.link).toBe('https://codeview.codes/crate/0.1.0/MyStruct');
+  });
+
+  it('sets link to null when no options provided', () => {
+    const vis = makeVisNode('crate::MyStruct', 'MyStruct', 'Struct');
+    const [shape] = nodeToExcalidraw(vis);
+    expect(shape.link).toBeNull();
+  });
+
+  it('text element has correct text fields', () => {
+    const vis = makeVisNode('crate::Foo', 'Foo', 'Struct');
+    const [, text] = nodeToExcalidraw(vis);
+    const txt = text as ExcalidrawTextElement;
+    expect(txt.originalText).toBe(txt.text);
+    expect((txt as Record<string, unknown>).autoResize).toBe(true);
+    expect(txt.lineHeight).toBe(1.25);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -128,7 +199,7 @@ describe('edgeToExcalidraw', () => {
 
   it('produces an arrow element', () => {
     const edge = makeVisEdge(from, to, 'UsesType', 'out');
-    const el = edgeToExcalidraw(edge, nodeMap);
+    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
 
     expect(el.type).toBe('arrow');
     expect(el.endArrowhead).toBe('arrow');
@@ -146,7 +217,7 @@ describe('edgeToExcalidraw', () => {
 
   it('has start/end bindings referencing source and target node shape IDs', () => {
     const edge = makeVisEdge(from, to, 'UsesType', 'out');
-    const el = edgeToExcalidraw(edge, nodeMap);
+    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
 
     expect(el.startBinding?.elementId).toBe(nodeShapeId('crate::A'));
     expect(el.endBinding?.elementId).toBe(nodeShapeId('crate::B'));
@@ -157,6 +228,68 @@ describe('edgeToExcalidraw', () => {
     const gids = ['edge_grp_1'];
     const el = edgeToExcalidraw(edge, nodeMap, gids);
     expect(el.groupIds).toEqual(gids);
+  });
+
+  it('includes customData on arrow element', () => {
+    const edge = makeVisEdge(from, to, 'UsesType', 'out');
+    const el = edgeToExcalidraw(edge, nodeMap);
+    const cd = (el as Record<string, unknown>).customData as Record<string, unknown>;
+    expect(cd).toMatchObject({
+      fromId: 'crate::A',
+      toId: 'crate::B',
+      edgeKind: 'UsesType',
+    });
+  });
+
+  it('pre-binds edge label in boundElements', () => {
+    const edge = makeVisEdge(from, to, 'UsesType', 'out');
+    const el = edgeToExcalidraw(edge, nodeMap);
+    const lblId = edgeLabelId('crate::A', 'crate::B', 'UsesType');
+    expect(el.boundElements).toContainEqual({ id: lblId, type: 'text' });
+  });
+
+  it('uses triangle arrowhead for Implements edge', () => {
+    const edge = makeVisEdge(from, to, 'Implements', 'out');
+    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    expect(el.endArrowhead).toBe('triangle');
+  });
+
+  it('uses diamond arrowhead for Contains edge', () => {
+    const edge = makeVisEdge(from, to, 'Contains', 'out');
+    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    expect(el.endArrowhead).toBe('diamond');
+  });
+
+  it('uses dot arrowhead for CallsRuntime edge', () => {
+    const edge = makeVisEdge(from, to, 'CallsRuntime', 'out');
+    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    expect(el.endArrowhead).toBe('dot');
+  });
+
+  it('uses arrow arrowhead for UsesType edge (default)', () => {
+    const edge = makeVisEdge(from, to, 'UsesType', 'out');
+    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    expect(el.endArrowhead).toBe('arrow');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// arrowheadForEdgeKind
+// ---------------------------------------------------------------------------
+
+describe('arrowheadForEdgeKind', () => {
+  it.each([
+    ['Contains', 'diamond'],
+    ['Defines', 'diamond_outline'],
+    ['Implements', 'triangle'],
+    ['Derives', 'triangle_outline'],
+    ['UsesType', 'arrow'],
+    ['CallsStatic', 'arrow'],
+    ['CallsRuntime', 'dot'],
+    ['ReExports', 'bar'],
+    ['UnknownKind', 'arrow'],
+  ] as const)('maps %s to %s', (kind, expected) => {
+    expect(arrowheadForEdgeKind(kind)).toBe(expected);
   });
 });
 
@@ -171,7 +304,7 @@ describe('labelToExcalidraw', () => {
     const edge = makeVisEdge(from, to, 'Implements', 'out');
     const label: LabelPosition = { x: 350, y: 250, anchor: 'middle' };
 
-    const el = labelToExcalidraw(edge, label);
+    const el = labelToExcalidraw(edge, label) as ExcalidrawTextElement;
 
     expect(el.type).toBe('text');
     expect(el.text).toBe('Implements');
@@ -188,6 +321,73 @@ describe('labelToExcalidraw', () => {
 
     const el = labelToExcalidraw(edge, label, gids);
     expect(el.groupIds).toEqual(gids);
+  });
+
+  it('includes customData on edge label', () => {
+    const from = makeVisNode('crate::A', 'A', 'Struct');
+    const to = makeVisNode('crate::B', 'B', 'Function');
+    const edge = makeVisEdge(from, to, 'Implements', 'out');
+    const label: LabelPosition = { x: 350, y: 250, anchor: 'middle' };
+
+    const el = labelToExcalidraw(edge, label);
+    const cd = (el as Record<string, unknown>).customData as Record<string, unknown>;
+    expect(cd).toMatchObject({
+      fromId: 'crate::A',
+      toId: 'crate::B',
+      edgeKind: 'Implements',
+      elementRole: 'edgeLabel',
+    });
+  });
+
+  it('has containerId pointing to the arrow', () => {
+    const from = makeVisNode('crate::A', 'A', 'Struct');
+    const to = makeVisNode('crate::B', 'B', 'Function');
+    const edge = makeVisEdge(from, to, 'Implements', 'out');
+    const label: LabelPosition = { x: 350, y: 250, anchor: 'middle' };
+
+    const el = labelToExcalidraw(edge, label) as ExcalidrawTextElement;
+    const arrowId = edgeArrowId('crate::A', 'crate::B', 'Implements');
+    expect(el.containerId).toBe(arrowId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderExcalidraw (standalone)
+// ---------------------------------------------------------------------------
+
+describe('renderExcalidraw', () => {
+  it('passes options through to generate links on node shapes', () => {
+    const center = makeVisNode('crate::MyStruct', 'MyStruct', 'Struct', { isCenter: true });
+    const scene: GraphScene = {
+      nodes: [center],
+      edges: [],
+      labels: [],
+      groups: [{ id: 'node:crate::MyStruct', type: 'node', nodeIndex: 0 }],
+      mode: 'ego',
+    };
+
+    const file = renderExcalidraw(scene, {
+      baseUrl: 'https://codeview.codes',
+      crateVersions: { crate: '0.1.0' },
+    });
+
+    const shape = file.elements.find((e) => e.id === nodeShapeId('crate::MyStruct'))!;
+    expect(shape.link).toBe('https://codeview.codes/crate/0.1.0/MyStruct');
+  });
+
+  it('does not set links when no options provided', () => {
+    const center = makeVisNode('crate::MyStruct', 'MyStruct', 'Struct', { isCenter: true });
+    const scene: GraphScene = {
+      nodes: [center],
+      edges: [],
+      labels: [],
+      groups: [{ id: 'node:crate::MyStruct', type: 'node', nodeIndex: 0 }],
+      mode: 'ego',
+    };
+
+    const file = renderExcalidraw(scene);
+    const shape = file.elements.find((e) => e.id === nodeShapeId('crate::MyStruct'))!;
+    expect(shape.link).toBeNull();
   });
 });
 
@@ -239,7 +439,7 @@ describe('excalidrawRenderer', () => {
     // Node elements (shape + text) should share a group
     const centerShapeId = nodeShapeId('crate::Center');
     const centerShape = file.elements.find((e) => e.id === centerShapeId)!;
-    const centerText = file.elements.find((e) => e.containerId === centerShapeId)!;
+    const centerText = file.elements.find((e) => e.type === 'text' && (e as ExcalidrawTextElement).containerId === centerShapeId)!;
     expect(centerShape.groupIds).toHaveLength(1);
     expect(centerShape.groupIds).toEqual(centerText.groupIds);
 
@@ -250,7 +450,7 @@ describe('excalidrawRenderer', () => {
 
     // Edge label shares same group as arrow
     const edgeLabel = file.elements.find(
-      (e) => e.type === 'text' && e.text === 'UsesType'
+      (e) => e.type === 'text' && (e as ExcalidrawTextElement).text === 'UsesType'
     )!;
     expect(edgeLabel.groupIds).toEqual(arrow.groupIds);
   });
@@ -267,7 +467,7 @@ describe('excalidrawRenderer', () => {
     expect(depShape.boundElements).toContainEqual({ id: arrowId, type: 'arrow' });
 
     // Shape should also have its text binding
-    const centerTextId = file.elements.find((e) => e.containerId === centerShape.id)!.id;
+    const centerTextId = file.elements.find((e) => e.type === 'text' && (e as ExcalidrawTextElement).containerId === centerShape.id)!.id;
     expect(centerShape.boundElements).toContainEqual({ id: centerTextId, type: 'text' });
   });
 
