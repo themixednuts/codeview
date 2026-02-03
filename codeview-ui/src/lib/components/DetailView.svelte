@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Edge, EdgeKind, Node, NodeKind, Visibility, Graph } from '$lib/graph';
+  import type { Node, NodeKind, Graph } from '$lib/graph';
   import type { SelectedEdges } from '$lib/ui';
   import type { LayoutMode } from '$lib/components/LayoutSwitcher.svelte';
   import type { NodeDetail } from '$lib/schema';
@@ -12,6 +12,7 @@
   import { onDestroy } from 'svelte';
   import { perf } from '$lib/perf';
   import { isHosted } from '$lib/platform';
+  import { kindLabels, visibilityLabels, edgeLabels } from '$lib/node-labels';
   import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
   import { Loader2Icon } from '@lucide/svelte';
   import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
@@ -98,21 +99,6 @@
   function toggleSemantic() {
     updateSearchParam('semantic', showSemantic ? '0' : null);
   }
-
-  const kindLabels: Record<NodeKind, string> = {
-    Crate: 'Crate', Module: 'Module', Struct: 'Struct', Union: 'Union',
-    Enum: 'Enum', Trait: 'Trait', TraitAlias: 'Trait alias', Impl: 'Impl',
-    Function: 'Function', Method: 'Method', TypeAlias: 'Type alias'
-  };
-  const visibilityLabels: Record<Visibility, string> = {
-    Public: 'Public', Crate: 'Crate', Restricted: 'Restricted',
-    Inherited: 'Inherited', Unknown: 'Unknown'
-  };
-  const edgeLabels: Record<EdgeKind, string> = {
-    Contains: 'Contains', Defines: 'Defines', UsesType: 'Uses type',
-    Implements: 'Implements', CallsStatic: 'Calls', CallsRuntime: 'Runtime calls',
-    Derives: 'Derives', ReExports: 'Re-exports'
-  };
 
   const selected = $derived(detail?.node ?? null);
 
@@ -261,7 +247,7 @@
       {#if graphForDisplay}
         <svelte:boundary>
           <Breadcrumbs graph={graphForDisplay} {selected} {getNodeUrl} {parentHint} />
-          {#snippet failed(error, reset)}
+          {#snippet failed(error: unknown, reset: () => void)}
             <div class="text-xs text-[var(--danger)]">Failed to load breadcrumbs</div>
           {/snippet}
         </svelte:boundary>
@@ -285,7 +271,7 @@
             onToggleStructural={toggleStructural}
             onToggleSemantic={toggleSemantic}
           />
-          {#snippet failed(error, reset)}
+          {#snippet failed(error: unknown, reset: () => void)}
             <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger)]">
               <p class="font-medium">Failed to render relationship graph</p>
               <button type="button" class="mt-2 text-[var(--accent)] hover:underline" onclick={reset}>Try again</button>
@@ -314,7 +300,7 @@
           {crateVersion}
           {crateVersions}
         />
-        {#snippet failed(error, reset)}
+        {#snippet failed(error: unknown, reset: () => void)}
           <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--danger-border)] bg-[var(--danger-bg)] p-4 text-sm text-[var(--danger)]">
             <p class="font-medium">Failed to render node details</p>
             <button type="button" class="mt-2 text-[var(--accent)] hover:underline" onclick={reset}>Try again</button>
@@ -330,7 +316,6 @@
       </div>
     </div>
   {/if}
-
   {#snippet pending()}
     <div class="flex h-full items-center justify-center">
       <div class="flex items-center gap-2 text-sm text-[var(--muted)]">
@@ -339,7 +324,6 @@
       </div>
     </div>
   {/snippet}
-
   {#snippet failed(error, reset)}
     <div class="flex h-full items-center justify-center p-6">
       <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--danger-border)] bg-[var(--danger-bg)] p-6 text-center max-w-md">

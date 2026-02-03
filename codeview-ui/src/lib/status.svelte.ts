@@ -6,7 +6,23 @@ import { SSEConnection } from '$lib/sse';
 type CrateStatusValue = CrateStatus['status'];
 
 /** Ordered pipeline steps — index determines ordering. */
-const STEP_ORDER = ['resolving', 'fetching', 'parsing', 'storing', 'indexing'];
+export const STEP_ORDER = ['resolving', 'fetching', 'parsing', 'storing', 'indexing'];
+
+export const stepLabels: Record<string, string> = {
+	resolving: 'Resolving metadata...',
+	fetching: 'Downloading rustdoc...',
+	parsing: 'Extracting graph...',
+	storing: 'Uploading graph...',
+	indexing: 'Indexing dependencies...'
+};
+
+export const stepPercents: Record<string, number> = {
+	resolving: 20,
+	fetching: 40,
+	parsing: 60,
+	storing: 80,
+	indexing: 90
+};
 
 /**
  * Reactive SSE connection for streaming crate parse status.

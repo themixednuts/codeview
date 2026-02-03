@@ -11,10 +11,11 @@
   import { onDestroy } from 'svelte';
   import GraphTree from '$lib/components/GraphTree.svelte';
   import { Loader2Icon } from '@lucide/svelte';
-  import { CrateStatusConnection } from '$lib/status.svelte';
+  import { CrateStatusConnection, stepLabels, stepPercents } from '$lib/status.svelte';
   import { perf } from '$lib/perf';
   import { perfTick } from '$lib/perf.svelte';
   import { kindColors, kindIcons } from '$lib/tree';
+  import { kindLabels, nodeKindOrder } from '$lib/node-labels';
 
   let { children } = $props();
   const theme = $derived(themeCtx.get());
@@ -163,19 +164,8 @@
   // Server-side search when there's a query
   const searchQuery = $derived(filter ? searchNodes({ crate: crateName, version, q: filter }) : null);
 
-  const nodeKindOrder: NodeKind[] = [
-    'Crate', 'Module', 'Struct', 'Enum', 'Trait', 'Impl',
-    'Function', 'Method', 'TypeAlias', 'Union', 'TraitAlias'
-  ];
-
   let activeKinds: NodeKind[] = $state([]);
   const kindFilter = $derived(new Set(activeKinds));
-
-  const kindLabels: Record<NodeKind, string> = {
-    Crate: 'Crate', Module: 'Module', Struct: 'Struct', Union: 'Union',
-    Enum: 'Enum', Trait: 'Trait', TraitAlias: 'Trait alias', Impl: 'Impl',
-    Function: 'Function', Method: 'Method', TypeAlias: 'Type alias'
-  };
 
   const graphForDisplayMemo = new KeyedMemo(
     () => treeGraph,
@@ -267,26 +257,6 @@
     }
   });
 
-  // Determine if we should show the main UI
-  const isReady = $derived(
-    statusConn.status === 'ready' || treeGraph !== null
-  );
-
-  // --- Step progress mappings ---
-  const stepLabels: Record<string, string> = {
-    resolving: 'Resolving metadata...',
-    fetching: 'Downloading rustdoc...',
-    parsing: 'Extracting graph...',
-    storing: 'Uploading graph...',
-    indexing: 'Indexing dependencies...'
-  };
-  const stepPercents: Record<string, number> = {
-    resolving: 20,
-    fetching: 40,
-    parsing: 60,
-    storing: 80,
-    indexing: 90
-  };
   const stepLabel = $derived(statusConn.step ? (stepLabels[statusConn.step] ?? 'Processing...') : 'Starting...');
   const stepPercent = $derived(statusConn.step ? (stepPercents[statusConn.step] ?? 10) : 10);
 
@@ -443,12 +413,6 @@
         {#if filter && searchQuery}
           <!-- Server-side search results -->
           <svelte:boundary>
-            {#snippet pending()}
-              <div class="flex items-center gap-2 p-4 text-sm text-[var(--muted)]">
-                <Loader2Icon class="animate-spin" size={16} />
-                Searching...
-              </div>
-            {/snippet}
             {@const results = await searchQuery}
             {#if results && results.length > 0}
               <div class="p-2">
@@ -477,15 +441,15 @@
             {:else}
               <div class="p-4 text-sm text-[var(--muted)]">No results for "{filter}"</div>
             {/if}
+            {#snippet pending()}
+              <div class="flex items-center gap-2 p-4">
+                <Loader2Icon class="animate-spin" size={16} />
+                <span class="text-sm text-[var(--muted)]">Searching...</span>
+              </div>
+            {/snippet}
           </svelte:boundary>
         {:else if treeQuery}
           <svelte:boundary>
-            {#snippet pending()}
-              <div class="flex items-center gap-2 p-4 text-sm text-[var(--muted)]">
-                <Loader2Icon class="animate-spin" size={16} />
-                Loading tree...
-              </div>
-            {/snippet}
             {@const _tree = await treeQuery}
             {#if graphForDisplay}
               <GraphTree
@@ -498,6 +462,12 @@
             {:else}
               <div class="p-4 text-sm text-[var(--muted)]">No data available</div>
             {/if}
+            {#snippet pending()}
+              <div class="flex items-center gap-2 p-4">
+                <Loader2Icon class="animate-spin" size={16} />
+                <span class="text-sm text-[var(--muted)]">Loading tree...</span>
+              </div>
+            {/snippet}
             {#snippet failed(error, reset)}
               <div class="p-4 text-sm text-[var(--danger)]">
                 <p class="font-medium">Failed to render tree</p>

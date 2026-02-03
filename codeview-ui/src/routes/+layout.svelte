@@ -122,12 +122,6 @@
               </div>
               {#if processingListQuery}
                 <svelte:boundary>
-                  {#snippet pending()}
-                    <div class="flex items-center gap-2 px-2 py-2 text-xs text-[var(--muted)]">
-                      <Loader2Icon class="animate-spin" size={12} />
-                      Loading...
-                    </div>
-                  {/snippet}
                   {@const crates = await processingListQuery}
                   {#if crates && crates.length > 0}
                     <div class="space-y-1">
@@ -141,6 +135,12 @@
                   {:else}
                     <div class="px-2 py-2 text-xs text-[var(--muted)]">No active parses</div>
                   {/if}
+                  {#snippet pending()}
+                    <div class="flex items-center gap-2 px-2 py-2">
+                      <Loader2Icon class="animate-spin" size={12} />
+                      <span class="text-xs text-[var(--muted)]">Loading...</span>
+                    </div>
+                  {/snippet}
                 </svelte:boundary>
               {:else}
                 <div class="px-2 py-2 text-xs text-[var(--muted)]">No active parses</div>

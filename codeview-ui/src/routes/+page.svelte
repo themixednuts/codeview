@@ -57,12 +57,6 @@
             </p>
           {:else if searchQuery}
             <svelte:boundary>
-              {#snippet pending()}
-                <p class="flex items-center gap-2 text-xs text-[var(--muted)]">
-                  <Loader2Icon class="animate-spin" size={12} />
-                  Searching...
-                </p>
-              {/snippet}
               {@const results = (await searchQuery).slice(0, 6)}
               {#if results.length > 0}
                 <div class="space-y-1">
@@ -84,6 +78,12 @@
               {:else}
                 <p class="text-xs text-[var(--muted)]">No matches found.</p>
               {/if}
+              {#snippet pending()}
+                <p class="flex items-center gap-2 text-xs text-[var(--muted)]">
+                  <Loader2Icon class="animate-spin" size={12} />
+                  Searching...
+                </p>
+              {/snippet}
             </svelte:boundary>
           {/if}
         </div>
@@ -211,7 +211,6 @@
           </div>
         {/if}
       </section>
-
       {#snippet pending()}
         <div
           class="rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-6 text-sm text-[var(--muted)]"
