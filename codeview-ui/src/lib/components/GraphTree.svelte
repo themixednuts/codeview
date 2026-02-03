@@ -23,6 +23,9 @@
   }>();
 
   const expandedIds = new SvelteSet<string>();
+  // Tracks nodes the user explicitly collapsed — prevents selectedAncestorIds
+  // from forcing ancestor nodes back open after the user collapses them.
+  const collapsedIds = new SvelteSet<string>();
 
   function buildTree(graph: Graph, parentMap: Map<string, string>): TreeNode[] {
     const nodeMap = new Map<string, Node>();
@@ -152,7 +155,9 @@
     return perf.time('derived', 'expandedIdsForRender', () => {
       const ids: string[] = [];
       for (const id of expandedIds) ids.push(id);
-      for (const id of selectedAncestorIds) ids.push(id);
+      for (const id of selectedAncestorIds) {
+        if (!collapsedIds.has(id)) ids.push(id);
+      }
       return new Set(ids);
     }, {
       detail: (s) => `${s.size} ids`
@@ -168,14 +173,17 @@
     if (selected && selected.id !== lastAutoExpandedId) {
       lastAutoExpandedId = selected.id;
       expandedIds.add(selected.id);
+      collapsedIds.clear();
     }
   });
 
   function toggleExpand(id: string) {
-    if (expandedIds.has(id)) {
+    if (expandedIdsForRender.has(id)) {
       expandedIds.delete(id);
+      collapsedIds.add(id);
     } else {
       expandedIds.add(id);
+      collapsedIds.delete(id);
     }
   }
 
@@ -188,15 +196,12 @@
     selectable: boolean
   ) {
     if (selectable || !hasChildren) return;
-    if (isExpanded) {
-      expandedIds.delete(id);
-    } else {
-      expandedIds.add(id);
-    }
+    toggleExpand(id);
   }
 
   function expandAll() {
     if (!graph) return;
+    collapsedIds.clear();
     expandedIds.clear();
     for (const node of graph.nodes) {
       expandedIds.add(node.id);
@@ -205,6 +210,7 @@
 
   function collapseAll() {
     expandedIds.clear();
+    collapsedIds.clear();
   }
 
   // Use virtualization for large trees
@@ -299,10 +305,7 @@
     href={getNodeUrl(item.node.id, parentId)}
     onToggle={() => { if (hasChildren) toggleExpand(item.node.id); }}
     onSelect={() => {
-      if (!item.selectable && hasChildren) {
-        if (isExpanded) expandedIds.delete(item.node.id);
-        else expandedIds.add(item.node.id);
-      }
+      if (!item.selectable && hasChildren) toggleExpand(item.node.id);
     }}
   />
   {#if hasChildren && isExpanded}
