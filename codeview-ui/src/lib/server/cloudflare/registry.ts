@@ -1,6 +1,6 @@
 import { Result } from 'better-result';
 import { DurableObject } from 'cloudflare:workers';
-import { and, count, desc, eq, inArray, or } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import { getLogger } from '$lib/log';
@@ -129,30 +129,33 @@ export class CrateRegistry extends DurableObject {
 			}
 		}
 
-		const now = Date.now();
-		for (const node of nodes) {
-			const isExternal = Boolean(node.is_external);
-			this.db
-				.insert(nodeIndex)
-				.values({
-					nodeId: node.id,
-					name: node.name,
-					kind: node.kind,
-					visibility: node.visibility,
-					isExternal,
-					updatedAt: now
-				})
-				.onConflictDoUpdate({
-					target: nodeIndex.nodeId,
-					set: {
-						name: node.name,
-						kind: node.kind,
-						visibility: node.visibility,
-						isExternal,
-						updatedAt: now
-					}
-				})
-				.run();
+		if (nodes.length > 0) {
+			const now = Date.now();
+			const BATCH = 10;
+			const rows = nodes.map((node) => ({
+				nodeId: node.id,
+				name: node.name,
+				kind: node.kind,
+				visibility: node.visibility,
+				isExternal: Boolean(node.is_external),
+				updatedAt: now
+			}));
+			for (let i = 0; i < rows.length; i += BATCH) {
+				this.db
+					.insert(nodeIndex)
+					.values(rows.slice(i, i + BATCH))
+					.onConflictDoUpdate({
+						target: nodeIndex.nodeId,
+						set: {
+							name: sql`excluded.name`,
+							kind: sql`excluded.kind`,
+							visibility: sql`excluded.visibility`,
+							isExternal: sql`excluded.is_external`,
+							updatedAt: sql`excluded.updated_at`
+						}
+					})
+					.run();
+			}
 		}
 
 		for (const nodeId of touchedNodes) {
