@@ -152,13 +152,23 @@
     zoom = Math.max(MIN_ZOOM, zoom / 1.2);
   }
 
-  /** Convert screen (clientX/Y) to SVG viewBox coordinates using native SVG APIs. */
+  /** Convert screen (clientX/Y) to SVG viewBox coordinates using native SVG APIs.
+   *  Caches CTM inverse during drag/pan to avoid repeated matrix inversion. */
+  let cachedCtmInverse: DOMMatrix | null = null;
   function screenToSvg(clientX: number, clientY: number): DOMPoint {
     if (!svgEl) return new DOMPoint(0, 0);
-    const ctm = svgEl.getScreenCTM();
-    if (!ctm) return new DOMPoint(0, 0);
-    return new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+    // Use cached inverse during interaction for better perf
+    if (!cachedCtmInverse || !isInteracting) {
+      const ctm = svgEl.getScreenCTM();
+      if (!ctm) return new DOMPoint(0, 0);
+      cachedCtmInverse = ctm.inverse();
+    }
+    return new DOMPoint(clientX, clientY).matrixTransform(cachedCtmInverse);
   }
+  // Invalidate cache when interaction ends
+  $effect(() => {
+    if (!isInteracting) cachedCtmInverse = null;
+  });
 
   /** Convert screen mouse coords to world (scene) coordinates, accounting for pan & zoom. */
   function getWorldPoint(e: MouseEvent): { x: number; y: number } {
@@ -198,10 +208,9 @@
       const dy = world.y - dragStart.y;
       const nextX = dragNodeStart.x + dx;
       const nextY = dragNodeStart.y + dy;
-      dragOffsets = {
-        ...dragOffsets,
-        [dragNodeId!]: { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y }
-      };
+      // Mutate-and-reassign: avoid spreading 100s of entries every frame
+      dragOffsets[dragNodeId!] = { x: nextX - dragBasePos.x, y: nextY - dragBasePos.y };
+      dragOffsets = dragOffsets;
     });
   }
 
@@ -304,12 +313,31 @@
 
   // Viewport culling — only render nodes/edges visible in the current view
   const CULL_MARGIN = 100; // px margin around viewport for labels
-  let visibleBounds = $derived.by(() => ({
-    minX: -panX / zoom - CULL_MARGIN,
-    minY: -panY / zoom - CULL_MARGIN,
-    maxX: (-panX + WIDTH) / zoom + CULL_MARGIN,
-    maxY: (-panY + HEIGHT) / zoom + CULL_MARGIN,
-  }));
+  const CULL_MARGIN_INTERACTION = 300; // larger margin during pan to avoid popping
+
+  function computeBounds(margin: number) {
+    return {
+      minX: -panX / zoom - margin,
+      minY: -panY / zoom - margin,
+      maxX: (-panX + WIDTH) / zoom + margin,
+      maxY: (-panY + HEIGHT) / zoom + margin,
+    };
+  }
+
+  // Freeze culling bounds during pan (not node drag) to avoid re-culling every frame
+  let frozenBounds: ReturnType<typeof computeBounds> | null = null;
+  let visibleBounds = $derived.by(() => {
+    // Only freeze during pan, not node drag — node drag changes positions so culling must stay live
+    if (isPanning && frozenBounds) return frozenBounds;
+    return computeBounds(CULL_MARGIN);
+  });
+  $effect(() => {
+    if (isPanning) {
+      if (!frozenBounds) frozenBounds = computeBounds(CULL_MARGIN_INTERACTION);
+    } else {
+      frozenBounds = null;
+    }
+  });
 
   function isNodeVisible(node: VisNode): boolean {
     const visual = getNodeVisual(node.node.kind, node.isCenter);
@@ -398,15 +426,20 @@
     return { href: getNodeUrl(node.id), external: false };
   }
 
-  // Stage 2: label positions. Recomputes with drag-aware positions (cheap).
+  // Stage 2: label positions. Recomputes with drag-aware positions.
+  // Freeze during pan (not node drag) — panning doesn't change relative label positions.
+  let frozenLabels: ReturnType<typeof computeSceneLabels> | null = null;
   let edgeLabelPositions = $derived.by(() => {
-    return perf.frame('derived', 'edgeLabelPositions', () =>
+    if (isPanning && frozenLabels) return frozenLabels;
+    const labels = perf.frame('derived', 'edgeLabelPositions', () =>
       computeSceneLabels(
         baseScene,
         positionedNodeMap,
         (kind) => getEdgeLabelMetrics(kind, false)
       )
     );
+    frozenLabels = labels;
+    return labels;
   });
 </script>
 
@@ -554,7 +587,10 @@
     </defs>
 
     <rect width="100%" height="100%" fill="url(#grid)" />
-    <g transform="translate({panX}, {panY}) scale({zoom})">
+    <g
+      class="scene-content"
+      style="transform: translate({panX}px, {panY}px) scale({zoom}); will-change: {isInteracting ? 'transform' : 'auto'};"
+    >
       <!-- Edges (culled to viewport, with invisible hit areas for easier hovering) -->
     {#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
       {@const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from}
@@ -572,7 +608,7 @@
       {@const isHighlighted = hoveredNodeId === edge.from.node.id || hoveredNodeId === edge.to.node.id || hoveredEdgeIndex === edgeIndex}
       <g
         class="edge {isInteracting ? '' : 'transition-opacity duration-150'}"
-        style="opacity: {hoveredNodeId && !isHighlighted ? 0.3 : 1}"
+        style="opacity: {hoveredNodeId && !isHighlighted ? 0.3 : 1}; pointer-events: {isInteracting ? 'none' : 'auto'};"
         onmouseenter={() => { if (!dragNodeId) hoveredEdgeIndex = edgeIndex; }}
         onmouseleave={() => { if (!dragNodeId) hoveredEdgeIndex = null; }}
       >
@@ -660,7 +696,7 @@
       <g
         class="node cursor-grab"
         class:cursor-grabbing={isDragging}
-        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1};{isInteracting || isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
+        style="transform: translate({visNode.x}px, {visNode.y}px) scale({hoverScale}); opacity: {shouldDim ? 0.3 : 1}; pointer-events: {isPanning ? 'none' : 'auto'};{isInteracting || isDragging ? '' : ' transition: transform 150ms ease-out, opacity 150ms ease-out;'}"
         onmousedown={(e) => startNodeDrag(visNode, e)}
         onmouseenter={(e) => { if (!dragNodeId) { hoveredNodeId = visNode.node.id; showTooltip(visNode, e); } }}
         onmousemove={(e) => { if (!dragNodeId) showTooltip(visNode, e); }}
