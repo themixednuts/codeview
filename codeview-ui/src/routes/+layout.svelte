@@ -7,7 +7,7 @@
   import { isHosted } from '$lib/platform';
   import { onMount } from 'svelte';
   import { perf } from '$lib/perf';
-  import { themeCtx, extLinkModeCtx, type Theme, type ExternalLinkMode } from '$lib/context';
+  import { themeCtx, extLinkModeCtx, sourceProviderModeCtx, type Theme, type ExternalLinkMode, type SourceProviderMode } from '$lib/context';
   import { Loader2Icon } from '@lucide/svelte';
 
   let navSpan: ReturnType<typeof perf.begin> | null = null;
@@ -39,14 +39,26 @@
     showProcessing ? getProcessingCrates({ refresh: processingCount }) : null
   );
 
-  $effect(() => {
-    if (!browser || !isHosted) return;
-    processingConn.connect('rust');
-    return () => processingConn.destroy();
+  onMount(() => {
+    if (!isHosted || !browser) return () => processingConn.destroy();
+    const syncProcessingStream = () => {
+      if (document.visibilityState === 'visible') {
+        processingConn.connect('rust');
+      } else {
+        processingConn.disconnect();
+      }
+    };
+    syncProcessingStream();
+    document.addEventListener('visibilitychange', syncProcessingStream);
+    return () => {
+      document.removeEventListener('visibilitychange', syncProcessingStream);
+      processingConn.destroy();
+    };
   });
 
   const THEME_KEY = 'codeview-theme';
   const EXT_LINK_KEY = 'codeview-ext-link-mode';
+  const SOURCE_PROVIDER_KEY = 'codeview-source-provider-mode';
 
   function getInitialExtLinkMode(): ExternalLinkMode {
     if (!browser) return 'codeview';
@@ -56,12 +68,31 @@
   }
 
   let extLinkMode = $state<ExternalLinkMode>('codeview');
+  let sourceProviderMode = $state<SourceProviderMode>('auto');
 
   extLinkModeCtx.set(() => extLinkMode);
+  sourceProviderModeCtx.set(() => sourceProviderMode);
 
   function toggleExtLinkMode() {
     extLinkMode = extLinkMode === 'codeview' ? 'docs' : 'codeview';
     if (browser) localStorage.setItem(EXT_LINK_KEY, extLinkMode);
+  }
+
+  function getInitialSourceProviderMode(): SourceProviderMode {
+    if (!browser) return 'auto';
+    const stored = localStorage.getItem(SOURCE_PROVIDER_KEY);
+    if (stored === 'auto' || stored === 'crates-io' || stored === 'github') return stored;
+    return 'auto';
+  }
+
+  function cycleSourceProviderMode() {
+    sourceProviderMode =
+      sourceProviderMode === 'auto'
+        ? 'crates-io'
+        : sourceProviderMode === 'crates-io'
+          ? 'github'
+          : 'auto';
+    if (browser) localStorage.setItem(SOURCE_PROVIDER_KEY, sourceProviderMode);
   }
 
   function getInitialTheme(): Theme {
@@ -89,6 +120,7 @@
   onMount(() => {
     applyTheme(getInitialTheme());
     extLinkMode = getInitialExtLinkMode();
+    sourceProviderMode = getInitialSourceProviderMode();
   });
 </script>
 
@@ -161,6 +193,18 @@
           style="background-color: {extLinkMode === 'docs' ? 'var(--accent)' : 'var(--muted)'}"
         ></span>
         <span>{extLinkMode === 'docs' ? 'docs.rs' : 'Codeview'}</span>
+      </button>
+      <button
+        type="button"
+        class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]"
+        title="Source provider (click to cycle): auto -> crates.io -> github"
+        onclick={cycleSourceProviderMode}
+      >
+        <span
+          class="h-2 w-2 rounded-full"
+          style="background-color: {sourceProviderMode === 'auto' ? 'var(--accent)' : 'var(--muted)'}"
+        ></span>
+        <span>Source: {sourceProviderMode}</span>
       </button>
       <button
         type="button"

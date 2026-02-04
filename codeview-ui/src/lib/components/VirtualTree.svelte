@@ -2,9 +2,10 @@
   import type { Node, NodeKind } from '$lib/graph';
   import type { Attachment } from 'svelte/attachments';
   import { matchesFilter, type TreeNode } from '$lib/tree';
-  import { Memo, arrayEqual } from '$lib/reactivity.svelte';
+  import { KeyedMemo, Memo, arrayEqual, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import TreeItem from './TreeItem.svelte';
   import { perf } from '$lib/perf';
+  import { getLogger } from '$lib/log';
 
   interface FlatNode {
     treeNode: TreeNode;
@@ -16,6 +17,8 @@
 
   let {
     tree,
+    treeVersion,
+    expandedVersion,
     selected,
     getNodeUrl,
     expandedIds,
@@ -25,6 +28,8 @@
     kindFilter
   } = $props<{
     tree: TreeNode[];
+    treeVersion: number;
+    expandedVersion: number;
     selected: Node | null;
     getNodeUrl: (id: string, parent?: string) => string;
     expandedIds: Set<string>;
@@ -34,6 +39,7 @@
     filter: string;
     kindFilter: Set<NodeKind>;
   }>();
+  const log = getLogger('virtual-tree');
 
   const ITEM_HEIGHT = 32;
   const OVERSCAN = 5;
@@ -44,39 +50,47 @@
   // Flatten visible tree nodes.
   // Wrapped in Memo to stabilize the reference — prevents downstream rerenders
   // when the tree/expandedIds signals fire but produce the same flat list.
-  // Snapshot expandedIds into a plain Set once per change to avoid
-  // repeated reactive proxy overhead from SvelteSet.has() inside the loop.
-  const expandedSnapshot = $derived(new Set(expandedIds));
+  const flatNodesMemo = new KeyedMemo(
+    () => keyOf(treeVersion, expandedVersion, tree),
+    () => {
+      const t0 = performance.now();
+      const flattened = perf.time('derived', 'flatNodes', () => {
+        const result: FlatNode[] = [];
+        function flatten(nodes: TreeNode[], depth: number, parentId: string | undefined) {
+          for (const treeNode of nodes) {
+            const hasChildren = treeNode.children.length > 0;
+            const isExpanded = expandedIds.has(treeNode.node.id);
 
-  const flatNodesMemo = new Memo(() => {
-    return perf.time('derived', 'flatNodes', () => {
-      const expanded = expandedSnapshot;
-      const result: FlatNode[] = [];
-      function flatten(nodes: TreeNode[], depth: number, parentId: string | undefined) {
-        for (const treeNode of nodes) {
-          const hasChildren = treeNode.children.length > 0;
-          const isExpanded = expanded.has(treeNode.node.id);
+            result.push({
+              treeNode,
+              depth,
+              isExpanded,
+              hasChildren,
+              parentId
+            });
 
-          result.push({
-            treeNode,
-            depth,
-            isExpanded,
-            hasChildren,
-            parentId
-          });
-
-          if (hasChildren && isExpanded) {
-            flatten(treeNode.children, depth + 1, treeNode.node.id);
+            if (hasChildren && isExpanded) {
+              flatten(treeNode.children, depth + 1, treeNode.node.id);
+            }
           }
         }
-      }
 
-      flatten(tree, 0, undefined);
-      return result;
-    }, {
-      detail: (r) => `${r.length} items`
-    });
-  }, (a, b) => arrayEqual(a, b, (x, y) => x.treeNode === y.treeNode && x.isExpanded === y.isExpanded));
+        flatten(tree, 0, undefined);
+        return result;
+      }, {
+        detail: (r) => `${r.length} items`
+      });
+      const ms = performance.now() - t0;
+      if (ms > 120) {
+        log.warn`flatNodes slow ${Math.round(ms)}ms items=${flattened.length} treeVersion=${treeVersion} expandedVersion=${expandedVersion}`;
+      }
+      return flattened;
+    },
+    {
+      equalsKey: keyEqual,
+      equalsValue: (a, b) => arrayEqual(a, b, (x, y) => x.treeNode === y.treeNode && x.isExpanded === y.isExpanded)
+    }
+  );
   const flatNodes = $derived(flatNodesMemo.current);
 
   // Calculate visible range — Memo stabilizes the reference when values unchanged.

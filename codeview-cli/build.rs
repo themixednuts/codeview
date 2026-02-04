@@ -1,14 +1,42 @@
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+/// Recursively emit rerun-if-changed for all files in a directory
+fn watch_dir_recursive(dir: &Path) {
+    if !dir.exists() {
+        return;
+    }
+
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Skip node_modules and .svelte-kit
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == "node_modules" || name == ".svelte-kit" || name == "dist" {
+                continue;
+            }
+            watch_dir_recursive(&path);
+        } else {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
+}
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("missing manifest dir"));
     let ui_dir = manifest_dir.parent().unwrap().join("codeview-ui");
     let target = env::var("TARGET").unwrap();
 
-    // Rebuild when UI source, config, or WASM changes
-    println!("cargo:rerun-if-changed={}", ui_dir.join("src").display());
+    // Rebuild when UI source changes (recursively watch all files)
+    watch_dir_recursive(&ui_dir.join("src"));
+
+    // Watch config files
     println!(
         "cargo:rerun-if-changed={}",
         ui_dir.join("package.json").display()
@@ -24,10 +52,7 @@ fn main() {
 
     // Rebuild when the codeview-rustdoc Rust source changes (triggers wasm:build)
     let rustdoc_dir = manifest_dir.parent().unwrap().join("codeview-rustdoc");
-    println!(
-        "cargo:rerun-if-changed={}",
-        rustdoc_dir.join("src").display()
-    );
+    watch_dir_recursive(&rustdoc_dir.join("src"));
     println!(
         "cargo:rerun-if-changed={}",
         rustdoc_dir.join("Cargo.toml").display()

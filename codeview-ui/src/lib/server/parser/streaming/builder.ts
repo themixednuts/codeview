@@ -24,6 +24,7 @@ import type {
 	FunctionSignature as FunctionSignatureOut,
 	Graph
 } from '$lib/graph';
+import { getLogger } from '$lib/log';
 import type {
 	Id,
 	Item,
@@ -51,6 +52,8 @@ import type { StreamingParseCallbacks } from './parser';
 /** Default batch size for node/edge callbacks */
 export const DEFAULT_BATCH_SIZE = 1000;
 
+const log = getLogger('streaming-builder');
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -70,6 +73,19 @@ export interface BatchCallbacks {
 	onCheckpoint?: (checkpoint: BuilderCheckpoint) => void | Promise<void>;
 }
 
+/**
+ * Storage callbacks for progressive database storage.
+ * When provided, nodes/edges are stored directly without accumulating in memory.
+ */
+export interface ProgressiveStorageCallbacks {
+	/** Called for each batch of nodes - should INSERT to DB */
+	storeNodes: (nodes: Node[]) => void | Promise<void>;
+	/** Called for each batch of edges - should INSERT to DB */
+	storeEdges: (edges: Edge[]) => void | Promise<void>;
+	/** Called to update a node (e.g., impl_trait field) - should UPDATE in DB */
+	updateNode?: (nodeId: string, updates: Partial<Node>) => void | Promise<void>;
+}
+
 /** Deferred edge reference (to be resolved after streaming) */
 interface DeferredEdge {
 	fromId: string;
@@ -83,6 +99,8 @@ interface DeferredImplEdge {
 	implNodeId: string;
 	forTypeId: Id | null;
 	traitId: Id | null;
+	forTypeName: string;
+	traitName: string | null;
 	items: Id[];
 }
 
@@ -102,26 +120,38 @@ export class StreamingGraphBuilder {
 	private readonly batchSize: number;
 	private readonly skipExternalNodes: boolean;
 	private readonly batchCallbacks: BatchCallbacks;
+	private readonly storageCallbacks: ProgressiveStorageCallbacks | null;
 
-	// Collected data during streaming
+	// Collected data during streaming (only used when NOT in progressive mode)
 	private nodes: Node[] = [];
 	private edges: Edge[] = [];
+
+	// Always used - for dedup and O(1) lookup
 	private nodeCache = new Set<string>();
+	private nodeIndex = new Map<string, Node>(); // O(1) node lookup
 	private edgeCache = new Set<string>();
 
-	// Deferred resolution data
-	private deferredUsesEdges: DeferredEdge[] = [];
-	private deferredImplEdges: DeferredImplEdge[] = [];
+	// Counters for progressive mode
+	private _nodeCount = 0;
+	private _edgeCount = 0;
+
+	// Deferred resolution data - indexed by target ID for incremental resolution
+	private pendingEdgesByTarget = new Map<Id, DeferredEdge[]>();
+	private pendingImplEdgesByTarget = new Map<Id, DeferredImplEdge[]>();
+	// Track unresolved for final pass
+	private unresolvedEdgeCount = 0;
+	private unresolvedImplCount = 0;
 
 	// Path index (built from $.paths.*)
 	private pathIndex = new Map<Id, { path: string[]; crateId: number; kind: string }>();
-
-	// Method IDs (items inside impl/trait blocks)
-	private methodIds = new Set<Id>();
+	// Item index (built from $.index.*) for metadata enrichment (docs/fields/variants/signatures)
+	private itemIndex = new Map<Id, Item>();
 
 	// External crates
 	private externalCrates: ExternalCrateInfo[] = [];
 	private externalCrateNames = new Map<number, string>(); // crateId -> name
+	private localCrateId: number | null = null;
+	private deferredPathsByCrate = new Map<number, Array<{ id: Id; summary: ItemSummary }>>();
 
 	// Metadata
 	private root: Id | null = null;
@@ -133,6 +163,7 @@ export class StreamingGraphBuilder {
 	private pendingNodes: Node[] = [];
 	private pendingEdges: Edge[] = [];
 	private lastItemId: string | null = null;
+	private updatedNodes = new Set<string>();
 
 	constructor(
 		crateName: string,
@@ -140,21 +171,48 @@ export class StreamingGraphBuilder {
 			batchSize?: number;
 			skipExternalNodes?: boolean;
 			batchCallbacks?: BatchCallbacks;
+			/** Progressive storage - when set, nodes/edges stored directly to DB without accumulating in memory */
+			storageCallbacks?: ProgressiveStorageCallbacks;
 		} = {}
 	) {
 		this.crateName = crateName.replace(/-/g, '_');
 		this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
 		this.skipExternalNodes = options.skipExternalNodes ?? true;
 		this.batchCallbacks = options.batchCallbacks ?? {};
+		this.storageCallbacks = options.storageCallbacks ?? null;
 
 		// Ensure crate root node exists
 		this.ensureCrateNode(this.crateName, 'Public', false);
+	}
+
+	/** Get current node count for progress reporting. */
+	get nodeCount(): number {
+		return this._nodeCount;
+	}
+
+	/** Get current edge count for progress reporting. */
+	get edgeCount(): number {
+		return this._edgeCount;
+	}
+
+	/** Get accumulated nodes (for delta updates during streaming). */
+	getNodes(): readonly Node[] {
+		return this.nodes;
+	}
+
+	/** Get accumulated edges (for delta updates during streaming). */
+	getEdges(): readonly Edge[] {
+		return this.edges;
 	}
 
 	/**
 	 * Creates parse callbacks for the streaming parser.
 	 */
 	createParseCallbacks(): StreamingParseCallbacks {
+		let itemCount = 0;
+		let pathCount = 0;
+		const PROGRESS_INTERVAL = 50000;
+
 		return {
 			onRoot: (root) => {
 				this.root = root;
@@ -164,19 +222,32 @@ export class StreamingGraphBuilder {
 			},
 			onItem: (id, item) => {
 				this.processItem(id, item);
+				itemCount++;
+				if (itemCount % PROGRESS_INTERVAL === 0) {
+					log.debug`parse: ${String(itemCount)} items, ${String(this._nodeCount)} nodes, ${String(this._edgeCount)} edges`;
+				}
 			},
 			onPath: (id, summary) => {
 				this.processPath(id, summary);
+				pathCount++;
+				if (pathCount % PROGRESS_INTERVAL === 0) {
+					log.debug`parse: ${String(pathCount)} paths, ${String(this._nodeCount)} nodes, ${String(this._edgeCount)} edges`;
+				}
 			},
 			onExternalCrate: (id, crate) => {
 				this.processExternalCrate(id, crate);
 			},
 			onComplete: () => {
+				this.flushRemainingDeferredPaths();
+				let pendingCount = 0;
+				for (const edges of this.pendingEdgesByTarget.values()) pendingCount += edges.length;
+				for (const impls of this.pendingImplEdgesByTarget.values()) pendingCount += impls.length;
+				log.info`parse complete: ${String(itemCount)} items, ${String(pathCount)} paths → ${String(this._nodeCount)} nodes, ${String(this._edgeCount)} edges (${String(pendingCount)} pending)`;
 				// Flush any remaining pending nodes
 				this.flushPendingNodes();
 			},
 			onError: (error) => {
-				console.error('Streaming parse error:', error);
+				log.error`parse error: ${error}`;
 			}
 		};
 	}
@@ -187,31 +258,27 @@ export class StreamingGraphBuilder {
 	private processItem(idStr: string, item: Item): void {
 		this.lastItemId = idStr;
 		const itemId = Number(idStr);
+		this.itemIndex.set(itemId, item);
 
 		try {
-			// Collect method IDs from impl and trait blocks
+			this.applyItemMetadata(itemId, item);
+
 			if ('impl' in item.inner) {
-				for (const id of item.inner.impl.items) {
-					this.methodIds.add(id);
-				}
 				// Process impl block
 				this.processImplItem(itemId, item);
-			} else if ('trait' in item.inner) {
-				for (const id of item.inner.trait.items) {
-					this.methodIds.add(id);
-				}
 			}
 
 			// Collect type references for UsesType edges (deferred)
 			this.collectDeferredTypeEdges(idStr, item);
 		} catch (err) {
 			// Log but don't fail - continue processing
-			console.warn(`Skipped item ${idStr}:`, err instanceof Error ? err.message : String(err));
+			log.warn`Skipped item ${idStr}: ${err instanceof Error ? err.message : String(err)}`;
 		}
 	}
 
 	/**
 	 * Process a path summary from $.paths.*
+	 * Also resolves any pending edges that were waiting for this path.
 	 */
 	private processPath(idStr: string, summary: ItemSummary): void {
 		const itemId = Number(idStr);
@@ -223,12 +290,33 @@ export class StreamingGraphBuilder {
 			kind: summary.kind
 		});
 
+		if (this.localCrateId === null && summary.path[0] === this.crateName) {
+			this.localCrateId = summary.crate_id;
+			this.flushDeferredPathsFor(summary.crate_id);
+		}
+
+		const crateKnown =
+			(this.localCrateId !== null && summary.crate_id === this.localCrateId)
+			|| this.externalCrateNames.has(summary.crate_id);
+		if (!crateKnown) {
+			const pending = this.deferredPathsByCrate.get(summary.crate_id) ?? [];
+			pending.push({ id: itemId, summary });
+			this.deferredPathsByCrate.set(summary.crate_id, pending);
+			return;
+		}
+
+		this.processResolvedPath(itemId, summary);
+	}
+
+	private processResolvedPath(itemId: Id, summary: ItemSummary): void {
+		// INCREMENTAL: resolve pending edges only after crate mapping for this path is known.
+		this.resolvePendingEdgesFor(itemId);
+
 		// Skip internal/generated paths
 		if (summary.path.length === 0) return;
 		if (summary.path.some((seg) => seg === '_' || seg.startsWith('__'))) return;
 
-		const isMethod = this.methodIds.has(itemId);
-		const nodeKind = this.mapItemKind(summary.kind, isMethod);
+		const nodeKind = this.mapItemKind(summary.kind);
 		if (!nodeKind) return;
 
 		const itemCrateName = this.crateNameForId(summary.crate_id);
@@ -262,6 +350,10 @@ export class StreamingGraphBuilder {
 		if (parentId && parentId !== nodeId) {
 			this.addEdge(parentId, nodeId, 'Contains', 'Static');
 		}
+
+		// If the full item already arrived, apply rich metadata now.
+		const item = this.itemIndex.get(itemId);
+		if (item) this.applyItemMetadata(itemId, item);
 	}
 
 	/**
@@ -276,6 +368,30 @@ export class StreamingGraphBuilder {
 			id: normalizedName,
 			name: crate.name
 		});
+		this.flushDeferredPathsFor(crateId);
+	}
+
+	private flushDeferredPathsFor(crateId: number): void {
+		const pending = this.deferredPathsByCrate.get(crateId);
+		if (!pending || pending.length === 0) return;
+		this.deferredPathsByCrate.delete(crateId);
+		for (const entry of pending) {
+			this.processResolvedPath(entry.id, entry.summary);
+		}
+	}
+
+	private flushRemainingDeferredPaths(): void {
+		let count = 0;
+		for (const pending of this.deferredPathsByCrate.values()) count += pending.length;
+		if (count > 0) {
+			log.warn`finalize: processing ${String(count)} deferred paths without crate mapping`;
+		}
+		for (const [, pending] of this.deferredPathsByCrate) {
+			for (const entry of pending) {
+				this.processResolvedPath(entry.id, entry.summary);
+			}
+		}
+		this.deferredPathsByCrate.clear();
 	}
 
 	/**
@@ -295,9 +411,11 @@ export class StreamingGraphBuilder {
 		const implNodeId = `${itemCrateName}::impl-${itemId}`;
 		const implTraitId = impl.trait ? impl.trait.id : null;
 		const forTypeId = this.typeToId(impl.for);
+		const forTypeName = this.implForTypeName(impl.for);
+		const traitName = impl.trait ? this.cleanPath(impl.trait.path) : null;
 
 		if (!this.nodeCache.has(implNodeId)) {
-			const name = this.implNodeName(impl);
+			const name = this.implNodeName(forTypeName, traitName);
 			const implType: ImplType | null = impl.trait ? 'Trait' : 'Inherent';
 
 			const node: Node = {
@@ -319,13 +437,41 @@ export class StreamingGraphBuilder {
 			this.addNode(node);
 		}
 
-		// Defer impl edge resolution
-		this.deferredImplEdges.push({
+		// Try to resolve impl edges immediately, or defer indexed by target
+		const implEdge: DeferredImplEdge = {
 			implNodeId,
 			forTypeId,
 			traitId: implTraitId,
+			forTypeName,
+			traitName,
 			items: impl.items
-		});
+		};
+
+		// Try immediate resolution
+		const forResolved = forTypeId !== null ? this.resolveId(forTypeId) : null;
+		const traitResolved = implTraitId !== null ? this.resolveId(implTraitId) : null;
+
+		if (forResolved || (forTypeId === null)) {
+			// Can resolve now
+			this.tryResolveImplEdge(implEdge);
+			if (!forResolved && forTypeId === null) {
+				// Fallback: attach unresolved impls to the crate root for visibility.
+				this.addEdge(itemCrateName, implNodeId, 'Defines', 'Static');
+			}
+		} else {
+			// Queue by forTypeId for later resolution
+			if (forTypeId !== null) {
+				const pending = this.pendingImplEdgesByTarget.get(forTypeId) ?? [];
+				pending.push(implEdge);
+				this.pendingImplEdgesByTarget.set(forTypeId, pending);
+			}
+			// Also queue by traitId if different
+			if (implTraitId !== null && implTraitId !== forTypeId) {
+				const pending = this.pendingImplEdgesByTarget.get(implTraitId) ?? [];
+				pending.push(implEdge);
+				this.pendingImplEdgesByTarget.set(implTraitId, pending);
+			}
+		}
 	}
 
 	/**
@@ -378,81 +524,211 @@ export class StreamingGraphBuilder {
 			}
 		}
 
-		// Defer UsesType edges
+		// Defer UsesType edges - indexed by target for incremental resolution
 		for (const typeId of typeIds) {
-			this.deferredUsesEdges.push({
+			const edge: DeferredEdge = {
 				fromId: ownerId,
 				toTypeId: typeId,
 				kind: 'UsesType',
 				confidence: 'Static'
-			});
+			};
+
+			// Try to resolve immediately if path already known
+			const targetId = this.resolveId(typeId);
+			if (targetId && targetId !== ownerId) {
+				this.addEdge(ownerId, targetId, 'UsesType', 'Static');
+			} else {
+				// Queue for resolution when path arrives
+				const pending = this.pendingEdgesByTarget.get(typeId) ?? [];
+				pending.push(edge);
+				this.pendingEdgesByTarget.set(typeId, pending);
+			}
+		}
+	}
+
+	/**
+	 * Resolve any pending edges that were waiting for a specific path ID.
+	 * Called incrementally as each path arrives.
+	 */
+	private resolvePendingEdgesFor(pathId: Id): void {
+		// Resolve pending UsesType edges
+		const pendingEdges = this.pendingEdgesByTarget.get(pathId);
+		if (pendingEdges) {
+			const targetId = this.resolveId(pathId);
+			if (targetId) {
+				for (const edge of pendingEdges) {
+					if (targetId !== edge.fromId) {
+						this.addEdge(edge.fromId, targetId, edge.kind, edge.confidence);
+					}
+				}
+			} else {
+				this.unresolvedEdgeCount += pendingEdges.length;
+			}
+			this.pendingEdgesByTarget.delete(pathId);
+		}
+
+		// Resolve pending impl edges that reference this path as forType or trait
+		const pendingImpls = this.pendingImplEdgesByTarget.get(pathId);
+		if (pendingImpls) {
+			for (const impl of pendingImpls) {
+				this.tryResolveImplEdge(impl);
+			}
+			this.pendingImplEdgesByTarget.delete(pathId);
+		}
+	}
+
+	/**
+	 * Try to resolve an impl edge. If not fully resolvable, re-queue it.
+	 */
+	private tryResolveImplEdge(impl: DeferredImplEdge): void {
+		const forTypeNodeId = impl.forTypeId !== null ? this.resolveId(impl.forTypeId) : null;
+		const traitNodeId = impl.traitId !== null ? this.resolveId(impl.traitId) : null;
+		const implNode = this.nodeIndex.get(impl.implNodeId);
+
+		if (implNode) {
+			const resolvedForTypeName = forTypeNodeId
+				? (this.nodeIndex.get(forTypeNodeId)?.name ?? impl.forTypeName)
+				: impl.forTypeName;
+			const resolvedTraitName = traitNodeId
+				? (this.nodeIndex.get(traitNodeId)?.name ?? impl.traitName)
+				: impl.traitName;
+			const nextName = this.implNodeName(resolvedForTypeName, resolvedTraitName);
+			if (nextName !== implNode.name) implNode.name = nextName;
+		}
+
+		// Update impl_trait on the impl node if trait is resolved
+		if (impl.traitId !== null && traitNodeId) {
+			if (implNode && !implNode.impl_trait) {
+				implNode.impl_trait = traitNodeId;
+			}
+		}
+
+		// Create edges if forType is resolved
+		if (forTypeNodeId) {
+			this.addEdge(forTypeNodeId, impl.implNodeId, 'Defines', 'Static');
+			if (traitNodeId) {
+				this.addEdge(forTypeNodeId, traitNodeId, 'Implements', 'Static');
+			}
 		}
 	}
 
 	/**
 	 * Finalize the graph after streaming is complete.
-	 * Resolves all deferred edges and flushes remaining batches.
+	 * Most edges were resolved incrementally - this handles remaining stragglers.
 	 */
 	async finalize(): Promise<{
 		nodes: Node[];
 		edges: Edge[];
+		nodeCount: number;
+		edgeCount: number;
 		externalCrates: ExternalCrateInfo[];
 		root: Id | null;
 		crateVersion: string | null;
 	}> {
-		// Resolve deferred UsesType edges
-		for (const deferred of this.deferredUsesEdges) {
-			const targetId = this.resolveId(deferred.toTypeId);
-			if (targetId && targetId !== deferred.fromId) {
-				this.addEdge(deferred.fromId, targetId, deferred.kind, deferred.confidence);
-			}
-		}
+		const t0 = performance.now();
+		const remainingEdges = this.pendingEdgesByTarget.size;
+		const remainingImpls = this.pendingImplEdgesByTarget.size;
+		log.info`finalize: ${String(remainingEdges)} unresolved edge targets, ${String(remainingImpls)} unresolved impl targets`;
 
-		// Resolve deferred impl edges
-		for (const impl of this.deferredImplEdges) {
-			// Update impl_trait on the impl node
-			if (impl.traitId !== null) {
-				const traitNodeId = this.resolveId(impl.traitId);
-				if (traitNodeId) {
-					const implNode = this.nodes.find((n) => n.id === impl.implNodeId);
-					if (implNode) {
-						implNode.impl_trait = traitNodeId;
+		// Process any remaining unresolved edges (external crates, missing paths)
+		let resolvedEdges = 0;
+		for (const [targetId, edges] of this.pendingEdgesByTarget) {
+			const resolved = this.resolveId(targetId);
+			if (resolved) {
+				for (const edge of edges) {
+					if (resolved !== edge.fromId) {
+						this.addEdge(edge.fromId, resolved, edge.kind, edge.confidence);
+						resolvedEdges++;
 					}
 				}
 			}
+		}
+		this.pendingEdgesByTarget.clear();
+		log.info`finalize: resolved ${String(resolvedEdges)} remaining edges in ${(performance.now() - t0).toFixed(0)}ms`;
 
-			// Defines edge from type to impl
-			if (impl.forTypeId !== null) {
-				const typeNodeId = this.resolveId(impl.forTypeId);
-				if (typeNodeId) {
-					this.addEdge(typeNodeId, impl.implNodeId, 'Defines', 'Static');
+		// Process any remaining impl edges
+		const t1 = performance.now();
+		const updatedImplNodes: Node[] = [];
+		let resolvedImpls = 0;
 
-					// Implements edge from type to trait
-					if (impl.traitId !== null) {
-						const traitNodeId = this.resolveId(impl.traitId);
-						if (traitNodeId) {
-							this.addEdge(typeNodeId, traitNodeId, 'Implements', 'Static');
+		for (const [, impls] of this.pendingImplEdgesByTarget) {
+			for (const impl of impls) {
+				const forTypeNodeId = impl.forTypeId !== null ? this.resolveId(impl.forTypeId) : null;
+				const traitNodeId = impl.traitId !== null ? this.resolveId(impl.traitId) : null;
+
+				if (impl.traitId !== null && traitNodeId) {
+					const implNode = this.nodeIndex.get(impl.implNodeId);
+					if (implNode && !implNode.impl_trait) {
+						implNode.impl_trait = traitNodeId;
+						if (this.storageCallbacks) {
+							updatedImplNodes.push(implNode);
 						}
 					}
 				}
+
+				if (forTypeNodeId) {
+					this.addEdge(forTypeNodeId, impl.implNodeId, 'Defines', 'Static');
+					if (traitNodeId) {
+						this.addEdge(forTypeNodeId, traitNodeId, 'Implements', 'Static');
+					}
+					resolvedImpls++;
+				}
 			}
+		}
+		this.pendingImplEdgesByTarget.clear();
+		log.info`finalize: resolved ${String(resolvedImpls)} remaining impls in ${(performance.now() - t1).toFixed(0)}ms`;
+
+		// Apply rich per-item metadata once all paths/items are available.
+		const tMeta = performance.now();
+		for (const [itemId, item] of this.itemIndex) {
+			this.applyItemMetadata(itemId, item);
+		}
+		if (this.storageCallbacks && this.updatedNodes.size > 0) {
+			const updates: Node[] = [];
+			for (const nodeId of this.updatedNodes) {
+				const node = this.nodeIndex.get(nodeId);
+				if (node) updates.push(node);
+			}
+			const BATCH = 500;
+			for (let i = 0; i < updates.length; i += BATCH) {
+				await this.storageCallbacks.storeNodes(updates.slice(i, i + BATCH));
+			}
+			log.info`finalize: applied metadata to ${String(updates.length)} nodes in ${(performance.now() - tMeta).toFixed(0)}ms`;
+			this.updatedNodes.clear();
 		}
 
 		// Flush remaining batches
-		this.flushPendingNodes();
-		this.flushPendingEdges();
+		const t2 = performance.now();
+		await this.flushPendingNodes();
+		await this.flushPendingEdges();
+		log.info`finalize: flushed batches in ${(performance.now() - t2).toFixed(0)}ms`;
+
+		// Update impl nodes in storage
+		if (this.storageCallbacks && updatedImplNodes.length > 0) {
+			const t3 = performance.now();
+			const BATCH = 500;
+			for (let i = 0; i < updatedImplNodes.length; i += BATCH) {
+				await this.storageCallbacks.storeNodes(updatedImplNodes.slice(i, i + BATCH));
+			}
+			log.info`finalize: updated ${String(updatedImplNodes.length)} impl nodes in ${(performance.now() - t3).toFixed(0)}ms`;
+		}
 
 		// Report final checkpoint
 		await this.batchCallbacks.onCheckpoint?.({
-			nodeCount: this.nodes.length,
+			nodeCount: this._nodeCount,
 			pendingEdgeCount: 0,
 			lastItemId: this.lastItemId,
 			phase: 'complete'
 		});
 
+		const total = performance.now() - t0;
+		log.info`finalize: complete - ${String(this._nodeCount)} nodes, ${String(this._edgeCount)} edges in ${total.toFixed(0)}ms`;
+
 		return {
 			nodes: this.nodes,
 			edges: this.edges,
+			nodeCount: this._nodeCount,
+			edgeCount: this._edgeCount,
 			externalCrates: this.externalCrates,
 			root: this.root,
 			crateVersion: this.crateVersion
@@ -463,9 +739,13 @@ export class StreamingGraphBuilder {
 	 * Get current checkpoint state.
 	 */
 	getCheckpoint(): BuilderCheckpoint {
+		let pendingCount = 0;
+		for (const edges of this.pendingEdgesByTarget.values()) pendingCount += edges.length;
+		for (const impls of this.pendingImplEdgesByTarget.values()) pendingCount += impls.length;
+
 		return {
-			nodeCount: this.nodes.length,
-			pendingEdgeCount: this.deferredUsesEdges.length + this.deferredImplEdges.length,
+			nodeCount: this._nodeCount,
+			pendingEdgeCount: pendingCount,
 			lastItemId: this.lastItemId,
 			phase: 'streaming'
 		};
@@ -479,7 +759,14 @@ export class StreamingGraphBuilder {
 		if (this.nodeCache.has(node.id)) return;
 
 		this.nodeCache.add(node.id);
-		this.nodes.push(node);
+		this.nodeIndex.set(node.id, node);
+		this._nodeCount++;
+
+		// Only accumulate in memory if NOT using progressive storage
+		if (!this.storageCallbacks) {
+			this.nodes.push(node);
+		}
+
 		this.pendingNodes.push(node);
 
 		if (this.pendingNodes.length >= this.batchSize) {
@@ -493,7 +780,13 @@ export class StreamingGraphBuilder {
 
 		this.edgeCache.add(key);
 		const edge: Edge = { from, to, kind, confidence };
-		this.edges.push(edge);
+		this._edgeCount++;
+
+		// Only accumulate in memory if NOT using progressive storage
+		if (!this.storageCallbacks) {
+			this.edges.push(edge);
+		}
+
 		this.pendingEdges.push(edge);
 
 		if (this.pendingEdges.length >= this.batchSize) {
@@ -507,6 +800,11 @@ export class StreamingGraphBuilder {
 		const batch = this.pendingNodes;
 		this.pendingNodes = [];
 
+		// Store to DB if progressive mode
+		if (this.storageCallbacks) {
+			await this.storageCallbacks.storeNodes(batch);
+		}
+
 		await this.batchCallbacks.onNodeBatch?.(batch, this.nodeBatchIndex);
 		this.nodeBatchIndex++;
 	}
@@ -516,6 +814,11 @@ export class StreamingGraphBuilder {
 
 		const batch = this.pendingEdges;
 		this.pendingEdges = [];
+
+		// Store to DB if progressive mode
+		if (this.storageCallbacks) {
+			await this.storageCallbacks.storeEdges(batch);
+		}
 
 		await this.batchCallbacks.onEdgeBatch?.(batch, this.edgeBatchIndex);
 		this.edgeBatchIndex++;
@@ -601,7 +904,7 @@ export class StreamingGraphBuilder {
 	// Item kind mapping
 	// ---------------------------------------------------------------------------
 
-	private mapItemKind(kind: string, isMethod: boolean): NodeKind | null {
+	private mapItemKind(kind: string): NodeKind | null {
 		switch (kind) {
 			case 'module': return 'Module';
 			case 'struct': return 'Struct';
@@ -610,8 +913,16 @@ export class StreamingGraphBuilder {
 			case 'trait': return 'Trait';
 			case 'trait_alias': return 'TraitAlias';
 			case 'impl': return 'Impl';
-			case 'function': return isMethod ? 'Method' : 'Function';
+			case 'function': return 'Function';
 			case 'type_alias': return 'TypeAlias';
+			case 'constant': return 'Constant';
+			case 'static': return 'Static';
+			case 'macro': return 'Macro';
+			case 'primitive': return 'Primitive';
+			case 'extern_crate': return 'ExternCrate';
+			case 'import': return 'Import';
+			case 'proc_attribute': return 'ProcMacro';
+			case 'proc_derive': return 'ProcMacro';
 			default: return null;
 		}
 	}
@@ -731,21 +1042,233 @@ export class StreamingGraphBuilder {
 		return '';
 	}
 
-	private implNodeName(impl: Impl): string {
-		const forId = this.typeToId(impl.for);
-		let typeName = 'type';
-		if (forId !== null) {
-			const resolved = this.resolveId(forId);
-			if (resolved) typeName = resolved.split('::').pop() ?? 'type';
-		} else if (impl.for && typeof impl.for === 'object' && 'resolved_path' in impl.for) {
-			typeName = this.cleanPath(impl.for.resolved_path.path);
+	private implForTypeName(ty: Type): string {
+		const name = this.formatType(ty).trim();
+		if (!name || name === '_') return 'type';
+		return name;
+	}
+
+	private implNodeName(typeName: string, traitName: string | null): string {
+		if (traitName) return `impl ${traitName} for ${typeName}`;
+		return `impl ${typeName}`;
+	}
+
+	// ---------------------------------------------------------------------------
+	// Item metadata enrichment
+	// ---------------------------------------------------------------------------
+
+	private applyItemMetadata(itemId: Id, item: Item): void {
+		const pathInfo = this.pathIndex.get(itemId);
+		if (!pathInfo) return;
+		const crateName = this.crateNameForId(pathInfo.crateId);
+		const nodeId = this.joinPath(crateName, pathInfo.path);
+		const node = this.nodeIndex.get(nodeId);
+		if (!node) return;
+
+		let changed = false;
+		const nextVisibility = this.mapVisibility(item.visibility);
+		if (node.visibility !== nextVisibility) {
+			node.visibility = nextVisibility;
+			changed = true;
+		}
+		const nextSpan = item.span ? this.mapSpan(item.span) : null;
+		if (JSON.stringify(node.span ?? null) !== JSON.stringify(nextSpan)) {
+			node.span = nextSpan;
+			changed = true;
+		}
+		const nextAttrs = this.formatAttributes(item.attrs);
+		if (!this.arrayShallowEqual(node.attrs ?? [], nextAttrs)) {
+			node.attrs = nextAttrs;
+			changed = true;
+		}
+		const nextDocs = item.docs ?? null;
+		if ((node.docs ?? null) !== nextDocs) {
+			node.docs = nextDocs;
+			changed = true;
 		}
 
-		if (impl.trait) {
-			const traitName = this.cleanPath(impl.trait.path);
-			return `impl ${traitName} for ${typeName}`;
+		const nextDocLinks: Record<string, string> = {};
+		for (const [label, targetId] of Object.entries(item.links ?? {})) {
+			const resolved = this.resolveId(targetId);
+			if (resolved) nextDocLinks[label] = resolved;
 		}
-		return `impl ${typeName}`;
+		if (!this.recordShallowEqual(node.doc_links ?? {}, nextDocLinks)) {
+			node.doc_links = Object.keys(nextDocLinks).length > 0 ? nextDocLinks : undefined;
+			changed = true;
+		}
+
+		const inner = item.inner;
+		if ('function' in inner) {
+			const sig = inner.function.sig;
+			const header = inner.function.header;
+			const nextSig: FunctionSignatureOut = {
+				inputs: sig.inputs.map(([name, ty]) => ({ name, type_name: this.formatType(ty) })),
+				output: sig.output ? this.formatType(sig.output) : null,
+				is_async: header.is_async,
+				is_unsafe: header.is_unsafe,
+				is_const: header.is_const
+			};
+			if (JSON.stringify(node.signature ?? null) !== JSON.stringify(nextSig)) {
+				node.signature = nextSig;
+				changed = true;
+			}
+			const nextGenerics = this.extractGenerics(inner.function.generics);
+			if (!this.arrayShallowEqual(node.generics ?? null, nextGenerics)) {
+				node.generics = nextGenerics;
+				changed = true;
+			}
+			const nextWhere = this.extractWhereClause(inner.function.generics);
+			if (!this.arrayShallowEqual(node.where_clause ?? null, nextWhere)) {
+				node.where_clause = nextWhere;
+				changed = true;
+			}
+		} else if ('struct' in inner) {
+			const nextGenerics = this.extractGenerics(inner.struct.generics);
+			const nextWhere = this.extractWhereClause(inner.struct.generics);
+			if (!this.arrayShallowEqual(node.generics ?? null, nextGenerics)) {
+				node.generics = nextGenerics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, nextWhere)) {
+				node.where_clause = nextWhere;
+				changed = true;
+			}
+			const nextFields = this.extractStructFields(inner.struct.kind);
+			if (!this.arrayShallowEqual(node.fields ?? null, nextFields, (a, b) =>
+				a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility
+			)) {
+				node.fields = nextFields;
+				changed = true;
+			}
+		} else if ('union' in inner) {
+			const nextGenerics = this.extractGenerics(inner.union.generics);
+			const nextWhere = this.extractWhereClause(inner.union.generics);
+			if (!this.arrayShallowEqual(node.generics ?? null, nextGenerics)) {
+				node.generics = nextGenerics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, nextWhere)) {
+				node.where_clause = nextWhere;
+				changed = true;
+			}
+			const nextFields = this.extractFieldList(inner.union.fields);
+			if (!this.arrayShallowEqual(node.fields ?? null, nextFields, (a, b) =>
+				a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility
+			)) {
+				node.fields = nextFields;
+				changed = true;
+			}
+		} else if ('enum' in inner) {
+			const nextGenerics = this.extractGenerics(inner.enum.generics);
+			const nextWhere = this.extractWhereClause(inner.enum.generics);
+			if (!this.arrayShallowEqual(node.generics ?? null, nextGenerics)) {
+				node.generics = nextGenerics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, nextWhere)) {
+				node.where_clause = nextWhere;
+				changed = true;
+			}
+			const nextVariants = this.extractVariants(inner.enum.variants);
+			if (!this.arrayShallowEqual(node.variants ?? null, nextVariants, (a, b) =>
+				a.name === b.name && this.arrayShallowEqual(a.fields, b.fields, (x, y) =>
+					x.name === y.name && x.type_name === y.type_name && x.visibility === y.visibility
+				)
+			)) {
+				node.variants = nextVariants;
+				changed = true;
+			}
+		}
+
+		if (changed) this.updatedNodes.add(node.id);
+	}
+
+	private extractStructFields(kind: StructKind): FieldInfo[] | null {
+		if (kind === 'unit') return null;
+		if ('plain' in kind) return this.extractFieldList(kind.plain.fields);
+		if ('tuple' in kind) {
+			const fields: FieldInfo[] = [];
+			for (let i = 0; i < kind.tuple.length; i++) {
+				const id = kind.tuple[i];
+				if (id == null) continue;
+				const field = this.extractField(id, `${i}`);
+				if (field) fields.push(field);
+			}
+			return fields.length > 0 ? fields : null;
+		}
+		return null;
+	}
+
+	private extractFieldList(ids: Id[]): FieldInfo[] | null {
+		const fields: FieldInfo[] = [];
+		for (let i = 0; i < ids.length; i++) {
+			const field = this.extractField(ids[i], `field${i}`);
+			if (field) fields.push(field);
+		}
+		return fields.length > 0 ? fields : null;
+	}
+
+	private extractField(id: Id, fallbackName: string): FieldInfo | null {
+		const item = this.itemIndex.get(id);
+		if (!item) return null;
+		const inner = item.inner;
+		if (!('struct_field' in inner)) return null;
+		return {
+			name: item.name ?? fallbackName,
+			type_name: this.formatType(inner.struct_field),
+			visibility: this.mapVisibility(item.visibility)
+		};
+	}
+
+	private extractVariants(ids: Id[]): VariantInfo[] | null {
+		const variants: VariantInfo[] = [];
+		for (const id of ids) {
+			const item = this.itemIndex.get(id);
+			if (!item || !('variant' in item.inner)) continue;
+			const variant = item.inner.variant;
+			const fields: FieldInfo[] = [];
+			const kind = variant.kind;
+			if (typeof kind === 'object' && kind !== null && 'tuple' in kind) {
+				for (let i = 0; i < kind.tuple.length; i++) {
+					const fieldId = kind.tuple[i];
+					if (fieldId == null) continue;
+					const field = this.extractField(fieldId, `${i}`);
+					if (field) fields.push(field);
+				}
+			} else if (typeof kind === 'object' && kind !== null && 'struct' in kind) {
+				const extracted = this.extractFieldList(kind.struct.fields);
+				if (extracted) fields.push(...extracted);
+			}
+			variants.push({
+				name: item.name ?? `Variant${id}`,
+				fields
+			});
+		}
+		return variants.length > 0 ? variants : null;
+	}
+
+	private arrayShallowEqual<T>(
+		a: T[] | null,
+		b: T[] | null,
+		equals: (x: T, y: T) => boolean = (x, y) => x === y
+	): boolean {
+		if (a === b) return true;
+		if (!a || !b) return false;
+		if (a.length !== b.length) return false;
+		for (let i = 0; i < a.length; i++) {
+			if (!equals(a[i], b[i])) return false;
+		}
+		return true;
+	}
+
+	private recordShallowEqual(a: Record<string, string>, b: Record<string, string>): boolean {
+		const aKeys = Object.keys(a);
+		const bKeys = Object.keys(b);
+		if (aKeys.length !== bKeys.length) return false;
+		for (const key of aKeys) {
+			if (a[key] !== b[key]) return false;
+		}
+		return true;
 	}
 
 	// ---------------------------------------------------------------------------
@@ -874,7 +1397,7 @@ export class StreamingGraphBuilder {
  * Build a graph from a streaming parser with batch callbacks.
  *
  * @param crateName - The crate name
- * @param options - Build options including batch callbacks
+ * @param options - Build options including batch callbacks and progressive storage
  * @returns The builder instance (call createParseCallbacks() to get callbacks for parser)
  */
 export function createStreamingGraphBuilder(
@@ -883,6 +1406,8 @@ export function createStreamingGraphBuilder(
 		batchSize?: number;
 		skipExternalNodes?: boolean;
 		batchCallbacks?: BatchCallbacks;
+		/** Progressive storage callbacks - when set, nodes/edges stored directly to DB */
+		storageCallbacks?: ProgressiveStorageCallbacks;
 	}
 ): StreamingGraphBuilder {
 	return new StreamingGraphBuilder(crateName, options);

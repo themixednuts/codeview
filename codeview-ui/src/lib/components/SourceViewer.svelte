@@ -7,7 +7,7 @@
   import { getSource } from '$lib/source.remote';
   import { cached, cacheKey } from '$lib/cache.svelte';
   import { Memo } from '$lib/reactivity.svelte';
-  import { isHosted } from '$lib/platform';
+  import { sourceProviderModeCtx } from '$lib/context';
   import CodeBlock from './CodeBlock.svelte';
   import X from '@lucide/svelte/icons/x';
   let {
@@ -22,6 +22,8 @@
     crateVersion?: string;
   }>();
 
+  const sourceProviderMode = $derived(sourceProviderModeCtx.getOr('auto'));
+
 
   let modalBody = $state<HTMLDivElement | null>(null);
   let lastScrollKey: string | null = null;
@@ -34,8 +36,8 @@
   const sourceQuery = $derived(
     isOpen
       ? cached(
-          cacheKey('source', crateName ?? 'workspace', span.file),
-          getSource({ file: span.file })
+          cacheKey('source', sourceProviderMode, crateName ?? 'workspace', crateVersion ?? 'unknown', span.file),
+          getSource({ file: span.file, crateName, crateVersion, sourceProvider: sourceProviderMode })
         )
       : null
   );
@@ -43,12 +45,6 @@
   const sourcePreview = $derived(sourceQuery?.current ?? null);
 
   function open() {
-    if (isHosted && crateName) {
-      const targetVersion = crateVersion ?? 'latest';
-      const url = docsSourceUrl(crateName, targetVersion, span.file);
-      window.open(url, '_blank', 'noopener,noreferrer');
-      return;
-    }
     pushState('', { ...page.state, sourceSpanKey: spanKey });
   }
 
@@ -103,11 +99,6 @@
     return 'text';
   }
 
-  function docsSourceUrl(crate: string, version: string, file: string): string {
-    const cleaned = file.replace(/^\.\/+/, '');
-    const path = cleaned.startsWith('src/') ? cleaned : `src/${cleaned}`;
-    return `https://docs.rs/${crate}/${version}/src/${crate}/${path}.html`;
-  }
 </script>
 
 <svelte:window onkeydown={isOpen ? handleKeydown : undefined} />

@@ -10,8 +10,14 @@ export const kindLabels: Record<NodeKind, string> = {
 	TraitAlias: 'Trait alias',
 	Impl: 'Impl',
 	Function: 'Function',
-	Method: 'Method',
-	TypeAlias: 'Type alias'
+	TypeAlias: 'Type alias',
+	Constant: 'Constant',
+	Static: 'Static',
+	Macro: 'Macro',
+	Primitive: 'Primitive',
+	ExternCrate: 'Extern crate',
+	Import: 'Import',
+	ProcMacro: 'Proc macro'
 };
 
 export const visibilityLabels: Record<Visibility, string> = {
@@ -41,8 +47,14 @@ export const nodeKindOrder: NodeKind[] = [
 	'Trait',
 	'Impl',
 	'Function',
-	'Method',
 	'TypeAlias',
 	'Union',
-	'TraitAlias'
+	'TraitAlias',
+	'Constant',
+	'Static',
+	'Macro',
+	'Primitive',
+	'ExternCrate',
+	'Import',
+	'ProcMacro'
 ];

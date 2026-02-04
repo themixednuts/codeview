@@ -34,7 +34,7 @@
   }>();
 
   const kind = $derived(node.kind as NodeKind);
-  const KindIcon = $derived(kindIcons[kind]);
+  const KindIcon = $derived(kindIcons[kind] ?? kindIcons.Crate);
   const heightStyle = $derived(itemHeight ? `height: ${itemHeight}px; ` : '');
   const cvStyle = $derived(itemHeight ? '' : 'content-visibility: auto; contain-intrinsic-size: auto 32px; ');
   const paddingStyle = $derived(`padding-left: ${depth * 16 + 8}px`);
@@ -96,7 +96,7 @@
     {/if}
     <span
       class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-white"
-      style="background-color: {kindColors[kind]}"
+      style="background-color: {kindColors[kind] ?? kindColors.Crate}"
     >
       <KindIcon size={12} strokeWidth={2.5} />
     </span>
@@ -135,7 +135,7 @@
     {/if}
     <span
       class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-chip)] corner-squircle text-white"
-      style="background-color: {kindColors[kind]}"
+      style="background-color: {kindColors[kind] ?? kindColors.Crate}"
     >
       <KindIcon size={12} strokeWidth={2.5} />
     </span>

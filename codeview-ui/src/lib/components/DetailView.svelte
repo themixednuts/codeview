@@ -4,12 +4,12 @@
   import type { LayoutMode } from '$lib/components/LayoutSwitcher.svelte';
   import type { NodeDetail } from '$lib/schema';
   import { page } from '$app/state';
-  import { goto } from '$app/navigation';
+  import { afterNavigate, goto } from '$app/navigation';
   import { getNodeDetail } from '$lib/graph.remote';
   import { cached, cacheKey } from '$lib/cache.svelte';
   import { CrossEdgeUpdatesConnection } from '$lib/updates.svelte';
   import { Memo } from '$lib/reactivity.svelte';
-  import { onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
   import { perf } from '$lib/perf';
   import { isHosted } from '$lib/platform';
   import { kindLabels, visibilityLabels, edgeLabels } from '$lib/node-labels';
@@ -18,9 +18,9 @@
   import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
   import LayoutSwitcher from '$lib/components/LayoutSwitcher.svelte';
   import NodeDetails from '$lib/components/NodeDetails.svelte';
-
-  import { themeCtx, getNodeUrlCtx, graphForDisplayCtx, crateVersionsCtx } from '$lib/context';
   import { getLogger } from '$lib/log';
+
+  import { themeCtx, getNodeUrlCtx, graphForDisplayCtx, crateVersionsCtx, crateStatusCtx, parseProgressStreamCtx } from '$lib/context';
 
   let { nodeId, parentHint } = $props<{
     nodeId: string;
@@ -31,34 +31,68 @@
   const getNodeUrl = $derived(getNodeUrlCtx.get());
   const graphForDisplay = $derived(graphForDisplayCtx.get());
   const crateVersions = $derived(crateVersionsCtx.get());
+  const crateStatus = $derived(crateStatusCtx.getOr('unknown'));
+  const progressStream = $derived(parseProgressStreamCtx.getOr(null));
 
   const crateName = $derived(page.params.crate);
   const crateVersion = $derived(page.params.version);
   const edgeUpdates = new CrossEdgeUpdatesConnection();
+  let lastEdgeNodeId = '';
   const refreshToken = $derived(edgeUpdates.updateTick);
+  const parseSequence = $derived(progressStream?.stream.sequence ?? 0);
+  const parseRefreshToken = $derived(crateStatus === 'processing' ? parseSequence : 0);
+  const detailRefreshToken = $derived(parseRefreshToken + refreshToken);
+
+  function connectEdgeUpdatesIfNeeded() {
+    if (!isHosted || !nodeId) {
+      edgeUpdates.disconnect();
+      return;
+    }
+    if (crateStatus !== 'processing') {
+      edgeUpdates.disconnect();
+      return;
+    }
+    if (nodeId === lastEdgeNodeId) return;
+    lastEdgeNodeId = nodeId;
+    edgeUpdates.connect(nodeId);
+  }
+
+  onMount(() => {
+    connectEdgeUpdatesIfNeeded();
+    afterNavigate(() => {
+      connectEdgeUpdatesIfNeeded();
+    });
+    return () => edgeUpdates.destroy();
+  });
 
   $effect(() => {
-    if (!nodeId || !isHosted) return;
-    edgeUpdates.connect(nodeId);
+    crateStatus;
+    nodeId;
+    connectEdgeUpdatesIfNeeded();
   });
-  onDestroy(() => edgeUpdates.destroy());
 
-  const log = getLogger('detail-view');
-
-  const detail: NodeDetail | null = $derived(
-    await cached(
+  const detailQuery = $derived(
+    cached(
       cacheKey('nodeDetail', nodeId, crateVersion),
-      getNodeDetail({ nodeId, version: crateVersion, refresh: refreshToken })
+      getNodeDetail({ nodeId, version: crateVersion, refresh: detailRefreshToken })
     )
   );
-
-  // Log every time detail resolves (tracks the actual value Svelte renders)
+  const rawDetail: NodeDetail | null = $derived(detailQuery.current as NodeDetail | null);
+  const detailLoading = $derived(detailQuery.loading);
+  const detail = $derived(
+    rawDetail && rawDetail.node.id === nodeId ? rawDetail : null
+  );
+  const hasStaleCurrent = $derived(
+    rawDetail !== null && rawDetail.node.id !== nodeId
+  );
+  const log = getLogger('detail-view');
   $effect(() => {
-    const name = detail?.node?.name ?? '(null)';
-    const id = detail?.node?.id ?? '';
-    log.debug`detail resolved: "${name}" (${id}) — requested nodeId="${nodeId}"`;
-    if (detail && detail.node.id !== nodeId) {
-      log.warn`MISMATCH: detail.node.id="${detail.node.id}" ≠ nodeId="${nodeId}"`;
+    const name = rawDetail?.node?.name ?? '(null)';
+    const id = rawDetail?.node?.id ?? '';
+    if (!rawDetail) return;
+    log.debug`detail resolved: "${name}" (${id}) — requested nodeId="${nodeId}" loading=${detailLoading ? 'yes' : 'no'}`;
+    if (rawDetail.node.id !== nodeId && !detailLoading) {
+      log.warn`MISMATCH: detail.node.id="${rawDetail.node.id}" ≠ nodeId="${nodeId}"`;
     }
   });
 
@@ -223,7 +257,7 @@
       for (const edge of detail!.edges) {
         if ((edge.kind === 'Contains' || edge.kind === 'Defines') && groups.has(edge.from)) {
           const target = relatedMap.get(edge.to);
-          if (target && (target.kind === 'Method' || target.kind === 'Function')) {
+          if (target && target.kind === 'Function') {
             groups.get(edge.from)?.methods.push(target);
           }
         }
@@ -241,7 +275,21 @@
 </script>
 
 <svelte:boundary>
-  {#if selected && detail}
+  {#if detailLoading && !detail}
+    <div class="flex h-full items-center justify-center">
+      <div class="flex items-center gap-2 text-sm text-[var(--muted)]">
+        <Loader2Icon class="animate-spin" size={16} />
+        Loading...
+      </div>
+    </div>
+  {:else if hasStaleCurrent && !detail}
+    <div class="flex h-full items-center justify-center">
+      <div class="flex items-center gap-2 text-sm text-[var(--muted)]">
+        <Loader2Icon class="animate-spin" size={16} />
+        Resolving node...
+      </div>
+    </div>
+  {:else if selected && detail}
     <div class="space-y-6">
       <!-- Breadcrumbs -->
       {#if graphForDisplay}
@@ -316,14 +364,6 @@
       </div>
     </div>
   {/if}
-  {#snippet pending()}
-    <div class="flex h-full items-center justify-center">
-      <div class="flex items-center gap-2 text-sm text-[var(--muted)]">
-        <Loader2Icon class="animate-spin" size={16} />
-        Loading...
-      </div>
-    </div>
-  {/snippet}
   {#snippet failed(error, reset)}
     <div class="flex h-full items-center justify-center p-6">
       <div class="rounded-[var(--radius-card)] corner-squircle border border-[var(--danger-border)] bg-[var(--danger-bg)] p-6 text-center max-w-md">

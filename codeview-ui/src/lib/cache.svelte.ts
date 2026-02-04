@@ -31,6 +31,7 @@
  */
 
 import { getLogger } from '$lib/log';
+import { perf } from '$lib/perf';
 
 const log = getLogger('cache');
 
@@ -56,15 +57,20 @@ function isExpired(entry: CacheEntry, now: number) {
 
 function readCache(key: string): unknown | undefined {
 	const entry = _cache.get(key);
-	if (!entry) return undefined;
+	if (!entry) {
+		perf.event('cache', 'miss', key.split('|')[1]);
+		return undefined;
+	}
 	const now = Date.now();
 	if (isExpired(entry, now)) {
 		_cache.delete(key);
+		perf.event('cache', 'expired', key.split('|')[1]);
 		return undefined;
 	}
 	// Touch for LRU.
 	_cache.delete(key);
 	_cache.set(key, entry);
+	perf.event('cache', 'hit', key.split('|')[1]);
 	return entry.value;
 }
 

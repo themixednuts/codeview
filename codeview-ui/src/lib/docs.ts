@@ -12,8 +12,6 @@ function kindPrefix(kind: NodeKind): string | null {
 			return 'trait';
 		case 'Function':
 			return 'fn';
-		case 'Method':
-			return 'fn';
 		case 'TypeAlias':
 			return 'type';
 		case 'Union':
@@ -85,4 +83,3 @@ export function externalDocsUrl(
 		? `${baseUrl}/${fullPath}/index.html`
 		: `${baseUrl}/${fullPath}/`;
 }
-

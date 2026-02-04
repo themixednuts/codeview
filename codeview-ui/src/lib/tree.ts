@@ -11,6 +11,13 @@ import ShieldHalf from '@lucide/svelte/icons/shield-half';
 import Puzzle from '@lucide/svelte/icons/puzzle';
 import Braces from '@lucide/svelte/icons/braces';
 import Equal from '@lucide/svelte/icons/equal';
+import Hash from '@lucide/svelte/icons/hash';
+import Database from '@lucide/svelte/icons/database';
+import Wand2 from '@lucide/svelte/icons/wand-2';
+import CircleDot from '@lucide/svelte/icons/circle-dot';
+import PackageOpen from '@lucide/svelte/icons/package-open';
+import Import from '@lucide/svelte/icons/import';
+import Sparkles from '@lucide/svelte/icons/sparkles';
 
 /** Node fill colors — derived from the canonical kindVisuals palette. */
 export const kindColors: Record<NodeKind, string> = Object.fromEntries(
@@ -29,8 +36,14 @@ export const kindIcons: Record<NodeKind, Component> = {
 	TraitAlias: ShieldHalf,
 	Impl: Puzzle,
 	Function: Braces,
-	Method: Braces,
-	TypeAlias: Equal
+	TypeAlias: Equal,
+	Constant: Hash,
+	Static: Database,
+	Macro: Wand2,
+	Primitive: CircleDot,
+	ExternCrate: PackageOpen,
+	Import: Import,
+	ProcMacro: Sparkles
 };
 
 export const kindOrder: Record<NodeKind, number> = {
@@ -41,10 +54,16 @@ export const kindOrder: Record<NodeKind, number> = {
 	Enum: 4,
 	Union: 5,
 	TypeAlias: 6,
-	Function: 7,
-	Impl: 8,
-	Method: 9,
-	TraitAlias: 10
+	Constant: 7,
+	Static: 8,
+	Function: 9,
+	Impl: 10,
+	TraitAlias: 11,
+	Macro: 12,
+	ProcMacro: 13,
+	Primitive: 14,
+	ExternCrate: 15,
+	Import: 16
 };
 
 export interface TreeNode {

@@ -1,18 +1,17 @@
 import { isRustChannel } from '$lib/std';
+import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 
-const CRATE_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/;
-const VERSION_RE = /^\d{1,10}\.\d{1,10}\.\d{1,10}(?:-[\w.-]+)?(?:\+[\w.-]+)?$/;
 const ALLOWED_ECOSYSTEMS = new Set(['rust']);
 const UNDERSCORE_RE = /_/g;
 const HYPHEN_RE = /-/g;
 const EDGE_NODE_ID_MAX = 512;
 
 export function isValidCrateName(name: string): boolean {
-	return CRATE_NAME_RE.test(name);
+	return isValidCrateNameParam(name);
 }
 
 export function isValidVersion(version: string): boolean {
-	return version === 'latest' || isRustChannel(version) || VERSION_RE.test(version);
+	return isRustChannel(version) || isValidVersionParam(version);
 }
 
 export function isValidEcosystem(ecosystem: string): boolean {

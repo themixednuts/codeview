@@ -17,6 +17,9 @@ import type {
 	ItemSummary,
 	ExternalCrate
 } from '../rustdoc.types';
+import { getLogger } from '$lib/log';
+
+const log = getLogger('streaming-parser');
 
 /**
  * Parsed element info from the JSON parser.
@@ -97,8 +100,15 @@ export function processParsedElement(
 ): void {
 	if (info.value === undefined) return;
 
-	const stackPath = info.stack.map((s: StackElement) => s.key).join('.');
+	// Stack path - the root element has empty string key, filter it out
+	const rawKeys = info.stack.map((s: StackElement) => s.key);
+	const stackPath = rawKeys.filter(k => k !== '' && k != null).join('.');
 	const key = info.key;
+
+	// Debug: log first few elements to understand structure
+	if (state.itemCount < 3 && state.pathCount < 3) {
+		log.debug`element: rawKeys=${JSON.stringify(rawKeys)} stackPath="${stackPath}" key="${String(key)}"`;
+	}
 
 	if (stackPath === '' && key === 'root') {
 		state.root = info.value as Id;
@@ -188,7 +198,7 @@ export async function parseRustdocByteStream(
  *
  * Note: This does NOT handle decompression. If the response is compressed,
  * decompress the body before calling this function, or use the environment-specific
- * parse functions that handle decompression (Cloudflare: ZstdDecompressionStream, local: fzstd).
+ * parse functions that handle decompression (gzip streams in hosted/local).
  *
  * @param response - Fetch response with JSON body
  * @param callbacks - Parse callbacks
@@ -202,31 +212,4 @@ export async function parseRustdocResponse(
 		throw new Error('Response has no body');
 	}
 	return parseRustdocByteStream(response.body, callbacks);
-}
-
-/**
- * Parses a Uint8Array buffer through the streaming parser.
- * Creates a ReadableStream from the buffer and processes it.
- *
- * This is useful for local mode where we have the entire buffer in memory
- * but still want to use streaming parsing for memory efficiency during
- * graph construction.
- *
- * @param buffer - The rustdoc JSON as a Uint8Array
- * @param callbacks - Parse callbacks
- * @returns Promise that resolves with final parse state
- */
-export async function parseRustdocBuffer(
-	buffer: Uint8Array,
-	callbacks: StreamingParseCallbacks
-): Promise<ParseState> {
-	// Create a ReadableStream from the buffer
-	const stream = new ReadableStream<Uint8Array>({
-		start(controller) {
-			// Push the entire buffer (could chunk if needed for very large buffers)
-			controller.enqueue(buffer);
-			controller.close();
-		}
-	});
-	return parseRustdocByteStream(stream, callbacks);
 }

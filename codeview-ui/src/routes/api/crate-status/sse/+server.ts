@@ -1,5 +1,8 @@
 import type { RequestHandler } from './$types';
 import { initProvider } from '$lib/server/provider';
+import { getLogger } from '$lib/log';
+
+const log = getLogger('api:status-sse');
 
 export const GET: RequestHandler = async (event) => {
 	const key = new URL(event.request.url).searchParams.get('key') ?? '';
@@ -7,6 +10,9 @@ export const GET: RequestHandler = async (event) => {
 	if (!name || !version) {
 		return new Response('Missing key', { status: 400 });
 	}
+	log.info`open key=${key} name=${name} version=${version}`;
 	const provider = await initProvider(event);
-	return provider.streamCrateStatus(name, version, event.request.signal);
+	const res = await provider.streamCrateStatus(name, version, event.request.signal);
+	log.info`stream key=${key} status=${res.status}`;
+	return res;
 };

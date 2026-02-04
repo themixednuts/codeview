@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "54f332ee-8691-4715-bb49-8decd58ac775",
+  "id": "53aa6227-566c-4fef-998d-7475fc9e8db9",
   "prevIds": [
-    "141c2751-e3d7-4752-acbc-c978a797bea4"
+    "00000000-0000-0000-0000-000000000000"
   ],
   "ddl": [
     {
@@ -19,7 +19,15 @@
       "entityType": "tables"
     },
     {
+      "name": "edges",
+      "entityType": "tables"
+    },
+    {
       "name": "graph_data",
+      "entityType": "tables"
+    },
+    {
+      "name": "node_details",
       "entityType": "tables"
     },
     {
@@ -66,17 +74,37 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "graph_json",
+      "name": "index_json",
       "entityType": "columns",
       "table": "crate_graphs"
     },
     {
       "type": "text",
-      "notNull": true,
+      "notNull": false,
       "autoincrement": false,
       "default": null,
       "generated": null,
-      "name": "index_json",
+      "name": "tree_json",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "node_count",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "0",
+      "generated": null,
+      "name": "edge_count",
       "entityType": "columns",
       "table": "crate_graphs"
     },
@@ -137,6 +165,16 @@
       "default": null,
       "generated": null,
       "name": "error",
+      "entityType": "columns",
+      "table": "crate_status"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "last_step",
       "entityType": "columns",
       "table": "crate_status"
     },
@@ -221,6 +259,76 @@
       "table": "cross_edges"
     },
     {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ecosystem",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "crate_name",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "crate_version",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "from_id",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "to_id",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "kind",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "confidence",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
       "type": "integer",
       "notNull": false,
       "autoincrement": false,
@@ -239,6 +347,56 @@
       "name": "json",
       "entityType": "columns",
       "table": "graph_data"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ecosystem",
+      "entityType": "columns",
+      "table": "node_details"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "crate_name",
+      "entityType": "columns",
+      "table": "node_details"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "crate_version",
+      "entityType": "columns",
+      "table": "node_details"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_id",
+      "entityType": "columns",
+      "table": "node_details"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "node_json",
+      "entityType": "columns",
+      "table": "node_details"
     },
     {
       "type": "text",
@@ -366,6 +524,32 @@
       "name": "cross_edges_pk",
       "entityType": "pks",
       "table": "cross_edges"
+    },
+    {
+      "columns": [
+        "ecosystem",
+        "crate_name",
+        "crate_version",
+        "from_id",
+        "to_id",
+        "kind"
+      ],
+      "nameExplicit": false,
+      "name": "edges_pk",
+      "entityType": "pks",
+      "table": "edges"
+    },
+    {
+      "columns": [
+        "ecosystem",
+        "crate_name",
+        "crate_version",
+        "node_id"
+      ],
+      "nameExplicit": false,
+      "name": "node_details_pk",
+      "entityType": "pks",
+      "table": "node_details"
     },
     {
       "columns": [

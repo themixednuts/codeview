@@ -1,6 +1,6 @@
 import type { Result } from 'better-result';
 import type { Edge, Workspace, CrateGraph } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeSummary } from '$lib/schema';
+import type { CrateIndex, CrateTree, NodeSummary, NodeDetail } from '$lib/schema';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
 
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
@@ -27,7 +27,12 @@ export interface CrossEdgeData {
 export interface DataProvider {
 	// Existing (kept for local CLI / single-workspace mode)
 	loadWorkspace(): Promise<Workspace | null>;
-	loadSourceFile(relativePath: string): Promise<{
+	loadSourceFile(
+		relativePath: string,
+		crateName?: string,
+		crateVersion?: string,
+		sourceProvider?: 'auto' | 'crates-io' | 'github'
+	): Promise<{
 		error: string | null;
 		content: string | null;
 	}>;
@@ -36,6 +41,8 @@ export interface DataProvider {
 	loadCrateGraph(name: string, version: string): Promise<CrateGraph | null>;
 	loadCrateTree(name: string, version: string): Promise<CrateTree | null>;
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
+	/** Load a single node with its edges and related nodes (progressive loading) */
+	loadNodeDetail?(name: string, version: string, nodeId: string): Promise<NodeDetail | null>;
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
 	triggerParse(name: string, version: string, force?: boolean): Promise<Result<void, ValidationError | NotAvailableError | RateLimitError>>;
@@ -49,6 +56,11 @@ export interface DataProvider {
 	streamCrateStatus(name: string, version: string, signal: AbortSignal): Promise<Response>;
 	streamProcessingStatus(ecosystem: string, signal: AbortSignal): Promise<Response>;
 	streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response>;
+	/** Stream parse progress (tree updates) during parsing */
+	streamParseProgress?(name: string, version: string, signal: AbortSignal, options?: {
+		since?: number;
+		contentId?: string | null;
+	}): Promise<Response>;
 }
 
 /**

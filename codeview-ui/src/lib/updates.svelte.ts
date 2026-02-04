@@ -1,5 +1,5 @@
 import { getLogger } from '$lib/log';
-import { SSEConnection } from '$lib/sse';
+import { StreamConnection } from '$lib/stream.svelte';
 
 /**
  * Delay before opening the SSE connection (ms).
@@ -12,7 +12,7 @@ const CONNECT_DELAY_MS = 1_500;
  * Reactive SSE connection for cross-crate edge updates.
  * Emits a monotonically increasing tick when updates arrive.
  */
-export class CrossEdgeUpdatesConnection extends SSEConnection {
+export class CrossEdgeUpdatesConnection extends StreamConnection {
 	updateTick = $state(0);
 
 	protected readonly log = getLogger('graph-updates');
@@ -34,6 +34,7 @@ export class CrossEdgeUpdatesConnection extends SSEConnection {
 		this.close();
 		this.activate();
 		this.#nodeId = nodeId;
+		this.beginStream(`edge:${nodeId}`);
 		// Delay opening to avoid zombie connections on rapid navigation
 		this.#connectTimer = setTimeout(() => {
 			this.#connectTimer = null;
@@ -61,6 +62,7 @@ export class CrossEdgeUpdatesConnection extends SSEConnection {
 	protected onData(data: unknown) {
 		const msg = data as { type?: string; nodeId?: string };
 		if (msg.type && msg.type !== 'cross-edges') return;
+		this.touchStream();
 		this.updateTick += 1;
 		this.log.debug`update ${this.tag} tick=${String(this.updateTick)}`;
 	}

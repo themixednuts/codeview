@@ -2,17 +2,22 @@ import { Result } from 'better-result';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
-import { decompress } from 'fzstd';
-import type { Workspace, CrateGraph, Confidence, EdgeKind, NodeKind, Visibility } from '$lib/graph';
-import type { CrateIndex } from '$lib/schema';
+import type { Workspace, CrateGraph, Confidence, EdgeKind, NodeKind, Visibility, Node, Edge } from '$lib/graph';
+import type { CrateIndex, CrateTree, NodeDetail, NodeSummary } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, STD_JSON_CRATES } from '$lib/std';
 import { getLogger } from '$lib/log';
+import { perf } from '$lib/perf';
+import { decodeGzipStream } from '$lib/server/gzip';
+import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from '$lib/server/cross-edges';
+import { getContentId } from '$lib/server/content';
 import { createCratesIoAdapter } from '../registry/cratesio';
 import { getRegistry } from '../registry/index';
-import { getParser } from '../parser/index';
+import { parseWithProgressiveStorage, type ParseProgress } from '../parser/streaming/adapter';
+import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
+import type { SourceProviderGroup } from '../sources/types';
 import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } from '../provider';
 import { ValidationError, NotAvailableError } from '../errors';
 import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
@@ -27,6 +32,48 @@ const log = getLogger('local');
 const USER_AGENT = 'codeview';
 const SOURCE_MAX_BYTES = 96 * 1024 * 1024;
 const VERSION_LOOKUP_CONCURRENCY = 6;
+
+function sourcePathCandidates(path: string): string[] {
+	const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
+	const withSrc = normalized.startsWith('src/') ? normalized : `src/${normalized}`;
+	const withoutSrc = normalized.startsWith('src/') ? normalized.slice('src/'.length) : normalized;
+	const values = [normalized, withSrc, withoutSrc];
+	return values.filter((v, i, all) => v.length > 0 && all.indexOf(v) === i);
+}
+
+function resolveSourceFileFromMap(files: Map<string, string>, file: string): string | null {
+	for (const candidate of sourcePathCandidates(file)) {
+		const exact = files.get(candidate);
+		if (exact !== undefined) return exact;
+	}
+	for (const candidate of sourcePathCandidates(file)) {
+		const suffix = `/${candidate}`;
+		for (const [path, content] of files) {
+			const normalizedPath = path.replace(/\\/g, '/');
+			if (normalizedPath === candidate || normalizedPath.endsWith(suffix)) return content;
+		}
+	}
+	return null;
+}
+
+function selectSourceProviders(
+	group: SourceProviderGroup,
+	mode: 'auto' | 'crates-io' | 'github'
+): SourceProviderGroup {
+	if (mode === 'auto') return group;
+	if (mode === 'crates-io') {
+		return {
+			...group,
+			main: group.main.filter((provider) => provider.id === 'crate-archive'),
+			fallbacks: []
+		};
+	}
+	return {
+		...group,
+		main: [],
+		fallbacks: group.fallbacks.filter((provider) => provider.id.startsWith('github-'))
+	};
+}
 
 type CrateIndexEntry = {
 	id: string;
@@ -60,6 +107,35 @@ async function mapWithConcurrency<T, R>(
 export function createLocalProvider(): DataProvider {
 	let cached: Workspace | null = null;
 	const registry = createCratesIoAdapter();
+	const sourceFileCache = new Map<string, string>();
+	const SOURCE_FILE_CACHE_MAX = 512;
+
+	function sourceCacheKey(
+		crateName: string,
+		crateVersion: string,
+		file: string,
+		sourceProvider: 'auto' | 'crates-io' | 'github'
+	): string {
+		return `${crateName}|${crateVersion}|${sourceProvider}|${file}`;
+	}
+
+	function getCachedSourceFile(key: string): string | null {
+		const value = sourceFileCache.get(key);
+		if (value === undefined) return null;
+		sourceFileCache.delete(key);
+		sourceFileCache.set(key, value);
+		return value;
+	}
+
+	function setCachedSourceFile(key: string, content: string): void {
+		if (sourceFileCache.has(key)) sourceFileCache.delete(key);
+		sourceFileCache.set(key, content);
+		while (sourceFileCache.size > SOURCE_FILE_CACHE_MAX) {
+			const oldestKey = sourceFileCache.keys().next().value;
+			if (oldestKey === undefined) break;
+			sourceFileCache.delete(oldestKey);
+		}
+	}
 
 	// Lazy-init cache to avoid bun:sqlite import at module level on CF
 	let cache: LocalCache | null = null;
@@ -72,6 +148,8 @@ export function createLocalProvider(): DataProvider {
 	const listeners = new Map<string, Set<(status: CrateStatus) => void>>();
 	const processingListeners = new Set<(count: number) => void>();
 	const edgeListeners = new Map<string, Set<(data: { type: string; nodeId: string }) => void>>();
+	const progressListeners = new Map<string, Set<(progress: ParseProgress) => void>>();
+	const progressState = new Map<string, { sequence: number; contentId?: string; snapshot?: CrateTree }>();
 
 	// In-flight parse deduplication
 	const inFlight = new Map<string, Promise<void>>();
@@ -96,13 +174,17 @@ export function createLocalProvider(): DataProvider {
 	function emitStatus(name: string, version: string, status: CrateStatus, step?: string): void {
 		const lc = getCache();
 		lc.setStatus('rust', name, version, status.status as 'unknown' | 'processing' | 'ready' | 'failed', status.error, step);
+		const key = statusKey(name, version);
+		if (status.status === 'processing' && step === 'resolving') {
+			// New parse cycle for this crate/version: drop any stale progress snapshot state.
+			progressState.delete(key);
+		}
 
 		const fullStatus: CrateStatus = {
 			...status,
 			...(step ? { step } : {}),
 		};
 
-		const key = statusKey(name, version);
 		const subs = listeners.get(key);
 		if (subs) {
 			for (const fn of subs) {
@@ -122,6 +204,33 @@ export function createLocalProvider(): DataProvider {
 		for (const fn of subs) {
 			try { fn({ type: 'cross-edges', nodeId }); } catch {}
 		}
+	}
+
+	function emitProgress(name: string, version: string, progress: ParseProgress): void {
+		const key = statusKey(name, version);
+		const subs = progressListeners.get(key);
+		if (!subs) return;
+		for (const fn of subs) {
+			try { fn(progress); } catch {}
+		}
+	}
+
+	function subscribeProgress(
+		name: string,
+		version: string,
+		cb: (progress: ParseProgress) => void
+	): () => void {
+		const key = statusKey(name, version);
+		let subs = progressListeners.get(key);
+		if (!subs) {
+			subs = new Set();
+			progressListeners.set(key, subs);
+		}
+		subs.add(cb);
+		return () => {
+			subs!.delete(cb);
+			if (subs!.size === 0) progressListeners.delete(key);
+		};
 	}
 
 	function subscribe(
@@ -209,11 +318,11 @@ export function createLocalProvider(): DataProvider {
 			});
 
 			// fetch-artifact: download + decompress
-			const artifact = await step.do(
+			const artifactResult = await step.do(
 				'fetch-artifact',
 				{ retries: { limit: 2, delayMs: 3000, backoff: 'exponential' } },
 				async () => {
-					const artifactUrl = meta.artifactUrl ?? `https://docs.rs/crate/${name}/${version}/json`;
+					const artifactUrl = meta.artifactUrl ?? `https://docs.rs/crate/${name}/${version}/json.gz`;
 					const artifactRes = await fetch(artifactUrl, {
 						headers: { 'User-Agent': USER_AGENT }
 					});
@@ -224,20 +333,44 @@ export function createLocalProvider(): DataProvider {
 					}
 
 					const contentType = artifactRes.headers.get('content-type') ?? '';
-					if (contentType.includes('zstd')) {
-						const compressed = new Uint8Array(await artifactRes.arrayBuffer());
-						return decompress(compressed);
+					const contentLength = Number(artifactRes.headers.get('content-length') ?? '0');
+					const contentId = getContentId(artifactRes.headers, `${name}@${version}`);
+					if (!artifactRes.body) {
+						throw new Error('Artifact response has no body for streaming');
 					}
-					return new Uint8Array(await artifactRes.arrayBuffer());
+					let input: ReadableStream<Uint8Array> = artifactRes.body;
+					if (contentType.includes('gzip')) {
+						input = decodeGzipStream(artifactRes.body);
+					}
+					const sizeLabel = contentLength > 0
+						? `${(contentLength / 1024 / 1024).toFixed(1)} MB compressed`
+						: 'unknown size';
+					return { input, sizeLabel, contentId };
 				}
 			);
-			log.info`Fetched ${name}@${version}: ${(artifact.byteLength / 1024 / 1024).toFixed(1)} MB`;
+			log.info`Fetched ${name}@${version}: ${artifactResult.sizeLabel}`;
 
-			// parse-rustdoc: parse JSON → graph
+			// Track cross-edge data during parsing (for both paths)
+			const crossEdgesList: Edge[] = [];
+			const crossNodeMap = new Map<string, CrossEdgeNodeSummary>();
+			const externalCratesFound: Array<{ id: string; name: string }> = [];
+
+			function cratePrefix(id: string): string {
+				return id.split('::')[0] ?? id;
+			}
+			const normalizedName = name.replace(/-/g, '_');
+			const isExternalNode = (id: string): boolean => cratePrefix(id) !== normalizedName;
+
+			// parse-rustdoc: parse JSON → graph with progressive storage
 			const parseResult = await step.do(
 				'parse-rustdoc',
 				{ retries: { limit: 1, delayMs: 1000, backoff: 'linear' } },
 				async () => {
+					log.info`Parsing rustdoc for ${name}@${version}`;
+					emitStatus(name, version, { status: 'processing' }, 'parsing');
+					const t0 = performance.now();
+
+					// Fetch sources in parallel with parsing to avoid blocking progress.
 					log.info`Fetching sources for ${name}@${version}`;
 					const sourceAdapterResult = getSourceAdapter('rust');
 					if (sourceAdapterResult.isErr()) throw sourceAdapterResult.error;
@@ -248,22 +381,116 @@ export function createLocalProvider(): DataProvider {
 						version,
 						metadata: meta
 					});
-					const sourceFiles = await fetchSourcesWithProviders(
+					const sourceFilesPromise = fetchSourcesWithProviders(
 						providers,
 						{ ecosystem: 'rust', name, version, metadata: meta },
 						{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT }
+					).catch((err) => {
+						log.warn`Sources fetch failed for ${name}@${version}: ${String(err)}`;
+						return null;
+					});
+
+					const lc = getCache();
+					const crateName = name.replace(/-/g, '_');
+
+					// Initialize crate entry (will be finalized after parsing)
+					const tempIndex: CrateIndex = { name, version, crates: [] };
+					lc.initCrate(name, version, tempIndex);
+
+					// Track node summaries for cross-edge detection
+					const nodeSummaries = new Map<string, CrossEdgeNodeSummary>();
+					// Accumulate deltas so we can periodically materialize a full tree for cache reads.
+					const treeAccumulator: CrateTree = { nodes: [], edges: [] };
+
+					const result = await parseWithProgressiveStorage(
+						artifactResult.input,
+						name,
+						{
+							storeNodes: (nodes) => {
+								// Store to DB
+								lc.insertNodes(name, version, nodes);
+								// Track summaries for cross-edge detection
+								for (const node of nodes) {
+									nodeSummaries.set(node.id, {
+										id: node.id,
+										name: node.name,
+										kind: node.kind,
+										visibility: node.visibility,
+										is_external: node.is_external
+									});
+								}
+							},
+							storeEdges: (edges) => {
+								// Store to DB
+								lc.insertEdges(name, version, edges);
+								// Track cross-crate edges
+								for (const edge of edges) {
+									if (cratePrefix(edge.from) !== cratePrefix(edge.to)) {
+										crossEdgesList.push(edge);
+										const fromNode = nodeSummaries.get(edge.from)
+											?? summarizeCrossEdgeNode(edge.from, isExternalNode(edge.from)).unwrapOr(null);
+										const toNode = nodeSummaries.get(edge.to)
+											?? summarizeCrossEdgeNode(edge.to, isExternalNode(edge.to)).unwrapOr(null);
+										if (fromNode) crossNodeMap.set(fromNode.id, fromNode);
+										if (toNode) crossNodeMap.set(toNode.id, toNode);
+									}
+								}
+							}
+						},
+						{
+							batchSize: 200,
+							skipExternalNodes: true,
+							onProgress: (progress) => {
+								// Emit delta updates to SSE listeners
+								emitProgress(name, version, progress);
+								// Also update tree in DB periodically for UI to fetch
+								if (progress.tree) {
+									if (progress.type === 'snapshot') {
+										treeAccumulator.nodes.length = 0;
+										treeAccumulator.edges.length = 0;
+										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
+										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
+									} else {
+										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
+										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
+									}
+									if (progress.nodeCount > 0) {
+										lc.finalizeCrate(name, version, treeAccumulator, progress.nodeCount, progress.edgeCount);
+									}
+								}
+								const key = statusKey(name, version);
+								const existing = progressState.get(key);
+								progressState.set(key, {
+									sequence: progress.sequence,
+									contentId: progress.contentId ?? existing?.contentId,
+									snapshot: progress.type === 'snapshot' && progress.tree
+										? { nodes: progress.tree.nodes.slice(), edges: progress.tree.edges.slice() }
+										: existing?.snapshot
+								});
+							},
+							progressInterval: 200,
+							snapshotInterval: 20000,
+							contentId: artifactResult.contentId
+						}
 					);
+
+					// Finalize crate with tree
+					lc.finalizeCrate(name, version, result.tree, result.nodeCount, result.edgeCount);
+
+					// Collect external crates
+					externalCratesFound.push(...result.externalCrates);
+
+					const sourceFiles = await sourceFilesPromise;
 					log.info`Sources for ${name}@${version}: ${sourceFiles ? sourceFiles.size + ' files' : 'none'}`;
 
-					log.info`Parsing rustdoc for ${name}@${version}`;
-					const t0 = performance.now();
-					const parserResult = getParser('rust');
-					if (parserResult.isErr()) throw parserResult.error;
-					const parser = parserResult.value;
-					const srcFiles = sourceFiles ?? undefined;
-					const result = await parser.parse(artifact, name, version, srcFiles);
-					log.info`Parsed ${name}@${version}: ${result.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
-					return result;
+					log.info`Parsed ${name}@${version}: ${result.nodeCount} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
+
+					return {
+						graph: { id: crateName, name: crateName, version, nodes: [] as Node[], edges: [] as Edge[] },
+						externalCrates: result.externalCrates.map(ec => ({ ...ec, version: null, nodes: [] as Node[] })),
+						nodeCount: result.nodeCount,
+						edgeCount: result.edgeCount
+					};
 				}
 			);
 
@@ -272,42 +499,16 @@ export function createLocalProvider(): DataProvider {
 				emitStatus(name, version, { status: 'processing' }, 'indexing');
 			});
 
-			// index-cross-edges: build cross-crate edge index + resolve external versions
-			const { crossEdgesList, crossNodeList, index } = await step.do(
+			// index-cross-edges: resolve external crate versions
+			const index = await step.do(
 				'index-cross-edges',
 				{ retries: { limit: 1, delayMs: 1000, backoff: 'linear' } },
 				async () => {
-					function cratePrefix(id: string): string {
-						return id.split('::')[0] ?? id;
-					}
-
-					const nodeById = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
-					for (const node of parseResult.graph.nodes) {
-						nodeById.set(node.id, {
-							id: node.id,
-							name: node.name,
-							kind: node.kind,
-							visibility: node.visibility,
-							is_external: node.is_external
-						});
-					}
-
-					const edgesOut = parseResult.graph.edges.filter(
-						(edge) => cratePrefix(edge.from) !== cratePrefix(edge.to)
-					);
-
-					const nodeMap = new Map<string, { id: string; name: string; kind: string; visibility: string; is_external?: boolean }>();
-					for (const edge of edgesOut) {
-						const fromNode = nodeById.get(edge.from);
-						const toNode = nodeById.get(edge.to);
-						if (fromNode) nodeMap.set(fromNode.id, fromNode);
-						if (toNode) nodeMap.set(toNode.id, toNode);
-					}
-
 					const regResult2 = getRegistry('rust');
 					if (regResult2.isErr()) throw regResult2.error;
 					const reg = regResult2.value;
 					const latestCacheLocal = new Map<string, string | null>();
+
 					async function getLatestVersionLocal(candidate: string): Promise<string | null> {
 						if (latestCacheLocal.has(candidate)) return latestCacheLocal.get(candidate)!;
 						const resolved = await reg.getLatestVersion(candidate);
@@ -315,10 +516,7 @@ export function createLocalProvider(): DataProvider {
 						return resolved;
 					}
 
-					async function resolveExternalEntry(ext: {
-						id: string;
-						name: string;
-					}): Promise<CrateIndexEntry | null> {
+					async function resolveExternalEntry(ext: { id: string; name: string }): Promise<CrateIndexEntry | null> {
 						const candidates = [
 							...crateNameVariants(ext.name),
 							...crateNameVariants(ext.id)
@@ -333,66 +531,55 @@ export function createLocalProvider(): DataProvider {
 						return null;
 					}
 
-					const externalCrates: { id: string; name: string }[] = [];
 					const seenExternal = new Set<string>();
-					for (const c of parseResult.externalCrates) {
+					const uniqueExternal: { id: string; name: string }[] = [];
+					for (const c of externalCratesFound) {
 						if (seenExternal.has(c.id)) continue;
 						seenExternal.add(c.id);
 						if (isStdCrate(c.name) || isStdCrate(c.id)) continue;
-						externalCrates.push({ id: c.id, name: c.name });
+						uniqueExternal.push(c);
 					}
+
 					const externalEntries = await mapWithConcurrency(
-						externalCrates,
+						uniqueExternal,
 						VERSION_LOOKUP_CONCURRENCY,
 						resolveExternalEntry
 					);
-					const filteredExternal = externalEntries.filter(
-						(e): e is CrateIndexEntry => e !== null
-					);
+					const filteredExternal = externalEntries.filter((e): e is CrateIndexEntry => e !== null);
 
-					const idx: CrateIndex = {
+					const crateName = name.replace(/-/g, '_');
+					return {
 						name,
 						version,
 						crates: [
-							{
-								id: parseResult.graph.id,
-								name,
-								version,
-								is_external: false
-							},
+							{ id: crateName, name, version, is_external: false },
 							...filteredExternal
 						]
-					};
-
-					return {
-						crossEdgesList: edgesOut,
-						crossNodeList: Array.from(nodeMap.values()),
-						index: idx
-					};
+					} satisfies CrateIndex;
 				}
 			);
 
-			// store-graph: write to SQLite
+			// store-graph: finalize progressive storage
 			await step.do(
 				'store-graph',
 				{ retries: { limit: 2, delayMs: 1000, backoff: 'linear' } },
 				async () => {
 					emitStatus(name, version, { status: 'processing' }, 'storing');
-
 					const lc = getCache();
-					const graph = {
-						id: parseResult.graph.id,
-						name: parseResult.graph.name,
-						version: parseResult.graph.version,
-						nodes: parseResult.graph.nodes,
-						edges: parseResult.graph.edges
-					};
-					lc.putCrate(name, version, graph, index);
 
+					// Update index (nodes/edges already stored during parsing)
+					lc.initCrate(name, version, index);
+					// Restore tree and counts
+					const tree = lc.getTree(name, version);
+					if (tree) {
+						lc.finalizeCrate(name, version, tree, parseResult.nodeCount, parseResult.edgeCount);
+					}
+
+					// Store cross-edge index
 					lc.replaceCrossEdges(
 						'rust', name, version,
 						crossEdgesList,
-						crossNodeList
+						Array.from(crossNodeMap.values())
 					);
 				}
 			);
@@ -491,24 +678,103 @@ export function createLocalProvider(): DataProvider {
 				throw new Error(`Std JSON not available for ${name}@${version}`);
 			}
 
+			const crossEdgesList: Edge[] = [];
+			const crossNodeMap = new Map<string, CrossEdgeNodeSummary>();
+			const nodeSummaries = new Map<string, CrossEdgeNodeSummary>();
+			const normalizedName = name.replace(/-/g, '_');
+			const cratePrefix = (id: string): string => id.split('::')[0] ?? id;
+			const isExternalNode = (id: string): boolean => cratePrefix(id) !== normalizedName;
+
 			// read-json
-			const artifact = await step.do('read-json', async () => {
+			const artifactInfo = await step.do('read-json', async () => {
 				emitStatus(name, version, { status: 'processing' }, 'fetching');
-				const content = await readFile(stdInfo.jsonPath!, 'utf-8');
-				return content;
+				const file = Bun.file(stdInfo.jsonPath!);
+				const sizeLabel = `${(file.size / 1024 / 1024).toFixed(1)} MB`;
+				const contentId = `${file.size}:${file.lastModified ?? 0}`;
+				return { stream: file.stream(), sizeLabel, contentId };
 			});
-			log.info`Read std JSON for ${name}@${version}: ${(artifact.length / 1024 / 1024).toFixed(1)} MB`;
+			log.info`Read std JSON for ${name}@${version}: ${artifactInfo.sizeLabel}`;
 
 			// parse-rustdoc
 			const parseResult = await step.do('parse-rustdoc', async () => {
 				log.info`Parsing rustdoc for std crate ${name}@${version}`;
 				emitStatus(name, version, { status: 'processing' }, 'parsing');
 				const t0 = performance.now();
-				const parserResult = getParser('rust');
-				if (parserResult.isErr()) throw parserResult.error;
-				const parser = parserResult.value;
-				const result = await parser.parse(artifact, name, version);
-				log.info`Parsed ${name}@${version}: ${result.graph.nodes.length} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
+
+				const lc = getCache();
+				const tempIndex: CrateIndex = { name, version, crates: [] };
+				lc.initCrate(name, version, tempIndex);
+				const treeAccumulator: CrateTree = { nodes: [], edges: [] };
+
+				const result = await perf.timeAsync('parser', `parse ${name}@${version}`, () =>
+					parseWithProgressiveStorage(
+						artifactInfo.stream,
+						name,
+						{
+							storeNodes: (nodes) => {
+								lc.insertNodes(name, version, nodes);
+								for (const node of nodes) {
+									nodeSummaries.set(node.id, {
+									id: node.id,
+									name: node.name,
+									kind: node.kind,
+									visibility: node.visibility,
+									is_external: node.is_external
+								});
+							}
+						},
+							storeEdges: (edges) => {
+								lc.insertEdges(name, version, edges);
+								for (const edge of edges) {
+								if (cratePrefix(edge.from) !== cratePrefix(edge.to)) {
+									crossEdgesList.push(edge);
+									const fromNode = nodeSummaries.get(edge.from)
+										?? summarizeCrossEdgeNode(edge.from, isExternalNode(edge.from)).unwrapOr(null);
+									const toNode = nodeSummaries.get(edge.to)
+										?? summarizeCrossEdgeNode(edge.to, isExternalNode(edge.to)).unwrapOr(null);
+									if (fromNode) crossNodeMap.set(fromNode.id, fromNode);
+									if (toNode) crossNodeMap.set(toNode.id, toNode);
+								}
+							}
+						}
+					},
+					{
+							batchSize: 200,
+							skipExternalNodes: true,
+							progressInterval: 200,
+							snapshotInterval: 20000,
+							contentId: artifactInfo.contentId,
+							onProgress: (progress: ParseProgress) => {
+								emitProgress(name, version, progress);
+								if (progress.tree) {
+									if (progress.type === 'snapshot') {
+										treeAccumulator.nodes.length = 0;
+										treeAccumulator.edges.length = 0;
+										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
+										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
+									} else {
+										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
+										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
+									}
+									if (progress.nodeCount > 0) {
+										lc.finalizeCrate(name, version, treeAccumulator, progress.nodeCount, progress.edgeCount);
+									}
+								}
+								const key = statusKey(name, version);
+								const existing = progressState.get(key);
+								progressState.set(key, {
+									sequence: progress.sequence,
+									contentId: progress.contentId ?? existing?.contentId,
+									snapshot: progress.type === 'snapshot' && progress.tree
+										? { nodes: progress.tree.nodes.slice(), edges: progress.tree.edges.slice() }
+										: existing?.snapshot
+								});
+							}
+						}
+					)
+				);
+
+				log.info`Parsed ${name}@${version}: ${result.nodeCount} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
 				return result;
 			});
 
@@ -516,19 +782,29 @@ export function createLocalProvider(): DataProvider {
 			await step.do('store-graph', async () => {
 				emitStatus(name, version, { status: 'processing' }, 'storing');
 				const lc = getCache();
-				const graph = {
-					id: parseResult.graph.id,
-					name: parseResult.graph.name,
-					version: parseResult.graph.version,
-					nodes: parseResult.graph.nodes,
-					edges: parseResult.graph.edges,
-				};
 				const index: CrateIndex = {
 					name,
 					version,
-					crates: [{ id: parseResult.graph.id, name, version, is_external: false }],
+					crates: [{ id: normalizedName, name, version, is_external: false }]
 				};
-				lc.putCrate(name, version, graph, index);
+				lc.initCrate(name, version, index);
+				lc.finalizeCrate(name, version, parseResult.tree, parseResult.nodeCount, parseResult.edgeCount);
+				lc.replaceCrossEdges(
+					'rust', name, version,
+					crossEdgesList,
+					Array.from(crossNodeMap.values())
+				);
+			});
+
+			await step.do('fanout-dependencies', async () => {
+				const touchedNodes = new Set<string>();
+				for (const edge of crossEdgesList) {
+					touchedNodes.add(edge.from);
+					touchedNodes.add(edge.to);
+				}
+				for (const nodeId of touchedNodes) {
+					emitEdgeUpdate(nodeId);
+				}
 			});
 
 			// set-status-ready
@@ -611,25 +887,88 @@ export function createLocalProvider(): DataProvider {
 			return cached;
 		},
 
-		async loadSourceFile(file: string) {
+		async loadSourceFile(
+			file: string,
+			crateName?: string,
+			crateVersion?: string,
+			sourceProvider: 'auto' | 'crates-io' | 'github' = 'auto'
+		) {
 			const workspaceRoot = process.env.CODEVIEW_WORKSPACE;
-			if (!workspaceRoot) {
-				return { error: 'CODEVIEW_WORKSPACE not set', content: null };
+			if (workspaceRoot) {
+				const fullPath = join(workspaceRoot, file);
+				const resolved = resolve(fullPath);
+				if (!resolved.startsWith(resolve(workspaceRoot))) {
+					return { error: 'Path outside workspace', content: null };
+				}
+				const localResult = await Result.tryPromise(() => readFile(resolved, 'utf-8'));
+				if (localResult.isOk()) {
+					return { error: null, content: localResult.value };
+				}
 			}
 
-			const fullPath = join(workspaceRoot, file);
-			const resolved = resolve(fullPath);
-
-			if (!resolved.startsWith(resolve(workspaceRoot))) {
-				return { error: 'Path outside workspace', content: null };
-			}
-
-			try {
-				const content = await readFile(resolved, 'utf-8');
-				return { error: null, content };
-			} catch {
+			if (!crateName || !crateVersion) {
 				return { error: 'File not found', content: null };
 			}
+
+			const cacheKey = sourceCacheKey(crateName, crateVersion, file, sourceProvider);
+			const cachedContent = getCachedSourceFile(cacheKey);
+			if (cachedContent !== null) {
+				return { error: null, content: cachedContent };
+			}
+
+			const sourceAdapterResult = getSourceAdapter('rust');
+			if (sourceAdapterResult.isErr()) {
+				return { error: sourceAdapterResult.error.message, content: null };
+			}
+
+			let metadata: Awaited<ReturnType<typeof registry.resolve>> | null = null;
+			for (const variant of crateNameVariants(crateName)) {
+				const resolved = await registry.resolve(variant, crateVersion);
+				if (resolved) {
+					metadata = resolved;
+					break;
+				}
+			}
+			if (!metadata) {
+				return { error: 'Source metadata unavailable', content: null };
+			}
+
+			if ((sourceProvider === 'auto' || sourceProvider === 'crates-io') && metadata.sourceArchiveUrl) {
+				const direct = await fetchSourceFileFromArchive(metadata.sourceArchiveUrl, file, {
+					maxBytes: SOURCE_MAX_BYTES,
+					userAgent: USER_AGENT
+				});
+				if (direct.status === 'ok') {
+					setCachedSourceFile(cacheKey, direct.content);
+					return { error: null, content: direct.content };
+				}
+				if (sourceProvider === 'crates-io') {
+					return { error: direct.status === 'error' ? direct.message : 'Source file not available', content: null };
+				}
+			}
+
+			const providers = sourceAdapterResult.value.getProviders({
+				ecosystem: 'rust',
+				name: metadata.name,
+				version: metadata.version,
+				metadata
+			});
+			const selectedProviders = selectSourceProviders(providers, sourceProvider);
+			const files = await fetchSourcesWithProviders(
+				selectedProviders,
+				{ ecosystem: 'rust', name: metadata.name, version: metadata.version, metadata },
+				{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT }
+			);
+			if (!files) {
+				return { error: 'Source file not available', content: null };
+			}
+
+			const content = resolveSourceFileFromMap(files, file);
+			if (content === null) {
+				return { error: 'File not found', content: null };
+			}
+			setCachedSourceFile(cacheKey, content);
+			return { error: null, content };
 		},
 
 		async loadCrateGraph(name: string, _version: string) {
@@ -647,7 +986,9 @@ export function createLocalProvider(): DataProvider {
 
 		async loadCrateTree(name: string, _version: string) {
 			const lc = getCache();
-			return lc.getTree(name, _version);
+			const tree = lc.getTree(name, _version);
+			log.info`loadCrateTree(local) name=${name} version=${_version} hit=${tree ? 'yes' : 'no'}${tree ? ` nodes=${tree.nodes.length} edges=${tree.edges.length}` : ''}`;
+			return tree;
 		},
 
 		async loadCrateIndex(name: string, version: string): Promise<CrateIndex | null> {
@@ -698,6 +1039,44 @@ export function createLocalProvider(): DataProvider {
 			return lc.getIndex(name, version);
 		},
 
+		async loadNodeDetail(name: string, version: string, nodeId: string): Promise<NodeDetail | null> {
+			const lc = getCache();
+
+			// Load node and its edges
+			const node = lc.getNodeById(name, version, nodeId);
+			if (!node) return null;
+
+			const nodeEdges = lc.getEdgesForNode(name, version, nodeId);
+
+			// Get related nodes (targets of edges)
+			const relatedIds = new Set<string>();
+			for (const edge of nodeEdges) {
+				if (edge.from !== nodeId) relatedIds.add(edge.from);
+				if (edge.to !== nodeId) relatedIds.add(edge.to);
+			}
+
+			// Load related nodes
+			const relatedNodes: NodeSummary[] = [];
+			for (const id of relatedIds) {
+				const related = lc.getNodeById(name, version, id);
+				if (related) {
+					relatedNodes.push({
+						id: related.id,
+						name: related.name,
+						kind: related.kind,
+						visibility: related.visibility,
+						is_external: related.is_external
+					});
+				}
+			}
+
+			return {
+				node,
+				edges: nodeEdges,
+				relatedNodes
+			};
+		},
+
 		async getCrossEdgeData(nodeId: string): Promise<CrossEdgeData> {
 			const lc = getCache();
 			const result = lc.getCrossEdgeData('rust', nodeId);
@@ -719,7 +1098,10 @@ export function createLocalProvider(): DataProvider {
 			if (isStdCrate(name)) {
 				// Check cache first
 				const lc = getCache();
-				if (lc.hasCrate(name, version)) return { status: 'ready' };
+				if (lc.hasCrate(name, version)) {
+					emitStatus(name, version, { status: 'ready' });
+					return { status: 'ready' };
+				}
 				const dbStatus = lc.getStatus('rust', name, version);
 				if (dbStatus.status !== 'unknown') return dbStatus;
 
@@ -747,7 +1129,10 @@ export function createLocalProvider(): DataProvider {
 				if (dbStatus.status !== 'unknown') return dbStatus;
 
 				// Check if graph exists in cache
-				if (lc.hasCrate(name, version)) return { status: 'ready' };
+				if (lc.hasCrate(name, version)) {
+					emitStatus(name, version, { status: 'ready' });
+					return { status: 'ready' };
+				}
 			} catch {}
 
 			// Check workspace
@@ -905,7 +1290,7 @@ export function createLocalProvider(): DataProvider {
 					push(`data: ${json}\n\n`);
 				});
 				return unsubscribe;
-			}, signal, { ttl: 30_000 });
+			}, signal, { ttl: 300_000 });
 		},
 
 		async streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response> {
@@ -915,7 +1300,71 @@ export function createLocalProvider(): DataProvider {
 					push(`data: ${json}\n\n`);
 				});
 				return unsubscribe;
-			}, signal, { ttl: 5_000 });
+			}, signal, { ttl: 120_000 });
+		},
+
+		async streamParseProgress(
+			name: string,
+			version: string,
+			signal: AbortSignal,
+			options?: { since?: number; contentId?: string | null }
+		): Promise<Response> {
+			return sseStreamResponse((push, close) => {
+				// Send current tree if available
+				const lc = getCache();
+				const key = statusKey(name, version);
+				const state = progressState.get(key);
+				const stateSequence = state?.sequence ?? -1;
+				const contentMatches = !options?.contentId || options.contentId === state?.contentId;
+				const shouldSendSnapshot = Boolean(state?.snapshot)
+					&& (!contentMatches || options?.since === undefined || options.since < stateSequence);
+				const status = lc.getStatus('rust', name, version).status;
+				const tree = shouldSendSnapshot
+					? state?.snapshot
+					: (status === 'processing' ? null : lc.getTree(name, version));
+				if (tree) {
+					const json = Result.try(() => JSON.stringify({
+						type: 'snapshot',
+						sequence: state?.sequence,
+						contentId: state?.contentId,
+						tree,
+						nodeCount: tree.nodes.length,
+						edgeCount: tree.edges.length
+					})).unwrapOr('{}');
+					push(`data: ${json}\n\n`);
+				}
+
+				const unsubscribeProgress = subscribeProgress(name, version, (progress) => {
+					const json = Result.try(() => JSON.stringify(progress)).unwrapOr('{}');
+					push(`data: ${json}\n\n`);
+				});
+
+				// Also listen for status changes to close stream when ready
+				const unsubscribeStatus = subscribe(name, version, (status) => {
+					if (status.status === 'ready' || status.status === 'failed') {
+						// Send final tree
+						const finalTree = lc.getTree(name, version);
+						if (finalTree) {
+							const latest = progressState.get(key);
+							const json = Result.try(() => JSON.stringify({
+								type: 'complete',
+								sequence: latest?.sequence,
+								contentId: latest?.contentId,
+								tree: finalTree,
+								nodeCount: finalTree.nodes.length,
+								edgeCount: finalTree.edges.length
+							})).unwrapOr('{}');
+							push(`data: ${json}\n\n`);
+						}
+						close();
+					}
+				});
+
+				return () => {
+					unsubscribeProgress();
+					unsubscribeStatus();
+				};
+			}, signal, { ttl: 300_000 }); // Keep stream stable during long parses
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {

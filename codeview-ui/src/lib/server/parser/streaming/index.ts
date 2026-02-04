@@ -12,7 +12,6 @@ export {
 	parseRustdocStream,
 	parseRustdocByteStream,
 	parseRustdocResponse,
-	parseRustdocBuffer,
 	type StreamingParseCallbacks,
 	type ParseState,
 	type ParsedElementInfo
@@ -25,11 +24,3 @@ export {
 	type BuilderCheckpoint,
 	type BatchCallbacks
 } from './builder';
-
-export {
-	createStreamingRustdocParser,
-	parseRustdocStreaming,
-	shouldUseStreaming,
-	STREAMING_THRESHOLD_BYTES,
-	type StreamingParserOptions
-} from './adapter';

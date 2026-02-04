@@ -15,8 +15,14 @@ export const NodeKindSchema = v.picklist([
 	'TraitAlias',
 	'Impl',
 	'Function',
-	'Method',
-	'TypeAlias'
+	'TypeAlias',
+	'Constant',
+	'Static',
+	'Macro',
+	'Primitive',
+	'ExternCrate',
+	'Import',
+	'ProcMacro'
 ]);
 
 export const ImplTypeSchema = v.picklist(['Trait', 'Inherent']);
@@ -143,7 +149,10 @@ export const SearchNodesInputSchema = v.object({
 });
 
 export const GetSourceInputSchema = v.object({
-	file: v.string()
+	file: v.string(),
+	crateName: v.optional(v.string()),
+	crateVersion: v.optional(v.string()),
+	sourceProvider: v.optional(v.picklist(['auto', 'crates-io', 'github']))
 });
 
 export const NodeIdSchema = v.string();
@@ -151,7 +160,9 @@ export const NodeIdsSchema = v.array(v.string());
 
 export const CrateRefSchema = v.object({
 	name: v.string(),
-	version: v.optional(v.string())
+	version: v.optional(v.string()),
+	mode: v.optional(v.picklist(['structural', 'complete'])),
+	includeExternal: v.optional(v.boolean())
 });
 
 export const NodeDetailInputSchema = v.object({

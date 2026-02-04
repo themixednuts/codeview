@@ -1,7 +1,7 @@
 import type { CrateStatus } from '$lib/schema';
 import { triggerCrateParse } from '$lib/graph.remote';
 import { getLogger } from '$lib/log';
-import { SSEConnection } from '$lib/sse';
+import { StreamConnection } from '$lib/stream.svelte';
 
 type CrateStatusValue = CrateStatus['status'];
 
@@ -29,7 +29,7 @@ export const stepPercents: Record<string, number> = {
  * Connects to the SSE endpoint which handles both hosted (DO stream)
  * and local (single-event) modes.
  */
-export class CrateStatusConnection extends SSEConnection {
+export class CrateStatusConnection extends StreamConnection {
 	status = $state<CrateStatusValue>('unknown');
 	error = $state<string | null>(null);
 	step = $state<string | null>(null);
@@ -55,6 +55,7 @@ export class CrateStatusConnection extends SSEConnection {
 		this.activate();
 		this.#name = name;
 		this.#version = version;
+		this.beginStream(`rust:${name}:${version}`);
 		this.status = 'unknown';
 		this.error = null;
 		this.step = null;
@@ -66,6 +67,7 @@ export class CrateStatusConnection extends SSEConnection {
 	protected onData(data: unknown) {
 		const msg = data as CrateStatus;
 		this.log.debug`msg ${this.tag} status=${msg.status} step=${msg.step ?? '-'}${msg.error ? ` error=${msg.error}` : ''}`;
+		this.touchStream();
 		this.status = msg.status;
 		this.error = msg.error ?? null;
 		this.action = msg.action;
@@ -82,8 +84,17 @@ export class CrateStatusConnection extends SSEConnection {
 		// Terminal states — close stream
 		if (msg.status === 'ready' || msg.status === 'failed') {
 			this.log.debug`terminal ${this.tag} status=${msg.status}`;
+			this.streamPhase = 'closed';
 			this.close();
 		}
+	}
+
+	protected override onStreamReady() {
+		this.log.debug`ready ${this.tag} status=${this.status} step=${this.step ?? '-'}`;
+	}
+
+	protected override onStreamEnd(reason: 'eof' | 'aborted' | 'fetch-error' | 'bad-response' | 'read-error', detail?: string) {
+		this.log.debug`end ${this.tag} reason=${reason}${detail ? ` detail=${detail}` : ''} status=${this.status} step=${this.step ?? '-'}`;
 	}
 
 	/** Trigger a parse and start watching. */
@@ -96,6 +107,7 @@ export class CrateStatusConnection extends SSEConnection {
 		this.activate();
 		this.#name = name;
 		this.#version = version;
+		this.beginStream(`rust:${name}:${version}`);
 		try {
 			await triggerCrateParse(`${name}@${version}`);
 			this.open();
@@ -123,6 +135,7 @@ export class CrateStatusConnection extends SSEConnection {
 		this.activate();
 		this.#name = name;
 		this.#version = version;
+		this.beginStream(`rust:${name}:${version}`);
 		try {
 			await triggerCrateParse(`${name}@${version}!force`);
 			this.open();

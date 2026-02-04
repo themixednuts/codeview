@@ -9,6 +9,12 @@ export interface SourceArchiveOptions {
 	headers?: Record<string, string>;
 }
 
+export type SourceFileArchiveOutcome =
+	| { status: 'ok'; content: string; totalBytes: number }
+	| { status: 'not-found'; totalBytes: number }
+	| { status: 'over-limit'; totalBytes: number }
+	| { status: 'error'; message: string };
+
 const TEXT_DECODER = new TextDecoder();
 
 export async function fetchSourceArchive(
@@ -32,6 +38,30 @@ export async function fetchSourceArchive(
 	}
 
 	return extractSourcesFromTarGz(response, options);
+}
+
+export async function fetchSourceFileFromArchive(
+	url: string,
+	targetFile: string,
+	options: SourceArchiveOptions
+): Promise<SourceFileArchiveOutcome> {
+	const headers: Record<string, string> = { ...(options.headers ?? {}) };
+	if (options.userAgent && !headers['User-Agent']) {
+		headers['User-Agent'] = options.userAgent;
+	}
+
+	let response: Response;
+	try {
+		response = await fetch(url, { headers });
+	} catch (err) {
+		return { status: 'error', message: err instanceof Error ? err.message : String(err) };
+	}
+
+	if (!response.ok) {
+		return { status: 'error', message: `Archive fetch failed: ${response.status} ${response.statusText}` };
+	}
+
+	return extractSourceFileFromTarGz(response, targetFile, options);
 }
 
 export async function extractSourcesFromTarGz(
@@ -129,6 +159,111 @@ export async function extractSourcesFromTarGz(
 	return { status: 'ok', files, totalBytes };
 }
 
+export async function extractSourceFileFromTarGz(
+	response: Response,
+	targetFile: string,
+	options: SourceArchiveOptions
+): Promise<SourceFileArchiveOutcome> {
+	if (!response.body) {
+		return { status: 'error', message: 'Archive response missing body' };
+	}
+
+	let stream: ReadableStream<Uint8Array>;
+	try {
+		stream = response.body.pipeThrough(new DecompressionStream('gzip'));
+	} catch (err) {
+		return {
+			status: 'error',
+			message: err instanceof Error ? err.message : 'Failed to create gzip stream'
+		};
+	}
+
+	const reader = stream.getReader();
+	const tar = new TarStreamReader(reader);
+	let totalBytes = 0;
+	let stripPrefix: string | null = null;
+	let pendingLongPath: string | null = null;
+	const targets = buildTargetCandidates(targetFile);
+
+	while (true) {
+		const headerBlock = await tar.readBlock();
+		if (!headerBlock) break;
+		if (isZeroBlock(headerBlock)) break;
+
+		const header = parseTarHeader(headerBlock);
+		const size = header.size;
+
+		if (header.typeflag === 'L') {
+			const data = await tar.readExact(size);
+			if (!data) {
+				return { status: 'error', message: 'Unexpected EOF while reading long path' };
+			}
+			pendingLongPath = decodeText(data).replace(/\0.*$/, '').trimEnd();
+			await tar.skipPadding(size);
+			continue;
+		}
+
+		const rawPath = pendingLongPath ?? header.name;
+		pendingLongPath = null;
+
+		const pathWithPrefix = header.prefix
+			? `${header.prefix}/${rawPath}`
+			: rawPath;
+
+		if (stripPrefix === null) {
+			const cleaned = pathWithPrefix.replace(/^\.\/+/, '');
+			if (cleaned.includes('/')) {
+				const first = cleaned.split('/')[0];
+				stripPrefix = first ? `${first}/` : '';
+			} else {
+				stripPrefix = '';
+			}
+		}
+
+		const normalizedPath = normalizeArchivePath(pathWithPrefix, stripPrefix);
+		const isFile = header.typeflag === '0' || header.typeflag === '\0';
+
+		if (!normalizedPath || !isFile) {
+			if (!(await tar.skipExact(size))) {
+				return { status: 'error', message: 'Unexpected EOF while skipping entry' };
+			}
+			await tar.skipPadding(size);
+			continue;
+		}
+
+		if (totalBytes + size > options.maxBytes) {
+			return { status: 'over-limit', totalBytes };
+		}
+
+		const needsThisFile = targets.has(normalizedPath);
+		if (!needsThisFile) {
+			if (!(await tar.skipExact(size))) {
+				return { status: 'error', message: 'Unexpected EOF while skipping entry' };
+			}
+			await tar.skipPadding(size);
+			totalBytes += size;
+			continue;
+		}
+
+		const data = await tar.readExact(size);
+		if (!data) {
+			return { status: 'error', message: 'Unexpected EOF while reading entry' };
+		}
+		await tar.skipPadding(size);
+		totalBytes += size;
+		const content = decodeText(data);
+
+		try {
+			await reader.cancel();
+		} catch {
+			// Ignore cancellation errors after match.
+		}
+		return { status: 'ok', content, totalBytes };
+	}
+
+	return { status: 'not-found', totalBytes };
+}
+
 function shouldInclude(path: string): boolean {
 	return path.endsWith('.rs') || path.endsWith('Cargo.toml');
 }
@@ -139,6 +274,17 @@ function normalizeArchivePath(path: string, stripPrefix: string | null): string 
 		normalized = normalized.slice(stripPrefix.length);
 	}
 	return normalized.replace(/^\/+/, '');
+}
+
+function buildTargetCandidates(path: string): Set<string> {
+	const normalized = path.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+	const withSrc = normalized.startsWith('src/') ? normalized : `src/${normalized}`;
+	const withoutSrc = normalized.startsWith('src/') ? normalized.slice('src/'.length) : normalized;
+	const set = new Set<string>();
+	if (normalized.length > 0) set.add(normalized);
+	if (withSrc.length > 0) set.add(withSrc);
+	if (withoutSrc.length > 0) set.add(withoutSrc);
+	return set;
 }
 
 function decodeText(data: Uint8Array): string {

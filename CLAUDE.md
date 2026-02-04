@@ -74,6 +74,30 @@ To clear all wrangler persisted state (Durable Objects, R2, KV) and start fresh:
 cd /e/Projects/codeview/codeview-ui && bun run cf:dev:clear
 ```
 
+## Build Lock Issues
+
+If builds fail with `EPERM, Permission denied` on `.wrangler` or `.svelte-kit/cloudflare`, a process is holding a lock. Use Sysinternals Handle to find and kill it:
+
+```bash
+# Find what's holding the lock
+handle .wrangler
+handle .svelte-kit
+
+# Kill the process by PID
+taskkill //F //PID <pid>
+```
+
+Common culprits: `workerd.exe`, `node.exe`, `esbuild.exe`.
+
+## Local Cache
+
+The local mode uses a SQLite cache at `~/.codeview/cache.sqlite` (defined in `codeview-ui/src/lib/server/local/cache.ts`). To clear for a fresh start:
+```bash
+rm ~/.codeview/cache.sqlite
+```
+
+The local server also stores rustdoc analysis at `target/codeview/graph.json`.
+
 ## Bash Commands
 
 Never filter or truncate bash command output with `head`, `tail`, `2>&1`, or similar. The tool handles output limits automatically. If you need to search output, run the command first, then grep/search the result separately.

@@ -26,6 +26,8 @@ export class CrateRegistry extends DurableObject {
 	private db: DrizzleSqliteDODatabase;
 	private stepMap = new Map<string, string>();
 	private sseWriters = new Map<string, Set<WritableStreamDefaultWriter>>();
+	private progressSnapshots = new Map<string, { sequence: number; contentId?: string; tree: unknown; contiguous: boolean }>();
+	private progressMeta = new Map<string, { sequence: number; contentId?: string }>();
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -42,12 +44,17 @@ export class CrateRegistry extends DurableObject {
 			this.sseWriters.set(tag, set);
 		}
 		set.add(writer);
+		log.debug`addWriter tag=${tag} count=${String(set.size)}`;
 	}
 
 	private removeWriter(tag: string, writer: WritableStreamDefaultWriter): void {
 		const set = this.sseWriters.get(tag);
-		if (!set) return;
-		set.delete(writer);
+		if (!set) {
+			log.debug`removeWriter tag=${tag} NOT FOUND`;
+			return;
+		}
+		const hadWriter = set.delete(writer);
+		log.debug`removeWriter tag=${tag} removed=${String(hadWriter)} remaining=${String(set.size)}`;
 		if (set.size === 0) this.sseWriters.delete(tag);
 	}
 
@@ -270,8 +277,14 @@ export class CrateRegistry extends DurableObject {
 		log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'} error=${error ?? '(none)'}`;
 		const now = Date.now();
 		const stepKey = `${ecosystem}:${name}:${version}`;
+		const progressTag = `progress:${ecosystem}:${name}:${version}`;
 		if (status === 'processing' && step) {
 			this.stepMap.set(stepKey, step);
+			if (step === 'resolving') {
+				// New parse cycle: clear any stale progress snapshot/meta state.
+				this.progressSnapshots.delete(progressTag);
+				this.progressMeta.delete(progressTag);
+			}
 		} else if (status !== 'processing') {
 			this.stepMap.delete(stepKey);
 		}
@@ -310,11 +323,91 @@ export class CrateRegistry extends DurableObject {
 	}
 
 	/**
+	 * Broadcast parse progress to subscribers.
+	 */
+	async broadcastProgress(
+		ecosystem: string,
+		name: string,
+		version: string,
+		data: { type: string; sequence?: number; contentId?: string; nodeCount?: number; edgeCount?: number; tree?: unknown; totalItems?: number }
+	): Promise<void> {
+		const tag = `progress:${ecosystem}:${name}:${version}`;
+		let payload = data;
+		if (data.tree && (data.nodeCount === undefined || data.edgeCount === undefined)) {
+			const counts = Result.try(() => {
+				const tree = data.tree as { nodes?: unknown[]; edges?: unknown[] };
+				return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
+			}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
+			payload = {
+				...data,
+				nodeCount: data.nodeCount ?? counts.nodeCount,
+				edgeCount: data.edgeCount ?? counts.edgeCount
+			};
+		}
+		if (typeof payload.sequence === 'number' || payload.contentId) {
+			this.progressMeta.set(tag, {
+				sequence: payload.sequence ?? 0,
+				contentId: payload.contentId
+			});
+		}
+		if (payload.tree) {
+			const incoming = Result.try(() => payload.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
+			const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes : [];
+			const incomingEdges = Array.isArray(incoming.edges) ? incoming.edges : [];
+			const seq = payload.sequence ?? 0;
+			const prior = this.progressSnapshots.get(tag);
+
+			if ((payload.type === 'snapshot' || payload.type === 'complete')) {
+				this.progressSnapshots.set(tag, {
+					sequence: seq,
+					contentId: payload.contentId,
+					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
+					contiguous: true
+				});
+			} else if (payload.type === 'delta' && prior && prior.contiguous) {
+				const priorTree = Result.try(() => prior.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
+				const priorNodes = Array.isArray(priorTree.nodes) ? priorTree.nodes : [];
+				const priorEdges = Array.isArray(priorTree.edges) ? priorTree.edges : [];
+				const sameContent = !payload.contentId || !prior.contentId || payload.contentId === prior.contentId;
+				const isContiguous = seq === prior.sequence + 1;
+				if (sameContent && isContiguous) {
+					for (const node of incomingNodes) priorNodes.push(node);
+					for (const edge of incomingEdges) priorEdges.push(edge);
+					this.progressSnapshots.set(tag, {
+						sequence: seq,
+						contentId: payload.contentId ?? prior.contentId,
+						tree: { nodes: priorNodes, edges: priorEdges },
+						contiguous: true
+					});
+				} else {
+					// Sequence gaps or content switches mean this partial delta stream is
+					// no longer safe as a reconnect snapshot source.
+					this.progressSnapshots.delete(tag);
+				}
+			} else if (payload.type === 'delta' && seq === 0) {
+				// Start of a fresh delta stream.
+				this.progressSnapshots.set(tag, {
+					sequence: seq,
+					contentId: payload.contentId,
+					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
+					contiguous: true
+				});
+			} else {
+				// Delta without a known contiguous base — do not publish as snapshot.
+				this.progressSnapshots.delete(tag);
+			}
+		}
+		log.debug`broadcastProgress ${tag} type=${payload.type} nodes=${payload.nodeCount ?? 0}`;
+		this.broadcast(tag, payload);
+	}
+
+	/**
 	 * HTTP handler — returns SSE streams for subscription keys.
 	 * The client passes the subscription key as a query parameter:
 	 *   /sse?key=rust:serde:1.0.219
 	 *   /sse?key=processing:rust
 	 *   /sse?key=edge:<nodeId>
+	 *   /sse?key=progress:rust:serde:1.0.219
 	 */
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
@@ -325,10 +418,11 @@ export class CrateRegistry extends DurableObject {
 		}
 
 		let tag: string | null = null;
-		let keyType: 'crate' | 'processing' | 'edge' | null = null;
+		let keyType: 'crate' | 'processing' | 'edge' | 'progress' | null = null;
 		let crateData: { ecosystem: string; name: string; version: string } | null = null;
 		let processingEcosystem: string | null = null;
 		let edgeData: { nodeId: string } | null = null;
+		let progressData: { ecosystem: string; name: string; version: string } | null = null;
 
 		if (key.startsWith('processing:')) {
 			const parts = key.split(':');
@@ -342,6 +436,14 @@ export class CrateRegistry extends DurableObject {
 			if (edgeData) {
 				tag = `edge:${edgeData.nodeId}`;
 				keyType = 'edge';
+			}
+		} else if (key.startsWith('progress:')) {
+			// progress:rust:name:version
+			const parts = key.split(':');
+			if (parts.length === 4 && isValidEcosystem(parts[1])) {
+				tag = key;
+				keyType = 'progress';
+				progressData = { ecosystem: parts[1], name: parts[2], version: parts[3] };
 			}
 		} else {
 			crateData = parseCrateKey(key);
@@ -357,7 +459,10 @@ export class CrateRegistry extends DurableObject {
 
 		// Limit concurrent connections per tag
 		const existing = this.sseWriters.get(tag);
+		const currentCount = existing?.size ?? 0;
+		log.debug`connection request tag=${tag} currentCount=${String(currentCount)}`;
 		if (existing && existing.size >= 10) {
+			log.warn`connection rejected tag=${tag} count=${String(existing.size)} limit=10`;
 			return new Response('Too many connections for this key', { status: 429 });
 		}
 
@@ -368,6 +473,31 @@ export class CrateRegistry extends DurableObject {
 		} else if (keyType === 'processing' && processingEcosystem) {
 			const cnt = await this.getProcessingCount(processingEcosystem);
 			initialData = { type: 'processing', count: cnt };
+		} else if (keyType === 'progress' && progressData) {
+			const sinceParam = url.searchParams.get('since');
+			const contentId = url.searchParams.get('contentId') ?? undefined;
+			let since: number | undefined;
+			if (sinceParam) {
+				const parsed = Result.try(() => Number.parseInt(sinceParam, 10));
+				if (parsed.isOk() && Number.isFinite(parsed.value)) since = parsed.value;
+			}
+			const snapshot = this.progressSnapshots.get(tag);
+			const meta = this.progressMeta.get(tag);
+			const contentMatches = !contentId || contentId === snapshot?.contentId;
+			if (snapshot && (!contentMatches || since === undefined || since < snapshot.sequence)) {
+				const counts = Result.try(() => {
+					const tree = snapshot.tree as { nodes?: unknown[]; edges?: unknown[] };
+					return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
+				}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
+				initialData = {
+					type: 'snapshot',
+					sequence: snapshot.sequence,
+					contentId: snapshot.contentId,
+					tree: snapshot.tree,
+					nodeCount: counts.nodeCount,
+					edgeCount: counts.edgeCount
+				};
+			}
 		}
 		// edge type has no initial data — updates arrive when edges change
 
@@ -393,16 +523,40 @@ export class CrateRegistry extends DurableObject {
 		// Both may fire — guard ensures we only run once.
 		const capturedTag = tag;
 		let cleaned = false;
-		const cleanup = () => {
-			if (cleaned) return;
+		let activityTimeout: ReturnType<typeof setTimeout> | null = null;
+
+		const cleanup = (source: 'closed-resolve' | 'closed-reject' | 'signal-abort' | 'timeout') => {
+			if (cleaned) {
+				log.debug`cleanup already done for tag=${capturedTag} ignoring=${source}`;
+				return;
+			}
 			cleaned = true;
-			log.debug`writer cleanup for tag=${capturedTag}`;
+			if (activityTimeout) {
+				clearTimeout(activityTimeout);
+				activityTimeout = null;
+			}
+			log.debug`writer cleanup for tag=${capturedTag} source=${source}`;
 			this.removeWriter(capturedTag, writer);
 			writer.close().catch(() => {});
 		};
-		writer.closed.then(cleanup, cleanup);
+
+		// Safety timeout: force cleanup after 60s if no proper close detected
+		// This handles cases where client disconnects without signaling (common in dev)
+		const resetActivityTimeout = () => {
+			if (activityTimeout) clearTimeout(activityTimeout);
+			activityTimeout = setTimeout(() => {
+				log.debug`activity timeout for tag=${capturedTag} forcing cleanup`;
+				cleanup('timeout');
+			}, 60000);
+		};
+		resetActivityTimeout();
+
+		writer.closed.then(
+			() => cleanup('closed-resolve'),
+			() => cleanup('closed-reject')
+		);
 		if (request.signal) {
-			request.signal.addEventListener('abort', cleanup, { once: true });
+			request.signal.addEventListener('abort', () => cleanup('signal-abort'), { once: true });
 		}
 
 		log.debug`returning SSE response for tag=${tag}`;

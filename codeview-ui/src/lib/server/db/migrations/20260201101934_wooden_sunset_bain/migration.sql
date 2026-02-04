@@ -1,1 +1,0 @@
-ALTER TABLE `crate_status` ADD `last_step` text;

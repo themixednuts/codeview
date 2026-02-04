@@ -31,10 +31,25 @@ sw.addEventListener('fetch', (event) => {
 	if (event.request.method !== 'GET') return;
 
 	const url = new URL(event.request.url);
+	const accept = event.request.headers.get('accept') ?? '';
+	const isSSE = accept.includes('text/event-stream') || url.pathname.endsWith('/sse');
+	const isRemoteRpc = url.pathname.startsWith('/_app/remote/');
+	const isApi = url.pathname.startsWith('/api/');
+
+	// Never cache/handle stream and API/RPC requests in SW.
+	// Let the browser hit the network directly to avoid stream reconnection churn.
+	if (isSSE || isRemoteRpc || isApi) return;
 
 	// Serve precached build/static assets directly from cache
 	if (PRECACHE_ASSETS.includes(url.pathname)) {
-		event.respondWith(caches.match(event.request).then((r) => r ?? fetch(event.request)));
+		event.respondWith(
+			caches.match(event.request).then((r) => {
+				if (r) return r;
+				return fetch(event.request).catch(
+					() => new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
+				);
+			})
+		);
 		return;
 	}
 
@@ -42,12 +57,28 @@ sw.addEventListener('fetch', (event) => {
 	event.respondWith(
 		fetch(event.request)
 			.then((response) => {
-				if (response.ok && url.origin === sw.location.origin) {
+				const cacheControl = response.headers.get('cache-control') ?? '';
+				const canCache =
+					response.ok &&
+					url.origin === sw.location.origin &&
+					response.type === 'basic' &&
+					!cacheControl.includes('no-store') &&
+					!cacheControl.includes('private') &&
+					response.status !== 206;
+
+				if (canCache) {
 					const clone = response.clone();
-					caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+					caches
+						.open(CACHE_NAME)
+						.then((cache) => cache.put(event.request, clone))
+						.catch(() => {});
 				}
 				return response;
 			})
-			.catch(() => caches.match(event.request).then((r) => r ?? Response.error()))
+			.catch(() =>
+				caches.match(event.request).then(
+					(r) => r ?? new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
+				)
+			)
 	);
 });

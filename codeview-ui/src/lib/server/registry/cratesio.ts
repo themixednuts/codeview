@@ -59,17 +59,25 @@ function extractGitHubRepo(url: string | null | undefined): string | undefined {
 }
 
 export function createCratesIoAdapter(): RegistryAdapter {
-	return {
+	const adapter: RegistryAdapter = {
 		async resolve(name, version) {
+			// Resolve "latest" to actual version number
+			let resolvedVersion = version;
+			if (version === 'latest') {
+				const latest = await adapter.getLatestVersion(name);
+				if (!latest) return null;
+				resolvedVersion = latest;
+			}
+
 			const result = await fetchJson<{ version: CratesIoVersion; crate?: CratesIoCrate }>(
-				`${CRATES_IO_API}/crates/${name}/${version}`
+				`${CRATES_IO_API}/crates/${name}/${resolvedVersion}`
 			);
 			if (result.isErr()) return null;
 			const data = result.value;
 			if (!data.version) return null;
 
-			// Build docs.rs rustdoc JSON URL
-			const artifactUrl = `https://docs.rs/crate/${name}/${version}/json`;
+			// Build docs.rs rustdoc JSON URL (gzip)
+			const artifactUrl = `https://docs.rs/crate/${name}/${resolvedVersion}/json.gz`;
 
 			// crates.io download URL for source archive
 			const sourceArchiveUrl = `https://crates.io${data.version.dl_path}`;
@@ -134,4 +142,5 @@ export function createCratesIoAdapter(): RegistryAdapter {
 			return result.value.crate?.max_version ?? null;
 		}
 	};
+	return adapter;
 }

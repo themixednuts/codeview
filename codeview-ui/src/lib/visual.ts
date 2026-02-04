@@ -29,8 +29,14 @@ export const kindVisuals: Record<NodeKind, { fill: string; stroke: string }> = {
   TraitAlias: { fill: '#0db39e', stroke: '#0a8f7e' },
   Impl:       { fill: '#8d99ae', stroke: '#6b7b8d' },
   Function:   { fill: '#f43f7a', stroke: '#d6336c' },
-  Method:     { fill: '#c026d3', stroke: '#a21caf' },
   TypeAlias:  { fill: '#f97316', stroke: '#d96012' },
+  Constant:   { fill: '#6366f1', stroke: '#4f46e5' },
+  Static:     { fill: '#8b5cf6', stroke: '#7c3aed' },
+  Macro:      { fill: '#ec4899', stroke: '#db2777' },
+  Primitive:  { fill: '#14b8a6', stroke: '#0d9488' },
+  ExternCrate:{ fill: '#f59e0b', stroke: '#d97706' },
+  Import:     { fill: '#64748b', stroke: '#475569' },
+  ProcMacro:  { fill: '#f472b6', stroke: '#ec4899' },
 };
 
 // ---------------------------------------------------------------------------
@@ -75,8 +81,14 @@ const BASE_SPECS: Record<NodeKind, ShapeSpec> = {
   TraitAlias: { shape: 'diamond',      width: 78,  height: 52, cornerRadius: 0 },
   Impl:       { shape: 'hexagon',      width: 110, height: 48, cornerRadius: 0 },
   Function:   { shape: 'pill',         width: 120, height: 44, cornerRadius: 22 },
-  Method:     { shape: 'pill',         width: 100, height: 38, cornerRadius: 19 },
   TypeAlias:  { shape: 'parallelogram', width: 120, height: 44, cornerRadius: 0 },
+  Constant:   { shape: 'rect',         width: 100, height: 36, cornerRadius: 2 },
+  Static:     { shape: 'rect',         width: 100, height: 36, cornerRadius: 2, strokeDasharray: '4 2' },
+  Macro:      { shape: 'chamfered-rect', width: 110, height: 40, cornerRadius: 2 },
+  Primitive:  { shape: 'rounded-rect', width: 90,  height: 36, cornerRadius: 8 },
+  ExternCrate:{ shape: 'rounded-rect', width: 120, height: 40, cornerRadius: 10, strokeDasharray: '6 3' },
+  Import:     { shape: 'parallelogram', width: 100, height: 36, cornerRadius: 0 },
+  ProcMacro:  { shape: 'chamfered-rect', width: 110, height: 40, cornerRadius: 2 },
 };
 
 const CENTER_SCALE = 1.15;
@@ -198,6 +210,39 @@ function buildHeaderPath(shape: NodeShape, w: number, h: number, cr: number, isC
   const headerR = Math.min(r, hHeight);
   const topY = -hh;
   const headerBottomY = topY + hHeight;
+
+  if (shape === 'chamfered-rect') {
+    const chamfer = Math.min(10, hw * 0.15, hh * 0.4);
+    const rightXAtHeaderBottom =
+      hHeight <= chamfer
+        ? (hw - chamfer + hHeight)
+        : hw;
+
+    const headerPath =
+      `M ${-hw + headerR} ${topY}` +
+      ` H ${hw - chamfer}` +
+      ` L ${hw} ${topY + chamfer}` +
+      ` V ${headerBottomY}` +
+      ` H ${-hw}` +
+      ` V ${topY + headerR} A ${headerR} ${headerR} 0 0 1 ${-hw + headerR} ${topY}` +
+      ` Z`;
+
+    // If header is shorter than chamfer depth, close the shape on the diagonal.
+    if (hHeight <= chamfer) {
+      return {
+        headerPath:
+          `M ${-hw + headerR} ${topY}` +
+          ` H ${hw - chamfer}` +
+          ` L ${rightXAtHeaderBottom} ${headerBottomY}` +
+          ` H ${-hw}` +
+          ` V ${topY + headerR} A ${headerR} ${headerR} 0 0 1 ${-hw + headerR} ${topY}` +
+          ` Z`,
+        headerHeight: hHeight
+      };
+    }
+
+    return { headerPath, headerHeight: hHeight };
+  }
 
   const headerPath =
     `M ${-hw + headerR} ${topY}` +

@@ -1,5 +1,5 @@
 import { getLogger } from '$lib/log';
-import { SSEConnection } from '$lib/sse';
+import { StreamConnection } from '$lib/stream.svelte';
 
 type ProcessingMessage = {
 	type?: string;
@@ -11,7 +11,7 @@ type ProcessingMessage = {
  * Emits the current count of crates being parsed.
  * In local mode the endpoint returns 503 and onerror silently closes.
  */
-export class ProcessingStatusConnection extends SSEConnection {
+export class ProcessingStatusConnection extends StreamConnection {
 	count = $state(0);
 
 	protected readonly log = getLogger('processing');
@@ -31,6 +31,7 @@ export class ProcessingStatusConnection extends SSEConnection {
 		this.close();
 		this.activate();
 		this.#ecosystem = ecosystem;
+		this.beginStream(`processing:${ecosystem}`);
 		this.open();
 	}
 
@@ -39,6 +40,7 @@ export class ProcessingStatusConnection extends SSEConnection {
 		if (msg.type && msg.type !== 'processing') return;
 		if (typeof msg.count === 'number') {
 			this.log.debug`msg ${this.tag} count=${String(msg.count)}`;
+			this.touchStream();
 			this.count = msg.count;
 		}
 	}

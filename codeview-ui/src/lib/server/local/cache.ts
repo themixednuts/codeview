@@ -10,9 +10,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { crateGraphs, crateStatus, crossEdges, nodeIndex } from "../db/schema";
+import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from "../db/schema";
 import { normalizeCrateName } from "../validation";
-import type { CrateGraph, Node } from "$lib/graph";
+import type { CrateGraph, Node, Edge } from "$lib/graph";
 import type { CrateIndex, CrateTree } from "$lib/schema";
 import { getLogger } from "$lib/log";
 
@@ -81,6 +81,7 @@ export class LocalCache {
 		return normalizeCrateName(name);
 	}
 
+
 	constructor() {
 		mkdirSync(CACHE_DIR, { recursive: true });
 		this.db = drizzle({ client: new Database(CACHE_DB) });
@@ -130,6 +131,10 @@ export class LocalCache {
 		return row !== undefined;
 	}
 
+	/**
+	 * Reconstruct full graph from nodeDetails + edges tables.
+	 * For large crates, prefer getTree() + getNodeById() for progressive loading.
+	 */
 	getGraph(name: string, version: string): CrateGraph | null {
 		const t0 = performance.now();
 		const n = this.norm(name);
@@ -141,8 +146,9 @@ export class LocalCache {
 			return cached;
 		}
 
-		const row = this.db
-			.select({ graphJson: crateGraphs.graphJson })
+		// Check if crate exists
+		const meta = this.db
+			.select({ nodeCount: crateGraphs.nodeCount, edgeCount: crateGraphs.edgeCount })
 			.from(crateGraphs)
 			.where(
 				and(
@@ -152,18 +158,119 @@ export class LocalCache {
 				),
 			)
 			.get();
-		if (!row) return null;
+		if (!meta) return null;
+
+		// Load all nodes
 		const t1 = performance.now();
-		const result = Result.try(() => JSON.parse(row.graphJson) as CrateGraph);
-		const t2 = performance.now();
-		if (result.isErr()) {
-			log.error`Failed to parse cached graph for ${n}@${version}`;
-			return null;
+		const nodeRows = this.db
+			.select({ nodeJson: nodeDetails.nodeJson })
+			.from(nodeDetails)
+			.where(
+				and(
+					eq(nodeDetails.ecosystem, "rust"),
+					eq(nodeDetails.crateName, n),
+					eq(nodeDetails.crateVersion, version),
+				),
+			)
+			.all();
+
+		const nodes: Node[] = [];
+		for (const row of nodeRows) {
+			const result = Result.try(() => JSON.parse(row.nodeJson) as Node);
+			if (result.isOk()) nodes.push(result.value);
 		}
-		const g = result.value;
+
+		// Load all edges
+		const t2 = performance.now();
+		const edgeRows = this.db
+			.select({
+				fromId: edges.fromId,
+				toId: edges.toId,
+				kind: edges.kind,
+				confidence: edges.confidence,
+			})
+			.from(edges)
+			.where(
+				and(
+					eq(edges.ecosystem, "rust"),
+					eq(edges.crateName, n),
+					eq(edges.crateVersion, version),
+				),
+			)
+			.all();
+
+		const graphEdges: Edge[] = edgeRows.map((row) => ({
+			from: row.fromId,
+			to: row.toId,
+			kind: row.kind as Edge['kind'],
+			confidence: row.confidence as Edge['confidence'],
+		}));
+
+		const t3 = performance.now();
+		const g: CrateGraph = {
+			id: n,
+			name: n,
+			version,
+			nodes,
+			edges: graphEdges,
+		};
+
 		setCachedGraph(cacheKey, g);
-		log.info`getGraph ${cacheKey}: sqlite=${(t1 - t0).toFixed(0)}ms, json=${(t2 - t1).toFixed(0)}ms (${(row.graphJson.length / 1e6).toFixed(1)}MB), ${String(g.nodes.length)}n ${String(g.edges.length)}e`;
+		log.info`getGraph ${cacheKey}: nodes=${(t2 - t1).toFixed(0)}ms, edges=${(t3 - t2).toFixed(0)}ms, ${String(nodes.length)}n ${String(graphEdges.length)}e`;
 		return g;
+	}
+
+	/**
+	 * Get a single node by ID - efficient for progressive loading.
+	 */
+	getNodeById(name: string, version: string, nodeId: string): Node | null {
+		const n = this.norm(name);
+		const row = this.db
+			.select({ nodeJson: nodeDetails.nodeJson })
+			.from(nodeDetails)
+			.where(
+				and(
+					eq(nodeDetails.ecosystem, "rust"),
+					eq(nodeDetails.crateName, n),
+					eq(nodeDetails.crateVersion, version),
+					eq(nodeDetails.nodeId, nodeId),
+				),
+			)
+			.get();
+		if (!row) return null;
+		const result = Result.try(() => JSON.parse(row.nodeJson) as Node);
+		return result.isOk() ? result.value : null;
+	}
+
+	/**
+	 * Get edges for a specific node - efficient for progressive loading.
+	 */
+	getEdgesForNode(name: string, version: string, nodeId: string): Edge[] {
+		const n = this.norm(name);
+		const edgeRows = this.db
+			.select({
+				fromId: edges.fromId,
+				toId: edges.toId,
+				kind: edges.kind,
+				confidence: edges.confidence,
+			})
+			.from(edges)
+			.where(
+				and(
+					eq(edges.ecosystem, "rust"),
+					eq(edges.crateName, n),
+					eq(edges.crateVersion, version),
+					or(eq(edges.fromId, nodeId), eq(edges.toId, nodeId)),
+				),
+			)
+			.all();
+
+		return edgeRows.map((row) => ({
+			from: row.fromId,
+			to: row.toId,
+			kind: row.kind as Edge['kind'],
+			confidence: row.confidence as Edge['confidence'],
+		}));
 	}
 
 	getIndex(name: string, version: string): CrateIndex | null {
@@ -211,31 +318,154 @@ export class LocalCache {
 		return result.value;
 	}
 
-	putCrate(name: string, version: string, graph: object, index: object): void {
+	// ── Progressive crate storage ──
+
+	/**
+	 * Initialize crate metadata entry (call before batch inserts).
+	 */
+	initCrate(name: string, version: string, index: CrateIndex): void {
 		const n = this.norm(name);
 		const now = Date.now();
-		const treeJson = JSON.stringify(computeTreeSummary(graph as CrateGraph));
 		this.db
 			.insert(crateGraphs)
 			.values({
 				ecosystem: "rust",
 				name: n,
 				version,
-				graphJson: JSON.stringify(graph),
 				indexJson: JSON.stringify(index),
-				treeJson,
+				treeJson: null,
+				nodeCount: 0,
+				edgeCount: 0,
 				parsedAt: now,
 			})
 			.onConflictDoUpdate({
 				target: [crateGraphs.ecosystem, crateGraphs.name, crateGraphs.version],
 				set: {
-					graphJson: JSON.stringify(graph),
 					indexJson: JSON.stringify(index),
-					treeJson,
+					treeJson: null,
+					nodeCount: 0,
+					edgeCount: 0,
 					parsedAt: now,
 				},
 			})
 			.run();
+
+		// Clear any existing nodes/edges for this crate
+		this.db
+			.delete(nodeDetails)
+			.where(
+				and(
+					eq(nodeDetails.ecosystem, "rust"),
+					eq(nodeDetails.crateName, n),
+					eq(nodeDetails.crateVersion, version),
+				),
+			)
+			.run();
+		this.db
+			.delete(edges)
+			.where(
+				and(
+					eq(edges.ecosystem, "rust"),
+					eq(edges.crateName, n),
+					eq(edges.crateVersion, version),
+				),
+			)
+			.run();
+	}
+
+	/**
+	 * Batch insert nodes - call multiple times during streaming parse.
+	 */
+	insertNodes(name: string, version: string, nodes: Node[]): void {
+		if (nodes.length === 0) return;
+		const n = this.norm(name);
+		const rows = nodes.map((node) => ({
+			ecosystem: "rust",
+			crateName: n,
+			crateVersion: version,
+			nodeId: node.id,
+			nodeJson: JSON.stringify(node),
+		}));
+
+		// Batch insert in chunks of 500 for SQLite efficiency
+		const BATCH = 500;
+		for (let i = 0; i < rows.length; i += BATCH) {
+			this.db
+				.insert(nodeDetails)
+				.values(rows.slice(i, i + BATCH))
+				.onConflictDoUpdate({
+					target: [nodeDetails.ecosystem, nodeDetails.crateName, nodeDetails.crateVersion, nodeDetails.nodeId],
+					set: { nodeJson: sql`excluded.node_json` },
+				})
+				.run();
+		}
+	}
+
+	/**
+	 * Batch insert edges - call multiple times during streaming parse.
+	 */
+	insertEdges(name: string, version: string, edgeList: Edge[]): void {
+		if (edgeList.length === 0) return;
+		const n = this.norm(name);
+		const rows = edgeList.map((edge) => ({
+			ecosystem: "rust",
+			crateName: n,
+			crateVersion: version,
+			fromId: edge.from,
+			toId: edge.to,
+			kind: edge.kind,
+			confidence: edge.confidence,
+		}));
+
+		// Batch insert in chunks of 500 for SQLite efficiency
+		const BATCH = 500;
+		for (let i = 0; i < rows.length; i += BATCH) {
+			this.db
+				.insert(edges)
+				.values(rows.slice(i, i + BATCH))
+				.onConflictDoNothing()
+				.run();
+		}
+	}
+
+	/**
+	 * Finalize crate storage - store tree summary and update counts.
+	 */
+	finalizeCrate(name: string, version: string, tree: CrateTree, nodeCount: number, edgeCount: number): void {
+		const n = this.norm(name);
+		const now = Date.now();
+		this.db
+			.update(crateGraphs)
+			.set({
+				treeJson: JSON.stringify(tree),
+				nodeCount,
+				edgeCount,
+				parsedAt: now,
+			})
+			.where(
+				and(
+					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.name, n),
+					eq(crateGraphs.version, version),
+				),
+			)
+			.run();
+
+		// Invalidate mem cache
+		const cacheKey = `${n}@${version}`;
+		graphCache.delete(cacheKey);
+	}
+
+	/**
+	 * Legacy putCrate - converts to progressive storage.
+	 * @deprecated Use initCrate + insertNodes + insertEdges + finalizeCrate instead.
+	 */
+	putCrate(name: string, version: string, graph: CrateGraph, index: CrateIndex): void {
+		const tree = computeTreeSummary(graph);
+		this.initCrate(name, version, index);
+		this.insertNodes(name, version, graph.nodes);
+		this.insertEdges(name, version, graph.edges);
+		this.finalizeCrate(name, version, tree, graph.nodes.length, graph.edges.length);
 	}
 
 	// ── Crate status tracking ──

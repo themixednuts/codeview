@@ -1,1 +1,0 @@
-ALTER TABLE `crate_graphs` ADD `tree_json` text;

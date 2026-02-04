@@ -3,6 +3,8 @@ import { error } from '@sveltejs/kit';
 import { initProvider } from '$lib/server/provider';
 import { isValidCrateName, isValidVersion, sanitizeSearchQuery } from './server/validation';
 import { perf } from './perf';
+import { isHosted } from '$lib/platform';
+import { getLogger } from '$lib/log';
 import type { Node, Workspace } from '$lib/graph';
 import {
 	NodeIdSchema,
@@ -26,6 +28,49 @@ type NodeDetailInput = {
 	version?: string;
 	refresh?: number;
 };
+
+type TreeMode = 'structural' | 'complete';
+
+function canonicalizeTree(
+	name: string,
+	tree: CrateTree,
+	options?: { mode?: TreeMode; includeExternal?: boolean }
+): CrateTree {
+	const mode = options?.mode ?? 'structural';
+	const includeExternal = options?.includeExternal ?? false;
+	const normalizedName = name.replace(/-/g, '_');
+	const structuralOnly = mode === 'structural';
+	const allowedNodeIds = new Set<string>();
+	const nodeById = new Map(tree.nodes.map((n) => [n.id, n]));
+	const outEdges = [];
+
+	for (const edge of tree.edges) {
+		if (structuralOnly && edge.kind !== 'Contains' && edge.kind !== 'Defines') continue;
+		const from = nodeById.get(edge.from);
+		const to = nodeById.get(edge.to);
+		if (!from || !to) continue;
+		if (!includeExternal && (from.is_external || to.is_external)) continue;
+		allowedNodeIds.add(edge.from);
+		allowedNodeIds.add(edge.to);
+		outEdges.push(edge);
+	}
+
+	if (structuralOnly) {
+		if (nodeById.has(name)) allowedNodeIds.add(name);
+		if (nodeById.has(normalizedName)) allowedNodeIds.add(normalizedName);
+	}
+
+	const outNodes = [];
+	for (const node of tree.nodes) {
+		if (!includeExternal && node.is_external) continue;
+		if (structuralOnly && !allowedNodeIds.has(node.id)) continue;
+		outNodes.push(node);
+	}
+
+	return { nodes: outNodes, edges: outEdges };
+}
+
+const log = getLogger('graph.remote');
 
 async function getProvider(provider?: Provider): Promise<Provider> {
 	return provider ?? initProvider(getRequestEvent());
@@ -132,7 +177,14 @@ async function resolveNodeDetail(
 			// Not a workspace crate — fall through to universal path
 		}
 
-		// Universal path: load crate graph by ref (works for local SQLite + hosted R2)
+		// Universal path: prefer provider-level node detail to avoid loading full graphs.
+		if (provider.loadNodeDetail) {
+			const detail = await provider.loadNodeDetail(cratePrefix, version ?? 'latest', nodeId);
+			if (detail) return detail;
+		}
+
+		// Fallback: load crate graph by ref (skip in hosted to avoid RPC limits)
+		if (isHosted) return null;
 		const graph = await provider.loadCrateGraph(cratePrefix, version ?? 'latest');
 		if (!graph) return null;
 
@@ -199,8 +251,9 @@ export const getProcessingCrates = query(ProcessingInputSchema, async (): Promis
 });
 
 /** Get crate tree structure (nodes + Contains/Defines edges for one crate) */
-export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Promise<CrateTree | null> => {
+export const getCrateTree = query(CrateRefSchema, async ({ name, version, mode, includeExternal }): Promise<CrateTree | null> => {
 	return perf.timeAsync('server', `getCrateTree(${name})`, async () => {
+		log.info`getCrateTree start name=${name} version=${version ?? 'latest'}`;
 		// Workspace crates are already in memory
 		const provider = await getProvider();
 		const ws = await loadWorkspace(provider);
@@ -211,23 +264,44 @@ export const getCrateTree = query(CrateRefSchema, async ({ name, version }): Pro
 			const treeEdges = wsCrate.edges.filter(
 				(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
 			);
-			return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
+			const tree = canonicalizeTree(name, { nodes: internalNodes.map(summarizeNode), edges: treeEdges }, {
+				mode,
+				includeExternal
+			});
+			log.info`getCrateTree source=workspace name=${name} version=${version ?? 'latest'} nodes=${tree.nodes.length} edges=${tree.edges.length}`;
+			return tree;
 		}
 
 		// Try pre-computed tree first (avoids loading full graph for sidebar)
 		const tree = await provider.loadCrateTree(name, version ?? 'latest');
-		if (tree) return tree;
+		if (tree) {
+			const normalized = canonicalizeTree(name, tree, { mode, includeExternal });
+			log.info`getCrateTree source=providerTree name=${name} version=${version ?? 'latest'} nodes=${normalized.nodes.length} edges=${normalized.edges.length}`;
+			return normalized;
+		}
 
 		// Fallback: load full graph and compute tree
+		if (isHosted) {
+			log.info`getCrateTree source=hosted-null name=${name} version=${version ?? 'latest'}`;
+			return null;
+		}
 		const graph = await loadCrateGraphByRef(name, version, provider);
-		if (!graph) return null;
+		if (!graph) {
+			log.info`getCrateTree source=fallbackGraph-none name=${name} version=${version ?? 'latest'}`;
+			return null;
+		}
 
 		const internalNodes = graph.nodes.filter((n) => !n.is_external);
 		const internalIds = new Set(internalNodes.map((n) => n.id));
 		const treeEdges = graph.edges.filter(
 			(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
 		);
-		return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
+		const derivedTree = canonicalizeTree(name, { nodes: internalNodes.map(summarizeNode), edges: treeEdges }, {
+			mode,
+			includeExternal
+		});
+		log.info`getCrateTree source=fallbackGraph name=${name} version=${version ?? 'latest'} graphNodes=${graph.nodes.length} graphEdges=${graph.edges.length} treeNodes=${derivedTree.nodes.length} treeEdges=${derivedTree.edges.length}`;
+		return derivedTree;
 	}, {
 		detail: (r) => r ? `${r.nodes.length}n ${r.edges.length}e` : 'null'
 	});
@@ -395,6 +469,7 @@ export const loadCrateGraph = query(
 	async (nameVersion: string): Promise<CrateTree | null> => {
 		const { name, version } = parseCrateRef(nameVersion);
 		const provider = await getProvider();
+		if (isHosted) return null;
 		const graph = await provider.loadCrateGraph(name, version);
 		if (!graph) return null;
 

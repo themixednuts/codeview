@@ -1,6 +1,7 @@
 import { panic } from 'better-result';
 import { getContext, setContext, hasContext } from 'svelte';
 import type { Edge, Node } from '$lib/graph';
+import type { StreamSnapshot } from '$lib/stream.svelte';
 
 /**
  * Type-safe reactive context. Stores a getter function internally so
@@ -47,12 +48,21 @@ class ReactiveContext<T> {
 
 export type Theme = 'light' | 'dark';
 export type ExternalLinkMode = 'codeview' | 'docs';
+export type SourceProviderMode = 'auto' | 'crates-io' | 'github';
+export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
+export interface StreamStateSource {
+	subscribe(listener: (snapshot: StreamSnapshot) => void): Disposable;
+	readonly stream: StreamSnapshot;
+}
 
 // --- Root layout contexts ---
 export const themeCtx = new ReactiveContext<Theme>('theme');
 export const extLinkModeCtx = new ReactiveContext<ExternalLinkMode>('extLinkMode');
+export const sourceProviderModeCtx = new ReactiveContext<SourceProviderMode>('sourceProviderMode');
 
 // --- Crate layout contexts ---
 export const getNodeUrlCtx = new ReactiveContext<(id: string, parent?: string) => string>('getNodeUrl');
 export const crateVersionsCtx = new ReactiveContext<Record<string, string>>('crateVersions');
 export const graphForDisplayCtx = new ReactiveContext<{ nodes: Node[]; edges: Edge[] } | null>('graphForDisplay');
+export const crateStatusCtx = new ReactiveContext<CrateStatusValue>('crateStatus');
+export const parseProgressStreamCtx = new ReactiveContext<StreamStateSource | null>('parseProgressStream');
