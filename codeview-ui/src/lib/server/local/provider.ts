@@ -22,6 +22,7 @@ import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } fro
 import { ValidationError, NotAvailableError } from '../errors';
 import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
 import { sseResponse, sseStreamResponse } from '../sse';
+import { SharedEventStream } from '../shared-events';
 import { LocalCache } from './cache';
 import { WorkflowEntrypoint, runWorkflow } from './workflow';
 import type { WorkflowStep, WorkflowEvent } from './workflow';
@@ -109,6 +110,9 @@ export function createLocalProvider(): DataProvider {
 	const registry = createCratesIoAdapter();
 	const sourceFileCache = new Map<string, string>();
 	const SOURCE_FILE_CACHE_MAX = 512;
+	
+	// Shared event stream for multiplexed SSE (single connection per client)
+	const sharedEvents = new SharedEventStream(log);
 
 	function sourceCacheKey(
 		crateName: string,
@@ -1386,6 +1390,27 @@ export function createLocalProvider(): DataProvider {
 				: localVersion
 					? [localVersion]
 					: [];
+		},
+
+		// Shared event stream for multiplexed SSE
+		streamSharedEvents: sharedEvents,
+
+		async getLatestProgress(
+			ecosystem: string,
+			name: string,
+			version: string
+		): Promise<unknown> {
+			const key = `${ecosystem}:${name}:${version}`;
+			const state = progressState.get(key);
+			if (!state?.snapshot) return null;
+			return {
+				type: 'snapshot',
+				sequence: state.sequence,
+				contentId: state.contentId,
+				tree: state.snapshot,
+				nodeCount: state.snapshot.nodes.length,
+				edgeCount: state.snapshot.edges.length
+			};
 		}
 	};
 }

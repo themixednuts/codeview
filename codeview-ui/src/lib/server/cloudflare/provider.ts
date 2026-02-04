@@ -18,6 +18,7 @@ import { sseResponse } from '../sse';
 import { checkRateLimitPolicy } from './ratelimit';
 import { isValidCrateName, isValidVersion, crateNameVariants } from '../validation';
 import { getLogger } from '$lib/log';
+import { SharedEventStream } from '../shared-events';
 
 const log = getLogger('cloudflare');
 const USER_AGENT = 'codeview';
@@ -114,6 +115,9 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 	const registryStub = env.CRATE_REGISTRY.get(env.CRATE_REGISTRY.idFromName('global'));
 	const sourceFileCache = new Map<string, string>();
 	const SOURCE_FILE_CACHE_MAX = 512;
+	
+	// Shared event stream for multiplexed SSE (single connection per client)
+	const sharedEvents = new SharedEventStream(log);
 
 	function sourceCacheKey(
 		crateName: string,
@@ -530,6 +534,23 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				if (versions.length > 0) return versions;
 			}
 			return [];
+		},
+
+		// Shared event stream for multiplexed SSE
+		streamSharedEvents: sharedEvents,
+
+		async getLatestProgress(
+			ecosystem: string,
+			name: string,
+			version: string
+		): Promise<unknown> {
+			// Get latest progress snapshot from DO
+			const tag = `progress:${ecosystem}:${name}:${version}`;
+			const response = await registryStub.fetch(
+				new Request(`https://do/progress-snapshot?tag=${encodeURIComponent(tag)}`)
+			);
+			if (!response.ok) return null;
+			return response.json();
 		}
 	};
 }

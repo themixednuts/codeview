@@ -1,3 +1,8 @@
 src/lib/wasm/
 src/lib/server/cloudflare/workers/dist/
 src/lib/server/db/migrations/migrations.js
+*.log
+*.err
+tmp/
+cf-dev.log
+cf-dev.err

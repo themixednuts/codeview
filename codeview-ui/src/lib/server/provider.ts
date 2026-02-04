@@ -2,6 +2,7 @@ import type { Result } from 'better-result';
 import type { Edge, Workspace, CrateGraph } from '$lib/graph';
 import type { CrateIndex, CrateTree, NodeSummary, NodeDetail } from '$lib/schema';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
+import type { SharedEventStream } from './shared-events';
 
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 
@@ -61,6 +62,12 @@ export interface DataProvider {
 		since?: number;
 		contentId?: string | null;
 	}): Promise<Response>;
+
+	// Shared event stream (multiplexed SSE)
+	/** Shared event stream instance for multiplexed subscriptions */
+	streamSharedEvents?: SharedEventStream;
+	/** Get latest progress snapshot for a crate */
+	getLatestProgress?(ecosystem: string, name: string, version: string): Promise<unknown>;
 }
 
 /**
