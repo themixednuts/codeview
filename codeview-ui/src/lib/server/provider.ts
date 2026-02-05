@@ -54,10 +54,18 @@ export interface DataProvider {
 	getCrateVersions(name: string, limit?: number): Promise<string[]>;
 
 	// Shared event stream (multiplexed SSE)
-	/** Shared event stream instance for multiplexed subscriptions */
+	/** Shared event stream instance for multiplexed subscriptions (local mode only) */
 	streamSharedEvents?: SharedEventStream;
 	/** Get latest progress snapshot for a crate */
 	getLatestProgress?(ecosystem: string, name: string, version: string): Promise<unknown>;
+	
+	// RPC methods for Cloudflare subscription management
+	/** Subscribe client to tags via RPC (Cloudflare only) */
+	subscribeToTags?(clientId: string, tags: string[]): Promise<void>;
+	/** Unsubscribe client from tags via RPC (Cloudflare only) */
+	unsubscribeFromTags?(clientId: string, tags: string[]): Promise<void>;
+	/** Ping client to keep connection alive via RPC (Cloudflare only) */
+	pingClient?(clientId: string): Promise<void>;
 }
 
 /**

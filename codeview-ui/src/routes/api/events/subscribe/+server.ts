@@ -51,8 +51,27 @@ export const POST: RequestHandler = async (event) => {
 						return new Response('Missing tags for subscribe', { status: 400 });
 					}
 					log.debug`RPC subscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
-					// RPC call - subscribe returns initial data for each tag
-					const initialData = await registryStub.subscribe(clientId, tags);
+					await registryStub.subscribeClient(clientId, tags);
+					
+					// Fetch and return initial state for each tag
+					const initialData: Record<string, unknown> = {};
+					for (const tag of tags) {
+						if (tag.startsWith('progress:')) {
+							// progress:ecosystem:name:version
+							const parts = tag.split(':');
+							if (parts.length === 4) {
+								const [, ecosystem, name, version] = parts;
+								initialData[tag] = await registryStub.getProgressSnapshot(ecosystem, name, version);
+							}
+						} else if (!tag.startsWith('edge:') && !tag.startsWith('processing:')) {
+							// Crate status: ecosystem:name:version
+							const parts = tag.split(':');
+							if (parts.length === 3) {
+								const [ecosystem, name, version] = parts;
+								initialData[tag] = await registryStub.getStatus(ecosystem, name, version);
+							}
+						}
+					}
 					return new Response(JSON.stringify({ success: true, initialData }), {
 						headers: { 'Content-Type': 'application/json' }
 					});
@@ -62,11 +81,11 @@ export const POST: RequestHandler = async (event) => {
 						return new Response('Missing tags for unsubscribe', { status: 400 });
 					}
 					log.debug`RPC unsubscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
-					await registryStub.unsubscribe(clientId, tags);
+					await registryStub.unsubscribeClient(clientId, tags);
 					break;
 
 				case 'ping':
-					await registryStub.ping(clientId);
+					await registryStub.pingClient(clientId);
 					break;
 
 				default:

@@ -115,9 +115,9 @@ export class CrateRegistry extends DurableObject {
 	}
 
 	/**
-	 * Get progress snapshot for reconnection.
+	 * Get progress snapshot for reconnection (RPC method).
 	 */
-	private getProgressSnapshot(ecosystem: string, name: string, version: string): unknown {
+	async getProgressSnapshot(ecosystem: string, name: string, version: string): Promise<unknown> {
 		const tag = `progress:${ecosystem}:${name}:${version}`;
 		const snapshot = this.progressSnapshots.get(tag);
 		if (!snapshot) return null;
@@ -491,6 +491,33 @@ export class CrateRegistry extends DurableObject {
 			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, 'processing')))
 			.get();
 		return Number(row?.count ?? 0);
+	}
+
+	// ============================================================
+	// RPC Methods - Shared Event Stream Subscriptions
+	// ============================================================
+
+	/**
+	 * Subscribe a client to tags via RPC.
+	 */
+	async subscribeClient(clientId: string, tags: string[]): Promise<void> {
+		log.debug`RPC subscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
+		this.sharedEvents.subscribe(clientId, tags);
+	}
+
+	/**
+	 * Unsubscribe a client from tags via RPC.
+	 */
+	async unsubscribeClient(clientId: string, tags: string[]): Promise<void> {
+		log.debug`RPC unsubscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
+		this.sharedEvents.unsubscribe(clientId, tags);
+	}
+
+	/**
+	 * Ping a client to keep connection alive via RPC.
+	 */
+	async pingClient(clientId: string): Promise<void> {
+		this.sharedEvents.ping(clientId);
 	}
 
 	// ============================================================

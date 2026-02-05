@@ -492,13 +492,21 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			name: string,
 			version: string
 		): Promise<unknown> {
-			// Get latest progress snapshot from DO
-			const tag = `progress:${ecosystem}:${name}:${version}`;
-			const response = await registryStub.fetch(
-				new Request(`https://do/progress-snapshot?tag=${encodeURIComponent(tag)}`)
-			);
-			if (!response.ok) return null;
-			return response.json();
+			// Get latest progress snapshot from DO via RPC
+			return await registryStub.getProgressSnapshot(ecosystem, name, version);
+		},
+
+		// RPC methods for subscription management
+		async subscribeToTags(clientId: string, tags: string[]): Promise<void> {
+			await registryStub.subscribeClient(clientId, tags);
+		},
+
+		async unsubscribeFromTags(clientId: string, tags: string[]): Promise<void> {
+			await registryStub.unsubscribeClient(clientId, tags);
+		},
+
+		async pingClient(clientId: string): Promise<void> {
+			await registryStub.pingClient(clientId);
 		}
 	};
 }
