@@ -6,7 +6,7 @@
     crateVersionsCtx,
     graphForDisplayCtx,
     crateStatusCtx,
-    parseProgressStreamCtx,
+    parseProgressCtx,
   } from "$lib/context";
   import { page } from "$app/state";
   import { afterNavigate, goto } from "$app/navigation";
@@ -54,9 +54,7 @@
   const hasValidCrateParam = $derived(
     isValidCrateNameParam(canonicalCrateName),
   );
-  const hasValidVersionParam = $derived(
-    isValidVersionParam(version),
-  );
+  const hasValidVersionParam = $derived(isValidVersionParam(version));
   const canQueryCrate = $derived(hasValidCrateParam && hasValidVersionParam);
 
   // --- SSE connections for status and parse progress ---
@@ -114,7 +112,8 @@
   function refreshTreeQuery(reason: string, force = false): Promise<void> {
     if (!treeQuery) return Promise.resolve();
     if (treeRefreshInFlight) return treeRefreshInFlight;
-    if (!force && (treeQuery.loading || treeQuery.current)) return Promise.resolve();
+    if (!force && (treeQuery.loading || treeQuery.current))
+      return Promise.resolve();
     const t0 = performance.now();
     log.debug`treeQuery refresh start ${canonicalCrateName}@${version} reason=${reason}`;
     treeRefreshInFlight = treeQuery
@@ -139,7 +138,8 @@
   function refreshIndexQuery(reason: string, force = false): Promise<void> {
     if (!indexQuery) return Promise.resolve();
     if (indexRefreshInFlight) return indexRefreshInFlight;
-    if (!force && (indexQuery.loading || indexQuery.current)) return Promise.resolve();
+    if (!force && (indexQuery.loading || indexQuery.current))
+      return Promise.resolve();
     const t0 = performance.now();
     log.debug`indexQuery refresh start ${canonicalCrateName}@${version} reason=${reason}`;
     indexRefreshInFlight = indexQuery
@@ -221,7 +221,8 @@
       statusConn.step = null;
       progressConn.reset();
     }
-    if (statusConn.status === "processing" && treeModel.source === "stream") return;
+    if (statusConn.status === "processing" && treeModel.source === "stream")
+      return;
     if (treeModel.source === "query" && treeModel.tree === queryTree) return;
     treeModel.applyQuerySnapshot(queryTree);
     log.debug`syncTreeFromQuery done ${canonicalCrateName}@${version}: status=${statusConn.status} source=${treeModel.source}`;
@@ -230,29 +231,6 @@
   onMount(() => {
     const stopMonitor = startMainThreadMonitor();
     connectStatusForCurrentRoute();
-    let wasReady = statusConn.status === "ready";
-    const statusSub = statusConn.subscribe(() => {
-      connectProgressForCurrentRoute();
-      if (treeModel.source !== "query" || statusConn.status === "unknown") {
-        logQueryTreeSnapshot("treeQuery current");
-        syncTreeFromQuery();
-      }
-      log.debug`status: ${statusConn.status} step=${statusConn.step ?? "none"} for ${crateName}@${version}`;
-      const isReady = statusConn.status === "ready";
-      if (isReady && !wasReady) {
-        // Parse is done: refresh canonical query snapshots and adopt them as the single tree model.
-        progressConn.reset();
-        void refreshTreeQuery("ready", true);
-        void refreshIndexQuery("ready", true);
-      }
-      wasReady = isReady;
-    });
-    const progressSub = progressConn.subscribe(() => {
-      syncTreeFromProgress();
-      if (progressConn.nodeCount > 0 || progressConn.tree) {
-        log.debug`progress: ${progressConn.nodeCount} nodes, tree=${progressConn.tree ? "yes" : "no"}`;
-      }
-    });
     afterNavigate(() => {
       connectStatusForCurrentRoute();
       connectProgressForCurrentRoute();
@@ -260,12 +238,45 @@
     return () => {
       stopMonitor?.();
       stopMainThreadMonitor();
-      statusSub[Symbol.dispose]();
-      progressSub[Symbol.dispose]();
-      statusConn.destroy();
-      progressConn.destroy();
+      statusConn.disconnect();
+      progressConn.disconnect();
       treeModel.clear();
     };
+  });
+
+  // Track status changes and react accordingly
+  let wasReady = $state(false);
+  $effect(() => {
+    // Read status to establish dependency
+    const currentStatus = statusConn.status;
+    const currentStep = statusConn.step;
+
+    connectProgressForCurrentRoute();
+    if (treeModel.source !== "query" || currentStatus === "unknown") {
+      logQueryTreeSnapshot("treeQuery current");
+      syncTreeFromQuery();
+    }
+    log.debug`status: ${currentStatus} step=${currentStep ?? "none"} for ${crateName}@${version}`;
+    const isReady = currentStatus === "ready";
+    if (isReady && !wasReady) {
+      // Parse is done: refresh canonical query snapshots and adopt them as the single tree model.
+      progressConn.reset();
+      void refreshTreeQuery("ready", true);
+      void refreshIndexQuery("ready", true);
+    }
+    wasReady = isReady;
+  });
+
+  // Track progress changes
+  $effect(() => {
+    // Read progress properties to establish dependencies
+    const tree = progressConn.tree;
+    const nodeCount = progressConn.nodeCount;
+
+    syncTreeFromProgress();
+    if (nodeCount > 0 || tree) {
+      log.debug`progress: ${nodeCount} nodes, tree=${tree ? "yes" : "no"}`;
+    }
   });
 
   // --- Existing workspace/crate loading (works when status is 'ready') ---
@@ -286,12 +297,21 @@
   // Versions list for current crate (hosted uses registry)
   const versionsQuery = $derived(
     canonicalCrateName
-      ? cached(cacheKey("versions", canonicalCrateName), getCrateVersions(canonicalCrateName))
+      ? cached(
+          cacheKey("versions", canonicalCrateName),
+          getCrateVersions(canonicalCrateName),
+        )
       : null,
   );
 
   const crateVersionsMemo = new KeyedMemo(
-    () => keyOf(canonicalCrateName, version, cratesQuery.current, indexQuery?.current),
+    () =>
+      keyOf(
+        canonicalCrateName,
+        version,
+        cratesQuery.current,
+        indexQuery?.current,
+      ),
     () => {
       const map: Record<string, string> = {};
       if (cratesQuery.current && cratesQuery.current.length > 0) {
@@ -389,7 +409,7 @@
   getNodeUrlCtx.set(() => getNodeUrl);
   crateVersionsCtx.set(() => crateVersions);
   crateStatusCtx.set(() => statusConn.status);
-  parseProgressStreamCtx.set(() => progressConn);
+  parseProgressCtx.set(() => progressConn);
 
   // Load the current crate's tree
   const treeQuery = $derived(
@@ -409,12 +429,7 @@
   // Build a Graph-shaped object for GraphTree from the tree response.
   // Prefer streamed progress tree during parsing, fall back to cached query.
   const treeGraphMemo = new KeyedMemo(
-    () =>
-      keyOf(
-        crateName,
-        treeModel.version,
-        treeModel.source,
-      ),
+    () => keyOf(crateName, treeModel.version, treeModel.source),
     () => {
       const tree = treeModel.tree;
       if (!tree) return null;
@@ -470,7 +485,11 @@
         progressConn.nodeCount,
       ),
     () => {
-      if (statusConn.status === "processing" && treeModel.source === "stream" && progressConn.nodeCount > 0) {
+      if (
+        statusConn.status === "processing" &&
+        treeModel.source === "stream" &&
+        progressConn.nodeCount > 0
+      ) {
         const kindCounts = nodeKindOrder
           .map((kind) => ({
             kind,
@@ -551,18 +570,15 @@
   const showStreamingState = $derived(
     statusConn.status === "unknown" || statusConn.status === "processing",
   );
-  const showProgressBadge = $derived(
-    statusConn.status === "processing",
-  );
+  const showProgressBadge = $derived(statusConn.status === "processing");
   const pendingSkeletonCount = $derived.by(() => {
     const known = progressConn.totalItems ?? progressConn.nodeCount;
     return known > 0 ? known : 24;
   });
   const loadingRelatedCrates = $derived(
-    (cratesQuery.loading && !cratesQuery.current)
-      || ((indexQuery?.loading ?? false) && !indexQuery?.current),
+    (cratesQuery.loading && !cratesQuery.current) ||
+      ((indexQuery?.loading ?? false) && !indexQuery?.current),
   );
-
 </script>
 
 <div class="flex flex-1 overflow-hidden">
@@ -681,7 +697,9 @@
         </div>
 
         {#if showPerfDebug && statusConn.status === "processing"}
-          <div class="mt-2 rounded border border-[var(--panel-border)] bg-[var(--panel-solid)] px-2 py-1.5 text-[10px] font-mono text-[var(--muted)]">
+          <div
+            class="mt-2 rounded border border-[var(--panel-border)] bg-[var(--panel-solid)] px-2 py-1.5 text-[10px] font-mono text-[var(--muted)]"
+          >
             <div>statusKey: {statusDebugKey}</div>
             <div>progressKey: {progressDebugKey}</div>
             <div>contentId: {progressConn.contentId ?? "-"}</div>
@@ -717,7 +735,9 @@
               {/each}
             </div>
           {:else if loadingRelatedCrates}
-            <div class="flex items-center gap-2 px-1 py-1 text-xs text-[var(--muted)]">
+            <div
+              class="flex items-center gap-2 px-1 py-1 text-xs text-[var(--muted)]"
+            >
               <Loader2Icon class="h-3 w-3 animate-spin" />
               <span>Loading crate list...</span>
             </div>
@@ -752,9 +772,7 @@
               type="button"
               data-kind={kind}
               data-active={activeKinds.has(kind) ? "true" : undefined}
-              class="badge badge-sm transition-colors {activeKinds.has(
-                kind,
-              )
+              class="badge badge-sm transition-colors {activeKinds.has(kind)
                 ? 'badge-accent'
                 : 'hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]'}"
               onclick={() => toggleKindFilter(kind)}
@@ -847,14 +865,20 @@
             {kindFilter}
           />
         {:else if showStreamingState}
-          <SkeletonTree count={pendingSkeletonCount} showKindBadges={false} pathStructure={progressConn.pathStructure} />
+          <SkeletonTree
+            count={pendingSkeletonCount}
+            showKindBadges={false}
+            pathStructure={progressConn.pathStructure}
+          />
         {:else if treeQuery}
           <svelte:boundary>
             {@const _tree = await treeQuery}
             <div class="p-4 text-sm text-[var(--muted)]">Preparing tree…</div>
             {#snippet pending()}
               <div class="p-2">
-                <div class="flex items-center gap-2 px-2 py-2 text-xs text-[var(--muted)]">
+                <div
+                  class="flex items-center gap-2 px-2 py-2 text-xs text-[var(--muted)]"
+                >
                   <Loader2Icon class="h-3 w-3 animate-spin" />
                   <span>Loading tree...</span>
                 </div>
@@ -887,9 +911,12 @@
     <div class="relative flex-1 overflow-auto bg-[var(--bg)] p-6">
       {#if showStreamingState && !treeGraph}
         <div class="pointer-events-none absolute left-6 top-6 z-10">
-          <div class="rounded-[var(--radius-card)] border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-2 shadow-[var(--shadow-soft)]">
+          <div
+            class="rounded-[var(--radius-card)] border border-[var(--panel-border)] bg-[var(--panel-solid)] px-3 py-2 shadow-[var(--shadow-soft)]"
+          >
             <div class="text-sm font-semibold text-[var(--ink)]">
-              Parsing {crateName} {version}
+              Parsing {crateName}
+              {version}
             </div>
             <div class="mt-1 text-xs text-[var(--muted)]">{stepLabel}</div>
             {#if progressConn.nodeCount > 0}
@@ -898,7 +925,9 @@
                 edges
               </div>
             {/if}
-            <div class="mt-2 h-1 w-44 overflow-hidden rounded-full bg-[var(--panel-border)]">
+            <div
+              class="mt-2 h-1 w-44 overflow-hidden rounded-full bg-[var(--panel-border)]"
+            >
               <div
                 class="h-full rounded-full bg-[var(--accent)] transition-all duration-500"
                 style="width: {stepPercent}%"

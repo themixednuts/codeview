@@ -7,6 +7,7 @@ import { getLogger } from '$lib/log';
 import migrations from '$lib/server/db/migrations/migrations';
 import { crateStatus, crossEdges, nodeIndex } from '$lib/server/db/schema';
 import { isValidEcosystem, parseCrateKey, parseEdgeKey } from '$lib/server/validation';
+import { SharedEventStream } from '../shared-events';
 
 const log = getLogger('registry');
 
@@ -20,66 +21,287 @@ export interface CrateStatusResult {
 
 /**
  * CrateRegistry Durable Object — tracks parse status for crates and
- * pushes real-time updates to SSE subscribers via TransformStream.
+ * pushes real-time updates to SSE subscribers via multiplexed shared events.
+ * 
+ * Uses RPC methods for all operations except SSE streaming (which requires fetch).
  */
 export class CrateRegistry extends DurableObject {
 	private db: DrizzleSqliteDODatabase;
 	private stepMap = new Map<string, string>();
-	private sseWriters = new Map<string, Set<WritableStreamDefaultWriter>>();
 	private progressSnapshots = new Map<string, { sequence: number; contentId?: string; tree: unknown; contiguous: boolean }>();
 	private progressMeta = new Map<string, { sequence: number; contentId?: string }>();
+	private sharedEvents: SharedEventStream;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
 		this.db = drizzle(this.ctx.storage);
+		this.sharedEvents = new SharedEventStream(log);
 		this.ctx.blockConcurrencyWhile(async () => {
 			migrate(this.db, migrations);
 		});
 	}
 
-	private addWriter(tag: string, writer: WritableStreamDefaultWriter): void {
-		let set = this.sseWriters.get(tag);
-		if (!set) {
-			set = new Set();
-			this.sseWriters.set(tag, set);
-		}
-		set.add(writer);
-		log.debug`addWriter tag=${tag} count=${String(set.size)}`;
-	}
+	// ============================================================
+	// RPC Methods - Subscription Management
+	// ============================================================
 
-	private removeWriter(tag: string, writer: WritableStreamDefaultWriter): void {
-		const set = this.sseWriters.get(tag);
-		if (!set) {
-			log.debug`removeWriter tag=${tag} NOT FOUND`;
-			return;
-		}
-		const hadWriter = set.delete(writer);
-		log.debug`removeWriter tag=${tag} removed=${String(hadWriter)} remaining=${String(set.size)}`;
-		if (set.size === 0) this.sseWriters.delete(tag);
-	}
-
-	private broadcast(tag: string, data: unknown): void {
-		const set = this.sseWriters.get(tag);
-		if (!set || set.size === 0) return;
-		log.debug`broadcast ${tag} to ${String(set.size)} writer(s)`;
-		const jsonResult = Result.try(() => JSON.stringify(data));
-		if (jsonResult.isErr()) {
-			log.error`Failed to serialize broadcast data for ${tag}`;
-			return;
-		}
-		const encoder = new TextEncoder();
-		const chunk = encoder.encode(`data: ${jsonResult.value}\n\n`);
-		// Copy to array — removeWriter mutates the Set
-		for (const writer of [...set]) {
-			try {
-				writer.write(chunk).catch(() => {
-					this.removeWriter(tag, writer);
-				});
-			} catch {
-				this.removeWriter(tag, writer);
+	/**
+	 * Subscribe a client to tags. Returns initial data for each tag.
+	 */
+	async subscribe(clientId: string, tags: string[]): Promise<Array<{ tag: string; data: unknown }>> {
+		log.debug`RPC subscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
+		
+		this.sharedEvents.subscribe(clientId, tags);
+		
+		// Collect initial data for each tag
+		const initialData: Array<{ tag: string; data: unknown }> = [];
+		
+		for (const tag of tags) {
+			const data = await this.getInitialDataForTag(tag);
+			if (data !== null) {
+				initialData.push({ tag, data });
+				// Also send immediately via SSE
+				await this.sharedEvents.sendToClient(clientId, { tag, data });
 			}
 		}
+		
+		return initialData;
 	}
+
+	/**
+	 * Unsubscribe a client from tags.
+	 */
+	async unsubscribe(clientId: string, tags: string[]): Promise<void> {
+		log.debug`RPC unsubscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
+		this.sharedEvents.unsubscribe(clientId, tags);
+	}
+
+	/**
+	 * Ping to keep connection alive.
+	 */
+	async ping(clientId: string): Promise<void> {
+		this.sharedEvents.ping(clientId);
+	}
+
+	/**
+	 * Get initial data for a subscription tag.
+	 */
+	private async getInitialDataForTag(tag: string): Promise<unknown> {
+		// Parse tag format and fetch appropriate data
+		if (tag.startsWith('progress:')) {
+			// progress:rust:name:version
+			const parts = tag.split(':');
+			if (parts.length === 4) {
+				const [, ecosystem, name, version] = parts;
+				return this.getProgressSnapshot(ecosystem, name, version);
+			}
+		} else if (tag.startsWith('processing:')) {
+			// processing:rust
+			const parts = tag.split(':');
+			if (parts.length === 2 && isValidEcosystem(parts[1])) {
+				const cnt = await this.getProcessingCount(parts[1]);
+				return { type: 'processing', count: cnt };
+			}
+		} else if (!tag.startsWith('edge:')) {
+			// Crate status: rust:name:version
+			const parts = tag.split(':');
+			if (parts.length === 3 && isValidEcosystem(parts[0])) {
+				const [ecosystem, name, version] = parts;
+				return this.getStatus(ecosystem, name, version);
+			}
+		}
+		// edge: tags have no initial data
+		return null;
+	}
+
+	/**
+	 * Get progress snapshot for reconnection.
+	 */
+	private getProgressSnapshot(ecosystem: string, name: string, version: string): unknown {
+		const tag = `progress:${ecosystem}:${name}:${version}`;
+		const snapshot = this.progressSnapshots.get(tag);
+		if (!snapshot) return null;
+		
+		const counts = Result.try(() => {
+			const tree = snapshot.tree as { nodes?: unknown[]; edges?: unknown[] };
+			return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
+		}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
+		
+		return {
+			type: 'snapshot',
+			sequence: snapshot.sequence,
+			contentId: snapshot.contentId,
+			tree: snapshot.tree,
+			nodeCount: counts.nodeCount,
+			edgeCount: counts.edgeCount
+		};
+	}
+
+	// ============================================================
+	// RPC Methods - Status Management
+	// ============================================================
+
+	async getStatus(ecosystem: string, name: string, version: string): Promise<CrateStatusResult> {
+		const row = this.db
+			.select({ status: crateStatus.status, error: crateStatus.error })
+			.from(crateStatus)
+			.where(
+				and(
+					eq(crateStatus.ecosystem, ecosystem),
+					eq(crateStatus.name, name),
+					eq(crateStatus.version, version)
+				)
+			)
+			.get();
+		if (!row) {
+			log.debug`getStatus ${ecosystem}:${name}:${version} → unknown (no row)`;
+			return { status: 'unknown' };
+		}
+		const stepKey = `${ecosystem}:${name}:${version}`;
+		const step = row.status === 'processing' ? this.stepMap.get(stepKey) : undefined;
+		log.debug`getStatus ${ecosystem}:${name}:${version} → ${row.status} step=${step ?? '(none)'}`;
+		return {
+			status: row.status as CrateStatusValue,
+			...(row.error ? { error: row.error } : {}),
+			...(step ? { step } : {})
+		};
+	}
+
+	async setStatus(
+		ecosystem: string,
+		name: string,
+		version: string,
+		status: CrateStatusValue,
+		error?: string,
+		step?: string
+	): Promise<void> {
+		log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'} error=${error ?? '(none)'}`;
+		const now = Date.now();
+		const stepKey = `${ecosystem}:${name}:${version}`;
+		const progressTag = `progress:${ecosystem}:${name}:${version}`;
+		if (status === 'processing' && step) {
+			this.stepMap.set(stepKey, step);
+			if (step === 'resolving') {
+				// New parse cycle: clear any stale progress snapshot/meta state.
+				this.progressSnapshots.delete(progressTag);
+				this.progressMeta.delete(progressTag);
+			}
+		} else if (status !== 'processing') {
+			this.stepMap.delete(stepKey);
+		}
+
+		this.db
+			.insert(crateStatus)
+			.values({
+				ecosystem,
+				name,
+				version,
+				status,
+				error: error ?? null,
+				updatedAt: now
+			})
+			.onConflictDoUpdate({
+				target: [crateStatus.ecosystem, crateStatus.name, crateStatus.version],
+				set: {
+					status,
+					error: error ?? null,
+					updatedAt: now
+				}
+			})
+			.run();
+
+		// Broadcast status update via shared events
+		const tag = `${ecosystem}:${name}:${version}`;
+		const currentStep = this.stepMap.get(stepKey);
+		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}) };
+		log.debug`broadcast ${tag}`;
+		await this.sharedEvents.broadcast(tag, message);
+
+		// Broadcast processing count change
+		const processingCount = await this.getProcessingCount(ecosystem);
+		const processingTag = `processing:${ecosystem}`;
+		await this.sharedEvents.broadcast(processingTag, { type: 'processing', count: processingCount });
+	}
+
+	// ============================================================
+	// RPC Methods - Progress Broadcasting
+	// ============================================================
+
+	async broadcastProgress(
+		ecosystem: string,
+		name: string,
+		version: string,
+		data: { type: string; sequence?: number; contentId?: string; nodeCount?: number; edgeCount?: number; tree?: unknown; totalItems?: number }
+	): Promise<void> {
+		const tag = `progress:${ecosystem}:${name}:${version}`;
+		let payload = data;
+		if (data.tree && (data.nodeCount === undefined || data.edgeCount === undefined)) {
+			const counts = Result.try(() => {
+				const tree = data.tree as { nodes?: unknown[]; edges?: unknown[] };
+				return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
+			}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
+			payload = {
+				...data,
+				nodeCount: data.nodeCount ?? counts.nodeCount,
+				edgeCount: data.edgeCount ?? counts.edgeCount
+			};
+		}
+		if (typeof payload.sequence === 'number' || payload.contentId) {
+			this.progressMeta.set(tag, {
+				sequence: payload.sequence ?? 0,
+				contentId: payload.contentId
+			});
+		}
+		if (payload.tree) {
+			const incoming = Result.try(() => payload.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
+			const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes : [];
+			const incomingEdges = Array.isArray(incoming.edges) ? incoming.edges : [];
+			const seq = payload.sequence ?? 0;
+			const prior = this.progressSnapshots.get(tag);
+
+			if ((payload.type === 'snapshot' || payload.type === 'complete')) {
+				this.progressSnapshots.set(tag, {
+					sequence: seq,
+					contentId: payload.contentId,
+					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
+					contiguous: true
+				});
+			} else if (payload.type === 'delta' && prior && prior.contiguous) {
+				const priorTree = Result.try(() => prior.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
+				const priorNodes = Array.isArray(priorTree.nodes) ? priorTree.nodes : [];
+				const priorEdges = Array.isArray(priorTree.edges) ? priorTree.edges : [];
+				const sameContent = !payload.contentId || !prior.contentId || payload.contentId === prior.contentId;
+				const isContiguous = seq === prior.sequence + 1;
+				if (sameContent && isContiguous) {
+					for (const node of incomingNodes) priorNodes.push(node);
+					for (const edge of incomingEdges) priorEdges.push(edge);
+					this.progressSnapshots.set(tag, {
+						sequence: seq,
+						contentId: payload.contentId ?? prior.contentId,
+						tree: { nodes: priorNodes, edges: priorEdges },
+						contiguous: true
+					});
+				} else {
+					this.progressSnapshots.delete(tag);
+				}
+			} else if (payload.type === 'delta' && seq === 0) {
+				this.progressSnapshots.set(tag, {
+					sequence: seq,
+					contentId: payload.contentId,
+					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
+					contiguous: true
+				});
+			} else {
+				this.progressSnapshots.delete(tag);
+			}
+		}
+		log.debug`broadcastProgress ${tag} type=${payload.type} nodes=${payload.nodeCount ?? 0}`;
+		await this.sharedEvents.broadcast(tag, payload);
+	}
+
+	// ============================================================
+	// RPC Methods - Cross Edges
+	// ============================================================
 
 	async replaceCrossEdges(
 		ecosystem: string,
@@ -165,8 +387,9 @@ export class CrateRegistry extends DurableObject {
 			}
 		}
 
+		// Broadcast edge updates
 		for (const nodeId of touchedNodes) {
-			this.broadcast(`edge:${nodeId}`, { type: 'cross-edges', nodeId });
+			await this.sharedEvents.broadcast(`edge:${nodeId}`, { type: 'cross-edges', nodeId });
 		}
 	}
 
@@ -240,335 +463,9 @@ export class CrateRegistry extends DurableObject {
 		return { edges, nodes };
 	}
 
-	async getStatus(ecosystem: string, name: string, version: string): Promise<CrateStatusResult> {
-		const row = this.db
-			.select({ status: crateStatus.status, error: crateStatus.error })
-			.from(crateStatus)
-			.where(
-				and(
-					eq(crateStatus.ecosystem, ecosystem),
-					eq(crateStatus.name, name),
-					eq(crateStatus.version, version)
-				)
-			)
-			.get();
-		if (!row) {
-			log.debug`getStatus ${ecosystem}:${name}:${version} → unknown (no row)`;
-			return { status: 'unknown' };
-		}
-		const stepKey = `${ecosystem}:${name}:${version}`;
-		const step = row.status === 'processing' ? this.stepMap.get(stepKey) : undefined;
-		log.debug`getStatus ${ecosystem}:${name}:${version} → ${row.status} step=${step ?? '(none)'}`;
-		return {
-			status: row.status as CrateStatusValue,
-			...(row.error ? { error: row.error } : {}),
-			...(step ? { step } : {})
-		};
-	}
-
-	async setStatus(
-		ecosystem: string,
-		name: string,
-		version: string,
-		status: CrateStatusValue,
-		error?: string,
-		step?: string
-	): Promise<void> {
-		log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'} error=${error ?? '(none)'}`;
-		const now = Date.now();
-		const stepKey = `${ecosystem}:${name}:${version}`;
-		const progressTag = `progress:${ecosystem}:${name}:${version}`;
-		if (status === 'processing' && step) {
-			this.stepMap.set(stepKey, step);
-			if (step === 'resolving') {
-				// New parse cycle: clear any stale progress snapshot/meta state.
-				this.progressSnapshots.delete(progressTag);
-				this.progressMeta.delete(progressTag);
-			}
-		} else if (status !== 'processing') {
-			this.stepMap.delete(stepKey);
-		}
-
-		this.db
-			.insert(crateStatus)
-			.values({
-				ecosystem,
-				name,
-				version,
-				status,
-				error: error ?? null,
-				updatedAt: now
-			})
-			.onConflictDoUpdate({
-				target: [crateStatus.ecosystem, crateStatus.name, crateStatus.version],
-				set: {
-					status,
-					error: error ?? null,
-					updatedAt: now
-				}
-			})
-			.run();
-
-		// Broadcast to all SSE subscribers watching this crate
-		const tag = `${ecosystem}:${name}:${version}`;
-		const currentStep = this.stepMap.get(stepKey);
-		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}) };
-		const msgJson = Result.try(() => JSON.stringify(message)).unwrapOr('{}');
-		log.debug`broadcast ${tag} → ${msgJson}`;
-		this.broadcast(tag, message);
-
-		const processingCount = await this.getProcessingCount(ecosystem);
-		const processingTag = `processing:${ecosystem}`;
-		this.broadcast(processingTag, { type: 'processing', count: processingCount });
-	}
-
-	/**
-	 * Broadcast parse progress to subscribers.
-	 */
-	async broadcastProgress(
-		ecosystem: string,
-		name: string,
-		version: string,
-		data: { type: string; sequence?: number; contentId?: string; nodeCount?: number; edgeCount?: number; tree?: unknown; totalItems?: number }
-	): Promise<void> {
-		const tag = `progress:${ecosystem}:${name}:${version}`;
-		let payload = data;
-		if (data.tree && (data.nodeCount === undefined || data.edgeCount === undefined)) {
-			const counts = Result.try(() => {
-				const tree = data.tree as { nodes?: unknown[]; edges?: unknown[] };
-				return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
-			}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
-			payload = {
-				...data,
-				nodeCount: data.nodeCount ?? counts.nodeCount,
-				edgeCount: data.edgeCount ?? counts.edgeCount
-			};
-		}
-		if (typeof payload.sequence === 'number' || payload.contentId) {
-			this.progressMeta.set(tag, {
-				sequence: payload.sequence ?? 0,
-				contentId: payload.contentId
-			});
-		}
-		if (payload.tree) {
-			const incoming = Result.try(() => payload.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
-			const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes : [];
-			const incomingEdges = Array.isArray(incoming.edges) ? incoming.edges : [];
-			const seq = payload.sequence ?? 0;
-			const prior = this.progressSnapshots.get(tag);
-
-			if ((payload.type === 'snapshot' || payload.type === 'complete')) {
-				this.progressSnapshots.set(tag, {
-					sequence: seq,
-					contentId: payload.contentId,
-					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
-					contiguous: true
-				});
-			} else if (payload.type === 'delta' && prior && prior.contiguous) {
-				const priorTree = Result.try(() => prior.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
-				const priorNodes = Array.isArray(priorTree.nodes) ? priorTree.nodes : [];
-				const priorEdges = Array.isArray(priorTree.edges) ? priorTree.edges : [];
-				const sameContent = !payload.contentId || !prior.contentId || payload.contentId === prior.contentId;
-				const isContiguous = seq === prior.sequence + 1;
-				if (sameContent && isContiguous) {
-					for (const node of incomingNodes) priorNodes.push(node);
-					for (const edge of incomingEdges) priorEdges.push(edge);
-					this.progressSnapshots.set(tag, {
-						sequence: seq,
-						contentId: payload.contentId ?? prior.contentId,
-						tree: { nodes: priorNodes, edges: priorEdges },
-						contiguous: true
-					});
-				} else {
-					// Sequence gaps or content switches mean this partial delta stream is
-					// no longer safe as a reconnect snapshot source.
-					this.progressSnapshots.delete(tag);
-				}
-			} else if (payload.type === 'delta' && seq === 0) {
-				// Start of a fresh delta stream.
-				this.progressSnapshots.set(tag, {
-					sequence: seq,
-					contentId: payload.contentId,
-					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
-					contiguous: true
-				});
-			} else {
-				// Delta without a known contiguous base — do not publish as snapshot.
-				this.progressSnapshots.delete(tag);
-			}
-		}
-		log.debug`broadcastProgress ${tag} type=${payload.type} nodes=${payload.nodeCount ?? 0}`;
-		this.broadcast(tag, payload);
-	}
-
-	/**
-	 * HTTP handler — returns SSE streams for subscription keys.
-	 * The client passes the subscription key as a query parameter:
-	 *   /sse?key=rust:serde:1.0.219
-	 *   /sse?key=processing:rust
-	 *   /sse?key=edge:<nodeId>
-	 *   /sse?key=progress:rust:serde:1.0.219
-	 */
-	async fetch(request: Request): Promise<Response> {
-		const url = new URL(request.url);
-		const key = url.searchParams.get('key');
-		log.debug`fetch key=${key}`;
-		if (!key) {
-			return new Response('Missing key parameter', { status: 400 });
-		}
-
-		let tag: string | null = null;
-		let keyType: 'crate' | 'processing' | 'edge' | 'progress' | null = null;
-		let crateData: { ecosystem: string; name: string; version: string } | null = null;
-		let processingEcosystem: string | null = null;
-		let edgeData: { nodeId: string } | null = null;
-		let progressData: { ecosystem: string; name: string; version: string } | null = null;
-
-		if (key.startsWith('processing:')) {
-			const parts = key.split(':');
-			if (parts.length === 2 && isValidEcosystem(parts[1])) {
-				tag = key;
-				keyType = 'processing';
-				processingEcosystem = parts[1];
-			}
-		} else if (key.startsWith('edge:')) {
-			edgeData = parseEdgeKey(key);
-			if (edgeData) {
-				tag = `edge:${edgeData.nodeId}`;
-				keyType = 'edge';
-			}
-		} else if (key.startsWith('progress:')) {
-			// progress:rust:name:version
-			const parts = key.split(':');
-			if (parts.length === 4 && isValidEcosystem(parts[1])) {
-				tag = key;
-				keyType = 'progress';
-				progressData = { ecosystem: parts[1], name: parts[2], version: parts[3] };
-			}
-		} else {
-			crateData = parseCrateKey(key);
-			if (crateData) {
-				tag = `${crateData.ecosystem}:${crateData.name}:${crateData.version}`;
-				keyType = 'crate';
-			}
-		}
-
-		if (!tag || !keyType) {
-			return new Response('Invalid key parameter', { status: 400 });
-		}
-
-		// Limit concurrent connections per tag
-		const existing = this.sseWriters.get(tag);
-		const currentCount = existing?.size ?? 0;
-		log.debug`connection request tag=${tag} currentCount=${String(currentCount)}`;
-		if (existing && existing.size >= 10) {
-			log.warn`connection rejected tag=${tag} count=${String(existing.size)} limit=10`;
-			return new Response('Too many connections for this key', { status: 429 });
-		}
-
-		// Build initial message
-		let initialData: unknown = null;
-		if (keyType === 'crate' && crateData) {
-			initialData = await this.getStatus(crateData.ecosystem, crateData.name, crateData.version);
-		} else if (keyType === 'processing' && processingEcosystem) {
-			const cnt = await this.getProcessingCount(processingEcosystem);
-			initialData = { type: 'processing', count: cnt };
-		} else if (keyType === 'progress' && progressData) {
-			const sinceParam = url.searchParams.get('since');
-			const contentId = url.searchParams.get('contentId') ?? undefined;
-			let since: number | undefined;
-			if (sinceParam) {
-				const parsed = Result.try(() => Number.parseInt(sinceParam, 10));
-				if (parsed.isOk() && Number.isFinite(parsed.value)) since = parsed.value;
-			}
-			const snapshot = this.progressSnapshots.get(tag);
-			const meta = this.progressMeta.get(tag);
-			const contentMatches = !contentId || contentId === snapshot?.contentId;
-			if (snapshot && (!contentMatches || since === undefined || since < snapshot.sequence)) {
-				const counts = Result.try(() => {
-					const tree = snapshot.tree as { nodes?: unknown[]; edges?: unknown[] };
-					return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
-				}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
-				initialData = {
-					type: 'snapshot',
-					sequence: snapshot.sequence,
-					contentId: snapshot.contentId,
-					tree: snapshot.tree,
-					nodeCount: counts.nodeCount,
-					edgeCount: counts.edgeCount
-				};
-			}
-		}
-		// edge type has no initial data — updates arrive when edges change
-
-		const encoder = new TextEncoder();
-		const { readable, writable } = new TransformStream();
-		const writer = writable.getWriter();
-
-		this.addWriter(tag, writer);
-		log.debug`registered writer for tag=${tag}, total writers=${String(this.sseWriters.get(tag)?.size ?? 0)}`;
-
-		// Send initial data after registering — don't await since the readable
-		// side has no consumer until the Response is returned.
-		if (initialData !== null) {
-			const initJson = Result.try(() => JSON.stringify(initialData)).unwrapOr('{}');
-			const chunk = encoder.encode(`data: ${initJson}\n\n`);
-			log.debug`writing initial data for tag=${tag}: ${initJson}`;
-			writer.write(chunk).catch(() => {});
-		}
-
-		// Clean up writer when the connection closes.
-		// writer.closed settles when the readable side is cancelled (CF production).
-		// request.signal fires when the upstream proxy aborts (wrangler dev).
-		// Both may fire — guard ensures we only run once.
-		const capturedTag = tag;
-		let cleaned = false;
-		let activityTimeout: ReturnType<typeof setTimeout> | null = null;
-
-		const cleanup = (source: 'closed-resolve' | 'closed-reject' | 'signal-abort' | 'timeout') => {
-			if (cleaned) {
-				log.debug`cleanup already done for tag=${capturedTag} ignoring=${source}`;
-				return;
-			}
-			cleaned = true;
-			if (activityTimeout) {
-				clearTimeout(activityTimeout);
-				activityTimeout = null;
-			}
-			log.debug`writer cleanup for tag=${capturedTag} source=${source}`;
-			this.removeWriter(capturedTag, writer);
-			writer.close().catch(() => {});
-		};
-
-		// Safety timeout: force cleanup after 60s if no proper close detected
-		// This handles cases where client disconnects without signaling (common in dev)
-		const resetActivityTimeout = () => {
-			if (activityTimeout) clearTimeout(activityTimeout);
-			activityTimeout = setTimeout(() => {
-				log.debug`activity timeout for tag=${capturedTag} forcing cleanup`;
-				cleanup('timeout');
-			}, 60000);
-		};
-		resetActivityTimeout();
-
-		writer.closed.then(
-			() => cleanup('closed-resolve'),
-			() => cleanup('closed-reject')
-		);
-		if (request.signal) {
-			request.signal.addEventListener('abort', () => cleanup('signal-abort'), { once: true });
-		}
-
-		log.debug`returning SSE response for tag=${tag}`;
-		return new Response(readable, {
-			headers: {
-				'Content-Type': 'text/event-stream',
-				'Cache-Control': 'no-cache',
-				'Content-Encoding': 'identity',
-				Connection: 'keep-alive'
-			}
-		});
-	}
+	// ============================================================
+	// RPC Methods - Processing Status
+	// ============================================================
 
 	async getProcessingCrates(
 		ecosystem: string,
@@ -594,5 +491,68 @@ export class CrateRegistry extends DurableObject {
 			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, 'processing')))
 			.get();
 		return Number(row?.count ?? 0);
+	}
+
+	// ============================================================
+	// HTTP fetch - Only for SSE streaming
+	// ============================================================
+
+	/**
+	 * HTTP handler — only handles SSE streaming connections.
+	 * All other operations use RPC methods.
+	 */
+	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+		const path = url.pathname;
+
+		// Only SSE connections use fetch - everything else uses RPC
+		if (path === '/shared-sse') {
+			return this.handleSharedSse(request);
+		}
+
+		return new Response('Use RPC methods', { status: 400 });
+	}
+
+	/**
+	 * Handle shared SSE connections (multiplexed).
+	 */
+	private async handleSharedSse(request: Request): Promise<Response> {
+		const clientId = crypto.randomUUID();
+		log.info`shared-sse new connection clientId=${clientId}`;
+
+		const { readable, writable } = new TransformStream();
+		const writer = writable.getWriter();
+
+		// Register client with shared event stream
+		this.sharedEvents.addClient(clientId, writer);
+
+		// Send initial connection acknowledgment
+		const encoder = new TextEncoder();
+		const ackMessage = encoder.encode(`data: ${JSON.stringify({ type: 'connected', clientId })}\n\n`);
+		writer.write(ackMessage).catch(() => {});
+
+		// Clean up when connection closes
+		let cleaned = false;
+		const cleanup = () => {
+			if (cleaned) return;
+			cleaned = true;
+			log.debug`shared-sse cleanup clientId=${clientId}`;
+			this.sharedEvents.removeClient(clientId);
+			writer.close().catch(() => {});
+		};
+
+		writer.closed.then(cleanup, cleanup);
+		if (request.signal) {
+			request.signal.addEventListener('abort', cleanup, { once: true });
+		}
+
+		return new Response(readable, {
+			headers: {
+				'Content-Type': 'text/event-stream',
+				'Cache-Control': 'no-cache',
+				'Content-Encoding': 'identity',
+				Connection: 'keep-alive'
+			}
+		});
 	}
 }

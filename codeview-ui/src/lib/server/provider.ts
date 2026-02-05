@@ -53,16 +53,6 @@ export interface DataProvider {
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getCrateVersions(name: string, limit?: number): Promise<string[]>;
 
-	// SSE streaming
-	streamCrateStatus(name: string, version: string, signal: AbortSignal): Promise<Response>;
-	streamProcessingStatus(ecosystem: string, signal: AbortSignal): Promise<Response>;
-	streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response>;
-	/** Stream parse progress (tree updates) during parsing */
-	streamParseProgress?(name: string, version: string, signal: AbortSignal, options?: {
-		since?: number;
-		contentId?: string | null;
-	}): Promise<Response>;
-
 	// Shared event stream (multiplexed SSE)
 	/** Shared event stream instance for multiplexed subscriptions */
 	streamSharedEvents?: SharedEventStream;

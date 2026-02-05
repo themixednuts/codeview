@@ -2,7 +2,7 @@ import type { NodeKind } from '$lib/graph';
 import type { CrateTree } from '$lib/schema';
 import type { PathStructureMetadata } from '$lib/path-structure';
 import { getLogger } from '$lib/log';
-import { StreamConnection } from '$lib/stream.svelte';
+import { getSharedEventConnection } from '$lib/shared-events-client';
 import { SvelteMap } from 'svelte/reactivity';
 
 export interface ProgressEvent {
@@ -19,10 +19,13 @@ export interface ProgressEvent {
 }
 
 /**
- * Reactive SSE connection for streaming parse progress (tree updates).
- * Provides real-time tree data as parsing progresses.
+ * Reactive connection for streaming parse progress via shared event stream.
+ * Uses multiplexed SSE to avoid connection limits.
+ * 
+ * All public properties use $state and are automatically reactive.
+ * Components can read them directly without subscribing.
  */
-export class ParseProgressConnection extends StreamConnection {
+export class ParseProgressConnection {
 	tree = $state<CrateTree | null>(null);
 	nodeCount = $state(0);
 	edgeCount = $state(0);
@@ -36,31 +39,34 @@ export class ParseProgressConnection extends StreamConnection {
 	/** True when delta sequence gaps were detected. */
 	stale: boolean = $state(false);
 	contentId: string | null = $state(null);
-	#lastSequence = -1;
 
-	protected readonly log = getLogger('progress');
+	#shared = getSharedEventConnection();
+	#log = getLogger('progress');
 	#name = '';
 	#version = '';
+	#lastSequence = -1;
+	#currentTag: string | null = null;
+	#unsubscribe: (() => void) | null = null;
 
-	protected get tag() {
+	get tag() {
 		return `${this.#name}@${this.#version}`;
 	}
 
-	protected get endpoint() {
-		const key = `progress:rust:${this.#name}:${this.#version}`;
-		const params = new URLSearchParams({ key });
-		if (this.#lastSequence >= 0) params.set('since', String(this.#lastSequence));
-		if (this.contentId) params.set('contentId', this.contentId);
-		return `/api/parse-progress/sse?${params.toString()}`;
-	}
+	/**
+	 * Connect to a crate's progress stream.
+	 */
+	async connect(name: string, version: string) {
+		// Unsubscribe from previous
+		this.disconnect();
 
-	/** Connect to a crate's progress stream. Closes any previous connection. */
-	connect(name: string, version: string) {
-		this.close();
-		this.activate();
 		this.#name = name;
 		this.#version = version;
-		this.beginStream(`progress:rust:${name}:${version}`);
+		const tag = `progress:rust:${name}:${version}`;
+		this.#currentTag = tag;
+
+		this.#log.debug`connect ${this.tag}`;
+
+		// Reset state
 		this.tree = null;
 		this.nodeCount = 0;
 		this.edgeCount = 0;
@@ -72,40 +78,71 @@ export class ParseProgressConnection extends StreamConnection {
 		this.stale = false;
 		this.contentId = null;
 		this.#lastSequence = -1;
-		this.open();
+
+		// Subscribe via shared connection
+		const callback = (data: unknown) => this.onProgressData(data as ProgressEvent);
+		await this.#shared.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
 	}
 
-	protected onData(data: unknown) {
-		const msg = data as ProgressEvent;
-		this.log.debug`msg ${this.tag} type=${msg.type} nodes=${msg.nodeCount ?? 0} total=${msg.totalItems ?? '-'}`;
+	/**
+	 * Disconnect from current progress stream.
+	 */
+	disconnect() {
+		if (this.#unsubscribe) {
+			this.#unsubscribe();
+			this.#unsubscribe = null;
+		}
+		this.#currentTag = null;
+	}
+
+	/**
+	 * Reset state without disconnecting.
+	 */
+	reset() {
+		this.disconnect();
+		this.tree = null;
+		this.nodeCount = 0;
+		this.edgeCount = 0;
+		this.sequence = null;
+		this.kindCounts.clear();
+		this.totalItems = null;
+		this.pathStructure = null;
+		this.complete = false;
+		this.stale = false;
+		this.contentId = null;
+		this.#lastSequence = -1;
+	}
+
+	private onProgressData(msg: ProgressEvent) {
+		this.#log.debug`msg ${this.tag} type=${msg.type} nodes=${msg.nodeCount ?? 0} total=${msg.totalItems ?? '-'}`;
 		const prevContentId = this.contentId;
 
 		if (msg.contentId) {
 			if (this.contentId && msg.contentId !== this.contentId) {
 				this.stale = true;
-				this.markStale(true);
 				this.#lastSequence = -1;
-				queueMicrotask(() => this.open());
 			}
 			this.contentId = msg.contentId;
-			this.markContentId(msg.contentId);
 		}
 
 		const incomingNodeCount = msg.nodeCount ?? msg.tree?.nodes.length;
 		const incomingEdgeCount = msg.edgeCount ?? msg.tree?.edges.length;
 		const sameContent = !msg.contentId || !prevContentId || msg.contentId === prevContentId;
+		
 		if (msg.type === 'delta'
 			&& sameContent
 			&& incomingNodeCount !== undefined
 			&& incomingNodeCount < this.nodeCount) {
-			this.log.debug`regression ${this.tag} ${String(incomingNodeCount)} < ${String(this.nodeCount)}`;
+			this.#log.debug`regression ${this.tag} ${String(incomingNodeCount)} < ${String(this.nodeCount)}`;
 			return;
 		}
+		
 		if (msg.type === 'snapshot'
 			&& sameContent
 			&& incomingNodeCount !== undefined
 			&& incomingNodeCount < this.nodeCount) {
-			this.log.debug`snapshot regression ${this.tag} ${String(incomingNodeCount)} < ${String(this.nodeCount)}`;
+			this.#log.debug`snapshot regression ${this.tag} ${String(incomingNodeCount)} < ${String(this.nodeCount)}`;
 			return;
 		}
 
@@ -114,22 +151,19 @@ export class ParseProgressConnection extends StreamConnection {
 				if (msg.sequence <= this.#lastSequence) return;
 				if (msg.sequence !== this.#lastSequence + 1) {
 					this.stale = true;
-					this.markStale(true);
 					this.#lastSequence = -1;
-					queueMicrotask(() => this.open());
 				}
 			}
 			this.#lastSequence = msg.sequence;
 			this.sequence = msg.sequence;
-			this.markSequence(msg.sequence);
 		}
 
-		// Handle metadata event (sent before data streams)
+		// Handle metadata event
 		if (msg.type === 'meta' && typeof msg.totalItems === 'number') {
 			this.totalItems = msg.totalItems;
 		}
 
-		// Handle path structure metadata for accurate skeleton rendering
+		// Handle path structure metadata
 		if (msg.pathStructure) {
 			this.pathStructure = msg.pathStructure;
 		}
@@ -141,50 +175,36 @@ export class ParseProgressConnection extends StreamConnection {
 			if (emptyTreeDelta && sameNodeCount && sameEdgeCount) return;
 		}
 
-		// Handle snapshot updates - replace tree
+		// Handle updates
 		if (msg.type === 'snapshot' && msg.tree) {
-			this.touchStream();
 			this.tree = msg.tree;
 			this.recomputeKindCounts(msg.tree);
 			this.stale = false;
-			this.log.debug`snapshot ${this.tag} ${String(msg.tree.nodes.length)} nodes`;
+			this.#log.debug`snapshot ${this.tag} ${String(msg.tree.nodes.length)} nodes`;
 			if (typeof msg.sequence === 'number') {
 				this.#lastSequence = msg.sequence;
 				this.sequence = msg.sequence;
-				this.markSequence(msg.sequence);
 			}
 		} else if (msg.type === 'delta' && msg.tree) {
-			this.touchStream();
-			// Handle delta updates - accumulate into tree
 			if (!this.tree) {
-				// First delta - initialize tree
 				this.tree = { nodes: [], edges: [] };
-				for (const node of msg.tree.nodes) this.tree.nodes.push(node);
-				for (const edge of msg.tree.edges) this.tree.edges.push(edge);
-			} else {
-				// Accumulate delta into existing tree - mutate in place to avoid O(n) copying
-				for (const node of msg.tree.nodes) this.tree.nodes.push(node);
-				for (const edge of msg.tree.edges) this.tree.edges.push(edge);
-				// Force reactivity by reassigning
-				this.tree = this.tree;
 			}
+			// Accumulate delta
+			for (const node of msg.tree.nodes) this.tree.nodes.push(node);
+			for (const edge of msg.tree.edges) this.tree.edges.push(edge);
+			this.tree = this.tree; // Force reactivity
+			
 			this.incrementKindCounts(msg.tree.nodes);
-			// If we were marked stale due to a reconnect gap, keep rendering and
-			// continue accumulating deltas until a fresh snapshot/complete arrives.
 			this.stale = false;
-			this.markStale(false);
-			this.log.debug`delta ${this.tag} +${String(msg.tree.nodes.length)} nodes`;
+			this.#log.debug`delta ${this.tag} +${String(msg.tree.nodes.length)} nodes`;
 		} else if (msg.type === 'complete' && msg.tree) {
-			this.touchStream();
-			// Complete event has full tree - replace accumulated
 			this.tree = msg.tree;
 			this.recomputeKindCounts(msg.tree);
 			this.stale = false;
-			this.log.debug`complete ${this.tag} ${String(msg.tree.nodes.length)} nodes`;
+			this.#log.debug`complete ${this.tag} ${String(msg.tree.nodes.length)} nodes`;
 			if (typeof msg.sequence === 'number') {
 				this.#lastSequence = msg.sequence;
 				this.sequence = msg.sequence;
-				this.markSequence(msg.sequence);
 			}
 		}
 
@@ -193,6 +213,7 @@ export class ParseProgressConnection extends StreamConnection {
 		} else if ((msg.type === 'snapshot' || msg.type === 'complete') && msg.tree) {
 			this.nodeCount = msg.tree.nodes.length;
 		}
+		
 		if (typeof msg.edgeCount === 'number') {
 			this.edgeCount = msg.edgeCount;
 		} else if ((msg.type === 'snapshot' || msg.type === 'complete') && msg.tree) {
@@ -201,33 +222,9 @@ export class ParseProgressConnection extends StreamConnection {
 
 		if (msg.type === 'complete') {
 			this.complete = true;
-			this.log.debug`complete ${this.tag}`;
-			this.close();
+			this.#log.debug`complete ${this.tag}`;
+			this.disconnect();
 		}
-	}
-
-	protected override onStreamReady() {
-		this.log.debug`ready ${this.tag} since=${String(this.#lastSequence)} contentId=${this.contentId ?? '-'}`;
-	}
-
-	protected override onStreamEnd(reason: 'eof' | 'aborted' | 'fetch-error' | 'bad-response' | 'read-error', detail?: string) {
-		this.log.debug`end ${this.tag} reason=${reason}${detail ? ` detail=${detail}` : ''} seq=${String(this.sequence)} nodes=${String(this.nodeCount)}`;
-	}
-
-	/** Reset state without destroying the connection. */
-	reset() {
-		this.close();
-		this.tree = null;
-		this.nodeCount = 0;
-		this.edgeCount = 0;
-		this.sequence = null;
-		this.kindCounts.clear();
-		this.markSequence(null);
-		this.markContentId(null);
-		this.markStale(false);
-		this.totalItems = null;
-		this.pathStructure = null;
-		this.complete = false;
 	}
 
 	private incrementKindCounts(nodes: CrateTree['nodes']) {

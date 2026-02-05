@@ -15,10 +15,23 @@ const log = getLogger('api:events-sse');
 export const GET: RequestHandler = async (event) => {
 	const provider = await initProvider(event);
 	
+	// For Cloudflare, proxy to registry DO
 	if (!provider.streamSharedEvents) {
-		return new Response('Shared events not available', { status: 501 });
+		// Get the platform env to access the registry DO
+		const platform = event.platform as { env?: { CRATE_REGISTRY?: DurableObjectNamespace } } | undefined;
+		const registry = platform?.env?.CRATE_REGISTRY;
+		
+		if (!registry) {
+			return new Response('Registry not available', { status: 501 });
+		}
+		
+		const registryStub = registry.get(registry.idFromName('global'));
+		return registryStub.fetch(
+			new Request('https://do/shared-sse', { signal: event.request.signal })
+		);
 	}
 
+	// Local mode: use provider's shared event stream
 	// Generate unique client ID
 	const clientId = crypto.randomUUID();
 	log.info`new shared SSE connection clientId=${clientId}`;

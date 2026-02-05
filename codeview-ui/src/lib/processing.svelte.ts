@@ -1,47 +1,69 @@
 import { getLogger } from '$lib/log';
-import { StreamConnection } from '$lib/stream.svelte';
+import { getSharedEventConnection } from '$lib/shared-events-client';
 
-type ProcessingMessage = {
+interface ProcessingMessage {
 	type?: string;
 	count?: number;
-};
+}
 
 /**
- * Reactive SSE connection for global processing updates.
+ * Reactive connection for global processing updates via shared event stream.
+ * Uses multiplexed SSE to avoid connection limits.
  * Emits the current count of crates being parsed.
- * In local mode the endpoint returns 503 and onerror silently closes.
  */
-export class ProcessingStatusConnection extends StreamConnection {
+export class ProcessingStatusConnection {
 	count = $state(0);
 
-	protected readonly log = getLogger('processing');
+	#shared = getSharedEventConnection();
+	#log = getLogger('processing');
 	#ecosystem = 'rust';
+	#currentTag: string | null = null;
+	#unsubscribe: (() => void) | null = null;
 
-	protected get tag() {
+	get tag() {
 		return `processing:${this.#ecosystem}`;
 	}
 
-	protected get endpoint() {
-		const key = `processing:${this.#ecosystem}`;
-		return `/api/processing-status/sse?key=${encodeURIComponent(key)}`;
-	}
+	/**
+	 * Connect to processing status updates for an ecosystem.
+	 */
+	async connect(ecosystem = 'rust') {
+		if (this.#ecosystem === ecosystem && this.#currentTag) return;
+		this.disconnect();
 
-	connect(ecosystem = 'rust') {
-		if (this.#ecosystem === ecosystem && this.connected) return;
-		this.close();
-		this.activate();
 		this.#ecosystem = ecosystem;
-		this.beginStream(`processing:${ecosystem}`);
-		this.open();
+		const tag = `processing:${ecosystem}`;
+		this.#currentTag = tag;
+
+		this.#log.debug`connect ${this.tag}`;
+
+		// Subscribe via shared connection
+		const callback = (data: unknown) => this.#onData(data as ProcessingMessage);
+		await this.#shared.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
 	}
 
-	protected onData(data: unknown) {
-		const msg = data as ProcessingMessage;
+	/**
+	 * Disconnect from current processing status.
+	 */
+	disconnect() {
+		if (this.#unsubscribe) {
+			this.#unsubscribe();
+			this.#unsubscribe = null;
+		}
+		this.#currentTag = null;
+	}
+
+	#onData(msg: ProcessingMessage) {
 		if (msg.type && msg.type !== 'processing') return;
 		if (typeof msg.count === 'number') {
-			this.log.debug`msg ${this.tag} count=${String(msg.count)}`;
-			this.touchStream();
+			this.#log.debug`msg ${this.tag} count=${String(msg.count)}`;
 			this.count = msg.count;
 		}
+	}
+
+	/** Clean up and disconnect. */
+	destroy() {
+		this.disconnect();
 	}
 }

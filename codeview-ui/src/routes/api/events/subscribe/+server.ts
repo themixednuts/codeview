@@ -1,4 +1,5 @@
 import type { RequestHandler } from './$types';
+import type { CrateRegistry } from '$lib/server/cloudflare/registry';
 import { initProvider } from '$lib/server/provider';
 import { getLogger } from '$lib/log';
 
@@ -19,10 +20,6 @@ interface SubscribeRequest {
 export const POST: RequestHandler = async (event) => {
 	const provider = await initProvider(event);
 	
-	if (!provider.streamSharedEvents) {
-		return new Response('Shared events not available', { status: 501 });
-	}
-
 	let body: SubscribeRequest;
 	try {
 		body = await event.request.json();
@@ -36,6 +33,56 @@ export const POST: RequestHandler = async (event) => {
 		return new Response('Missing clientId', { status: 400 });
 	}
 
+	// For Cloudflare, use RPC to call registry DO methods
+	if (!provider.streamSharedEvents) {
+		const platform = event.platform as { env?: { CRATE_REGISTRY?: DurableObjectNamespace<CrateRegistry> } } | undefined;
+		const registry = platform?.env?.CRATE_REGISTRY;
+		
+		if (!registry) {
+			return new Response('Registry not available', { status: 501 });
+		}
+		
+		const registryStub = registry.get(registry.idFromName('global'));
+		
+		try {
+			switch (action) {
+				case 'subscribe':
+					if (!tags.length) {
+						return new Response('Missing tags for subscribe', { status: 400 });
+					}
+					log.debug`RPC subscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
+					// RPC call - subscribe returns initial data for each tag
+					const initialData = await registryStub.subscribe(clientId, tags);
+					return new Response(JSON.stringify({ success: true, initialData }), {
+						headers: { 'Content-Type': 'application/json' }
+					});
+
+				case 'unsubscribe':
+					if (!tags.length) {
+						return new Response('Missing tags for unsubscribe', { status: 400 });
+					}
+					log.debug`RPC unsubscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
+					await registryStub.unsubscribe(clientId, tags);
+					break;
+
+				case 'ping':
+					await registryStub.ping(clientId);
+					break;
+
+				default:
+					return new Response(`Unknown action: ${action}`, { status: 400 });
+			}
+		} catch (err) {
+			log.error`RPC error: ${String(err)}`;
+			return new Response(`RPC error: ${err instanceof Error ? err.message : String(err)}`, { status: 500 });
+		}
+		
+		return new Response(JSON.stringify({ success: true }), {
+			headers: { 'Content-Type': 'application/json' }
+		});
+	}
+
+	// Local mode: use provider's shared event stream
 	switch (action) {
 		case 'subscribe':
 			if (!tags.length) {
@@ -87,7 +134,22 @@ async function sendInitialState(provider: any, clientId: string, tags: string[])
 					await provider.streamSharedEvents.sendToClient(clientId, { tag, data });
 				}
 			}
-		} else if (!tag.startsWith('processing:') && !tag.startsWith('edge:')) {
+		} else if (tag.startsWith('processing:')) {
+			// Send current processing count
+			const parts = tag.split(':');
+			if (parts.length === 2) {
+				const ecosystem = parts[1];
+				// For local mode, get processing count from cache
+				const lc = provider.getCache?.();
+				if (lc) {
+					const cnt = lc.getProcessingCount(ecosystem);
+					await provider.streamSharedEvents.sendToClient(clientId, { 
+						tag, 
+						data: { type: 'processing', count: cnt } 
+					});
+				}
+			}
+		} else if (!tag.startsWith('edge:')) {
 			// Crate status
 			const parts = tag.split(':');
 			if (parts.length === 3) {

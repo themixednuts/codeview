@@ -1,45 +1,62 @@
 import { getLogger } from '$lib/log';
-import { StreamConnection } from '$lib/stream.svelte';
+import { getSharedEventConnection } from '$lib/shared-events-client';
 
 /**
- * Delay before opening the SSE connection (ms).
- * Prevents zombie connections during rapid back/forward navigation —
- * if the user navigates away within this window, no connection is opened.
+ * Delay before subscribing to edge updates (ms).
+ * Prevents zombie subscriptions during rapid back/forward navigation —
+ * if the user navigates away within this window, no subscription is made.
  */
 const CONNECT_DELAY_MS = 1_500;
 
+interface EdgeUpdateMessage {
+	type?: string;
+	nodeId?: string;
+}
+
 /**
- * Reactive SSE connection for cross-crate edge updates.
+ * Reactive connection for cross-crate edge updates via shared event stream.
+ * Uses multiplexed SSE to avoid connection limits.
  * Emits a monotonically increasing tick when updates arrive.
  */
-export class CrossEdgeUpdatesConnection extends StreamConnection {
+export class CrossEdgeUpdatesConnection {
 	updateTick = $state(0);
 
-	protected readonly log = getLogger('graph-updates');
+	#shared = getSharedEventConnection();
+	#log = getLogger('graph-updates');
 	#nodeId = '';
+	#currentTag: string | null = null;
+	#unsubscribe: (() => void) | null = null;
 	#connectTimer: ReturnType<typeof setTimeout> | null = null;
 
-	protected get tag() {
+	get tag() {
 		return `edge:${this.#nodeId}`;
 	}
 
-	protected get endpoint() {
-		const key = `edge:${this.#nodeId}`;
-		return `/api/graph-updates/sse?key=${encodeURIComponent(key)}`;
-	}
-
+	/**
+	 * Connect to edge updates for a node.
+	 */
 	connect(nodeId: string) {
-		if (this.#nodeId === nodeId && this.connected) return;
+		if (this.#nodeId === nodeId && this.#currentTag) return;
 		this.#cancelPending();
-		this.close();
-		this.activate();
+		this.disconnect();
+
 		this.#nodeId = nodeId;
-		this.beginStream(`edge:${nodeId}`);
-		// Delay opening to avoid zombie connections on rapid navigation
+		const tag = `edge:${nodeId}`;
+		this.#currentTag = tag;
+
+		this.#log.debug`connect ${this.tag}`;
+
+		// Delay subscribing to avoid zombie connections on rapid navigation
 		this.#connectTimer = setTimeout(() => {
 			this.#connectTimer = null;
-			this.open();
+			this.#doSubscribe(tag);
 		}, CONNECT_DELAY_MS);
+	}
+
+	async #doSubscribe(tag: string) {
+		const callback = (data: unknown) => this.#onData(data as EdgeUpdateMessage);
+		await this.#shared.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
 	}
 
 	#cancelPending() {
@@ -49,21 +66,26 @@ export class CrossEdgeUpdatesConnection extends StreamConnection {
 		}
 	}
 
-	override destroy() {
+	/**
+	 * Disconnect from current edge updates.
+	 */
+	disconnect() {
 		this.#cancelPending();
-		super.destroy();
+		if (this.#unsubscribe) {
+			this.#unsubscribe();
+			this.#unsubscribe = null;
+		}
+		this.#currentTag = null;
 	}
 
-	protected override close() {
-		this.#cancelPending();
-		super.close();
-	}
-
-	protected onData(data: unknown) {
-		const msg = data as { type?: string; nodeId?: string };
+	#onData(msg: EdgeUpdateMessage) {
 		if (msg.type && msg.type !== 'cross-edges') return;
-		this.touchStream();
 		this.updateTick += 1;
-		this.log.debug`update ${this.tag} tick=${String(this.updateTick)}`;
+		this.#log.debug`update ${this.tag} tick=${String(this.updateTick)}`;
+	}
+
+	/** Clean up and disconnect. */
+	destroy() {
+		this.disconnect();
 	}
 }

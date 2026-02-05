@@ -189,6 +189,10 @@ export function createLocalProvider(): DataProvider {
 			...(step ? { step } : {}),
 		};
 
+		// Broadcast via shared event stream (multiplexed SSE)
+		const statusTag = `rust:${name}:${version}`;
+		sharedEvents.broadcast(statusTag, fullStatus);
+
 		const subs = listeners.get(key);
 		if (subs) {
 			for (const fn of subs) {
@@ -200,18 +204,28 @@ export function createLocalProvider(): DataProvider {
 		for (const fn of processingListeners) {
 			try { fn(count); } catch {}
 		}
+		// Broadcast processing count via shared event stream
+		sharedEvents.broadcast('processing:rust', { type: 'processing', count });
 	}
 
 	function emitEdgeUpdate(nodeId: string): void {
+		const data = { type: 'cross-edges', nodeId };
+		// Broadcast via shared event stream
+		sharedEvents.broadcast(`edge:${nodeId}`, data);
+		
 		const subs = edgeListeners.get(nodeId);
 		if (!subs) return;
 		for (const fn of subs) {
-			try { fn({ type: 'cross-edges', nodeId }); } catch {}
+			try { fn(data); } catch {}
 		}
 	}
 
 	function emitProgress(name: string, version: string, progress: ParseProgress): void {
 		const key = statusKey(name, version);
+		// Broadcast via shared event stream
+		const progressTag = `progress:rust:${name}:${version}`;
+		sharedEvents.broadcast(progressTag, progress);
+		
 		const subs = progressListeners.get(key);
 		if (!subs) return;
 		for (const fn of subs) {
@@ -1233,144 +1247,6 @@ export function createLocalProvider(): DataProvider {
 			return lc.getProcessingCrates('rust', limit);
 		},
 
-		async streamCrateStatus(
-			name: string,
-			version: string,
-			signal: AbortSignal
-		): Promise<Response> {
-			const status = await this.getCrateStatus(name, version);
-
-			// Terminal states — single event
-			if (status.status === 'ready' || status.status === 'failed') {
-				const statusJson = Result.try(() => JSON.stringify(status)).unwrapOr('{"status":"unknown"}');
-				return sseResponse(`data: ${statusJson}\n\n`, signal, { ttl: 500 });
-			}
-
-			// For unknown crates, auto-trigger parse and stream updates
-			if (status.status === 'unknown' && isValidCrateName(name) && isValidVersion(version)) {
-				const triggerResult = await this.triggerParse(name, version);
-				if (triggerResult.isErr()) {
-					// Std crates and other non-parseable crates — return unknown status
-					const statusJson = Result.try(() => JSON.stringify(status)).unwrapOr('{"status":"unknown"}');
-					return sseResponse(`data: ${statusJson}\n\n`, signal, { ttl: 500 });
-				}
-			}
-
-			// Stream updates
-			return sseStreamResponse((push, close) => {
-				// Send current status immediately
-				const lc = getCache();
-				const current = lc.getStatus('rust', name, version);
-				if (current.status !== 'unknown') {
-					const json = Result.try(() => JSON.stringify(current)).unwrapOr('{"status":"unknown"}');
-					push(`data: ${json}\n\n`);
-					if (current.status === 'ready' || current.status === 'failed') {
-						close();
-						return () => {};
-					}
-				}
-
-				const unsubscribe = subscribe(name, version, (s) => {
-					const json = Result.try(() => JSON.stringify(s)).unwrapOr('{"status":"unknown"}');
-					push(`data: ${json}\n\n`);
-					if (s.status === 'ready' || s.status === 'failed') {
-						close();
-					}
-				});
-				return unsubscribe;
-			}, signal);
-		},
-
-		async streamProcessingStatus(_ecosystem: string, signal: AbortSignal): Promise<Response> {
-			return sseStreamResponse((push, _close) => {
-				// Send current count immediately
-				const lc = getCache();
-				const cnt = lc.getProcessingCount('rust');
-				const json = Result.try(() => JSON.stringify({ type: 'processing', count: cnt })).unwrapOr('{"type":"processing","count":0}');
-				push(`data: ${json}\n\n`);
-
-				const unsubscribe = subscribeProcessing((c) => {
-					const json = Result.try(() => JSON.stringify({ type: 'processing', count: c })).unwrapOr('{"type":"processing","count":0}');
-					push(`data: ${json}\n\n`);
-				});
-				return unsubscribe;
-			}, signal, { ttl: 300_000 });
-		},
-
-		async streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response> {
-			return sseStreamResponse((push, _close) => {
-				const unsubscribe = subscribeEdge(nodeId, (data) => {
-					const json = Result.try(() => JSON.stringify(data)).unwrapOr('{}');
-					push(`data: ${json}\n\n`);
-				});
-				return unsubscribe;
-			}, signal, { ttl: 120_000 });
-		},
-
-		async streamParseProgress(
-			name: string,
-			version: string,
-			signal: AbortSignal,
-			options?: { since?: number; contentId?: string | null }
-		): Promise<Response> {
-			return sseStreamResponse((push, close) => {
-				// Send current tree if available
-				const lc = getCache();
-				const key = statusKey(name, version);
-				const state = progressState.get(key);
-				const stateSequence = state?.sequence ?? -1;
-				const contentMatches = !options?.contentId || options.contentId === state?.contentId;
-				const shouldSendSnapshot = Boolean(state?.snapshot)
-					&& (!contentMatches || options?.since === undefined || options.since < stateSequence);
-				const status = lc.getStatus('rust', name, version).status;
-				const tree = shouldSendSnapshot
-					? state?.snapshot
-					: (status === 'processing' ? null : lc.getTree(name, version));
-				if (tree) {
-					const json = Result.try(() => JSON.stringify({
-						type: 'snapshot',
-						sequence: state?.sequence,
-						contentId: state?.contentId,
-						tree,
-						nodeCount: tree.nodes.length,
-						edgeCount: tree.edges.length
-					})).unwrapOr('{}');
-					push(`data: ${json}\n\n`);
-				}
-
-				const unsubscribeProgress = subscribeProgress(name, version, (progress) => {
-					const json = Result.try(() => JSON.stringify(progress)).unwrapOr('{}');
-					push(`data: ${json}\n\n`);
-				});
-
-				// Also listen for status changes to close stream when ready
-				const unsubscribeStatus = subscribe(name, version, (status) => {
-					if (status.status === 'ready' || status.status === 'failed') {
-						// Send final tree
-						const finalTree = lc.getTree(name, version);
-						if (finalTree) {
-							const latest = progressState.get(key);
-							const json = Result.try(() => JSON.stringify({
-								type: 'complete',
-								sequence: latest?.sequence,
-								contentId: latest?.contentId,
-								tree: finalTree,
-								nodeCount: finalTree.nodes.length,
-								edgeCount: finalTree.edges.length
-							})).unwrapOr('{}');
-							push(`data: ${json}\n\n`);
-						}
-						close();
-					}
-				});
-
-				return () => {
-					unsubscribeProgress();
-					unsubscribeStatus();
-				};
-			}, signal, { ttl: 300_000 }); // Keep stream stable during long parses
-		},
-
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
 			const ws = await this.loadWorkspace();
 			const localVersion = ws?.crates.find(
@@ -1391,6 +1267,7 @@ export function createLocalProvider(): DataProvider {
 					? [localVersion]
 					: [];
 		},
+
 
 		// Shared event stream for multiplexed SSE
 		streamSharedEvents: sharedEvents,

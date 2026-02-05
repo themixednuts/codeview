@@ -94,30 +94,10 @@ async function resolveStdVersion(
 	return pointer.version ?? null;
 }
 
-function proxyDO(
-	registryStub: DurableObjectStub<CrateRegistry>,
-	key: string,
-	signal: AbortSignal,
-	params?: Record<string, string | undefined>
-): Promise<Response> {
-	const search = new URLSearchParams({ key });
-	if (params) {
-		for (const [paramKey, value] of Object.entries(params)) {
-			if (value) search.set(paramKey, value);
-		}
-	}
-	return registryStub.fetch(
-		new Request(`https://do/sse?${search.toString()}`, { signal })
-	);
-}
-
 export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): DataProvider {
 	const registryStub = env.CRATE_REGISTRY.get(env.CRATE_REGISTRY.idFromName('global'));
 	const sourceFileCache = new Map<string, string>();
 	const SOURCE_FILE_CACHE_MAX = 512;
-	
-	// Shared event stream for multiplexed SSE (single connection per client)
-	const sharedEvents = new SharedEventStream(log);
 
 	function sourceCacheKey(
 		crateName: string,
@@ -482,39 +462,6 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return await registryStub.getProcessingCrates('rust', limit);
 		},
 
-		async streamCrateStatus(name: string, version: string, signal: AbortSignal): Promise<Response> {
-			// Resolve effective status first (includes graph-presence healing).
-			const status = await this.getCrateStatus(name, version);
-			// For terminal states, return a one-shot SSE payload directly.
-			// This avoids depending on a long-lived proxied stream just to deliver
-			// a single status event.
-			if (status.status === 'ready' || status.status === 'failed') {
-				const payload = Result.try(() => JSON.stringify(status)).unwrapOr('{"status":"unknown"}');
-				return sseResponse(`data: ${payload}\n\n`, signal, { ttl: 500 });
-			}
-			return proxyDO(registryStub, `rust:${name}:${version}`, signal);
-		},
-
-		async streamProcessingStatus(ecosystem: string, signal: AbortSignal): Promise<Response> {
-			return proxyDO(registryStub, `processing:${ecosystem}`, signal);
-		},
-
-		async streamEdgeUpdates(nodeId: string, signal: AbortSignal): Promise<Response> {
-			return proxyDO(registryStub, `edge:${nodeId}`, signal);
-		},
-
-		async streamParseProgress(
-			name: string,
-			version: string,
-			signal: AbortSignal,
-			options?: { since?: number; contentId?: string | null }
-		): Promise<Response> {
-			// Proxy to DO for progress updates
-			return proxyDO(registryStub, `progress:rust:${name}:${version}`, signal, {
-				since: options?.since !== undefined ? String(options.since) : undefined,
-				contentId: options?.contentId ?? undefined
-			});
-		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
 			if (isStdCrate(name)) {
@@ -536,8 +483,9 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return [];
 		},
 
-		// Shared event stream for multiplexed SSE
-		streamSharedEvents: sharedEvents,
+		// Cloudflare: Shared events are handled by proxying to registry DO
+		// The endpoints /api/events/sse and /api/events/subscribe handle this
+		streamSharedEvents: undefined,
 
 		async getLatestProgress(
 			ecosystem: string,
