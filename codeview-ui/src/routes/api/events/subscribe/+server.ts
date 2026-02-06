@@ -68,7 +68,14 @@ export const POST: RequestHandler = async (event) => {
 							const parts = tag.split(':');
 							if (parts.length === 3) {
 								const [ecosystem, name, version] = parts;
-								initialData[tag] = await registryStub.getStatus(ecosystem, name, version);
+								// Use provider.getCrateStatus for rust - it has auto-trigger logic
+								// that starts parsing when status is 'unknown'
+								if (ecosystem === 'rust') {
+									const cfProvider = await initProvider(event);
+									initialData[tag] = await cfProvider.getCrateStatus(name, version);
+								} else {
+									initialData[tag] = await registryStub.getStatus(ecosystem, name, version);
+								}
 							}
 						}
 					}
