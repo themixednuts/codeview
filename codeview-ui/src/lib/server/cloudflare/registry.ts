@@ -6,8 +6,9 @@ import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import { getLogger } from '$lib/log';
 import migrations from '$lib/server/db/migrations/migrations';
 import { crateStatus, crossEdges, nodeIndex } from '$lib/server/db/schema';
-import { isValidEcosystem, parseCrateKey, parseEdgeKey } from '$lib/server/validation';
-import { SharedEventStream } from '../shared-events';
+import { isValidEcosystem, isValidCrateName, isValidVersion } from '$lib/server/validation';
+import { isStdCrate } from '$lib/std';
+import type { GraphStore } from '$cloudflare/store';
 
 const log = getLogger('registry');
 
@@ -21,112 +22,252 @@ export interface CrateStatusResult {
 
 /**
  * CrateRegistry Durable Object — tracks parse status for crates and
- * pushes real-time updates to SSE subscribers via multiplexed shared events.
- * 
- * Uses RPC methods for all operations except SSE streaming (which requires fetch).
+ * pushes real-time updates to WebSocket subscribers.
+ *
+ * Uses Cloudflare Hibernatable WebSockets for connection management,
+ * enabling DO hibernation between messages to reduce costs.
  */
 export class CrateRegistry extends DurableObject {
 	private db: DrizzleSqliteDODatabase;
 	private stepMap = new Map<string, string>();
 	private progressSnapshots = new Map<string, { sequence: number; contentId?: string; tree: unknown; contiguous: boolean }>();
 	private progressMeta = new Map<string, { sequence: number; contentId?: string }>();
-	private sharedEvents: SharedEventStream;
+	private appEnv: Env;
 
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
+		this.appEnv = env;
 		this.db = drizzle(this.ctx.storage);
-		this.sharedEvents = new SharedEventStream(log);
 		this.ctx.blockConcurrencyWhile(async () => {
 			migrate(this.db, migrations);
 		});
 	}
 
 	// ============================================================
-	// RPC Methods - Subscription Management
+	// WebSocket Lifecycle (Hibernatable)
 	// ============================================================
 
 	/**
-	 * Subscribe a client to tags. Returns initial data for each tag.
+	 * HTTP handler — accepts WebSocket upgrades.
 	 */
-	async subscribe(clientId: string, tags: string[]): Promise<Array<{ tag: string; data: unknown }>> {
-		log.debug`RPC subscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
-		
-		this.sharedEvents.subscribe(clientId, tags);
-		
-		// Collect initial data for each tag
-		const initialData: Array<{ tag: string; data: unknown }> = [];
-		
-		for (const tag of tags) {
-			const data = await this.getInitialDataForTag(tag);
-			if (data !== null) {
-				initialData.push({ tag, data });
-				// Also send immediately via SSE
-				await this.sharedEvents.sendToClient(clientId, { tag, data });
+	async fetch(request: Request): Promise<Response> {
+		const upgradeHeader = request.headers.get('Upgrade');
+		if (upgradeHeader !== 'websocket') {
+			return new Response('Expected WebSocket upgrade', { status: 400 });
+		}
+
+		const pair = new WebSocketPair();
+		const connectionId = crypto.randomUUID();
+
+		// Accept with hibernation support — tags stored as attachment
+		this.ctx.acceptWebSocket(pair[1], [connectionId]);
+
+		// Send connection acknowledgment
+		pair[1].send(JSON.stringify({ type: 'connected', connectionId }));
+
+		log.info`ws connect connectionId=${connectionId}`;
+
+		return new Response(null, { status: 101, webSocket: pair[0] });
+	}
+
+	/**
+	 * Called when a WebSocket message arrives (survives hibernation).
+	 */
+	async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+		const raw = typeof message === 'string' ? message : new TextDecoder().decode(message);
+		let parsed: { action?: string; tags?: string[] };
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			log.warn`invalid JSON from WebSocket client`;
+			return;
+		}
+
+		const { action, tags = [] } = parsed;
+
+		if (action === 'subscribe' && tags.length > 0) {
+			// Get current subscription tags from attachment
+			const currentTags = this.getWsTags(ws);
+			for (const tag of tags) {
+				currentTags.add(tag);
+			}
+			this.setWsTags(ws, currentTags);
+
+			log.debug`ws subscribe tags=[${tags.join(', ')}]`;
+
+			// Send initial data for each tag
+			for (const tag of tags) {
+				const data = await this.getInitialDataForTag(tag);
+				if (data !== null) {
+					try {
+						ws.send(JSON.stringify({ tag, data }));
+					} catch {
+						// Connection may have closed
+					}
+				}
+			}
+		} else if (action === 'unsubscribe' && tags.length > 0) {
+			const currentTags = this.getWsTags(ws);
+			for (const tag of tags) {
+				currentTags.delete(tag);
+			}
+			this.setWsTags(ws, currentTags);
+
+			log.debug`ws unsubscribe tags=[${tags.join(', ')}]`;
+		}
+	}
+
+	/**
+	 * Called when a WebSocket connection closes (survives hibernation).
+	 */
+	async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
+		log.debug`ws close code=${String(code)} reason=${reason || '(none)'}`;
+		// Cloudflare automatically cleans up the WebSocket from getWebSockets()
+	}
+
+	/**
+	 * Called when a WebSocket encounters an error.
+	 */
+	async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
+		log.warn`ws error: ${String(error)}`;
+	}
+
+	// ── Typed emit helpers ──
+
+	private emit = {
+		status: (name: string, version: string, data: CrateStatusResult) => {
+			this.broadcastToTag(`rust:${name}:${version}`, data);
+		},
+		progress: (name: string, version: string, data: unknown) => {
+			this.broadcastToTag(`progress:rust:${name}:${version}`, data);
+		},
+		processing: (ecosystem: string, data: { type: 'processing'; count: number }) => {
+			this.broadcastToTag(`processing:${ecosystem}`, data);
+		},
+		edges: (nodeId: string, data: { type: 'cross-edges'; nodeId: string }) => {
+			this.broadcastToTag(`edge:${nodeId}`, data);
+		}
+	};
+
+	// ── Tag management via DO WebSocket attachment serialization ──
+
+	/**
+	 * Store subscription tags for a WebSocket using serialization attachment.
+	 * We serialize tags as a JSON string in the first attachment slot.
+	 */
+	private getWsTags(ws: WebSocket): Set<string> {
+		try {
+			const attachment = ws.deserializeAttachment() as { tags?: string[] } | null;
+			return new Set(attachment?.tags ?? []);
+		} catch {
+			return new Set();
+		}
+	}
+
+	private setWsTags(ws: WebSocket, tags: Set<string>): void {
+		try {
+			ws.serializeAttachment({ tags: Array.from(tags) });
+		} catch {
+			// May fail if WS is closing
+		}
+	}
+
+	// ── Broadcasting to WebSocket clients ──
+
+	private broadcastToTag<T = unknown>(tag: string, data: T): void {
+		const payload = JSON.stringify({ tag, data });
+		const sockets = this.ctx.getWebSockets();
+
+		for (const ws of sockets) {
+			const tags = this.getWsTags(ws);
+			if (!tags.has(tag)) continue;
+			try {
+				ws.send(payload);
+			} catch {
+				// Dead connection — Cloudflare will clean up
 			}
 		}
-		
-		return initialData;
 	}
 
-	/**
-	 * Unsubscribe a client from tags.
-	 */
-	async unsubscribe(clientId: string, tags: string[]): Promise<void> {
-		log.debug`RPC unsubscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
-		this.sharedEvents.unsubscribe(clientId, tags);
-	}
-
-	/**
-	 * Ping to keep connection alive.
-	 */
-	async ping(clientId: string): Promise<void> {
-		this.sharedEvents.ping(clientId);
-	}
+	// ============================================================
+	// RPC Methods - Initial Data
+	// ============================================================
 
 	/**
 	 * Get initial data for a subscription tag.
 	 */
 	private async getInitialDataForTag(tag: string): Promise<unknown> {
-		// Parse tag format and fetch appropriate data
 		if (tag.startsWith('progress:')) {
-			// progress:rust:name:version
 			const parts = tag.split(':');
 			if (parts.length === 4) {
 				const [, ecosystem, name, version] = parts;
 				return this.getProgressSnapshot(ecosystem, name, version);
 			}
 		} else if (tag.startsWith('processing:')) {
-			// processing:rust
 			const parts = tag.split(':');
 			if (parts.length === 2 && isValidEcosystem(parts[1])) {
 				const cnt = await this.getProcessingCount(parts[1]);
 				return { type: 'processing', count: cnt };
 			}
 		} else if (!tag.startsWith('edge:')) {
-			// Crate status: rust:name:version
 			const parts = tag.split(':');
 			if (parts.length === 3 && isValidEcosystem(parts[0])) {
 				const [ecosystem, name, version] = parts;
-				return this.getStatus(ecosystem, name, version);
+				const status = await this.getStatus(ecosystem, name, version);
+
+				// Auto-trigger parse for unknown non-std crates (mirrors provider.getCrateStatus logic)
+				if (status.status === 'unknown' && ecosystem === 'rust' && !isStdCrate(name)) {
+					return this.autoTriggerParse(ecosystem, name, version);
+				}
+
+				return status;
 			}
 		}
-		// edge: tags have no initial data
 		return null;
 	}
 
 	/**
-	 * Get progress snapshot for reconnection (RPC method).
+	 * Check graph presence and auto-trigger parsing for unknown crates.
+	 * Mirrors the auto-trigger logic in cloudflare/provider.ts getCrateStatus().
+	 */
+	private async autoTriggerParse(ecosystem: string, name: string, version: string): Promise<CrateStatusResult> {
+		// Registry status can lag — check if graph data already exists and heal
+		try {
+			const graphStore = this.appEnv.GRAPH_STORE as unknown as DurableObjectNamespace<GraphStore>;
+			const graphStub = graphStore.get(graphStore.idFromName(`${ecosystem}/${name}/${version}`));
+			const hasGraph = await graphStub.hasCrate(ecosystem, name, version);
+			if (hasGraph) {
+				await this.setStatus(ecosystem, name, version, 'ready');
+				return { status: 'ready' };
+			}
+		} catch {}
+
+		// Validate and trigger parse workflow
+		if (isValidCrateName(name) && isValidVersion(version)) {
+			const workflow = this.appEnv.PARSE_CRATE as Workflow;
+			await Promise.all([
+				this.setStatus(ecosystem, name, version, 'processing'),
+				workflow.create({ params: { ecosystem, name, version } })
+			]);
+			return { status: 'processing' };
+		}
+
+		return { status: 'unknown' };
+	}
+
+	/**
+	 * Get progress snapshot for reconnection.
 	 */
 	async getProgressSnapshot(ecosystem: string, name: string, version: string): Promise<unknown> {
 		const tag = `progress:${ecosystem}:${name}:${version}`;
 		const snapshot = this.progressSnapshots.get(tag);
 		if (!snapshot) return null;
-		
+
 		const counts = Result.try(() => {
 			const tree = snapshot.tree as { nodes?: unknown[]; edges?: unknown[] };
 			return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
 		}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
-		
+
 		return {
 			type: 'snapshot',
 			sequence: snapshot.sequence,
@@ -183,7 +324,6 @@ export class CrateRegistry extends DurableObject {
 		if (status === 'processing' && step) {
 			this.stepMap.set(stepKey, step);
 			if (step === 'resolving') {
-				// New parse cycle: clear any stale progress snapshot/meta state.
 				this.progressSnapshots.delete(progressTag);
 				this.progressMeta.delete(progressTag);
 			}
@@ -211,17 +351,15 @@ export class CrateRegistry extends DurableObject {
 			})
 			.run();
 
-		// Broadcast status update via shared events
-		const tag = `${ecosystem}:${name}:${version}`;
+		// Broadcast status update via WebSocket
 		const currentStep = this.stepMap.get(stepKey);
-		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}), ...(action ? { action } : {}) };
-		log.debug`broadcast ${tag}`;
-		await this.sharedEvents.broadcast(tag, message);
+		const message: CrateStatusResult = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}), ...(action ? { action } : {}) };
+		log.debug`broadcast ${ecosystem}:${name}:${version}`;
+		this.emit.status(name, version, message);
 
 		// Broadcast processing count change
 		const processingCount = await this.getProcessingCount(ecosystem);
-		const processingTag = `processing:${ecosystem}`;
-		await this.sharedEvents.broadcast(processingTag, { type: 'processing', count: processingCount });
+		this.emit.processing(ecosystem, { type: 'processing', count: processingCount });
 	}
 
 	// ============================================================
@@ -296,8 +434,8 @@ export class CrateRegistry extends DurableObject {
 				this.progressSnapshots.delete(tag);
 			}
 		}
-		log.debug`broadcastProgress ${tag} type=${payload.type} nodes=${payload.nodeCount ?? 0}`;
-		await this.sharedEvents.broadcast(tag, payload);
+		log.debug`broadcastProgress ${ecosystem}:${name}:${version} type=${payload.type} nodes=${payload.nodeCount ?? 0}`;
+		this.emit.progress(name, version, payload);
 	}
 
 	// ============================================================
@@ -388,9 +526,9 @@ export class CrateRegistry extends DurableObject {
 			}
 		}
 
-		// Broadcast edge updates
+		// Broadcast edge updates via WebSocket
 		for (const nodeId of touchedNodes) {
-			await this.sharedEvents.broadcast(`edge:${nodeId}`, { type: 'cross-edges', nodeId });
+			this.emit.edges(nodeId, { type: 'cross-edges', nodeId });
 		}
 	}
 
@@ -492,95 +630,5 @@ export class CrateRegistry extends DurableObject {
 			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, 'processing')))
 			.get();
 		return Number(row?.count ?? 0);
-	}
-
-	// ============================================================
-	// RPC Methods - Shared Event Stream Subscriptions
-	// ============================================================
-
-	/**
-	 * Subscribe a client to tags via RPC.
-	 */
-	async subscribeClient(clientId: string, tags: string[]): Promise<void> {
-		log.debug`RPC subscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
-		this.sharedEvents.subscribe(clientId, tags);
-	}
-
-	/**
-	 * Unsubscribe a client from tags via RPC.
-	 */
-	async unsubscribeClient(clientId: string, tags: string[]): Promise<void> {
-		log.debug`RPC unsubscribe clientId=${clientId} tags=[${tags.join(', ')}]`;
-		this.sharedEvents.unsubscribe(clientId, tags);
-	}
-
-	/**
-	 * Ping a client to keep connection alive via RPC.
-	 */
-	async pingClient(clientId: string): Promise<void> {
-		this.sharedEvents.ping(clientId);
-	}
-
-	// ============================================================
-	// HTTP fetch - Only for SSE streaming
-	// ============================================================
-
-	/**
-	 * HTTP handler — only handles SSE streaming connections.
-	 * All other operations use RPC methods.
-	 */
-	async fetch(request: Request): Promise<Response> {
-		const url = new URL(request.url);
-		const path = url.pathname;
-
-		// Only SSE connections use fetch - everything else uses RPC
-		if (path === '/shared-sse') {
-			return this.handleSharedSse(request);
-		}
-
-		return new Response('Use RPC methods', { status: 400 });
-	}
-
-	/**
-	 * Handle shared SSE connections (multiplexed).
-	 */
-	private async handleSharedSse(request: Request): Promise<Response> {
-		const clientId = crypto.randomUUID();
-		log.info`shared-sse new connection clientId=${clientId}`;
-
-		const { readable, writable } = new TransformStream();
-		const writer = writable.getWriter();
-
-		// Register client with shared event stream
-		this.sharedEvents.addClient(clientId, writer);
-
-		// Send initial connection acknowledgment
-		const encoder = new TextEncoder();
-		const ackMessage = encoder.encode(`data: ${JSON.stringify({ type: 'connected', clientId })}\n\n`);
-		writer.write(ackMessage).catch(() => {});
-
-		// Clean up when connection closes
-		let cleaned = false;
-		const cleanup = () => {
-			if (cleaned) return;
-			cleaned = true;
-			log.debug`shared-sse cleanup clientId=${clientId}`;
-			this.sharedEvents.removeClient(clientId);
-			writer.close().catch(() => {});
-		};
-
-		writer.closed.then(cleanup, cleanup);
-		if (request.signal) {
-			request.signal.addEventListener('abort', cleanup, { once: true });
-		}
-
-		return new Response(readable, {
-			headers: {
-				'Content-Type': 'text/event-stream',
-				'Cache-Control': 'no-cache',
-				'Content-Encoding': 'identity',
-				Connection: 'keep-alive'
-			}
-		});
 	}
 }

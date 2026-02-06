@@ -13,11 +13,9 @@ import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
 import { ValidationError, NotAvailableError, RateLimitError } from '../errors';
-import { sseResponse } from '../sse';
 import { checkRateLimitPolicy } from './ratelimit';
 import { isValidCrateName, isValidVersion, crateNameVariants, normalizeCrateName } from '../validation';
 import { getLogger } from '$lib/log';
-import { SharedEventStream } from '../shared-events';
 import { USER_AGENT, SOURCE_MAX_BYTES, resolveSourceFileFromMap, selectSourceProviders, classifyStatusAction } from '../provider-utils';
 
 const log = getLogger('cloudflare');
@@ -484,31 +482,6 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return resolved ?? version;
 		},
 
-		// Cloudflare: Shared events are handled by proxying to registry DO
-		// The endpoints /api/events/sse and /api/events/subscribe handle this
-		streamSharedEvents: undefined,
-
-		async getLatestProgress(
-			ecosystem: string,
-			name: string,
-			version: string
-		): Promise<unknown> {
-			// Get latest progress snapshot from DO via RPC
-			return await registryStub.getProgressSnapshot(ecosystem, name, version);
-		},
-
-		// RPC methods for subscription management
-		async subscribeToTags(clientId: string, tags: string[]): Promise<void> {
-			await registryStub.subscribeClient(clientId, tags);
-		},
-
-		async unsubscribeFromTags(clientId: string, tags: string[]): Promise<void> {
-			await registryStub.unsubscribeClient(clientId, tags);
-		},
-
-		async pingClient(clientId: string): Promise<void> {
-			await registryStub.pingClient(clientId);
-		}
 	};
 }
 
@@ -516,4 +489,11 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 export function createProvider(event: RequestEvent): DataProvider {
 	const env = (event.platform as { env: AppEnv }).env;
 	return createCloudflareProvider(env, event);
+}
+
+/** Handle WebSocket upgrade by proxying to the CrateRegistry Durable Object. */
+export function handleWsUpgrade(event: RequestEvent): Response | Promise<Response> {
+	const env = (event.platform as { env: AppEnv }).env;
+	const stub = env.CRATE_REGISTRY.get(env.CRATE_REGISTRY.idFromName('global'));
+	return stub.fetch(event.request);
 }

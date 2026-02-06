@@ -1,10 +1,6 @@
+import type { RealtimeCallback } from '$lib/ws/client';
 import { getLogger } from '$lib/log';
 import { SSEConnection, type SSEEndReason } from './connection';
-
-interface SubscriptionCallback {
-	tag: string;
-	callback: (data: unknown) => void;
-}
 
 interface SharedEventMessage {
 	tag: string;
@@ -17,8 +13,8 @@ interface SharedEventMessage {
  * Replaces multiple per-crate connections with one shared connection.
  * Subscriptions are managed via POST /api/events/subscribe
  */
-export class SharedEventConnection extends SSEConnection {
-	private subscriptions = new Map<string, Set<(data: unknown) => void>>();
+export class Client extends SSEConnection {
+	private subscriptions = new Map<string, Set<RealtimeCallback>>();
 	private clientId: string | null = null;
 	private pingInterval: ReturnType<typeof setInterval> | null = null;
 	private pendingSubscriptions = new Set<string>();
@@ -37,14 +33,14 @@ export class SharedEventConnection extends SSEConnection {
 	/**
 	 * Subscribe to a tag. Creates the shared connection if needed.
 	 */
-	async subscribe(tag: string, callback: (data: unknown) => void): Promise<void> {
+	async subscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): Promise<void> {
 		// Add callback to subscriptions
 		let callbacks = this.subscriptions.get(tag);
 		if (!callbacks) {
 			callbacks = new Set();
 			this.subscriptions.set(tag, callbacks);
 		}
-		callbacks.add(callback);
+		callbacks.add(callback as RealtimeCallback);
 
 		// If already connected and subscribed, nothing to do
 		if (this.subscribedTags.has(tag)) {
@@ -67,11 +63,11 @@ export class SharedEventConnection extends SSEConnection {
 	/**
 	 * Unsubscribe from a tag.
 	 */
-	async unsubscribe(tag: string, callback: (data: unknown) => void): Promise<void> {
+	async unsubscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): Promise<void> {
 		const callbacks = this.subscriptions.get(tag);
 		if (!callbacks) return;
 
-		callbacks.delete(callback);
+		callbacks.delete(callback as RealtimeCallback);
 
 		// If no more callbacks for this tag, unsubscribe from server
 		if (callbacks.size === 0) {
@@ -295,11 +291,11 @@ export class SharedEventConnection extends SSEConnection {
 }
 
 // Global singleton - one shared connection per browser tab
-let globalSharedConnection: SharedEventConnection | null = null;
+let globalSharedConnection: Client | null = null;
 
-export function getSharedEventConnection(): SharedEventConnection {
+export function connect(): Client {
 	if (!globalSharedConnection) {
-		globalSharedConnection = new SharedEventConnection();
+		globalSharedConnection = new Client();
 	}
 	return globalSharedConnection;
 }

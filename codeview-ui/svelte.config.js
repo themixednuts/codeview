@@ -25,7 +25,8 @@ const config = {
       '$cloudflare': 'src/lib/server/cloudflare',
       '$provider': isCloudflare
         ? 'src/lib/server/cloudflare/provider.ts'
-        : 'src/lib/server/local/provider.ts'
+        : 'src/lib/server/local/provider.ts',
+      '$realtime': 'src/lib/ws/client.ts'
     },
     experimental: {
       remoteFunctions: true

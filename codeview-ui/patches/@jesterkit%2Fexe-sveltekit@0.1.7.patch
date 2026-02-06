@@ -1,0 +1,20 @@
+--- a/dist/server/index.ts
++++ b/dist/server/index.ts
+@@ -118,8 +118,17 @@
+ 			getClientAddress() {
+ 				return bunServer.requestIP(req)?.address || "127.0.0.1";
+ 			},
++			platform: {
++				server: bunServer,
++			},
+ 		});
+ 	},
++	websocket: {
++		open(ws: any) { ws.data?.open?.(ws); },
++		message(ws: any, msg: any) { ws.data?.message?.(ws, msg); },
++		close(ws: any, code: number, reason: string) { ws.data?.close?.(ws, code, reason); },
++		drain(ws: any) { ws.data?.drain?.(ws); },
++	},
+ 	error(e: Error) {
+ 		return Response.json(
+ 			{

@@ -11,6 +11,8 @@ declare global {
 			sourceSpanKey?: string;
 		}
 		interface Platform {
+			/** Bun server instance for WebSocket upgrades (local mode only) */
+			server?: import('bun').Server;
 			env?: {
 				GRAPH_STORE?: DurableObjectNamespace<GraphStore>;
 				CRATE_REGISTRY?: DurableObjectNamespace<CrateRegistry>;

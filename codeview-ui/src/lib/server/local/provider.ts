@@ -20,8 +20,7 @@ import { fetchSourcesWithProviders } from '../sources/runner';
 import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } from '../provider';
 import { ValidationError, NotAvailableError } from '../errors';
 import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
-import { sseResponse, sseStreamResponse } from '../sse';
-import { SharedEventStream } from '../shared-events';
+import { realtime, createHandlers, type LocalProviderInternals } from './ws';
 import { USER_AGENT, SOURCE_MAX_BYTES, resolveSourceFileFromMap, selectSourceProviders, classifyStatusAction } from '../provider-utils';
 import { LocalCache } from './cache';
 import { WorkflowEntrypoint, runWorkflow } from './workflow';
@@ -61,15 +60,14 @@ async function mapWithConcurrency<T, R>(
 	return results;
 }
 
+let providerInternals: LocalProviderInternals | null = null;
+
 export function createLocalProvider(): DataProvider {
 	let cached: Workspace | null = null;
 	const registry = createCratesIoAdapter();
 	const sourceFileCache = new Map<string, string>();
 	const SOURCE_FILE_CACHE_MAX = 512;
 	
-	// Shared event stream for multiplexed SSE (single connection per client)
-	const sharedEvents = new SharedEventStream(log);
-
 	function sourceCacheKey(
 		crateName: string,
 		crateVersion: string,
@@ -145,9 +143,8 @@ export function createLocalProvider(): DataProvider {
 			...(step ? { step } : {}),
 		};
 
-		// Broadcast via shared event stream (multiplexed SSE)
-		const statusTag = `rust:${name}:${version}`;
-		sharedEvents.broadcast(statusTag, fullStatus);
+		// Broadcast via WebSocket
+		realtime.status.emit(name, version, fullStatus);
 
 		const subs = listeners.get(key);
 		if (subs) {
@@ -160,14 +157,14 @@ export function createLocalProvider(): DataProvider {
 		for (const fn of processingListeners) {
 			try { fn(count); } catch {}
 		}
-		// Broadcast processing count via shared event stream
-		sharedEvents.broadcast('processing:rust', { type: 'processing', count });
+		// Broadcast processing count via WebSocket
+		realtime.processing.emit('rust', { type: 'processing', count });
 	}
 
 	function emitEdgeUpdate(nodeId: string): void {
-		const data = { type: 'cross-edges', nodeId };
-		// Broadcast via shared event stream
-		sharedEvents.broadcast(`edge:${nodeId}`, data);
+		const data = { type: 'cross-edges' as const, nodeId };
+		// Broadcast via WebSocket
+		realtime.edges.emit(nodeId, data);
 		
 		const subs = edgeListeners.get(nodeId);
 		if (!subs) return;
@@ -178,9 +175,8 @@ export function createLocalProvider(): DataProvider {
 
 	function emitProgress(name: string, version: string, progress: ParseProgress): void {
 		const key = statusKey(name, version);
-		// Broadcast via shared event stream
-		const progressTag = `progress:rust:${name}:${version}`;
-		sharedEvents.broadcast(progressTag, progress);
+		// Broadcast via WebSocket
+		realtime.progress.emit(name, version, progress);
 		
 		const subs = progressListeners.get(key);
 		if (!subs) return;
@@ -845,7 +841,7 @@ export function createLocalProvider(): DataProvider {
 		}
 	}
 
-	return {
+	const provider: DataProvider = {
 		async loadWorkspace() {
 			if (cached) return cached;
 			const graphPath = process.env.CODEVIEW_GRAPH;
@@ -1263,30 +1259,57 @@ export function createLocalProvider(): DataProvider {
 			return version;
 		},
 
-		// Shared event stream for multiplexed SSE
-		streamSharedEvents: sharedEvents,
-
-		async getLatestProgress(
-			ecosystem: string,
-			name: string,
-			version: string
-		): Promise<unknown> {
-			const key = `${ecosystem}:${name}:${version}`;
-			const state = progressState.get(key);
-			if (!state?.snapshot) return null;
-			return {
-				type: 'snapshot',
-				sequence: state.sequence,
-				contentId: state.contentId,
-				tree: state.snapshot,
-				nodeCount: state.snapshot.nodes.length,
-				edgeCount: state.snapshot.edges.length
-			};
-		}
 	};
+
+	// ── Provider internals for WebSocket handler ──
+
+	function getLatestProgress(ecosystem: string, name: string, version: string): unknown {
+		const key = `${ecosystem}:${name}:${version}`;
+		const state = progressState.get(key);
+		if (!state?.snapshot) return null;
+		return {
+			type: 'snapshot',
+			sequence: state.sequence,
+			contentId: state.contentId,
+			tree: state.snapshot,
+			nodeCount: state.snapshot.nodes.length,
+			edgeCount: state.snapshot.edges.length
+		};
+	}
+
+	providerInternals = {
+		getCache,
+		getLatestProgress,
+		getCrateStatus: (name: string, version: string) => provider.getCrateStatus(name, version),
+	};
+
+	return provider;
 }
 
 /** Build-time entry point — imported via the `$provider` alias (see vite.config.js). */
 export function createProvider(_event: RequestEvent): DataProvider {
 	return createLocalProvider();
+}
+
+/**
+ * Handle WebSocket upgrade for local mode.
+ * Called from the /api/events/ws route.
+ */
+export function handleWsUpgrade(event: RequestEvent): Response {
+	const server = event.platform?.server;
+	if (!server) {
+		return new Response('No Bun server available for WebSocket upgrade', { status: 500 });
+	}
+
+	if (!providerInternals) {
+		return new Response('Provider not initialized', { status: 500 });
+	}
+
+	const handlers = createHandlers(providerInternals);
+	const upgraded = server.upgrade(event.request, { data: handlers });
+	if (!upgraded) {
+		return new Response('WebSocket upgrade failed', { status: 400 });
+	}
+	// Bun handles the 101 response internally
+	return new Response(null, { status: 101 });
 }
