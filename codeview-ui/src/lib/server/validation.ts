@@ -2,8 +2,7 @@ import { isRustChannel } from '$lib/std';
 import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 
 const ALLOWED_ECOSYSTEMS = new Set(['rust']);
-const UNDERSCORE_RE = /_/g;
-const HYPHEN_RE = /-/g;
+export { normalizeCrateName, hyphenateCrateName, crateNameVariants } from '$lib/crate-names';
 const EDGE_NODE_ID_MAX = 512;
 
 export function isValidCrateName(name: string): boolean {
@@ -41,14 +40,3 @@ export function sanitizeSearchQuery(q: string): string {
 	return q.slice(0, 100).trim();
 }
 
-/** Canonical Rust crate name: hyphens → underscores (idempotent). */
-export function normalizeCrateName(name: string): string {
-	return name.replace(HYPHEN_RE, '_');
-}
-
-/** Returns [underscore_form, hyphen_form] for registry lookups. */
-export function crateNameVariants(name: string): [string, string] {
-	const underscore = name.replace(HYPHEN_RE, '_');
-	const hyphen = name.replace(UNDERSCORE_RE, '-');
-	return [underscore, hyphen];
-}

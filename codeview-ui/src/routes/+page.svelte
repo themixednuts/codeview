@@ -1,7 +1,7 @@
 <script lang="ts">
   import { Debounced } from 'runed';
   import { Loader2Icon } from '@lucide/svelte';
-  import { getCrates, getTopCrates, searchRegistry } from '$lib/graph.remote';
+  import { getCrates, getTopCrates, searchRegistry } from '$lib/rpc/crate.remote';
   import { cached, cacheKey } from '$lib/cache.svelte';
 
   const workspaceCrates = $derived(

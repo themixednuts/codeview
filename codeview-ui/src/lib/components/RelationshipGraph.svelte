@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Graph, Node } from '$lib/graph';
-  import type { LayoutMode, VisEdge, VisNode } from '$lib/graph-layout';
+  import type { LayoutMode, VisEdge, VisNode } from '$lib/graph/layout';
   import { kindColors } from '$lib/tree';
   import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
   import {
@@ -8,8 +8,8 @@
     CENTER_Y,
     LAYOUT_HEIGHT,
     LAYOUT_WIDTH,
-  } from '$lib/graph-layout';
-  import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/visual';
+  } from '$lib/graph/layout';
+  import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/graph/visual';
   import {
     buildBaseScene,
     buildNodeMap,

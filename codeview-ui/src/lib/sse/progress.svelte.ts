@@ -2,7 +2,7 @@ import type { NodeKind } from '$lib/graph';
 import type { CrateTree } from '$lib/schema';
 import type { PathStructureMetadata } from '$lib/path-structure';
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from '$lib/shared-events-client';
+import { getSharedEventConnection } from './shared-client';
 import { SvelteMap } from 'svelte/reactivity';
 
 export interface ProgressEvent {
@@ -21,7 +21,7 @@ export interface ProgressEvent {
 /**
  * Reactive connection for streaming parse progress via shared event stream.
  * Uses multiplexed SSE to avoid connection limits.
- * 
+ *
  * All public properties use $state and are automatically reactive.
  * Components can read them directly without subscribing.
  */
@@ -120,8 +120,14 @@ export class ParseProgressConnection {
 
 		if (msg.contentId) {
 			if (this.contentId && msg.contentId !== this.contentId) {
-				this.stale = true;
+				// Content changed - reset accumulated state to avoid corrupting tree
+				this.#log.debug`contentId changed ${this.tag}: ${this.contentId} -> ${msg.contentId}, resetting state`;
+				this.tree = null;
+				this.nodeCount = 0;
+				this.edgeCount = 0;
+				this.kindCounts.clear();
 				this.#lastSequence = -1;
+				this.stale = false; // Fresh start, not stale
 			}
 			this.contentId = msg.contentId;
 		}
@@ -129,7 +135,7 @@ export class ParseProgressConnection {
 		const incomingNodeCount = msg.nodeCount ?? msg.tree?.nodes.length;
 		const incomingEdgeCount = msg.edgeCount ?? msg.tree?.edges.length;
 		const sameContent = !msg.contentId || !prevContentId || msg.contentId === prevContentId;
-		
+
 		if (msg.type === 'delta'
 			&& sameContent
 			&& incomingNodeCount !== undefined
@@ -137,7 +143,7 @@ export class ParseProgressConnection {
 			this.#log.debug`regression ${this.tag} ${String(incomingNodeCount)} < ${String(this.nodeCount)}`;
 			return;
 		}
-		
+
 		if (msg.type === 'snapshot'
 			&& sameContent
 			&& incomingNodeCount !== undefined
@@ -152,10 +158,19 @@ export class ParseProgressConnection {
 				if (msg.sequence !== this.#lastSequence + 1) {
 					this.stale = true;
 					this.#lastSequence = -1;
+					// Don't apply out-of-order deltas - wait for a snapshot
+					this.#log.debug`sequence gap ${this.tag}: expected ${this.#lastSequence + 1}, got ${msg.sequence}, waiting for snapshot`;
+					return;
 				}
 			}
 			this.#lastSequence = msg.sequence;
 			this.sequence = msg.sequence;
+		}
+
+		// When stale, only accept snapshots or complete events to resync
+		if (this.stale && msg.type === 'delta') {
+			this.#log.debug`stale ${this.tag}: ignoring delta, waiting for snapshot`;
+			return;
 		}
 
 		// Handle metadata event
@@ -193,7 +208,7 @@ export class ParseProgressConnection {
 			for (const node of msg.tree.nodes) this.tree.nodes.push(node);
 			for (const edge of msg.tree.edges) this.tree.edges.push(edge);
 			this.tree = this.tree; // Force reactivity
-			
+
 			this.incrementKindCounts(msg.tree.nodes);
 			this.stale = false;
 			this.#log.debug`delta ${this.tag} +${String(msg.tree.nodes.length)} nodes`;
@@ -213,7 +228,7 @@ export class ParseProgressConnection {
 		} else if ((msg.type === 'snapshot' || msg.type === 'complete') && msg.tree) {
 			this.nodeCount = msg.tree.nodes.length;
 		}
-		
+
 		if (typeof msg.edgeCount === 'number') {
 			this.edgeCount = msg.edgeCount;
 		} else if ((msg.type === 'snapshot' || msg.type === 'complete') && msg.tree) {

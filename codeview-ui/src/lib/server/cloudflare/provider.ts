@@ -1,7 +1,7 @@
 import { Result } from 'better-result';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Confidence, CrateGraph, EdgeKind, Node, Edge, NodeKind, Visibility, Workspace } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeDetail, NodeSummary } from '$lib/schema';
+import type { CrateIndex, CrateTree, NodeDetail } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, isRustChannel } from '$lib/std';
 import type { CrossEdgeData, DataProvider } from '../provider';
@@ -12,59 +12,15 @@ import { getRegistry } from '../registry/index';
 import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
-import type { SourceProviderGroup } from '../sources/types';
 import { ValidationError, NotAvailableError, RateLimitError } from '../errors';
 import { sseResponse } from '../sse';
 import { checkRateLimitPolicy } from './ratelimit';
-import { isValidCrateName, isValidVersion, crateNameVariants } from '../validation';
+import { isValidCrateName, isValidVersion, crateNameVariants, normalizeCrateName } from '../validation';
 import { getLogger } from '$lib/log';
 import { SharedEventStream } from '../shared-events';
+import { USER_AGENT, SOURCE_MAX_BYTES, resolveSourceFileFromMap, selectSourceProviders, classifyStatusAction } from '../provider-utils';
 
 const log = getLogger('cloudflare');
-const USER_AGENT = 'codeview';
-const SOURCE_MAX_BYTES = 96 * 1024 * 1024;
-
-function sourcePathCandidates(path: string): string[] {
-	const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
-	const withSrc = normalized.startsWith('src/') ? normalized : `src/${normalized}`;
-	const withoutSrc = normalized.startsWith('src/') ? normalized.slice('src/'.length) : normalized;
-	const values = [normalized, withSrc, withoutSrc];
-	return values.filter((v, i, all) => v.length > 0 && all.indexOf(v) === i);
-}
-
-function resolveSourceFileFromMap(files: Map<string, string>, file: string): string | null {
-	for (const candidate of sourcePathCandidates(file)) {
-		const exact = files.get(candidate);
-		if (exact !== undefined) return exact;
-	}
-	for (const candidate of sourcePathCandidates(file)) {
-		const suffix = `/${candidate}`;
-		for (const [path, content] of files) {
-			const normalizedPath = path.replace(/\\/g, '/');
-			if (normalizedPath === candidate || normalizedPath.endsWith(suffix)) return content;
-		}
-	}
-	return null;
-}
-
-function selectSourceProviders(
-	group: SourceProviderGroup,
-	mode: 'auto' | 'crates-io' | 'github'
-): SourceProviderGroup {
-	if (mode === 'auto') return group;
-	if (mode === 'crates-io') {
-		return {
-			...group,
-			main: group.main.filter((provider) => provider.id === 'crate-archive'),
-			fallbacks: []
-		};
-	}
-	return {
-		...group,
-		main: [],
-		fallbacks: group.fallbacks.filter((provider) => provider.id.startsWith('github-'))
-	};
-}
 
 /** Get a GraphStore stub for a specific crate */
 function getCrateGraphStore(env: AppEnv, name: string, version: string): DurableObjectStub<GraphStore> {
@@ -236,7 +192,7 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				graphStub.getEdgesForCrate('rust', name, resolved)
 			]);
 
-			const normalizedName = name.replace(/-/g, '_');
+			const normalizedName = normalizeCrateName(name);
 			return {
 				id: normalizedName,
 				name: normalizedName,
@@ -322,31 +278,58 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 
 			if (!node) return null;
 
-			// Get related nodes (targets of edges)
+			// Collect all edges - start with direct edges
+			const allEdges = [...nodeEdges];
+			const edgeSet = new Set(nodeEdges.map(e => `${e.from}|${e.to}|${e.kind}`));
+
+			// For types with impl blocks, follow Defines edges to get impl -> method edges
+			// This enables showing methods in the detail view
+			const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(node.kind);
+			const implIds: string[] = [];
+			if (isTypeNode) {
+				for (const edge of nodeEdges) {
+					if (edge.kind === 'Defines' && edge.from === nodeId) {
+						implIds.push(edge.to);
+					}
+				}
+			}
+
+			// Load edges from impl blocks (to get Contains/Defines -> Function edges)
+			if (implIds.length > 0) {
+				const implEdgePromises = implIds.map(implId => 
+					graphStub.getEdgesForNode('rust', name, resolved, implId)
+				);
+				const implEdgesArrays = await Promise.all(implEdgePromises);
+				for (const implEdges of implEdgesArrays) {
+					for (const edge of implEdges) {
+						const key = `${edge.from}|${edge.to}|${edge.kind}`;
+						if (!edgeSet.has(key)) {
+							allEdges.push(edge);
+							edgeSet.add(key);
+						}
+					}
+				}
+			}
+
+			// Get related nodes (targets of all edges including impl methods)
 			const relatedIds = new Set<string>();
-			for (const edge of nodeEdges) {
+			for (const edge of allEdges) {
 				if (edge.from !== nodeId) relatedIds.add(edge.from);
 				if (edge.to !== nodeId) relatedIds.add(edge.to);
 			}
 
-			// Load related nodes
-			const relatedNodes: NodeSummary[] = [];
+			// Load related nodes with full data
+			const relatedNodes: Node[] = [];
 			for (const id of relatedIds) {
 				const related = await graphStub.getNode('rust', name, resolved, id);
 				if (related) {
-					relatedNodes.push({
-						id: related.id,
-						name: related.name,
-						kind: related.kind,
-						visibility: related.visibility,
-						is_external: related.is_external
-					});
+					relatedNodes.push(related as Node);
 				}
 			}
 
 			return {
 				node,
-				edges: nodeEdges,
+				edges: allEdges,
 				relatedNodes
 			};
 		},
@@ -401,7 +384,9 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				]);
 				return { status: 'processing' as const };
 			}
-			return current;
+			// Re-derive action from error message (not stored in DB)
+			const action = classifyStatusAction(current);
+			return action ? { ...current, action } : current;
 		},
 
 		async triggerParse(name: string, version: string, force?: boolean) {
@@ -481,6 +466,22 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				if (versions.length > 0) return versions;
 			}
 			return [];
+		},
+
+		async resolveVersion(name: string, version: string): Promise<string> {
+			if (version === 'latest') {
+				const registry = getRegistry('rust');
+				if (registry.isOk()) {
+					for (const variant of crateNameVariants(name)) {
+						const versions = await registry.value.listVersions(variant, 1);
+						if (versions.length > 0) return versions[0];
+					}
+				}
+				return version;
+			}
+			// Resolve Rust channel aliases (stable/beta/nightly) for std crates
+			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
+			return resolved ?? version;
 		},
 
 		// Cloudflare: Shared events are handled by proxying to registry DO

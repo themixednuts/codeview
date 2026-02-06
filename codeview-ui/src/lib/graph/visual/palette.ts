@@ -1,0 +1,25 @@
+import type { NodeKind } from '$lib/graph';
+
+export const kindVisuals: Record<NodeKind, { fill: string; stroke: string }> = {
+  Crate:      { fill: '#e8720c', stroke: '#b85a09' },
+  Module:     { fill: '#2d8a5e', stroke: '#1e6b45' },
+  Struct:     { fill: '#9d4edd', stroke: '#7b2cbf' },
+  StructField:{ fill: '#b794f4', stroke: '#9f7aea' },
+  Union:      { fill: '#7c5cbf', stroke: '#5e3fa3' },
+  Enum:       { fill: '#4a90ff', stroke: '#2b6ddb' },
+  Variant:    { fill: '#7cb3ff', stroke: '#5a9beb' },
+  Trait:      { fill: '#10b981', stroke: '#059669' },
+  TraitAlias: { fill: '#0db39e', stroke: '#0a8f7e' },
+  Impl:       { fill: '#8d99ae', stroke: '#6b7b8d' },
+  Function:   { fill: '#f43f7a', stroke: '#d6336c' },
+  TypeAlias:  { fill: '#f97316', stroke: '#d96012' },
+  AssocType:  { fill: '#fb923c', stroke: '#ea580c' },
+  Constant:   { fill: '#6366f1', stroke: '#4f46e5' },
+  AssocConst: { fill: '#818cf8', stroke: '#6366f1' },
+  Static:     { fill: '#8b5cf6', stroke: '#7c3aed' },
+  Macro:      { fill: '#ec4899', stroke: '#db2777' },
+  Primitive:  { fill: '#14b8a6', stroke: '#0d9488' },
+  ExternCrate:{ fill: '#f59e0b', stroke: '#d97706' },
+  Import:     { fill: '#64748b', stroke: '#475569' },
+  ProcMacro:  { fill: '#f472b6', stroke: '#ec4899' },
+};

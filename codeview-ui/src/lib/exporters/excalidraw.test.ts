@@ -10,10 +10,10 @@ import {
   edgeLabelId,
   arrowheadForEdgeKind,
 } from './excalidraw';
-import type { VisNode, VisEdge } from '$lib/graph-layout';
+import type { VisNode, VisEdge } from '$lib/graph/layout';
 import type { Node } from '$lib/graph';
 import type { GraphScene, SceneGroup } from '$lib/renderers/graph';
-import type { LabelPosition } from '$lib/labels';
+import type { LabelPosition } from '$lib/graph/labels';
 import type {
   ExcalidrawTextElement,
   ExcalidrawArrowElement,

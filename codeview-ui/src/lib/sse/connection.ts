@@ -86,7 +86,7 @@ export abstract class SSEConnection implements Disposable, AsyncDisposable {
 
 	#ensureWorker() {
 		if (this.#worker) return;
-		const worker = new Worker(new URL('./workers/sse.ts', import.meta.url), { type: 'module' });
+		const worker = new Worker(new URL('../workers/sse.ts', import.meta.url), { type: 'module' });
 		worker.onmessage = (event: MessageEvent<WorkerMessage>) => {
 			this.#handleWorkerMessage(event.data);
 		};

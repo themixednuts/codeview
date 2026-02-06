@@ -1,7 +1,7 @@
 import { panic } from 'better-result';
 import { getContext, setContext, hasContext } from 'svelte';
 import type { Edge, Node } from '$lib/graph';
-import type { ParseProgressConnection } from '$lib/progress.svelte';
+import type { ParseProgressConnection } from '$lib/sse';
 
 /**
  * Type-safe reactive context. Stores a getter function internally so

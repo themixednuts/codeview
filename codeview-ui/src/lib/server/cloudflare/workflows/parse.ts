@@ -37,8 +37,8 @@ type ServicesEnv = Omit<Env, 'GRAPH_STORE' | 'CRATE_REGISTRY' | 'PARSE_CRATE'> &
 	GITHUB_TOKEN?: string;
 };
 
-const USER_AGENT = 'codeview';
-const SOURCE_MAX_BYTES = 96 * 1024 * 1024;
+import { USER_AGENT, SOURCE_MAX_BYTES } from '$lib/server/provider-utils';
+
 const VERSION_LOOKUP_CONCURRENCY = 6;
 const FANOUT_CONCURRENCY = 4;
 const ENABLE_DEPENDENCY_FANOUT = false;
@@ -211,7 +211,7 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 					const nodeSummaries = new Map<string, CrossEdgeNodeSummary>();
 					const crossEdgesList: CrossEdgeStepResult['edges'] = [];
 					const crossNodeMap = new Map<string, CrossEdgeNodeSummary>();
-					const normalizedName = name.replace(/-/g, '_');
+					const normalizedName = normalizeCrateName(name);
 
 					const cratePrefix = (id: string): string => id.split('::')[0] ?? id;
 					const isExternalNode = (id: string): boolean => cratePrefix(id) !== normalizedName;
@@ -462,8 +462,11 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ServicesEnv, ParseCra
 		} catch (err) {
 			// On failure: mark status as failed with error message
 			const errorMessage = err instanceof Error ? err.message : String(err);
+			const action = /Failed to fetch artifact:.*\b404\b/.test(errorMessage)
+				? 'docs_unavailable'
+				: undefined;
 			await step.do('set-status-failed', async () => {
-				await registryStub.setStatus(ecosystem, name, version, 'failed', errorMessage);
+				await registryStub.setStatus(ecosystem, name, version, 'failed', errorMessage, undefined, action);
 			});
 			throw err;
 		}

@@ -1,5 +1,5 @@
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from '$lib/shared-events-client';
+import { getSharedEventConnection } from './shared-client';
 
 interface ProcessingMessage {
 	type?: string;

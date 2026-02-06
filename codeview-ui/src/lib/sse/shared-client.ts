@@ -1,5 +1,5 @@
 import { getLogger } from '$lib/log';
-import { SSEConnection, type SSEEndReason } from '$lib/sse';
+import { SSEConnection, type SSEEndReason } from './connection';
 
 interface SubscriptionCallback {
 	tag: string;
@@ -13,7 +13,7 @@ interface SharedEventMessage {
 
 /**
  * Shared Event Connection - Single SSE connection with multiplexed subscriptions
- * 
+ *
  * Replaces multiple per-crate connections with one shared connection.
  * Subscriptions are managed via POST /api/events/subscribe
  */
@@ -76,7 +76,7 @@ export class SharedEventConnection extends SSEConnection {
 		// If no more callbacks for this tag, unsubscribe from server
 		if (callbacks.size === 0) {
 			this.subscriptions.delete(tag);
-			
+
 			if (this.subscribedTags.has(tag)) {
 				await this.sendUnsubscribe([tag]);
 				this.subscribedTags.delete(tag);
@@ -132,14 +132,36 @@ export class SharedEventConnection extends SSEConnection {
 				})
 			});
 
-			if (response.ok) {
-				// Mark tags as subscribed
-				for (const tag of tags) {
-					this.pendingSubscriptions.delete(tag);
-					this.subscribedTags.add(tag);
-				}
-			} else {
+			if (!response.ok) {
 				this.log.warn`subscribe failed: ${response.status}`;
+				return;
+			}
+
+			// Mark tags as subscribed
+			for (const tag of tags) {
+				this.pendingSubscriptions.delete(tag);
+				this.subscribedTags.add(tag);
+			}
+
+			// Apply initialData immediately (server returns current state for each tag)
+			const payload = await response.json().catch(() => null) as
+				| { success?: boolean; initialData?: Record<string, unknown> }
+				| null;
+
+			const initialData = payload?.initialData;
+			if (initialData) {
+				for (const [tag, data] of Object.entries(initialData)) {
+					if (data === null || data === undefined) continue;
+					const callbacks = this.subscriptions.get(tag);
+					if (!callbacks) continue;
+					for (const cb of callbacks) {
+						try {
+							cb(data);
+						} catch (err) {
+							this.log.error`initialData callback error for ${tag}: ${String(err)}`;
+						}
+					}
+				}
 			}
 		} catch (err) {
 			this.log.error`subscribe error: ${String(err)}`;
@@ -189,12 +211,12 @@ export class SharedEventConnection extends SSEConnection {
 
 	protected onData(data: unknown): void {
 		const msg = data as { type?: string; clientId?: string; tag?: string; data?: unknown };
-		
+
 		// Handle connection acknowledgment
 		if (msg.type === 'connected' && msg.clientId) {
 			this.clientId = msg.clientId;
 			this.log.debug`connected with clientId=${msg.clientId}`;
-			
+
 			// Subscribe to any pending tags
 			if (this.pendingSubscriptions.size > 0) {
 				this.sendSubscribe(Array.from(this.pendingSubscriptions));
@@ -219,7 +241,7 @@ export class SharedEventConnection extends SSEConnection {
 
 	protected override onStreamReady(): void {
 		this.log.debug`stream ready`;
-		
+
 		// Start ping interval
 		if (this.pingInterval) {
 			clearInterval(this.pingInterval);
@@ -231,7 +253,7 @@ export class SharedEventConnection extends SSEConnection {
 
 	protected override onStreamEnd(reason: SSEEndReason, detail?: string): void {
 		this.log.debug`stream ended: ${reason}${detail ? ` (${detail})` : ''}`;
-		
+
 		// Clear ping interval
 		if (this.pingInterval) {
 			clearInterval(this.pingInterval);
@@ -241,7 +263,7 @@ export class SharedEventConnection extends SSEConnection {
 		// Reset state
 		this.clientId = null;
 		this.subscribedTags.clear();
-		
+
 		// Reconnection will happen automatically via SSEConnection
 		// When reconnected, we'll need to resubscribe to all tags
 		for (const tag of this.subscriptions.keys()) {

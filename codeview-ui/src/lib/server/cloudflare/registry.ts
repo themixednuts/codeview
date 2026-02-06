@@ -173,7 +173,8 @@ export class CrateRegistry extends DurableObject {
 		version: string,
 		status: CrateStatusValue,
 		error?: string,
-		step?: string
+		step?: string,
+		action?: string
 	): Promise<void> {
 		log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'} error=${error ?? '(none)'}`;
 		const now = Date.now();
@@ -213,7 +214,7 @@ export class CrateRegistry extends DurableObject {
 		// Broadcast status update via shared events
 		const tag = `${ecosystem}:${name}:${version}`;
 		const currentStep = this.stepMap.get(stepKey);
-		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}) };
+		const message = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}), ...(action ? { action } : {}) };
 		log.debug`broadcast ${tag}`;
 		await this.sharedEvents.broadcast(tag, message);
 

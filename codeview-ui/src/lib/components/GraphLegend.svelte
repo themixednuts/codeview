@@ -1,6 +1,12 @@
 <script lang="ts">
-  import type { Confidence, EdgeKind, NodeKind } from '$lib/graph';
-  import type { GraphStats } from '$lib/ui';
+  import type { Confidence, Edge, EdgeKind, NodeKind } from '$lib/graph';
+
+  type GraphStats = {
+    nodeCount: number;
+    edgeCount: number;
+    kindCounts: { kind: NodeKind; count: number }[];
+    edgeCounts: { kind: EdgeKind; count: number }[];
+  };
 
   let { stats, nodeColor, edgeColor, kindLabels, edgeLabels, confidenceLabels } = $props<{
     stats: GraphStats;

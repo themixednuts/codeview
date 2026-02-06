@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { Workspace, CrateGraph, Confidence, EdgeKind, NodeKind, Visibility, Node, Edge } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeDetail, NodeSummary } from '$lib/schema';
+import type { CrateIndex, CrateTree, NodeDetail } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, STD_JSON_CRATES } from '$lib/std';
 import { getLogger } from '$lib/log';
@@ -17,12 +17,12 @@ import { parseWithProgressiveStorage, type ParseProgress } from '../parser/strea
 import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
-import type { SourceProviderGroup } from '../sources/types';
 import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } from '../provider';
 import { ValidationError, NotAvailableError } from '../errors';
 import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
 import { sseResponse, sseStreamResponse } from '../sse';
 import { SharedEventStream } from '../shared-events';
+import { USER_AGENT, SOURCE_MAX_BYTES, resolveSourceFileFromMap, selectSourceProviders, classifyStatusAction } from '../provider-utils';
 import { LocalCache } from './cache';
 import { WorkflowEntrypoint, runWorkflow } from './workflow';
 import type { WorkflowStep, WorkflowEvent } from './workflow';
@@ -30,51 +30,7 @@ import { findStdJson, installStdDocs, detectSysroot } from './sysroot';
 
 const log = getLogger('local');
 
-const USER_AGENT = 'codeview';
-const SOURCE_MAX_BYTES = 96 * 1024 * 1024;
 const VERSION_LOOKUP_CONCURRENCY = 6;
-
-function sourcePathCandidates(path: string): string[] {
-	const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
-	const withSrc = normalized.startsWith('src/') ? normalized : `src/${normalized}`;
-	const withoutSrc = normalized.startsWith('src/') ? normalized.slice('src/'.length) : normalized;
-	const values = [normalized, withSrc, withoutSrc];
-	return values.filter((v, i, all) => v.length > 0 && all.indexOf(v) === i);
-}
-
-function resolveSourceFileFromMap(files: Map<string, string>, file: string): string | null {
-	for (const candidate of sourcePathCandidates(file)) {
-		const exact = files.get(candidate);
-		if (exact !== undefined) return exact;
-	}
-	for (const candidate of sourcePathCandidates(file)) {
-		const suffix = `/${candidate}`;
-		for (const [path, content] of files) {
-			const normalizedPath = path.replace(/\\/g, '/');
-			if (normalizedPath === candidate || normalizedPath.endsWith(suffix)) return content;
-		}
-	}
-	return null;
-}
-
-function selectSourceProviders(
-	group: SourceProviderGroup,
-	mode: 'auto' | 'crates-io' | 'github'
-): SourceProviderGroup {
-	if (mode === 'auto') return group;
-	if (mode === 'crates-io') {
-		return {
-			...group,
-			main: group.main.filter((provider) => provider.id === 'crate-archive'),
-			fallbacks: []
-		};
-	}
-	return {
-		...group,
-		main: [],
-		fallbacks: group.fallbacks.filter((provider) => provider.id.startsWith('github-'))
-	};
-}
 
 type CrateIndexEntry = {
 	id: string;
@@ -376,7 +332,7 @@ export function createLocalProvider(): DataProvider {
 			function cratePrefix(id: string): string {
 				return id.split('::')[0] ?? id;
 			}
-			const normalizedName = name.replace(/-/g, '_');
+			const normalizedName = normalizeCrateName(name);
 			const isExternalNode = (id: string): boolean => cratePrefix(id) !== normalizedName;
 
 			// parse-rustdoc: parse JSON → graph with progressive storage
@@ -409,7 +365,7 @@ export function createLocalProvider(): DataProvider {
 					});
 
 					const lc = getCache();
-					const crateName = name.replace(/-/g, '_');
+					const crateName = normalizeCrateName(name);
 
 					// Initialize crate entry (will be finalized after parsing)
 					const tempIndex: CrateIndex = { name, version, crates: [] };
@@ -565,7 +521,7 @@ export function createLocalProvider(): DataProvider {
 					);
 					const filteredExternal = externalEntries.filter((e): e is CrateIndexEntry => e !== null);
 
-					const crateName = name.replace(/-/g, '_');
+					const crateName = normalizeCrateName(name);
 					return {
 						name,
 						version,
@@ -636,7 +592,10 @@ export function createLocalProvider(): DataProvider {
 		if (result.isErr()) {
 			const err = result.error;
 			log.error`Failed to parse ${name}@${version}: ${err.message} (step: ${err.failedStep})`;
-			emitStatus(name, version, { status: 'failed', error: err.message }, err.failedStep);
+			const action = err.failedStep === 'fetch-artifact' && /\b404\b/.test(err.message)
+				? 'docs_unavailable' as const
+				: undefined;
+			emitStatus(name, version, { status: 'failed', error: err.message, ...(action ? { action } : {}) }, err.failedStep);
 		}
 	}
 
@@ -699,7 +658,7 @@ export function createLocalProvider(): DataProvider {
 			const crossEdgesList: Edge[] = [];
 			const crossNodeMap = new Map<string, CrossEdgeNodeSummary>();
 			const nodeSummaries = new Map<string, CrossEdgeNodeSummary>();
-			const normalizedName = name.replace(/-/g, '_');
+			const normalizedName = normalizeCrateName(name);
 			const cratePrefix = (id: string): string => id.split('::')[0] ?? id;
 			const isExternalNode = (id: string): boolean => cratePrefix(id) !== normalizedName;
 
@@ -1066,31 +1025,53 @@ export function createLocalProvider(): DataProvider {
 
 			const nodeEdges = lc.getEdgesForNode(name, version, nodeId);
 
-			// Get related nodes (targets of edges)
+			// Collect all edges - start with direct edges
+			const allEdges = [...nodeEdges];
+			const edgeSet = new Set(nodeEdges.map(e => `${e.from}|${e.to}|${e.kind}`));
+
+			// For types with impl blocks, follow Defines edges to get impl -> method edges
+			// This enables showing methods in the detail view
+			const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(node.kind);
+			if (isTypeNode) {
+				const implIds: string[] = [];
+				for (const edge of nodeEdges) {
+					if (edge.kind === 'Defines' && edge.from === nodeId) {
+						implIds.push(edge.to);
+					}
+				}
+
+				// Load edges from impl blocks (to get Contains/Defines -> Function edges)
+				for (const implId of implIds) {
+					const implEdges = lc.getEdgesForNode(name, version, implId);
+					for (const edge of implEdges) {
+						const key = `${edge.from}|${edge.to}|${edge.kind}`;
+						if (!edgeSet.has(key)) {
+							allEdges.push(edge);
+							edgeSet.add(key);
+						}
+					}
+				}
+			}
+
+			// Get related nodes (targets of all edges including impl methods)
 			const relatedIds = new Set<string>();
-			for (const edge of nodeEdges) {
+			for (const edge of allEdges) {
 				if (edge.from !== nodeId) relatedIds.add(edge.from);
 				if (edge.to !== nodeId) relatedIds.add(edge.to);
 			}
 
-			// Load related nodes
-			const relatedNodes: NodeSummary[] = [];
+			// Load related nodes with full data
+			const relatedNodes: Node[] = [];
 			for (const id of relatedIds) {
 				const related = lc.getNodeById(name, version, id);
 				if (related) {
-					relatedNodes.push({
-						id: related.id,
-						name: related.name,
-						kind: related.kind,
-						visibility: related.visibility,
-						is_external: related.is_external
-					});
+					relatedNodes.push(related);
 				}
 			}
 
 			return {
 				node,
-				edges: nodeEdges,
+				edges: allEdges,
 				relatedNodes
 			};
 		},
@@ -1121,7 +1102,10 @@ export function createLocalProvider(): DataProvider {
 					return { status: 'ready' };
 				}
 				const dbStatus = lc.getStatus('rust', name, version);
-				if (dbStatus.status !== 'unknown') return dbStatus;
+				if (dbStatus.status !== 'unknown') {
+					const action = classifyStatusAction(dbStatus);
+					return action ? { ...dbStatus, action } : dbStatus;
+				}
 
 				// Check sysroot availability
 				try {
@@ -1144,7 +1128,10 @@ export function createLocalProvider(): DataProvider {
 			try {
 				const lc = getCache();
 				const dbStatus = lc.getStatus('rust', name, version);
-				if (dbStatus.status !== 'unknown') return dbStatus;
+				if (dbStatus.status !== 'unknown') {
+					const action = classifyStatusAction(dbStatus);
+					return action ? { ...dbStatus, action } : dbStatus;
+				}
 
 				// Check if graph exists in cache
 				if (lc.hasCrate(name, version)) {
@@ -1268,6 +1255,13 @@ export function createLocalProvider(): DataProvider {
 					: [];
 		},
 
+		async resolveVersion(name: string, version: string): Promise<string> {
+			if (version === 'latest') {
+				const versions = await this.getCrateVersions(name, 1);
+				if (versions.length > 0) return versions[0];
+			}
+			return version;
+		},
 
 		// Shared event stream for multiplexed SSE
 		streamSharedEvents: sharedEvents,

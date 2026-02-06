@@ -8,6 +8,7 @@ const USER_AGENT = 'codeview (https://github.com/nicksenger/codeview)';
 interface CratesIoVersion {
 	num: string;
 	dl_path: string;
+	crate: string;
 }
 
 interface CratesIoCrate {
@@ -77,7 +78,9 @@ export function createCratesIoAdapter(): RegistryAdapter {
 			if (!data.version) return null;
 
 			// Build docs.rs rustdoc JSON URL (gzip)
-			const artifactUrl = `https://docs.rs/crate/${name}/${resolvedVersion}/json.gz`;
+			// Use canonical name from crates.io (e.g. rand_core) — docs.rs 404s on hyphenated variants (rand-core)
+			const docsName = data.version.crate ?? name;
+			const artifactUrl = `https://docs.rs/crate/${docsName}/${resolvedVersion}/json.gz`;
 
 			// crates.io download URL for source archive
 			const sourceArchiveUrl = `https://crates.io${data.version.dl_path}`;

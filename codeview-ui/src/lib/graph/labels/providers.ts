@@ -1,31 +1,9 @@
-import type { LayoutMode, VisEdge, VisNode } from './graph-layout';
-import { getVisNodeEdgeAnchor } from './visual';
-
-export type LabelPosition = { x: number; y: number; anchor: string };
-export type SimilarityInfo = { group: number[]; indexOf: number };
-
-export type LabelContext = {
-  edge: VisEdge;
-  fromNode: VisNode;
-  toNode: VisNode;
-  edgeIndex: number;
-  labelWidth: number;
-  similarity: SimilarityInfo | undefined;
-};
-
-export interface LabelPositionProvider {
-  position(ctx: LabelContext): LabelPosition;
-  /** Optional post-process pass over all computed positions (e.g. collision avoidance) */
-  postProcess?(positions: LabelPosition[]): void;
-}
-
-// ---------------------------------------------------------------------------
-// Provider implementations
-// ---------------------------------------------------------------------------
+import type { LabelPositionProvider, LabelContext, LabelPosition } from './types';
+import { getVisNodeEdgeAnchor } from '$lib/graph/visual/edge-anchor';
 
 const EDGE_NODE_PADDING = 10;
 
-const egoLabelProvider: LabelPositionProvider = {
+export const egoLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, similarity } = ctx;
     const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
@@ -42,7 +20,7 @@ const egoLabelProvider: LabelPositionProvider = {
   }
 };
 
-const hierarchicalLabelProvider: LabelPositionProvider = {
+export const hierarchicalLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, labelWidth, similarity } = ctx;
     const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
@@ -59,7 +37,7 @@ const hierarchicalLabelProvider: LabelPositionProvider = {
   }
 };
 
-const radialLabelProvider: LabelPositionProvider = {
+export const radialLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, similarity } = ctx;
     const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
@@ -85,7 +63,7 @@ const radialLabelProvider: LabelPositionProvider = {
   }
 };
 
-const forceLabelProvider: LabelPositionProvider = {
+export const forceLabelProvider: LabelPositionProvider = {
   position(ctx) {
     const { fromNode, toNode, labelWidth, similarity } = ctx;
     const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode);
@@ -141,49 +119,3 @@ const forceLabelProvider: LabelPositionProvider = {
     }
   }
 };
-
-// ---------------------------------------------------------------------------
-// Factory & batch helper
-// ---------------------------------------------------------------------------
-
-export function getLabelProvider(mode: LayoutMode): LabelPositionProvider {
-  switch (mode) {
-    case 'ego':
-      return egoLabelProvider;
-    case 'hierarchical':
-      return hierarchicalLabelProvider;
-    case 'radial':
-      return radialLabelProvider;
-    case 'force':
-      return forceLabelProvider;
-    default:
-      return egoLabelProvider;
-  }
-}
-
-export function computeAllLabelPositions(
-  provider: LabelPositionProvider,
-  edges: VisEdge[],
-  positionedNodeMap: Map<string, VisNode>,
-  similarityGroups: Map<number, SimilarityInfo>,
-  getMetrics: (kind: string) => { width: number }
-): LabelPosition[] {
-  const positions = edges.map((edge, i) => {
-    const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from;
-    const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to;
-    const metrics = getMetrics(edge.kind);
-    const ctx: LabelContext = {
-      edge,
-      fromNode,
-      toNode,
-      edgeIndex: i,
-      labelWidth: metrics.width,
-      similarity: similarityGroups.get(i)
-    };
-    return provider.position(ctx);
-  });
-
-  provider.postProcess?.(positions);
-
-  return positions;
-}

@@ -1,7 +1,7 @@
 import type { CrateStatus } from '$lib/schema';
-import { triggerCrateParse } from '$lib/graph.remote';
+import { triggerCrateParse } from '$lib/rpc/crate.remote';
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from '$lib/shared-events-client';
+import { getSharedEventConnection } from './shared-client';
 
 type CrateStatusValue = CrateStatus['status'];
 
@@ -27,7 +27,7 @@ export const stepPercents: Record<string, number> = {
 /**
  * Reactive connection for streaming crate parse status via shared event stream.
  * Uses multiplexed SSE to avoid connection limits.
- * 
+ *
  * All public properties use $state and are automatically reactive.
  * Components can read them directly without subscribing.
  */
@@ -35,7 +35,7 @@ export class CrateStatusConnection {
 	status = $state<CrateStatusValue>('unknown');
 	error = $state<string | null>(null);
 	step = $state<string | null>(null);
-	action = $state<'install_std_docs' | undefined>(undefined);
+	action = $state<'install_std_docs' | 'docs_unavailable' | undefined>(undefined);
 	installedVersion = $state<string | undefined>(undefined);
 
 	#shared = getSharedEventConnection();
@@ -88,7 +88,7 @@ export class CrateStatusConnection {
 
 	private onStatusData(msg: CrateStatus) {
 		this.#log.debug`msg ${this.tag} status=${msg.status} step=${msg.step ?? '-'}${msg.error ? ` error=${msg.error}` : ''}`;
-		
+
 		this.status = msg.status;
 		this.error = msg.error ?? null;
 		this.action = msg.action;
@@ -115,10 +115,10 @@ export class CrateStatusConnection {
 		this.status = 'processing';
 		this.error = null;
 		this.step = null;
-		
+
 		// Ensure we're subscribed
 		await this.connect(name, version);
-		
+
 		try {
 			await triggerCrateParse(`${name}@${version}`);
 		} catch (err) {
@@ -141,10 +141,10 @@ export class CrateStatusConnection {
 		this.status = 'processing';
 		this.error = null;
 		this.step = null;
-		
+
 		// Ensure we're subscribed
 		await this.connect(name, version);
-		
+
 		try {
 			await triggerCrateParse(`${name}@${version}!force`);
 		} catch (err) {

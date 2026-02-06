@@ -10,7 +10,7 @@ export interface CrateStatus {
 	status: CrateStatusValue;
 	error?: string;
 	step?: string;
-	action?: 'install_std_docs';
+	action?: 'install_std_docs' | 'docs_unavailable';
 	installedVersion?: string;
 }
 
@@ -52,6 +52,10 @@ export interface DataProvider {
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getCrateVersions(name: string, limit?: number): Promise<string[]>;
+
+	/** Resolve version aliases ("latest", channel names) to an actual semver.
+	 *  Returns the input unchanged if it's already a concrete version. */
+	resolveVersion(name: string, version: string): Promise<string>;
 
 	// Shared event stream (multiplexed SSE)
 	/** Shared event stream instance for multiplexed subscriptions (local mode only) */

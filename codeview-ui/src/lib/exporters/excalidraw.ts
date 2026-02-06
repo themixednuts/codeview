@@ -1,8 +1,8 @@
 import type { GraphRenderer, GraphScene, SceneGroup } from '$lib/renderers/graph';
-import type { VisNode, VisEdge } from '$lib/graph-layout';
-import type { LabelPosition } from '$lib/labels';
-import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/visual';
-import type { NodeVisual } from '$lib/visual';
+import type { VisNode, VisEdge } from '$lib/graph/layout';
+import type { LabelPosition } from '$lib/graph/labels';
+import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/graph/visual';
+import type { NodeVisual } from '$lib/graph/visual';
 import { nodeUrl } from '$lib/url';
 
 import type { ExcalidrawElement, Arrowhead } from '@excalidraw/excalidraw/element/types';

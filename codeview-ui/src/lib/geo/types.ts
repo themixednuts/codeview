@@ -1,0 +1,9 @@
+export type Point = { x: number; y: number };
+export type Vec2 = { u: number; v: number };
+export type Rect = { x: number; y: number; w: number; h: number };
+export type LineSegment = [Point, Point];
+export type Polygon = Point[];
+export type Ellipse = { center: Point; halfWidth: number; halfHeight: number };
+export type Curve = [Point, Point, Point, Point]; // cubic Bezier
+export type Triangle = [Point, Point, Point];
+export type InclusiveRange = [number, number];
