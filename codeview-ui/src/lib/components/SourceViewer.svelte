@@ -1,32 +1,31 @@
 <script lang="ts">
   import type { Span } from '$lib/graph';
+  import type { Attachment } from 'svelte/attachments';
   import { Loader2Icon } from '@lucide/svelte';
   import { pushState } from '$app/navigation';
   import { page } from '$app/state';
   import { browser } from '$app/environment';
-  import { getSource } from '$lib/source.remote';
+  import { getSource } from '$lib/rpc/source.remote';
   import { cached, cacheKey } from '$lib/cache.svelte';
-  import { Memo } from '$lib/reactivity.svelte';
   import { sourceProviderModeCtx } from '$lib/context';
   import CodeBlock from './CodeBlock.svelte';
   import X from '@lucide/svelte/icons/x';
+
+  interface Props {
+    span: Span;
+    theme?: 'dark' | 'light';
+    crateName?: string;
+    crateVersion?: string;
+  }
+
   let {
     span,
     theme = 'light',
     crateName,
     crateVersion
-  } = $props<{
-    span: Span;
-    theme?: 'dark' | 'light';
-    crateName?: string;
-    crateVersion?: string;
-  }>();
+  }: Props = $props();
 
   const sourceProviderMode = $derived(sourceProviderModeCtx.getOr('auto'));
-
-
-  let modalBody = $state<HTMLDivElement | null>(null);
-  let lastScrollKey: string | null = null;
 
   /** Unique key for this span */
   const spanKey = $derived(`${span.file}:${span.line}:${span.end_line ?? span.line}`);
@@ -42,7 +41,15 @@
       : null
   );
   const isLoading = $derived(sourceQuery?.loading ?? false);
-  const sourcePreview = $derived(sourceQuery?.current ?? null);
+  const sourceContent = $derived(sourceQuery?.current?.content ?? null);
+
+  const highlightRange = $derived.by(() => {
+    const start = span.line;
+    const end = span.end_line ?? span.line;
+    const lines: number[] = [];
+    for (let i = start; i <= end; i++) lines.push(i);
+    return lines;
+  });
 
   function open() {
     pushState('', { ...page.state, sourceSpanKey: spanKey });
@@ -52,45 +59,13 @@
     history.back();
   }
 
+  function handleDialogClose() {
+    if (isOpen) history.back();
+  }
+
   function handleBackdropClick(e: MouseEvent) {
     if (e.target === e.currentTarget) close();
   }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') close();
-  }
-
-  const highlightRangeMemo = new Memo(() => {
-    const start = span.line;
-    const end = span.end_line ?? span.line;
-    const lines: number[] = [];
-    for (let i = start; i <= end; i++) lines.push(i);
-    return lines;
-  });
-  const highlightRange = $derived(highlightRangeMemo.current);
-
-  // Scroll to highlighted line when content is ready
-  function scrollToHighlight(container: HTMLDivElement) {
-    requestAnimationFrame(() => {
-      const firstHighlighted = container.querySelector('.line.highlighted');
-      if (firstHighlighted) {
-        const lineTop = (firstHighlighted as HTMLElement).offsetTop;
-        const offset = Math.max(0, lineTop - container.clientHeight / 3);
-        container.scrollTo({ top: offset, behavior: 'instant' });
-      }
-    });
-  }
-
-  $effect(() => {
-    if (!isOpen) {
-      lastScrollKey = null;
-      return;
-    }
-    if (!modalBody || !sourcePreview?.content) return;
-    if (lastScrollKey === spanKey) return;
-    lastScrollKey = spanKey;
-    scrollToHighlight(modalBody);
-  });
 
   function langFromFile(file: string): 'rust' | 'toml' | 'json' | 'text' {
     if (file.endsWith('.rs')) return 'rust';
@@ -99,9 +74,40 @@
     return 'text';
   }
 
-</script>
+  // Attachment to sync dialog open/close with isOpen state
+  const syncDialog: Attachment<HTMLDialogElement> = (dialog) => {
+    $effect(() => {
+      if (isOpen && !dialog.open) {
+        dialog.showModal();
+      } else if (!isOpen && dialog.open) {
+        dialog.close();
+      }
+    });
+  };
 
-<svelte:window onkeydown={isOpen ? handleKeydown : undefined} />
+  // Attachment to scroll to highlighted line when content loads
+  const scrollToHighlight: Attachment<HTMLDivElement> = (container) => {
+    let lastKey: string | null = null;
+    
+    $effect(() => {
+      if (!isOpen || !sourceContent) {
+        lastKey = null;
+        return;
+      }
+      if (lastKey === spanKey) return;
+      lastKey = spanKey;
+      
+      requestAnimationFrame(() => {
+        const firstHighlighted = container.querySelector('.line.highlighted');
+        if (firstHighlighted) {
+          const lineTop = (firstHighlighted as HTMLElement).offsetTop;
+          const offset = Math.max(0, lineTop - container.clientHeight / 3);
+          container.scrollTo({ top: offset, behavior: 'instant' });
+        }
+      });
+    });
+  };
+</script>
 
 <button
   type="button"
@@ -115,52 +121,56 @@
   {/if}
 </button>
 
-{#if isOpen}
-  <div class="modal-backdrop" role="presentation" onclick={handleBackdropClick}>
-    <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Source: {span.file}">
-      <header class="modal-header">
-        <div class="modal-title">
-          <span class="modal-file">{span.file}</span>
-          <span class="modal-line">:{span.line}:{span.column}</span>
-        </div>
-        <button type="button" class="modal-close" onclick={close} aria-label="Close">
-          <X size={18} />
-        </button>
-      </header>
-      <div class="modal-body" bind:this={modalBody}>
-        <svelte:boundary>
-          {@const result = sourceQuery ? await sourceQuery : null}
-          {#if result?.error}
-            <p class="source-error">{result.error}</p>
-          {:else if result?.content}
-            <CodeBlock
-              code={result.content}
-              lang={langFromFile(span.file)}
-              {theme}
-              startLine={1}
-              highlightLines={highlightRange}
-              showLineNumbers={true}
-            />
-          {:else}
-            <p class="source-error">Source unavailable.</p>
-          {/if}
-          {#snippet pending()}
-            <div class="flex items-center gap-2 p-4">
-              <Loader2Icon class="animate-spin" size={12} />
-              <span class="text-xs text-[var(--muted)]">Loading source...</span>
-            </div>
-          {/snippet}
-          {#snippet failed(error, reset)}
-            <div class="p-4 text-xs text-[var(--danger)]">
-              <p>Failed to load source</p>
-              <button type="button" class="mt-2 text-[var(--accent)] hover:underline" onclick={reset}>Retry</button>
-            </div>
-          {/snippet}
-        </svelte:boundary>
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<dialog
+  {@attach syncDialog}
+  onclose={handleDialogClose}
+  onclick={handleBackdropClick}
+  aria-label="Source: {span.file}"
+>
+  <div class="modal-panel">
+    <header class="modal-header">
+      <div class="modal-title">
+        <span class="modal-file">{span.file}</span>
+        <span class="modal-line">:{span.line}:{span.column}</span>
       </div>
+      <button type="button" class="modal-close" onclick={close} aria-label="Close">
+        <X size={18} />
+      </button>
+    </header>
+    <div class="modal-body" {@attach scrollToHighlight}>
+      <svelte:boundary>
+        {@const result = sourceQuery ? await sourceQuery : null}
+        {#if result?.error}
+          <p class="source-error">{result.error}</p>
+        {:else if result?.content}
+          <CodeBlock
+            code={result.content}
+            lang={langFromFile(span.file)}
+            {theme}
+            startLine={1}
+            highlightLines={highlightRange}
+            showLineNumbers={true}
+          />
+        {:else}
+          <p class="source-error">Source unavailable.</p>
+        {/if}
+        {#snippet pending()}
+          <div class="flex items-center gap-2 p-4">
+            <Loader2Icon class="animate-spin" size={12} />
+            <span class="text-xs text-[var(--muted)]">Loading source...</span>
+          </div>
+        {/snippet}
+        {#snippet failed(error, reset)}
+          <div class="p-4 text-xs text-[var(--danger)]">
+            <p>Failed to load source</p>
+            <button type="button" class="mt-2 text-[var(--accent)] hover:underline" onclick={reset}>Retry</button>
+          </div>
+        {/snippet}
+      </svelte:boundary>
     </div>
   </div>
-{/if}
+</dialog>
 
 <style>
   .source-link {
@@ -181,17 +191,26 @@
     color: var(--accent);
   }
 
-
-  .modal-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 1000;
+  dialog {
+    padding: 0;
+    border: none;
+    background: transparent;
+    max-width: none;
+    max-height: none;
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;
+  }
+
+  dialog::backdrop {
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
-    padding: 2rem;
+  }
+
+  dialog:not([open]) {
+    display: none;
   }
 
   .modal-panel {

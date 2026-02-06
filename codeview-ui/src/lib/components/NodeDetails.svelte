@@ -1,6 +1,10 @@
 <script lang="ts">
   import type { Edge, EdgeKind, Node, NodeKind, Visibility } from '$lib/graph';
-  import type { SelectedEdges } from '$lib/ui';
+
+  type SelectedEdges = {
+    incoming: Edge[];
+    outgoing: Edge[];
+  };
   import { kindColors } from '$lib/tree';
   import { externalDocsUrl } from '$lib/docs';
   import Documentation from './Documentation.svelte';
@@ -178,6 +182,9 @@
   let signatureRef = $state<CollapsibleSection | null>(null);
   let fieldsRef = $state<CollapsibleSection | null>(null);
   let variantsRef = $state<CollapsibleSection | null>(null);
+  let typeInfoRef = $state<CollapsibleSection | null>(null);
+  let boundsRef = $state<CollapsibleSection | null>(null);
+  let variantTypeRef = $state<CollapsibleSection | null>(null);
   let docsRef = $state<CollapsibleSection | null>(null);
   let methodsRef = $state<CollapsibleSection | null>(null);
   let implsRef = $state<CollapsibleSection | null>(null);
@@ -188,6 +195,9 @@
     signatureRef,
     fieldsRef,
     variantsRef,
+    typeInfoRef,
+    boundsRef,
+    variantTypeRef,
     docsRef,
     methodsRef,
     implsRef,
@@ -450,6 +460,24 @@
       {/if}
     </div>
 
+    <!-- Parent context for associated items -->
+    {#if selected.parent_impl}
+      <div class="mb-4 flex items-center gap-2 text-sm">
+        <span class="text-[var(--muted)]">Defined in</span>
+        {#if getNodeUrl && nodeExists?.(selected.parent_impl)}
+          <a
+            href={getNodeUrl(selected.parent_impl)}
+            data-sveltekit-noscroll
+            class="badge badge-strong text-[var(--accent)] hover:underline underline-offset-2"
+          >
+            {displayNode(selected.parent_impl)}
+          </a>
+        {:else}
+          <code class="badge badge-strong badge-code">{displayNode(selected.parent_impl)}</code>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Signature (always open) -->
     {#if selected.signature}
       <CollapsibleSection
@@ -545,6 +573,73 @@
               {/if}
             </div>
           {/each}
+        </div>
+      </CollapsibleSection>
+    {/if}
+
+    <!-- Type info for StructField, AssocType, AssocConst -->
+    {#if selected.type_name && (selectedKind === 'StructField' || selectedKind === 'AssocType' || selectedKind === 'AssocConst')}
+      <CollapsibleSection
+        bind:this={typeInfoRef}
+        title="Type"
+        defaultOpen={true}
+      >
+        <div class="flex flex-wrap items-baseline gap-2">
+          {#if selectedKind === 'AssocConst'}
+            <span class="text-[var(--muted)]">const</span>
+            <code class="badge badge-strong badge-code">{selected.name}</code>
+            <span class="text-[var(--muted)]">:</span>
+          {:else if selectedKind === 'AssocType'}
+            <span class="text-[var(--muted)]">type</span>
+            <code class="badge badge-strong badge-code">{selected.name}</code>
+            <span class="text-[var(--muted)]">=</span>
+          {:else}
+            <code class="badge badge-strong badge-code">{selected.name}</code>
+            <span class="text-[var(--muted)]">:</span>
+          {/if}
+          {@render linkedBadge(selected.type_name, selected.bound_links, false)}
+        </div>
+        {#if selected.const_value}
+          <div class="mt-3">
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">Value</h4>
+            <code class="mt-1 block font-[var(--font-code)] text-sm text-[var(--ink)]">{selected.const_value}</code>
+          </div>
+        {/if}
+      </CollapsibleSection>
+    {/if}
+
+    <!-- Bounds for AssocType -->
+    {#if selected.bounds && selected.bounds.length > 0}
+      <CollapsibleSection
+        bind:this={boundsRef}
+        title="Bounds"
+        count={selected.bounds.length}
+        defaultOpen={true}
+      >
+        <div class="flex flex-wrap items-center gap-2">
+          {#each selected.bounds as bound (bound)}
+            {@render linkedBadge(bound, selected.bound_links, false)}
+            {#if selected.bounds && selected.bounds.indexOf(bound) < selected.bounds.length - 1}
+              <span class="text-[var(--muted)]">+</span>
+            {/if}
+          {/each}
+        </div>
+      </CollapsibleSection>
+    {/if}
+
+    <!-- Variant info -->
+    {#if selectedKind === 'Variant'}
+      <CollapsibleSection
+        bind:this={variantTypeRef}
+        title="Variant Type"
+        defaultOpen={true}
+      >
+        <div class="flex items-center gap-2">
+          <span class="badge">{selected.variant_kind ?? 'unit'}</span>
+          {#if selected.discriminant}
+            <span class="text-[var(--muted)]">=</span>
+            <code class="badge badge-code">{selected.discriminant}</code>
+          {/if}
         </div>
       </CollapsibleSection>
     {/if}

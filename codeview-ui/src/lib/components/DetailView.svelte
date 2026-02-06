@@ -1,18 +1,23 @@
 <script lang="ts">
   import type { Node, NodeKind, Graph } from "$lib/graph";
-  import type { SelectedEdges } from "$lib/ui";
+  import type { Edge } from "$lib/graph";
   import type { LayoutMode } from "$lib/components/LayoutSwitcher.svelte";
   import type { NodeDetail } from "$lib/schema";
   import { page } from "$app/state";
   import { afterNavigate, goto } from "$app/navigation";
-  import { getNodeDetail } from "$lib/graph.remote";
+  import { getNodeDetail } from "$lib/rpc/detail.remote";
   import { cached, cacheKey } from "$lib/cache.svelte";
-  import { CrossEdgeUpdatesConnection } from "$lib/updates.svelte";
+  import { CrossEdgeUpdatesConnection } from "$lib/sse";
   import { Memo } from "$lib/reactivity.svelte";
   import { onMount } from "svelte";
   import { perf } from "$lib/perf";
   import { isHosted } from "$lib/platform";
-  import { kindLabels, visibilityLabels, edgeLabels } from "$lib/node-labels";
+  import { kindLabels, visibilityLabels, edgeLabels } from "$lib/display-names";
+
+  type SelectedEdges = {
+    incoming: Edge[];
+    outgoing: Edge[];
+  };
   import Breadcrumbs from "$lib/components/Breadcrumbs.svelte";
   import { Loader2Icon } from "@lucide/svelte";
   import RelationshipGraph from "$lib/components/RelationshipGraph.svelte";
@@ -108,6 +113,18 @@
     if (rawDetail.node.id !== nodeId && !detailLoading) {
       log.warn`MISMATCH: detail.node.id="${rawDetail.node.id}" ≠ nodeId="${nodeId}"`;
     }
+  });
+
+  let wasDetailReady = $state(false);
+  $effect(() => {
+    const isReady = crateStatus === "ready";
+    if (isReady && !wasDetailReady) {
+      if (detailQuery.current === null || detailQuery.current === undefined) {
+        log.debug`detail refresh on status→ready (SSR null fix)`;
+        detailQuery.refresh();
+      }
+    }
+    wasDetailReady = isReady;
   });
 
   const VALID_LAYOUTS: LayoutMode[] = [
