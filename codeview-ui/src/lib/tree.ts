@@ -1,6 +1,6 @@
 import type { Node, NodeKind } from '$lib/graph';
 import type { Component } from 'svelte';
-import { kindVisuals } from '$lib/visual';
+import { kindVisuals } from '$lib/graph/visual';
 import Package from '@lucide/svelte/icons/package';
 import FolderCode from '@lucide/svelte/icons/folder-code';
 import Box from '@lucide/svelte/icons/box';
@@ -30,14 +30,18 @@ export const kindIcons: Record<NodeKind, Component> = {
 	Crate: Package,
 	Module: FolderCode,
 	Struct: Box,
+	StructField: Box,
 	Union: Layers,
 	Enum: List,
+	Variant: List,
 	Trait: Shield,
 	TraitAlias: ShieldHalf,
 	Impl: Puzzle,
 	Function: Braces,
 	TypeAlias: Equal,
+	AssocType: Equal,
 	Constant: Hash,
+	AssocConst: Hash,
 	Static: Database,
 	Macro: Wand2,
 	Primitive: CircleDot,
@@ -51,19 +55,23 @@ export const kindOrder: Record<NodeKind, number> = {
 	Module: 1,
 	Trait: 2,
 	Struct: 3,
-	Enum: 4,
-	Union: 5,
-	TypeAlias: 6,
-	Constant: 7,
-	Static: 8,
-	Function: 9,
-	Impl: 10,
-	TraitAlias: 11,
-	Macro: 12,
-	ProcMacro: 13,
-	Primitive: 14,
-	ExternCrate: 15,
-	Import: 16
+	StructField: 4,
+	Enum: 5,
+	Variant: 6,
+	Union: 7,
+	TypeAlias: 8,
+	AssocType: 9,
+	Constant: 10,
+	AssocConst: 11,
+	Static: 12,
+	Function: 13,
+	Impl: 14,
+	TraitAlias: 15,
+	Macro: 16,
+	ProcMacro: 17,
+	Primitive: 18,
+	ExternCrate: 19,
+	Import: 20
 };
 
 export interface TreeNode {

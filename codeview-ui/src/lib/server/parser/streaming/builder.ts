@@ -25,6 +25,7 @@ import type {
 	Graph
 } from '$lib/graph';
 import { getLogger } from '$lib/log';
+import { normalizeCrateName } from '$lib/crate-names';
 import type {
 	Id,
 	Item,
@@ -157,6 +158,11 @@ export class StreamingGraphBuilder {
 	private root: Id | null = null;
 	private crateVersion: string | null = null;
 
+	// Impl item tracking: maps item ID -> impl node ID for creating Impl->Function edges
+	private implItemToImplNode = new Map<Id, string>();
+	// Track processed item node IDs for deferred impl->item edge creation
+	private processedItemNodes = new Map<Id, string>(); // itemId -> nodeId
+
 	// Batch tracking
 	private nodeBatchIndex = 0;
 	private edgeBatchIndex = 0;
@@ -175,7 +181,7 @@ export class StreamingGraphBuilder {
 			storageCallbacks?: ProgressiveStorageCallbacks;
 		} = {}
 	) {
-		this.crateName = crateName.replace(/-/g, '_');
+		this.crateName = normalizeCrateName(crateName);
 		this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
 		this.skipExternalNodes = options.skipExternalNodes ?? true;
 		this.batchCallbacks = options.batchCallbacks ?? {};
@@ -268,6 +274,13 @@ export class StreamingGraphBuilder {
 				this.processImplItem(itemId, item);
 			}
 
+			// Handle impl items (methods/associated items) that may not have path entries
+			// Check if this item belongs to an impl and create node + edge if needed
+			const implNodeId = this.implItemToImplNode.get(itemId);
+			if (implNodeId && !this.processedItemNodes.has(itemId)) {
+				this.createImplItemNode(itemId, item, implNodeId);
+			}
+
 			// Collect type references for UsesType edges (deferred)
 			this.collectDeferredTypeEdges(idStr, item);
 		} catch (err) {
@@ -345,9 +358,18 @@ export class StreamingGraphBuilder {
 			this.addNode(node);
 		}
 
-		// Add Contains edge from parent
+		// Track this item for impl->method edge creation
+		this.processedItemNodes.set(itemId, nodeId);
+
+		// Check if this item belongs to an impl block and create edge
+		const implNodeId = this.implItemToImplNode.get(itemId);
+		if (implNodeId) {
+			this.addEdge(implNodeId, nodeId, 'Defines', 'Static');
+		}
+
+		// Add Contains edge from parent (only if not an impl item - impls define their methods)
 		const parentId = this.parentPathId(itemCrateName, summary.path);
-		if (parentId && parentId !== nodeId) {
+		if (parentId && parentId !== nodeId && !implNodeId) {
 			this.addEdge(parentId, nodeId, 'Contains', 'Static');
 		}
 
@@ -361,7 +383,7 @@ export class StreamingGraphBuilder {
 	 */
 	private processExternalCrate(idStr: string, crate: ExternalCrate): void {
 		const crateId = Number(idStr);
-		const normalizedName = crate.name.replace(/-/g, '_');
+		const normalizedName = normalizeCrateName(crate.name);
 
 		this.externalCrateNames.set(crateId, normalizedName);
 		this.externalCrates.push({
@@ -384,7 +406,8 @@ export class StreamingGraphBuilder {
 		let count = 0;
 		for (const pending of this.deferredPathsByCrate.values()) count += pending.length;
 		if (count > 0) {
-			log.warn`finalize: processing ${String(count)} deferred paths without crate mapping`;
+			// Expected for items from external crates that weren't explicitly mapped
+			log.debug`finalize: processing ${String(count)} deferred paths without crate mapping`;
 		}
 		for (const [, pending] of this.deferredPathsByCrate) {
 			for (const entry of pending) {
@@ -472,6 +495,100 @@ export class StreamingGraphBuilder {
 				this.pendingImplEdgesByTarget.set(implTraitId, pending);
 			}
 		}
+
+		// Register impl items for edge creation (impl -> method/function edges)
+		// This enables showing methods in type detail views
+		for (const assocItemId of impl.items) {
+			this.implItemToImplNode.set(assocItemId, implNodeId);
+			// If we already processed this item, create the edge now
+			const existingNodeId = this.processedItemNodes.get(assocItemId);
+			if (existingNodeId) {
+				this.addEdge(implNodeId, existingNodeId, 'Defines', 'Static');
+			}
+		}
+	}
+
+	/**
+	 * Create a node for an impl item (method/associated type) and link it to its impl.
+	 * This handles items that don't have path entries but are listed in impl.items.
+	 */
+	private createImplItemNode(itemId: Id, item: Item, implNodeId: string): void {
+		const inner = item.inner;
+		
+		// Determine node kind from item inner type
+		// Associated items in impls use specific kinds matching rustdoc schema
+		let nodeKind: NodeKind | null = null;
+		if ('function' in inner) {
+			nodeKind = 'Function';
+		} else if ('assoc_type' in inner) {
+			nodeKind = 'AssocType';
+		} else if ('assoc_const' in inner) {
+			nodeKind = 'AssocConst';
+		} else if ('type_alias' in inner) {
+			// Fallback for older rustdoc versions
+			nodeKind = 'TypeAlias';
+		} else if ('constant' in inner) {
+			// Fallback for older rustdoc versions
+			nodeKind = 'Constant';
+		}
+		
+		if (!nodeKind) return;
+		
+		const name = item.name ?? `item-${itemId}`;
+		// Use impl-scoped node ID to match Rust parser pattern
+		const nodeId = `${implNodeId}::${name}`;
+		
+		if (this.nodeCache.has(nodeId)) {
+			// Node already exists, just track and add edge
+			this.processedItemNodes.set(itemId, nodeId);
+			this.addEdge(implNodeId, nodeId, 'Defines', 'Static');
+			return;
+		}
+		
+		const itemCrateName = this.crateNameForId(item.crate_id);
+		const isExternal = itemCrateName !== this.crateName;
+		
+		if (isExternal && this.skipExternalNodes) return;
+		
+		const node: Node = {
+			id: nodeId,
+			name,
+			kind: nodeKind,
+			visibility: this.mapVisibility(item.visibility),
+			span: item.span ? this.mapSpan(item.span) : null,
+			attrs: this.formatAttributes(item.attrs),
+			is_external: isExternal || undefined,
+			docs: item.docs ?? null,
+			parent_impl: implNodeId
+		};
+		
+		// Add type-specific data
+		if ('function' in inner) {
+			const sig = inner.function.sig;
+			const header = inner.function.header;
+			node.signature = {
+				inputs: sig.inputs.map(([name, ty]) => ({ name, type_name: this.formatType(ty) })),
+				output: sig.output ? this.formatType(sig.output) : null,
+				is_async: header.is_async,
+				is_unsafe: header.is_unsafe,
+				is_const: header.is_const
+			};
+			node.generics = this.extractGenerics(inner.function.generics);
+			node.where_clause = this.extractWhereClause(inner.function.generics);
+		} else if ('assoc_type' in inner) {
+			const assocType = inner.assoc_type;
+			node.generics = this.extractGenerics(assocType.generics);
+			node.bounds = assocType.bounds?.map((b: unknown) => this.formatGenericBound(b)) ?? null;
+			node.type_name = assocType.type ? this.formatType(assocType.type) : null;
+		} else if ('assoc_const' in inner) {
+			const assocConst = inner.assoc_const;
+			node.type_name = this.formatType(assocConst.type);
+			node.const_value = assocConst.value ?? null;
+		}
+		
+		this.addNode(node);
+		this.processedItemNodes.set(itemId, nodeId);
+		this.addEdge(implNodeId, nodeId, 'Defines', 'Static');
 	}
 
 	/**
@@ -908,14 +1025,18 @@ export class StreamingGraphBuilder {
 		switch (kind) {
 			case 'module': return 'Module';
 			case 'struct': return 'Struct';
+			case 'struct_field': return 'StructField';
 			case 'union': return 'Union';
 			case 'enum': return 'Enum';
+			case 'variant': return 'Variant';
 			case 'trait': return 'Trait';
 			case 'trait_alias': return 'TraitAlias';
 			case 'impl': return 'Impl';
 			case 'function': return 'Function';
 			case 'type_alias': return 'TypeAlias';
+			case 'assoc_type': return 'AssocType';
 			case 'constant': return 'Constant';
+			case 'assoc_const': return 'AssocConst';
 			case 'static': return 'Static';
 			case 'macro': return 'Macro';
 			case 'primitive': return 'Primitive';
@@ -996,6 +1117,16 @@ export class StreamingGraphBuilder {
 				return null;
 			})
 			.filter((s): s is string => s !== null);
+	}
+
+	private formatGenericBound(bound: unknown): string {
+		if (!bound || typeof bound !== 'object') return String(bound);
+		const b = bound as GenericBound;
+		if ('trait_bound' in b && b.trait_bound?.trait?.path) {
+			return this.cleanPath(b.trait_bound.trait.path);
+		}
+		if ('outlives' in b) return b.outlives as string;
+		return '_';
 	}
 
 	private cleanPath(path: string): string {

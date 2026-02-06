@@ -11,6 +11,7 @@ import { createStreamingGraphBuilder, type ProgressiveStorageCallbacks } from '.
 import { parseRustdocByteStream } from './parser';
 import { getLogger } from '$lib/log';
 import { perf } from '$lib/perf';
+import { normalizeCrateName } from '$lib/crate-names';
 
 const log = getLogger('streaming-parser');
 
@@ -89,7 +90,7 @@ export async function parseWithProgressiveStorage(
 		contentId
 	} = options;
 
-	const normalizedName = crateName.replace(/-/g, '_');
+	const normalizedName = normalizeCrateName(crateName);
 	const t0 = performance.now();
 
 	// Track tree data during streaming
@@ -97,7 +98,9 @@ export async function parseWithProgressiveStorage(
 	const treeEdges: CrateTree['edges'] = [];
 	const internalNodeIds = new Set<string>();
 	// Candidate tree edges awaiting filtering (edges may arrive before nodes)
-	const pendingTreeEdges: CrateTree['edges'] = [];
+	// Indexed by missing endpoint for O(1) lookup when nodes arrive
+	const pendingEdgesByFrom = new Map<string, CrateTree['edges']>();
+	const pendingEdgesByTo = new Map<string, CrateTree['edges']>();
 
 	// Track path structure for accurate skeleton rendering
 	// Maps parent node ID -> Set of child node IDs (only for tree-structure Contains edges)
@@ -114,26 +117,85 @@ export async function parseWithProgressiveStorage(
 	let firstDeltaSent = false;
 	let firstEdgeDeltaSent = false;
 	let progressSequence = 0;
-	// Delta tracking - only send new nodes/edges since last emit
-	let lastSentNodeIndex = 0;
-	let lastSentEdgeIndex = 0;
+	// Time-based emission for responsive UI
+	let lastEmitMs = performance.now();
+	const emitTimeoutMs = 250; // Emit at least every 250ms for responsive UI
+	// Max delta size to prevent huge payloads
+	const maxDeltaNodes = 2000;
+	const maxDeltaEdges = 4000;
+	// Unsent buffers - avoid slice() allocations
+	let unsentNodes: CrateTree['nodes'] = [];
+	let unsentEdges: CrateTree['edges'] = [];
 
 	/**
-	 * Filter pending tree edges against internalNodeIds.
-	 * Moves edges where both endpoints exist to treeEdges.
-	 * Edges with unknown endpoints remain in pendingTreeEdges for later.
+	 * Add an edge to pending, indexed by missing endpoint(s).
 	 */
-	function flushPendingTreeEdges(): void {
-		let i = 0;
-		while (i < pendingTreeEdges.length) {
-			const edge = pendingTreeEdges[i];
-			if (internalNodeIds.has(edge.from) && internalNodeIds.has(edge.to)) {
-				treeEdges.push(edge);
-				// Remove from pending by swapping with last element
-				pendingTreeEdges[i] = pendingTreeEdges[pendingTreeEdges.length - 1];
-				pendingTreeEdges.pop();
-			} else {
-				i++;
+	function addPendingEdge(edge: CrateTree['edges'][number]): void {
+		const hasFrom = internalNodeIds.has(edge.from);
+		const hasTo = internalNodeIds.has(edge.to);
+		
+		if (hasFrom && hasTo) {
+			// Both endpoints exist, add directly to tree
+			treeEdges.push(edge);
+			unsentEdges.push(edge);
+		} else {
+			// Index by missing endpoint(s)
+			if (!hasFrom) {
+				if (!pendingEdgesByFrom.has(edge.from)) {
+					pendingEdgesByFrom.set(edge.from, []);
+				}
+				pendingEdgesByFrom.get(edge.from)!.push(edge);
+			}
+			if (!hasTo) {
+				if (!pendingEdgesByTo.has(edge.to)) {
+					pendingEdgesByTo.set(edge.to, []);
+				}
+				pendingEdgesByTo.get(edge.to)!.push(edge);
+			}
+		}
+	}
+
+	/**
+	 * Called when a new node is added. Resolves any pending edges waiting on this node.
+	 */
+	function resolveEdgesForNode(nodeId: string): void {
+		// Check edges waiting for this node as 'from'
+		const waitingFrom = pendingEdgesByFrom.get(nodeId);
+		if (waitingFrom) {
+			pendingEdgesByFrom.delete(nodeId);
+			for (const edge of waitingFrom) {
+				// Check if 'to' is now available
+				if (internalNodeIds.has(edge.to)) {
+					treeEdges.push(edge);
+					unsentEdges.push(edge);
+					// Remove from 'to' index if it was there
+					const toList = pendingEdgesByTo.get(edge.to);
+					if (toList) {
+						const idx = toList.indexOf(edge);
+						if (idx >= 0) toList.splice(idx, 1);
+						if (toList.length === 0) pendingEdgesByTo.delete(edge.to);
+					}
+				}
+			}
+		}
+		
+		// Check edges waiting for this node as 'to'
+		const waitingTo = pendingEdgesByTo.get(nodeId);
+		if (waitingTo) {
+			pendingEdgesByTo.delete(nodeId);
+			for (const edge of waitingTo) {
+				// Check if 'from' is now available
+				if (internalNodeIds.has(edge.from)) {
+					treeEdges.push(edge);
+					unsentEdges.push(edge);
+					// Remove from 'from' index if it was there
+					const fromList = pendingEdgesByFrom.get(edge.from);
+					if (fromList) {
+						const idx = fromList.indexOf(edge);
+						if (idx >= 0) fromList.splice(idx, 1);
+						if (fromList.length === 0) pendingEdgesByFrom.delete(edge.from);
+					}
+				}
 			}
 		}
 	}
@@ -141,69 +203,75 @@ export async function parseWithProgressiveStorage(
 	function emitProgress(
 		type: 'delta' | 'snapshot',
 		includeTree = false,
-		advanceCursor = includeTree,
 		fullTree = false,
 		includePathStructure = false
 	) {
-		if (onProgress) {
-			// Filter any pending edges that now have known endpoints
-			flushPendingTreeEdges();
+		if (!onProgress) return;
 
-			// Build delta - only nodes/edges since last emit
-			const deltaNodes = includeTree
-				? (fullTree ? treeNodes : treeNodes.slice(lastSentNodeIndex))
-				: undefined;
-			const deltaEdges = includeTree
-				? (fullTree ? treeEdges : treeEdges.slice(lastSentEdgeIndex))
-				: undefined;
-
-			if (advanceCursor) {
-				lastSentNodeIndex = treeNodes.length;
-				lastSentEdgeIndex = treeEdges.length;
+		// Build tree payload
+		let tree: CrateTree | undefined;
+		if (includeTree) {
+			if (fullTree) {
+				// Snapshot: send full tree
+				tree = { nodes: treeNodes, edges: treeEdges };
+			} else {
+				// Delta: send unsent buffers and reset them
+				tree = { nodes: unsentNodes, edges: unsentEdges };
+				unsentNodes = [];
+				unsentEdges = [];
 			}
-
-			const tree = includeTree
-				? { nodes: deltaNodes ?? treeNodes, edges: deltaEdges ?? treeEdges }
-				: undefined;
-
-			// Build path structure metadata for accurate skeleton rendering
-			let pathStructure: PathStructureMetadata | undefined;
-			if (includePathStructure && parentChildMap.size > 0) {
-				const childCounts: Record<string, number> = {};
-				for (const [parentId, children] of parentChildMap) {
-					childCounts[parentId] = children.size;
-				}
-				pathStructure = {
-					childCounts,
-					completedNodes: Array.from(completedNodes),
-					timestamp: Date.now()
-				};
-			}
-
-			const detail = tree ? `${String(tree.nodes.length)}n ${String(tree.edges.length)}e` : 'no-tree';
-			if (type === 'snapshot') {
-				perf.event('parser', 'snapshot', `${String(nodeCount)} total (${detail})`);
-			}
-			onProgress({
-				type,
-				sequence: progressSequence++,
-				contentId,
-				nodeCount,
-				edgeCount,
-				tree: tree && (tree.nodes.length > 0 || tree.edges.length > 0) ? tree : undefined,
-				pathStructure
-			});
 		}
+
+		// Only include pathStructure on snapshots to reduce payload size
+		let pathStructure: PathStructureMetadata | undefined;
+		if (includePathStructure && parentChildMap.size > 0) {
+			const childCounts: Record<string, number> = {};
+			for (const [parentId, children] of parentChildMap) {
+				childCounts[parentId] = children.size;
+			}
+			pathStructure = {
+				childCounts,
+				completedNodes: Array.from(completedNodes),
+				timestamp: Date.now()
+			};
+		}
+
+		const detail = tree ? `${String(tree.nodes.length)}n ${String(tree.edges.length)}e` : 'no-tree';
+		if (type === 'snapshot') {
+			perf.event('parser', 'snapshot', `${String(nodeCount)} total (${detail})`);
+		}
+		
+		lastEmitMs = performance.now();
+		
+		onProgress({
+			type,
+			sequence: progressSequence++,
+			contentId,
+			nodeCount,
+			edgeCount,
+			tree: tree && (tree.nodes.length > 0 || tree.edges.length > 0) ? tree : undefined,
+			pathStructure
+		});
+	}
+
+	/**
+	 * Check if we should emit based on time or buffer size.
+	 */
+	function shouldEmitDelta(): boolean {
+		const now = performance.now();
+		const timeSinceEmit = now - lastEmitMs;
+		const bufferFull = unsentNodes.length >= maxDeltaNodes || unsentEdges.length >= maxDeltaEdges;
+		return bufferFull || timeSinceEmit >= emitTimeoutMs;
 	}
 
 	// Wrap storage callbacks to also collect tree data
 	const wrappedStorageCallbacks: ProgressiveStorageCallbacks = {
 		storeNodes: async (nodes) => {
-			// Collect tree nodes (non-external only)
+			// Collect tree nodes (non-external only) into both full list and unsent buffer
 			for (const node of nodes) {
 				if (!node.is_external) {
 					internalNodeIds.add(node.id);
-					treeNodes.push({
+					const treeNode = {
 						id: node.id,
 						name: node.name,
 						kind: node.kind,
@@ -215,35 +283,44 @@ export async function parseWithProgressiveStorage(
 							where_clause: node.where_clause,
 							bound_links: node.bound_links
 						} : {})
-					});
+					};
+					treeNodes.push(treeNode);
+					unsentNodes.push(treeNode);
+					// Resolve any pending edges waiting for this node
+					resolveEdgesForNode(node.id);
 				}
 			}
 
 			// Track and emit progress BEFORE awaiting DO write
-			// (flushes run concurrently so we need to emit with accurate deltas)
 			nodeCount += nodes.length;
+			
+			// Emit logic: first delta immediately, then time/size based
 			if (!firstDeltaSent && nodeCount > 0) {
 				firstDeltaSent = true;
 				lastProgressAt = nodeCount;
-				emitProgress('delta', true, true, false); // First delta as soon as nodes arrive
-			} else if (nodeCount - lastProgressAt >= progressInterval) {
+				emitProgress('delta', true, false);
+			} else if (shouldEmitDelta()) {
 				lastProgressAt = nodeCount;
-				emitProgress('delta', true, true, false); // Include tree at intervals
+				emitProgress('delta', true, false);
 			}
+			
+			// Periodic snapshots with full tree + path structure
 			if (nodeCount - lastSnapshotAt >= snapshotInterval && treeNodes.length > 0) {
 				lastSnapshotAt = nodeCount;
-				// Include full path structure in snapshots
-				emitProgress('snapshot', true, true, true, true);
+				emitProgress('snapshot', true, true, true);
 			}
 
 			await storageCallbacks.storeNodes(nodes);
 		},
 		storeEdges: async (edges) => {
-			// Collect candidate tree edges (Contains/Defines) - defer filtering
-			// because edges may arrive before their nodes
+			// Track and emit progress BEFORE awaiting DO write (match node behavior)
+			edgeCount += edges.length;
+			
+			// Collect candidate tree edges (Contains/Defines)
+			// Uses indexed pending edge tracking for O(1) resolution
 			for (const edge of edges) {
 				if (edge.kind === 'Contains' || edge.kind === 'Defines') {
-					pendingTreeEdges.push(edge);
+					addPendingEdge(edge);
 
 					// Track parent-child relationships for path structure metadata
 					if (edge.kind === 'Contains') {
@@ -254,20 +331,15 @@ export async function parseWithProgressiveStorage(
 					}
 				}
 			}
-			await storageCallbacks.storeEdges(edges);
-			edgeCount += edges.length;
-			if (firstDeltaSent && edgeCount > 0) {
-				if (!firstEdgeDeltaSent) {
-					firstEdgeDeltaSent = true;
-					lastEdgeProgressAt = edgeCount;
-					// Include path structure on first edge delta
-					emitProgress('delta', true, true, false, true);
-				} else if (edgeCount - lastEdgeProgressAt >= progressInterval) {
-					lastEdgeProgressAt = edgeCount;
-					// Include path structure periodically
-					emitProgress('delta', true, true, false, true);
-				}
+			
+			// Emit if buffer full or time elapsed
+			if (firstDeltaSent && shouldEmitDelta()) {
+				lastEdgeProgressAt = edgeCount;
+				// Include path structure on edge deltas since that's when we learn tree structure
+				emitProgress('delta', true, false, true);
 			}
+			
+			await storageCallbacks.storeEdges(edges);
 		},
 		updateNode: storageCallbacks.updateNode
 	};
@@ -298,8 +370,11 @@ export async function parseWithProgressiveStorage(
 	const elapsed = performance.now() - t0;
 	log.info`progressive parsed ${normalizedName}: ${String(result.nodeCount)} nodes, ${String(result.edgeCount)} edges in ${elapsed.toFixed(0)}ms`;
 
-	// Final flush of any remaining pending tree edges
-	flushPendingTreeEdges();
+	// Log any remaining unresolved pending edges (expected for edges to external/filtered nodes)
+	const remainingPending = pendingEdgesByFrom.size + pendingEdgesByTo.size;
+	if (remainingPending > 0) {
+		log.debug`${remainingPending} pending edge references remain unresolved`;
+	}
 
 	// Server-side orphan filtering: only keep nodes reachable from Crate roots via Contains/Defines
 	const tFilter = performance.now();
