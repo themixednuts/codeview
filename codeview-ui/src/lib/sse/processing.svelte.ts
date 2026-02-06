@@ -1,5 +1,5 @@
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from './shared-client';
+import { connect } from '$realtime';
 
 interface ProcessingMessage {
 	type?: string;
@@ -11,10 +11,10 @@ interface ProcessingMessage {
  * Uses multiplexed SSE to avoid connection limits.
  * Emits the current count of crates being parsed.
  */
-export class ProcessingStatusConnection {
+export class ProcessingStatusConnection implements Disposable {
 	count = $state(0);
 
-	#shared = getSharedEventConnection();
+	#client = connect();
 	#log = getLogger('processing');
 	#ecosystem = 'rust';
 	#currentTag: string | null = null;
@@ -39,8 +39,8 @@ export class ProcessingStatusConnection {
 
 		// Subscribe via shared connection
 		const callback = (data: unknown) => this.#onData(data as ProcessingMessage);
-		await this.#shared.subscribe(tag, callback);
-		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
+		await this.#client.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#client.unsubscribe(tag, callback);
 	}
 
 	/**
@@ -65,5 +65,9 @@ export class ProcessingStatusConnection {
 	/** Clean up and disconnect. */
 	destroy() {
 		this.disconnect();
+	}
+
+	[Symbol.dispose]() {
+		this.destroy();
 	}
 }

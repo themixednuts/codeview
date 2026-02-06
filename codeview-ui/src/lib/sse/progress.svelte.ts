@@ -2,7 +2,7 @@ import type { NodeKind } from '$lib/graph';
 import type { CrateTree } from '$lib/schema';
 import type { PathStructureMetadata } from '$lib/path-structure';
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from './shared-client';
+import { connect } from '$realtime';
 import { SvelteMap } from 'svelte/reactivity';
 
 export interface ProgressEvent {
@@ -25,7 +25,7 @@ export interface ProgressEvent {
  * All public properties use $state and are automatically reactive.
  * Components can read them directly without subscribing.
  */
-export class ParseProgressConnection {
+export class ParseProgressConnection implements Disposable {
 	tree = $state<CrateTree | null>(null);
 	nodeCount = $state(0);
 	edgeCount = $state(0);
@@ -40,7 +40,7 @@ export class ParseProgressConnection {
 	stale: boolean = $state(false);
 	contentId: string | null = $state(null);
 
-	#shared = getSharedEventConnection();
+	#client = connect();
 	#log = getLogger('progress');
 	#name = '';
 	#version = '';
@@ -81,8 +81,8 @@ export class ParseProgressConnection {
 
 		// Subscribe via shared connection
 		const callback = (data: unknown) => this.onProgressData(data as ProgressEvent);
-		await this.#shared.subscribe(tag, callback);
-		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
+		await this.#client.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#client.unsubscribe(tag, callback);
 	}
 
 	/**
@@ -94,6 +94,15 @@ export class ParseProgressConnection {
 			this.#unsubscribe = null;
 		}
 		this.#currentTag = null;
+	}
+
+	destroy() {
+		this.disconnect();
+		this.reset();
+	}
+
+	[Symbol.dispose]() {
+		this.destroy();
 	}
 
 	/**

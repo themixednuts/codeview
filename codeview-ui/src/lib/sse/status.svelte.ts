@@ -1,7 +1,7 @@
 import type { CrateStatus } from '$lib/schema';
 import { triggerCrateParse } from '$lib/rpc/crate.remote';
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from './shared-client';
+import { connect } from '$realtime';
 
 type CrateStatusValue = CrateStatus['status'];
 
@@ -31,14 +31,14 @@ export const stepPercents: Record<string, number> = {
  * All public properties use $state and are automatically reactive.
  * Components can read them directly without subscribing.
  */
-export class CrateStatusConnection {
+export class CrateStatusConnection implements Disposable {
 	status = $state<CrateStatusValue>('unknown');
 	error = $state<string | null>(null);
 	step = $state<string | null>(null);
 	action = $state<'install_std_docs' | 'docs_unavailable' | undefined>(undefined);
 	installedVersion = $state<string | undefined>(undefined);
 
-	#shared = getSharedEventConnection();
+	#client = connect();
 	#log = getLogger('status');
 	#name = '';
 	#version = '';
@@ -71,8 +71,8 @@ export class CrateStatusConnection {
 
 		// Subscribe via shared connection
 		const callback = (data: unknown) => this.onStatusData(data as CrateStatus);
-		await this.#shared.subscribe(tag, callback);
-		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
+		await this.#client.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#client.unsubscribe(tag, callback);
 	}
 
 	/**
@@ -84,6 +84,14 @@ export class CrateStatusConnection {
 			this.#unsubscribe = null;
 		}
 		this.#currentTag = null;
+	}
+
+	destroy() {
+		this.disconnect();
+	}
+
+	[Symbol.dispose]() {
+		this.destroy();
 	}
 
 	private onStatusData(msg: CrateStatus) {

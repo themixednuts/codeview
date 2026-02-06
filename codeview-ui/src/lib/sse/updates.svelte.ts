@@ -1,5 +1,5 @@
 import { getLogger } from '$lib/log';
-import { getSharedEventConnection } from './shared-client';
+import { connect } from '$realtime';
 
 /**
  * Delay before subscribing to edge updates (ms).
@@ -18,10 +18,10 @@ interface EdgeUpdateMessage {
  * Uses multiplexed SSE to avoid connection limits.
  * Emits a monotonically increasing tick when updates arrive.
  */
-export class CrossEdgeUpdatesConnection {
+export class CrossEdgeUpdatesConnection implements Disposable {
 	updateTick = $state(0);
 
-	#shared = getSharedEventConnection();
+	#client = connect();
 	#log = getLogger('graph-updates');
 	#nodeId = '';
 	#currentTag: string | null = null;
@@ -55,8 +55,8 @@ export class CrossEdgeUpdatesConnection {
 
 	async #doSubscribe(tag: string) {
 		const callback = (data: unknown) => this.#onData(data as EdgeUpdateMessage);
-		await this.#shared.subscribe(tag, callback);
-		this.#unsubscribe = () => this.#shared.unsubscribe(tag, callback);
+		await this.#client.subscribe(tag, callback);
+		this.#unsubscribe = () => this.#client.unsubscribe(tag, callback);
 	}
 
 	#cancelPending() {
@@ -87,5 +87,9 @@ export class CrossEdgeUpdatesConnection {
 	/** Clean up and disconnect. */
 	destroy() {
 		this.disconnect();
+	}
+
+	[Symbol.dispose]() {
+		this.destroy();
 	}
 }
