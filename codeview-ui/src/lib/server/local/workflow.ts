@@ -51,7 +51,7 @@ function computeDelay(config: WorkflowRetryConfig, attempt: number): number {
 export async function runWorkflow<TParams>(
 	workflow: WorkflowEntrypoint<TParams>,
 	params: TParams,
-	options?: WorkflowRunnerOptions
+	options?: WorkflowRunnerOptions,
 ): Promise<Result<void, WorkflowStepError>> {
 	let currentStep = '';
 
@@ -59,7 +59,7 @@ export async function runWorkflow<TParams>(
 		async do<T>(
 			name: string,
 			configOrCallback: WorkflowStepConfig | (() => Promise<T>),
-			maybeCallback?: () => Promise<T>
+			maybeCallback?: () => Promise<T>,
 		): Promise<T> {
 			const config: WorkflowStepConfig | undefined =
 				typeof configOrCallback === 'function' ? undefined : configOrCallback;
@@ -91,7 +91,7 @@ export async function runWorkflow<TParams>(
 
 			// Unreachable, but TS needs it
 			throw new Error(`Step "${name}" exhausted retries`);
-		}
+		},
 	};
 
 	try {

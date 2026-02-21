@@ -4,7 +4,7 @@ import type {
 	SourcePhase,
 	SourceProvider,
 	SourceProviderGroup,
-	SourceFetchState
+	SourceFetchState,
 } from './types';
 
 export interface ThresholdPolicyOptions {
@@ -37,7 +37,7 @@ export function createThresholdPolicy(options: ThresholdPolicyOptions): SourceFe
 		shouldRaceFallbacks(state: SourceFetchState, group: SourceProviderGroup) {
 			const threshold = group.maxMainFailures ?? options.maxMainFailures;
 			return state.mainFailures >= threshold;
-		}
+		},
 	};
 }
 
@@ -47,7 +47,7 @@ export const defaultSourcePolicy = createThresholdPolicy({
 	mainRetries: 2,
 	fallbackRetries: 1,
 	baseDelayMs: 500,
-	maxDelayMs: 4000
+	maxDelayMs: 4000,
 });
 
 export interface FailureRatePolicyOptions {
@@ -85,7 +85,7 @@ export function createFailureRatePolicy(options: FailureRatePolicyOptions): Sour
 			if (state.mainAttempts < options.minSamples) return false;
 			const rate = state.mainFailures / state.mainAttempts;
 			return rate >= options.failureRateThreshold;
-		}
+		},
 	};
 }
 

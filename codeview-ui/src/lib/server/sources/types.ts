@@ -42,7 +42,7 @@ export interface SourceFetchPolicy {
 		attempt: number,
 		phase: SourcePhase,
 		provider: SourceProvider,
-		group: SourceProviderGroup
+		group: SourceProviderGroup,
 	): boolean;
 	getRetryDelayMs(attempt: number, phase: SourcePhase): number;
 	shouldRaceFallbacks(state: SourceFetchState, group: SourceProviderGroup): boolean;

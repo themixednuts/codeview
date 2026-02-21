@@ -2,7 +2,7 @@ import type {
 	SourceFetchContext,
 	SourceFetchOutcome,
 	SourceProvider,
-	SourceProviderGroup
+	SourceProviderGroup,
 } from './types';
 import type { SourceFetchPolicy } from './types';
 import { defaultSourcePolicy } from './policy';
@@ -11,7 +11,7 @@ import { SourceOverLimitError } from '../errors';
 export async function fetchSourcesWithProviders(
 	group: SourceProviderGroup,
 	request: Parameters<SourceProvider['fetch']>[0],
-	context: SourceFetchContext
+	context: SourceFetchContext,
 ): Promise<Map<string, string> | null> {
 	const policy = group.policy ?? defaultSourcePolicy;
 
@@ -32,7 +32,7 @@ export async function fetchSourcesWithProviders(
 			providerIndex: index,
 			mainFailures,
 			mainAttempts,
-			lastOutcome: outcome
+			lastOutcome: outcome,
 		} as const;
 		if (group.fallbacks.length > 0 && policy.shouldRaceFallbacks(state, group)) {
 			const fallback = await raceFallbacks(group.fallbacks, request, context, policy, group);
@@ -53,7 +53,7 @@ async function attemptProvider(
 	context: SourceFetchContext,
 	policy: SourceFetchPolicy,
 	group: SourceProviderGroup,
-	phase: 'main' | 'fallback'
+	phase: 'main' | 'fallback',
 ): Promise<{ outcome: SourceFetchOutcome; attempts: number; failures: number }> {
 	let attempt = 0;
 	let lastError: SourceFetchOutcome | null = null;
@@ -79,7 +79,7 @@ async function attemptProvider(
 	return {
 		outcome: lastError ?? { status: 'error', message: 'Source provider failed' },
 		attempts: attempt + 1,
-		failures
+		failures,
 	};
 }
 
@@ -88,7 +88,7 @@ async function raceFallbacks(
 	request: Parameters<SourceProvider['fetch']>[0],
 	context: SourceFetchContext,
 	policy: SourceFetchPolicy,
-	group: SourceProviderGroup
+	group: SourceProviderGroup,
 ): Promise<Map<string, string> | null> {
 	if (providers.length === 0) return null;
 
@@ -99,9 +99,9 @@ async function raceFallbacks(
 				throw new SourceOverLimitError({ message: 'Source fetch exceeded size limit' });
 			}
 			throw new Error(
-				result.outcome.status === 'error' ? result.outcome.message : 'Source not found'
+				result.outcome.status === 'error' ? result.outcome.message : 'Source not found',
 			);
-		})
+		}),
 	);
 
 	try {

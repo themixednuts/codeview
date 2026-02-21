@@ -5,7 +5,9 @@ import { UnsupportedEcosystemError } from '../errors';
 
 const adapters = new Map<Ecosystem, RegistryAdapter>();
 
-export function getRegistry(ecosystem: Ecosystem): Result<RegistryAdapter, UnsupportedEcosystemError> {
+export function getRegistry(
+	ecosystem: Ecosystem,
+): Result<RegistryAdapter, UnsupportedEcosystemError> {
 	let adapter = adapters.get(ecosystem);
 	if (adapter) return Result.ok(adapter);
 

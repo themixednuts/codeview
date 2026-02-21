@@ -1,11 +1,11 @@
 /**
  * Shared Event Stream - Multiplexed SSE for CodeView
- * 
+ *
  * Architecture:
  * - Single SSE connection per browser tab
  * - Client subscribes/unsubscribes to "channels" (e.g., crate status, progress)
  * - Server broadcasts updates to all clients subscribed to a channel
- * 
+ *
  * Benefits:
  * - No 10-connection limit issues
  * - Lower overhead
@@ -36,10 +36,10 @@ export class SharedEventStream {
 	private tagToClients = new Map<string, Set<string>>();
 	private encoder = new TextEncoder();
 	private cleanupInterval: ReturnType<typeof setInterval> | null = null;
-	
+
 	constructor(
 		private log: Logger,
-		private idleTimeoutMs = 120000 // 2 minutes
+		private idleTimeoutMs = 120000, // 2 minutes
 	) {
 		this.startCleanupInterval();
 	}
@@ -65,15 +65,15 @@ export class SharedEventStream {
 	 */
 	addClient(clientId: string, writer: WritableStreamDefaultWriter): void {
 		this.log.debug`addClient ${clientId}`;
-		
+
 		// Remove existing client if any (shouldn't happen, but be safe)
 		this.removeClient(clientId);
-		
+
 		this.clients.set(clientId, {
 			clientId,
 			tags: new Set(),
 			writer,
-			lastActivity: Date.now()
+			lastActivity: Date.now(),
 		});
 	}
 
@@ -118,7 +118,7 @@ export class SharedEventStream {
 			if (client.tags.has(tag)) continue;
 
 			client.tags.add(tag);
-			
+
 			let clientsForTag = this.tagToClients.get(tag);
 			if (!clientsForTag) {
 				clientsForTag = new Set();
@@ -127,7 +127,8 @@ export class SharedEventStream {
 			clientsForTag.add(clientId);
 		}
 
-		this.log.debug`subscribe ${clientId} to [${tags.join(', ')}] - now subscribed to ${String(client.tags.size)} tags`;
+		this.log
+			.debug`subscribe ${clientId} to [${tags.join(', ')}] - now subscribed to ${String(client.tags.size)} tags`;
 	}
 
 	/**
@@ -143,7 +144,7 @@ export class SharedEventStream {
 			if (!client.tags.has(tag)) continue;
 
 			client.tags.delete(tag);
-			
+
 			const clientsForTag = this.tagToClients.get(tag);
 			if (clientsForTag) {
 				clientsForTag.delete(clientId);
@@ -153,7 +154,8 @@ export class SharedEventStream {
 			}
 		}
 
-		this.log.debug`unsubscribe ${clientId} from [${tags.join(', ')}] - now subscribed to ${String(client.tags.size)} tags`;
+		this.log
+			.debug`unsubscribe ${clientId} from [${tags.join(', ')}] - now subscribed to ${String(client.tags.size)} tags`;
 	}
 
 	/**
@@ -230,7 +232,7 @@ export class SharedEventStream {
 		}
 		return {
 			clients: this.clients.size,
-			subscriptions: totalSubscriptions
+			subscriptions: totalSubscriptions,
 		};
 	}
 

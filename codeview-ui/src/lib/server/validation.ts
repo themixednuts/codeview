@@ -18,7 +18,7 @@ export function isValidEcosystem(ecosystem: string): boolean {
 }
 
 export function parseCrateKey(
-	key: string
+	key: string,
 ): { ecosystem: string; name: string; version: string } | null {
 	const parts = key.split(':');
 	if (parts.length !== 3) return null;
@@ -39,4 +39,3 @@ export function parseEdgeKey(key: string): { nodeId: string } | null {
 export function sanitizeSearchQuery(q: string): string {
 	return q.slice(0, 100).trim();
 }
-

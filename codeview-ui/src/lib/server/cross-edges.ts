@@ -9,7 +9,10 @@ export type CrossEdgeNodeSummary = {
 	is_external?: boolean;
 };
 
-export function summarizeCrossEdgeNode(id: string, isExternal: boolean): Result<CrossEdgeNodeSummary, Error> {
+export function summarizeCrossEdgeNode(
+	id: string,
+	isExternal: boolean,
+): Result<CrossEdgeNodeSummary, Error> {
 	return Result.try(() => {
 		const parts = id.split('::');
 		const name = parts[parts.length - 1] || id;
@@ -19,7 +22,7 @@ export function summarizeCrossEdgeNode(id: string, isExternal: boolean): Result<
 			name,
 			kind,
 			visibility: 'Unknown',
-			...(isExternal ? { is_external: true } : {})
+			...(isExternal ? { is_external: true } : {}),
 		};
 		return summary;
 	});

@@ -1,7 +1,7 @@
 export const SSE_HEADERS = {
 	'Content-Type': 'text/event-stream',
 	'Cache-Control': 'no-cache',
-	Connection: 'keep-alive'
+	Connection: 'keep-alive',
 } as const;
 
 export interface SSEOptions {
@@ -39,7 +39,7 @@ export function sseResponse(data: string, signal: AbortSignal, options?: SSEOpti
 
 			const ttlTimer = options?.ttl ? setTimeout(doClose, options.ttl) : undefined;
 			signal.addEventListener('abort', doClose, { once: true });
-		}
+		},
 	});
 	return new Response(stream, { headers: SSE_HEADERS });
 }
@@ -52,7 +52,7 @@ export function sseResponse(data: string, signal: AbortSignal, options?: SSEOpti
 export function sseStreamResponse(
 	subscribe: (push: (data: string) => void, close: () => void) => () => void,
 	signal: AbortSignal,
-	options?: SSEOptions
+	options?: SSEOptions,
 ): Response {
 	const encoder = new TextEncoder();
 	const stream = new ReadableStream({
@@ -67,22 +67,19 @@ export function sseStreamResponse(
 					controller.close();
 				} catch {}
 			};
-			const unsubscribe = subscribe(
-				(data) => {
-					if (!closed) {
-						try {
-							controller.enqueue(encoder.encode(data));
-						} catch {
-							doClose();
-						}
+			const unsubscribe = subscribe((data) => {
+				if (!closed) {
+					try {
+						controller.enqueue(encoder.encode(data));
+					} catch {
+						doClose();
 					}
-				},
-				doClose
-			);
+				}
+			}, doClose);
 
 			const ttlTimer = options?.ttl ? setTimeout(doClose, options.ttl) : undefined;
 			signal.addEventListener('abort', doClose, { once: true });
-		}
+		},
 	});
 	return new Response(stream, { headers: SSE_HEADERS });
 }

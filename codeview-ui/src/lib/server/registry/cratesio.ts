@@ -36,7 +36,7 @@ async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonPar
 	let res: Response;
 	try {
 		res = await fetch(url, {
-			headers: { 'User-Agent': USER_AGENT }
+			headers: { 'User-Agent': USER_AGENT },
 		});
 	} catch (err) {
 		return Result.err(new FetchError({ url, status: 0, statusText: String(err) }));
@@ -45,10 +45,12 @@ async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonPar
 		return Result.err(new FetchError({ url, status: res.status, statusText: res.statusText }));
 	}
 	try {
-		const data = await res.json() as T;
+		const data = (await res.json()) as T;
 		return Result.ok(data);
 	} catch (err) {
-		return Result.err(new JsonParseError({ message: `Failed to parse JSON from ${url}`, cause: err }));
+		return Result.err(
+			new JsonParseError({ message: `Failed to parse JSON from ${url}`, cause: err }),
+		);
 	}
 }
 
@@ -71,7 +73,7 @@ export function createCratesIoAdapter(): RegistryAdapter {
 			}
 
 			const result = await fetchJson<{ version: CratesIoVersion; crate?: CratesIoCrate }>(
-				`${CRATES_IO_API}/crates/${name}/${resolvedVersion}`
+				`${CRATES_IO_API}/crates/${name}/${resolvedVersion}`,
 			);
 			if (result.isErr()) return null;
 			const data = result.value;
@@ -93,13 +95,13 @@ export function createCratesIoAdapter(): RegistryAdapter {
 				repository: extractGitHubRepo(data.crate?.repository),
 				repositoryUrl: data.crate?.repository ?? undefined,
 				artifactUrl,
-				sourceArchiveUrl
+				sourceArchiveUrl,
 			};
 		},
 
 		async search(query, limit = 20) {
 			const result = await fetchJson<{ crates: CratesIoCrate[] }>(
-				`${CRATES_IO_API}/crates?q=${encodeURIComponent(query)}&per_page=${limit}`
+				`${CRATES_IO_API}/crates?q=${encodeURIComponent(query)}&per_page=${limit}`,
 			);
 			if (result.isErr()) return [];
 			return result.value.crates.map((c) => ({
@@ -108,13 +110,13 @@ export function createCratesIoAdapter(): RegistryAdapter {
 				version: c.max_version,
 				description: c.description,
 				repository: extractGitHubRepo(c.repository),
-				repositoryUrl: c.repository ?? undefined
+				repositoryUrl: c.repository ?? undefined,
 			}));
 		},
 
 		async listTop(limit = 10) {
 			const result = await fetchJson<{ crates: CratesIoCrate[] }>(
-				`${CRATES_IO_API}/crates?sort=recent-downloads&per_page=${limit}`
+				`${CRATES_IO_API}/crates?sort=recent-downloads&per_page=${limit}`,
 			);
 			if (result.isErr()) return [];
 			return result.value.crates.map((c) => ({
@@ -123,27 +125,25 @@ export function createCratesIoAdapter(): RegistryAdapter {
 				version: c.max_version,
 				description: c.description,
 				repository: extractGitHubRepo(c.repository),
-				repositoryUrl: c.repository ?? undefined
+				repositoryUrl: c.repository ?? undefined,
 			}));
 		},
 
 		async listVersions(name, limit = 20) {
 			const result = await fetchJson<CratesIoVersionsResponse>(
-				`${CRATES_IO_API}/crates/${name}/versions?per_page=${limit}`
+				`${CRATES_IO_API}/crates/${name}/versions?per_page=${limit}`,
 			);
 			if (result.isErr()) return [];
-			return result.value.versions
-				.filter((v) => !v.yanked)
-				.map((v) => v.num);
+			return result.value.versions.filter((v) => !v.yanked).map((v) => v.num);
 		},
 
 		async getLatestVersion(name) {
 			const result = await fetchJson<CratesIoCrateDetailResponse>(
-				`${CRATES_IO_API}/crates/${name}`
+				`${CRATES_IO_API}/crates/${name}`,
 			);
 			if (result.isErr()) return null;
 			return result.value.crate?.max_version ?? null;
-		}
+		},
 	};
 	return adapter;
 }

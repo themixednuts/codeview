@@ -4,13 +4,13 @@ import type {
 	SourceProvider,
 	SourceProviderGroup,
 	SourceRequest,
-	SourceFetchOutcome
+	SourceFetchOutcome,
 } from './types';
 import { fetchSourceArchive } from '../parser/archive';
 import {
 	collectManifests,
 	filterSourceFilesForManifest,
-	selectManifestForCrate
+	selectManifestForCrate,
 } from '../parser/manifest';
 
 type RepoInfo =
@@ -39,7 +39,7 @@ export function createRustSourceAdapter(): SourceAdapter {
 			}
 
 			return { main, fallbacks, maxMainFailures: 2, mainRetries: 2, fallbackRetries: 1 };
-		}
+		},
 	};
 }
 
@@ -49,7 +49,7 @@ function createArchiveProvider(id: string, url: string): SourceProvider {
 		async fetch(request: SourceRequest, context: SourceFetchContext): Promise<SourceFetchOutcome> {
 			const archive = await fetchSourceArchive(url, {
 				maxBytes: context.maxBytes,
-				userAgent: context.userAgent
+				userAgent: context.userAgent,
 			});
 			if (archive.status === 'ok') {
 				const filtered = filterForCrate(request.name, archive.files);
@@ -59,7 +59,7 @@ function createArchiveProvider(id: string, url: string): SourceProvider {
 				return { status: 'over-limit' };
 			}
 			return { status: 'error', message: archive.message };
-		}
+		},
 	};
 }
 
@@ -76,7 +76,7 @@ function createGitHubProvider(repoInfo: Extract<RepoInfo, { host: 'github' }>): 
 				const archive = await fetchSourceArchive(url, {
 					maxBytes: context.maxBytes,
 					userAgent: context.userAgent,
-					headers
+					headers,
 				});
 				if (archive.status === 'ok') {
 					const filtered = filterForCrate(request.name, archive.files);
@@ -87,7 +87,7 @@ function createGitHubProvider(repoInfo: Extract<RepoInfo, { host: 'github' }>): 
 				}
 			}
 			return { status: 'not-found' };
-		}
+		},
 	};
 }
 
@@ -99,7 +99,7 @@ function createGitLabProvider(repoInfo: Extract<RepoInfo, { host: 'gitlab' }>): 
 				const url = `https://${repoInfo.projectPath}/-/archive/${ref}/${repoInfo.repoName}-${ref}.tar.gz`;
 				const archive = await fetchSourceArchive(url, {
 					maxBytes: context.maxBytes,
-					userAgent: context.userAgent
+					userAgent: context.userAgent,
 				});
 				if (archive.status === 'ok') {
 					const filtered = filterForCrate(request.name, archive.files);
@@ -110,7 +110,7 @@ function createGitLabProvider(repoInfo: Extract<RepoInfo, { host: 'gitlab' }>): 
 				}
 			}
 			return { status: 'not-found' };
-		}
+		},
 	};
 }
 

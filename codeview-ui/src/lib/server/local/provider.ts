@@ -2,15 +2,23 @@ import { Result } from 'better-result';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Workspace, CrateGraph, Confidence, EdgeKind, NodeKind, Visibility, Node, Edge } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeDetail } from '$lib/schema';
+import type {
+	Workspace,
+	CrateGraph,
+	Confidence,
+	EdgeKind,
+	NodeKind,
+	Visibility,
+	Node,
+	Edge,
+} from '$lib/graph';
+import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, STD_JSON_CRATES } from '$lib/std';
 import { getLogger } from '$lib/log';
 import { perf } from '$lib/perf';
 import { decodeGzipStream } from '$lib/server/gzip';
 import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from '$lib/server/cross-edges';
-import { getContentId } from '$lib/server/content';
 import { createCratesIoAdapter } from '../registry/cratesio';
 import { getRegistry } from '../registry/index';
 import { parseWithProgressiveStorage, type ParseProgress } from '../parser/streaming/adapter';
@@ -19,9 +27,19 @@ import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
 import type { CrossEdgeData, DataProvider, CrateStatus, CrateSummaryResult } from '../provider';
 import { ValidationError, NotAvailableError } from '../errors';
-import { isValidCrateName, isValidVersion, normalizeCrateName, crateNameVariants } from '../validation';
-import { realtime, createHandlers, type LocalProviderInternals } from './ws';
-import { USER_AGENT, SOURCE_MAX_BYTES, resolveSourceFileFromMap, selectSourceProviders, classifyStatusAction } from '../provider-utils';
+import {
+	isValidCrateName,
+	isValidVersion,
+	normalizeCrateName,
+	crateNameVariants,
+} from '../validation';
+import {
+	emit,
+	broadcastProgress,
+	createHandlers,
+	type LocalProviderInternals,
+} from './ws';
+import { USER_AGENT, SOURCE_MAX_BYTES, statusAction, source, type SourceProviderMode } from '../provider-utils';
 import { LocalCache } from './cache';
 import { WorkflowEntrypoint, runWorkflow } from './workflow';
 import type { WorkflowStep, WorkflowEvent } from './workflow';
@@ -30,6 +48,43 @@ import { findStdJson, installStdDocs, detectSysroot } from './sysroot';
 const log = getLogger('local');
 
 const VERSION_LOOKUP_CONCURRENCY = 6;
+
+/** Convert a full Node to a NodeSummary (drop heavy fields like docs/source). */
+function nodeToSummary(n: Node): NodeSummary {
+	return {
+		id: n.id,
+		name: n.name,
+		kind: n.kind,
+		visibility: n.visibility,
+		is_external: n.is_external,
+		...(n.kind === 'Impl'
+			? {
+					impl_trait: n.impl_trait,
+					generics: n.generics,
+					where_clause: n.where_clause,
+					bound_links: n.bound_links,
+				}
+			: {}),
+	};
+}
+
+/** Build a GitHub file URL from a repository URL, version, and file path. */
+function buildGitHubFileUrl(
+	repositoryUrl: string | undefined,
+	version: string,
+	filePath: string,
+): string | null {
+	if (!repositoryUrl) return null;
+	try {
+		const url = new URL(repositoryUrl);
+		if (!url.hostname.includes('github.com')) return null;
+		const path = url.pathname.replace(/\.git$/, '').replace(/\/+$/, '');
+		const normalizedFile = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+		return `https://github.com${path}/blob/v${version}/${normalizedFile}`;
+	} catch {
+		return null;
+	}
+}
 
 type CrateIndexEntry = {
 	id: string;
@@ -41,7 +96,7 @@ type CrateIndexEntry = {
 async function mapWithConcurrency<T, R>(
 	items: T[],
 	limit: number,
-	fn: (item: T) => Promise<R>
+	fn: (item: T) => Promise<R>,
 ): Promise<R[]> {
 	if (items.length === 0) return [];
 	const results: R[] = new Array(items.length);
@@ -62,17 +117,22 @@ async function mapWithConcurrency<T, R>(
 
 let providerInternals: LocalProviderInternals | null = null;
 
+/** Expose internals for Vite dev plugin (WS upgrades bypass SvelteKit routes in dev). */
+export function getProviderInternals(): LocalProviderInternals | null {
+	return providerInternals;
+}
+
 export function createLocalProvider(): DataProvider {
 	let cached: Workspace | null = null;
 	const registry = createCratesIoAdapter();
 	const sourceFileCache = new Map<string, string>();
 	const SOURCE_FILE_CACHE_MAX = 512;
-	
+
 	function sourceCacheKey(
 		crateName: string,
 		crateVersion: string,
 		file: string,
-		sourceProvider: 'auto' | 'crates-io' | 'github'
+		sourceProvider: SourceProviderMode,
 	): string {
 		return `${crateName}|${crateVersion}|${sourceProvider}|${file}`;
 	}
@@ -102,13 +162,6 @@ export function createLocalProvider(): DataProvider {
 		return cache;
 	}
 
-	// In-memory listeners for SSE push (source of truth is SQLite via LocalCache)
-	const listeners = new Map<string, Set<(status: CrateStatus) => void>>();
-	const processingListeners = new Set<(count: number) => void>();
-	const edgeListeners = new Map<string, Set<(data: { type: string; nodeId: string }) => void>>();
-	const progressListeners = new Map<string, Set<(progress: ParseProgress) => void>>();
-	const progressState = new Map<string, { sequence: number; contentId?: string; snapshot?: CrateTree }>();
-
 	// In-flight parse deduplication
 	const inFlight = new Map<string, Promise<void>>();
 
@@ -125,118 +178,30 @@ export function createLocalProvider(): DataProvider {
 		inFlight.set(key, promise);
 	}
 
-	function statusKey(name: string, version: string): string {
-		return `${normalizeCrateName(name)}:${version}`;
-	}
-
 	function emitStatus(name: string, version: string, status: CrateStatus, step?: string): void {
 		const lc = getCache();
-		lc.setStatus('rust', name, version, status.status as 'unknown' | 'processing' | 'ready' | 'failed', status.error, step);
-		const key = statusKey(name, version);
-		if (status.status === 'processing' && step === 'resolving') {
-			// New parse cycle for this crate/version: drop any stale progress snapshot state.
-			progressState.delete(key);
-		}
+		lc.setStatus(
+			'rust',
+			name,
+			version,
+			status.status as 'unknown' | 'processing' | 'ready' | 'failed',
+			status.error,
+			step,
+		);
 
 		const fullStatus: CrateStatus = {
 			...status,
 			...(step ? { step } : {}),
 		};
 
-		// Broadcast via WebSocket
-		realtime.status.emit(name, version, fullStatus);
+		emit.status(name, version, fullStatus);
 
-		const subs = listeners.get(key);
-		if (subs) {
-			for (const fn of subs) {
-				try { fn(fullStatus); } catch {}
-			}
-		}
-		// Broadcast processing count change
 		const count = lc.getProcessingCount('rust');
-		for (const fn of processingListeners) {
-			try { fn(count); } catch {}
-		}
-		// Broadcast processing count via WebSocket
-		realtime.processing.emit('rust', { type: 'processing', count });
+		emit.processing('rust', { type: 'processing', count });
 	}
 
 	function emitEdgeUpdate(nodeId: string): void {
-		const data = { type: 'cross-edges' as const, nodeId };
-		// Broadcast via WebSocket
-		realtime.edges.emit(nodeId, data);
-		
-		const subs = edgeListeners.get(nodeId);
-		if (!subs) return;
-		for (const fn of subs) {
-			try { fn(data); } catch {}
-		}
-	}
-
-	function emitProgress(name: string, version: string, progress: ParseProgress): void {
-		const key = statusKey(name, version);
-		// Broadcast via WebSocket
-		realtime.progress.emit(name, version, progress);
-		
-		const subs = progressListeners.get(key);
-		if (!subs) return;
-		for (const fn of subs) {
-			try { fn(progress); } catch {}
-		}
-	}
-
-	function subscribeProgress(
-		name: string,
-		version: string,
-		cb: (progress: ParseProgress) => void
-	): () => void {
-		const key = statusKey(name, version);
-		let subs = progressListeners.get(key);
-		if (!subs) {
-			subs = new Set();
-			progressListeners.set(key, subs);
-		}
-		subs.add(cb);
-		return () => {
-			subs!.delete(cb);
-			if (subs!.size === 0) progressListeners.delete(key);
-		};
-	}
-
-	function subscribe(
-		name: string,
-		version: string,
-		cb: (status: CrateStatus) => void
-	): () => void {
-		const key = statusKey(name, version);
-		let subs = listeners.get(key);
-		if (!subs) {
-			subs = new Set();
-			listeners.set(key, subs);
-		}
-		subs.add(cb);
-		return () => {
-			subs!.delete(cb);
-			if (subs!.size === 0) listeners.delete(key);
-		};
-	}
-
-	function subscribeProcessing(cb: (count: number) => void): () => void {
-		processingListeners.add(cb);
-		return () => { processingListeners.delete(cb); };
-	}
-
-	function subscribeEdge(nodeId: string, cb: (data: { type: string; nodeId: string }) => void): () => void {
-		let subs = edgeListeners.get(nodeId);
-		if (!subs) {
-			subs = new Set();
-			edgeListeners.set(nodeId, subs);
-		}
-		subs.add(cb);
-		return () => {
-			subs!.delete(cb);
-			if (subs!.size === 0) edgeListeners.delete(nodeId);
-		};
+		emit.edges(nodeId, { type: 'cross-edges', nodeId });
 	}
 
 	// ── Workflow-based parse pipeline ──
@@ -278,7 +243,7 @@ export function createLocalProvider(): DataProvider {
 						throw new Error(`Package not found: ${name}@${version}`);
 					}
 					return resolved;
-				}
+				},
 			);
 
 			// set-status-fetching
@@ -292,19 +257,19 @@ export function createLocalProvider(): DataProvider {
 				'fetch-artifact',
 				{ retries: { limit: 2, delayMs: 3000, backoff: 'exponential' } },
 				async () => {
-					const artifactUrl = meta.artifactUrl ?? `https://docs.rs/crate/${name}/${version}/json.gz`;
+					const artifactUrl =
+						meta.artifactUrl ?? `https://docs.rs/crate/${name}/${version}/json.gz`;
 					const artifactRes = await fetch(artifactUrl, {
-						headers: { 'User-Agent': USER_AGENT }
+						headers: { 'User-Agent': USER_AGENT },
 					});
 					if (!artifactRes.ok) {
 						throw new Error(
-							`Failed to fetch artifact: ${artifactRes.status} ${artifactRes.statusText}`
+							`Failed to fetch artifact: ${artifactRes.status} ${artifactRes.statusText}`,
 						);
 					}
 
 					const contentType = artifactRes.headers.get('content-type') ?? '';
 					const contentLength = Number(artifactRes.headers.get('content-length') ?? '0');
-					const contentId = getContentId(artifactRes.headers, `${name}@${version}`);
 					if (!artifactRes.body) {
 						throw new Error('Artifact response has no body for streaming');
 					}
@@ -312,11 +277,12 @@ export function createLocalProvider(): DataProvider {
 					if (contentType.includes('gzip')) {
 						input = decodeGzipStream(artifactRes.body);
 					}
-					const sizeLabel = contentLength > 0
-						? `${(contentLength / 1024 / 1024).toFixed(1)} MB compressed`
-						: 'unknown size';
-					return { input, sizeLabel, contentId };
-				}
+					const sizeLabel =
+						contentLength > 0
+							? `${(contentLength / 1024 / 1024).toFixed(1)} MB compressed`
+							: 'unknown size';
+					return { input, sizeLabel };
+				},
 			);
 			log.info`Fetched ${name}@${version}: ${artifactResult.sizeLabel}`;
 
@@ -349,12 +315,12 @@ export function createLocalProvider(): DataProvider {
 						ecosystem: 'rust',
 						name,
 						version,
-						metadata: meta
+						metadata: meta,
 					});
 					const sourceFilesPromise = fetchSourcesWithProviders(
 						providers,
 						{ ecosystem: 'rust', name, version, metadata: meta },
-						{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT }
+						{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT },
 					).catch((err) => {
 						log.warn`Sources fetch failed for ${name}@${version}: ${String(err)}`;
 						return null;
@@ -369,8 +335,6 @@ export function createLocalProvider(): DataProvider {
 
 					// Track node summaries for cross-edge detection
 					const nodeSummaries = new Map<string, CrossEdgeNodeSummary>();
-					// Accumulate deltas so we can periodically materialize a full tree for cache reads.
-					const treeAccumulator: CrateTree = { nodes: [], edges: [] };
 
 					const result = await parseWithProgressiveStorage(
 						artifactResult.input,
@@ -386,7 +350,7 @@ export function createLocalProvider(): DataProvider {
 										name: node.name,
 										kind: node.kind,
 										visibility: node.visibility,
-										is_external: node.is_external
+										is_external: node.is_external,
 									});
 								}
 							},
@@ -397,54 +361,29 @@ export function createLocalProvider(): DataProvider {
 								for (const edge of edges) {
 									if (cratePrefix(edge.from) !== cratePrefix(edge.to)) {
 										crossEdgesList.push(edge);
-										const fromNode = nodeSummaries.get(edge.from)
-											?? summarizeCrossEdgeNode(edge.from, isExternalNode(edge.from)).unwrapOr(null);
-										const toNode = nodeSummaries.get(edge.to)
-											?? summarizeCrossEdgeNode(edge.to, isExternalNode(edge.to)).unwrapOr(null);
+										const fromNode =
+											nodeSummaries.get(edge.from) ??
+											summarizeCrossEdgeNode(edge.from, isExternalNode(edge.from)).unwrapOr(null);
+										const toNode =
+											nodeSummaries.get(edge.to) ??
+											summarizeCrossEdgeNode(edge.to, isExternalNode(edge.to)).unwrapOr(null);
 										if (fromNode) crossNodeMap.set(fromNode.id, fromNode);
 										if (toNode) crossNodeMap.set(toNode.id, toNode);
 									}
 								}
-							}
+							},
 						},
 						{
 							batchSize: 200,
 							skipExternalNodes: true,
 							onProgress: (progress) => {
-								// Emit delta updates to SSE listeners
-								emitProgress(name, version, progress);
-								// Also update tree in DB periodically for UI to fetch
-								if (progress.tree) {
-									if (progress.type === 'snapshot') {
-										treeAccumulator.nodes.length = 0;
-										treeAccumulator.edges.length = 0;
-										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
-										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
-									} else {
-										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
-										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
-									}
-									if (progress.nodeCount > 0) {
-										lc.finalizeCrate(name, version, treeAccumulator, progress.nodeCount, progress.edgeCount);
-									}
-								}
-								const key = statusKey(name, version);
-								const existing = progressState.get(key);
-								progressState.set(key, {
-									sequence: progress.sequence,
-									contentId: progress.contentId ?? existing?.contentId,
-									snapshot: progress.type === 'snapshot' && progress.tree
-										? { nodes: progress.tree.nodes.slice(), edges: progress.tree.edges.slice() }
-										: existing?.snapshot
-								});
+								broadcastProgress('rust', name, version, progress);
 							},
-							progressInterval: 200,
-							snapshotInterval: 20000,
-							contentId: artifactResult.contentId
-						}
+						},
 					);
 
-					// Finalize crate with tree
+					// Finalize crate with tree (orphan-filtered by adapter)
+					log.info`Finalize tree ${name}@${version}: ${result.tree.nodes.length}n ${result.tree.edges.length}e`;
 					lc.finalizeCrate(name, version, result.tree, result.nodeCount, result.edgeCount);
 
 					// Collect external crates
@@ -456,12 +395,16 @@ export function createLocalProvider(): DataProvider {
 					log.info`Parsed ${name}@${version}: ${result.nodeCount} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
 
 					return {
-						graph: { id: crateName, name: crateName, version, nodes: [] as Node[], edges: [] as Edge[] },
-						externalCrates: result.externalCrates.map(ec => ({ ...ec, version: null, nodes: [] as Node[] })),
+						tree: result.tree,
+						externalCrates: result.externalCrates.map((ec) => ({
+							...ec,
+							version: null,
+							nodes: [] as Node[],
+						})),
 						nodeCount: result.nodeCount,
-						edgeCount: result.edgeCount
+						edgeCount: result.edgeCount,
 					};
-				}
+				},
 			);
 
 			// set-status-indexing
@@ -486,10 +429,13 @@ export function createLocalProvider(): DataProvider {
 						return resolved;
 					}
 
-					async function resolveExternalEntry(ext: { id: string; name: string }): Promise<CrateIndexEntry | null> {
+					async function resolveExternalEntry(ext: {
+						id: string;
+						name: string;
+					}): Promise<CrateIndexEntry | null> {
 						const candidates = [
 							...crateNameVariants(ext.name),
-							...crateNameVariants(ext.id)
+							...crateNameVariants(ext.id),
 						].filter((value, idx, all) => value && all.indexOf(value) === idx);
 
 						for (const candidate of candidates) {
@@ -513,7 +459,7 @@ export function createLocalProvider(): DataProvider {
 					const externalEntries = await mapWithConcurrency(
 						uniqueExternal,
 						VERSION_LOOKUP_CONCURRENCY,
-						resolveExternalEntry
+						resolveExternalEntry,
 					);
 					const filteredExternal = externalEntries.filter((e): e is CrateIndexEntry => e !== null);
 
@@ -521,12 +467,9 @@ export function createLocalProvider(): DataProvider {
 					return {
 						name,
 						version,
-						crates: [
-							{ id: crateName, name, version, is_external: false },
-							...filteredExternal
-						]
+						crates: [{ id: crateName, name, version, is_external: false }, ...filteredExternal],
 					} satisfies CrateIndex;
-				}
+				},
 			);
 
 			// store-graph: finalize progressive storage
@@ -537,21 +480,26 @@ export function createLocalProvider(): DataProvider {
 					emitStatus(name, version, { status: 'processing' }, 'storing');
 					const lc = getCache();
 
-					// Update index (nodes/edges already stored during parsing)
-					lc.initCrate(name, version, index);
-					// Restore tree and counts
-					const tree = lc.getTree(name, version);
-					if (tree) {
-						lc.finalizeCrate(name, version, tree, parseResult.nodeCount, parseResult.edgeCount);
-					}
+					// Update index only — nodes/edges were already stored during progressive parsing.
+					// Do NOT call initCrate() here: it deletes all nodes/edges.
+					lc.updateIndex(name, version, index);
+					lc.finalizeCrate(
+						name,
+						version,
+						parseResult.tree,
+						parseResult.nodeCount,
+						parseResult.edgeCount,
+					);
 
 					// Store cross-edge index
 					lc.replaceCrossEdges(
-						'rust', name, version,
+						'rust',
+						name,
+						version,
 						crossEdgesList,
-						Array.from(crossNodeMap.values())
+						Array.from(crossNodeMap.values()),
 					);
-				}
+				},
 			);
 
 			// fanout-dependencies: trigger parses for external crates
@@ -576,22 +524,32 @@ export function createLocalProvider(): DataProvider {
 
 	async function parseCrate(name: string, version: string): Promise<void> {
 		const workflow = new ParseCrateWorkflow();
-		const result = await runWorkflow(workflow, { name, version }, {
-			onStepStart(stepName) {
-				log.info`[workflow] step started: ${stepName} for ${name}@${version}`;
+		const result = await runWorkflow(
+			workflow,
+			{ name, version },
+			{
+				onStepStart(stepName) {
+					log.info`[workflow] step started: ${stepName} for ${name}@${version}`;
+				},
+				onStepError(stepName, error, attempt) {
+					log.error`[workflow] step "${stepName}" failed (attempt ${String(attempt)}): ${error.message}`;
+				},
 			},
-			onStepError(stepName, error, attempt) {
-				log.error`[workflow] step "${stepName}" failed (attempt ${String(attempt)}): ${error.message}`;
-			}
-		});
+		);
 
 		if (result.isErr()) {
 			const err = result.error;
 			log.error`Failed to parse ${name}@${version}: ${err.message} (step: ${err.failedStep})`;
-			const action = err.failedStep === 'fetch-artifact' && /\b404\b/.test(err.message)
-				? 'docs_unavailable' as const
-				: undefined;
-			emitStatus(name, version, { status: 'failed', error: err.message, ...(action ? { action } : {}) }, err.failedStep);
+			const action =
+				err.failedStep === 'fetch-artifact' && /\b404\b/.test(err.message)
+					? ('docs_unavailable' as const)
+					: undefined;
+			emitStatus(
+				name,
+				version,
+				{ status: 'failed', error: err.message, ...(action ? { action } : {}) },
+				err.failedStep,
+			);
 		}
 	}
 
@@ -677,8 +635,6 @@ export function createLocalProvider(): DataProvider {
 				const lc = getCache();
 				const tempIndex: CrateIndex = { name, version, crates: [] };
 				lc.initCrate(name, version, tempIndex);
-				const treeAccumulator: CrateTree = { nodes: [], edges: [] };
-
 				const result = await perf.timeAsync('parser', `parse ${name}@${version}`, () =>
 					parseWithProgressiveStorage(
 						artifactInfo.stream,
@@ -688,63 +644,39 @@ export function createLocalProvider(): DataProvider {
 								lc.insertNodes(name, version, nodes);
 								for (const node of nodes) {
 									nodeSummaries.set(node.id, {
-									id: node.id,
-									name: node.name,
-									kind: node.kind,
-									visibility: node.visibility,
-									is_external: node.is_external
-								});
-							}
-						},
+										id: node.id,
+										name: node.name,
+										kind: node.kind,
+										visibility: node.visibility,
+										is_external: node.is_external,
+									});
+								}
+							},
 							storeEdges: (edges) => {
 								lc.insertEdges(name, version, edges);
 								for (const edge of edges) {
-								if (cratePrefix(edge.from) !== cratePrefix(edge.to)) {
-									crossEdgesList.push(edge);
-									const fromNode = nodeSummaries.get(edge.from)
-										?? summarizeCrossEdgeNode(edge.from, isExternalNode(edge.from)).unwrapOr(null);
-									const toNode = nodeSummaries.get(edge.to)
-										?? summarizeCrossEdgeNode(edge.to, isExternalNode(edge.to)).unwrapOr(null);
-									if (fromNode) crossNodeMap.set(fromNode.id, fromNode);
-									if (toNode) crossNodeMap.set(toNode.id, toNode);
+									if (cratePrefix(edge.from) !== cratePrefix(edge.to)) {
+										crossEdgesList.push(edge);
+										const fromNode =
+											nodeSummaries.get(edge.from) ??
+											summarizeCrossEdgeNode(edge.from, isExternalNode(edge.from)).unwrapOr(null);
+										const toNode =
+											nodeSummaries.get(edge.to) ??
+											summarizeCrossEdgeNode(edge.to, isExternalNode(edge.to)).unwrapOr(null);
+										if (fromNode) crossNodeMap.set(fromNode.id, fromNode);
+										if (toNode) crossNodeMap.set(toNode.id, toNode);
+									}
 								}
-							}
-						}
-					},
-					{
+							},
+						},
+						{
 							batchSize: 200,
 							skipExternalNodes: true,
-							progressInterval: 200,
-							snapshotInterval: 20000,
-							contentId: artifactInfo.contentId,
 							onProgress: (progress: ParseProgress) => {
-								emitProgress(name, version, progress);
-								if (progress.tree) {
-									if (progress.type === 'snapshot') {
-										treeAccumulator.nodes.length = 0;
-										treeAccumulator.edges.length = 0;
-										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
-										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
-									} else {
-										for (const node of progress.tree.nodes) treeAccumulator.nodes.push(node);
-										for (const edge of progress.tree.edges) treeAccumulator.edges.push(edge);
-									}
-									if (progress.nodeCount > 0) {
-										lc.finalizeCrate(name, version, treeAccumulator, progress.nodeCount, progress.edgeCount);
-									}
-								}
-								const key = statusKey(name, version);
-								const existing = progressState.get(key);
-								progressState.set(key, {
-									sequence: progress.sequence,
-									contentId: progress.contentId ?? existing?.contentId,
-									snapshot: progress.type === 'snapshot' && progress.tree
-										? { nodes: progress.tree.nodes.slice(), edges: progress.tree.edges.slice() }
-										: existing?.snapshot
-								});
-							}
-						}
-					)
+								broadcastProgress('rust', name, version, progress);
+							},
+						},
+					),
 				);
 
 				log.info`Parsed ${name}@${version}: ${result.nodeCount} nodes, ${(performance.now() - t0).toFixed(0)}ms`;
@@ -758,14 +690,23 @@ export function createLocalProvider(): DataProvider {
 				const index: CrateIndex = {
 					name,
 					version,
-					crates: [{ id: normalizedName, name, version, is_external: false }]
+					crates: [{ id: normalizedName, name, version, is_external: false }],
 				};
-				lc.initCrate(name, version, index);
-				lc.finalizeCrate(name, version, parseResult.tree, parseResult.nodeCount, parseResult.edgeCount);
+				// Update index only — nodes/edges were already stored during progressive parsing.
+				lc.updateIndex(name, version, index);
+				lc.finalizeCrate(
+					name,
+					version,
+					parseResult.tree,
+					parseResult.nodeCount,
+					parseResult.edgeCount,
+				);
 				lc.replaceCrossEdges(
-					'rust', name, version,
+					'rust',
+					name,
+					version,
 					crossEdgesList,
-					Array.from(crossNodeMap.values())
+					Array.from(crossNodeMap.values()),
 				);
 			});
 
@@ -804,16 +745,24 @@ export function createLocalProvider(): DataProvider {
 		inFlight.set(key, promise);
 	}
 
-	async function parseStdCrate(name: string, version: string, installConsent: boolean): Promise<void> {
+	async function parseStdCrate(
+		name: string,
+		version: string,
+		installConsent: boolean,
+	): Promise<void> {
 		const workflow = new ParseStdCrateWorkflow();
-		const result = await runWorkflow(workflow, { name, version, installConsent }, {
-			onStepStart(stepName) {
-				log.info`[std-workflow] step started: ${stepName} for ${name}@${version}`;
+		const result = await runWorkflow(
+			workflow,
+			{ name, version, installConsent },
+			{
+				onStepStart(stepName) {
+					log.info`[std-workflow] step started: ${stepName} for ${name}@${version}`;
+				},
+				onStepError(stepName, error, attempt) {
+					log.error`[std-workflow] step "${stepName}" failed (attempt ${String(attempt)}): ${error.message}`;
+				},
 			},
-			onStepError(stepName, error, attempt) {
-				log.error`[std-workflow] step "${stepName}" failed (attempt ${String(attempt)}): ${error.message}`;
-			}
-		});
+		);
 
 		if (result.isErr()) {
 			const err = result.error;
@@ -822,7 +771,9 @@ export function createLocalProvider(): DataProvider {
 		}
 	}
 
-	function autoTriggerStdCrates(crates: Array<{ name: string; version: string; is_external?: boolean }>): void {
+	function autoTriggerStdCrates(
+		crates: Array<{ name: string; version: string; is_external?: boolean }>,
+	): void {
 		const lc = getCache();
 		for (const c of crates) {
 			if (!isStdCrate(c.name) || !STD_JSON_CRATES.includes(c.name)) continue;
@@ -830,68 +781,83 @@ export function createLocalProvider(): DataProvider {
 			const key = parseKey(c.name, c.version);
 			if (inFlight.has(key)) continue;
 			// Fire-and-forget: try to parse from sysroot (no install consent)
-			findStdJson(c.name, c.version).then((info) => {
-				if (info.available) {
-					log.info`Auto-triggering std crate parse: ${c.name}@${c.version}`;
-					startStdParse(c.name, c.version, false);
-				}
-			}).catch(() => {
-				// Silently ignore — sysroot detection failure is non-fatal
-			});
+			findStdJson(c.name, c.version)
+				.then((info) => {
+					if (info.available) {
+						log.info`Auto-triggering std crate parse: ${c.name}@${c.version}`;
+						startStdParse(c.name, c.version, false);
+					}
+				})
+				.catch(() => {
+					// Silently ignore — sysroot detection failure is non-fatal
+				});
 		}
 	}
+
+	let loadingPromise: Promise<Workspace | null> | null = null;
 
 	const provider: DataProvider = {
 		async loadWorkspace() {
 			if (cached) return cached;
-			const graphPath = process.env.CODEVIEW_GRAPH;
-			if (!graphPath) return null;
-			const readResult = await Result.tryPromise(() => readFile(graphPath, 'utf-8'));
-			if (readResult.isErr()) {
-				log.error`Failed to read workspace file: ${readResult.error}`;
-				return null;
-			}
-			const parseResult = Result.try(() => JSON.parse(readResult.value));
-			if (parseResult.isErr()) {
-				log.error`Failed to parse workspace JSON`;
-				return null;
-			}
-			cached = parseWorkspace(parseResult.value) as Workspace;
-			return cached;
+			if (loadingPromise) return loadingPromise;
+			loadingPromise = (async () => {
+				const graphPath = process.env.CODEVIEW_GRAPH;
+				if (!graphPath) return null;
+				const readResult = await Result.tryPromise(() => readFile(graphPath, 'utf-8'));
+				if (readResult.isErr()) {
+					log.error`Failed to read workspace file: ${readResult.error}`;
+					return null;
+				}
+				const parseResult = Result.try(() => JSON.parse(readResult.value));
+				if (parseResult.isErr()) {
+					log.error`Failed to parse workspace JSON`;
+					return null;
+				}
+				cached = parseWorkspace(parseResult.value) as Workspace;
+				return cached;
+			})().finally(() => {
+				loadingPromise = null;
+			});
+			return loadingPromise;
 		},
 
 		async loadSourceFile(
 			file: string,
 			crateName?: string,
 			crateVersion?: string,
-			sourceProvider: 'auto' | 'crates-io' | 'github' = 'auto'
+			sourceProvider: SourceProviderMode = 'auto',
 		) {
 			const workspaceRoot = process.env.CODEVIEW_WORKSPACE;
 			if (workspaceRoot) {
 				const fullPath = join(workspaceRoot, file);
 				const resolved = resolve(fullPath);
 				if (!resolved.startsWith(resolve(workspaceRoot))) {
-					return { error: 'Path outside workspace', content: null };
+					return { error: 'Path outside workspace', content: null, absolutePath: null, repoUrl: null };
 				}
 				const localResult = await Result.tryPromise(() => readFile(resolved, 'utf-8'));
 				if (localResult.isOk()) {
-					return { error: null, content: localResult.value };
+					return {
+						error: null,
+						content: localResult.value,
+						absolutePath: resolved.replace(/\\/g, '/'),
+						repoUrl: null,
+					};
 				}
 			}
 
 			if (!crateName || !crateVersion) {
-				return { error: 'File not found', content: null };
+				return { error: 'File not found', content: null, absolutePath: null, repoUrl: null };
 			}
 
 			const cacheKey = sourceCacheKey(crateName, crateVersion, file, sourceProvider);
 			const cachedContent = getCachedSourceFile(cacheKey);
 			if (cachedContent !== null) {
-				return { error: null, content: cachedContent };
+				return { error: null, content: cachedContent, absolutePath: null, repoUrl: null };
 			}
 
 			const sourceAdapterResult = getSourceAdapter('rust');
 			if (sourceAdapterResult.isErr()) {
-				return { error: sourceAdapterResult.error.message, content: null };
+				return { error: sourceAdapterResult.error.message, content: null, absolutePath: null, repoUrl: null };
 			}
 
 			let metadata: Awaited<ReturnType<typeof registry.resolve>> | null = null;
@@ -903,20 +869,30 @@ export function createLocalProvider(): DataProvider {
 				}
 			}
 			if (!metadata) {
-				return { error: 'Source metadata unavailable', content: null };
+				return { error: 'Source metadata unavailable', content: null, absolutePath: null, repoUrl: null };
 			}
 
-			if ((sourceProvider === 'auto' || sourceProvider === 'crates-io') && metadata.sourceArchiveUrl) {
+			const repoUrl = buildGitHubFileUrl(metadata.repositoryUrl, metadata.version, file);
+
+			if (
+				(sourceProvider === 'auto' || sourceProvider === 'crates-io') &&
+				metadata.sourceArchiveUrl
+			) {
 				const direct = await fetchSourceFileFromArchive(metadata.sourceArchiveUrl, file, {
 					maxBytes: SOURCE_MAX_BYTES,
-					userAgent: USER_AGENT
+					userAgent: USER_AGENT,
 				});
 				if (direct.status === 'ok') {
 					setCachedSourceFile(cacheKey, direct.content);
-					return { error: null, content: direct.content };
+					return { error: null, content: direct.content, absolutePath: null, repoUrl };
 				}
 				if (sourceProvider === 'crates-io') {
-					return { error: direct.status === 'error' ? direct.message : 'Source file not available', content: null };
+					return {
+						error: direct.status === 'error' ? direct.message : 'Source file not available',
+						content: null,
+						absolutePath: null,
+						repoUrl: null,
+					};
 				}
 			}
 
@@ -924,31 +900,32 @@ export function createLocalProvider(): DataProvider {
 				ecosystem: 'rust',
 				name: metadata.name,
 				version: metadata.version,
-				metadata
+				metadata,
 			});
-			const selectedProviders = selectSourceProviders(providers, sourceProvider);
+			const selectedProviders = source.selectProviders(providers, sourceProvider);
 			const files = await fetchSourcesWithProviders(
 				selectedProviders,
 				{ ecosystem: 'rust', name: metadata.name, version: metadata.version, metadata },
-				{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT }
+				{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT },
 			);
 			if (!files) {
-				return { error: 'Source file not available', content: null };
+				return { error: 'Source file not available', content: null, absolutePath: null, repoUrl: null };
 			}
 
-			const content = resolveSourceFileFromMap(files, file);
+			const content = source.resolveFromMap(files, file);
 			if (content === null) {
-				return { error: 'File not found', content: null };
+				return { error: 'File not found', content: null, absolutePath: null, repoUrl: null };
 			}
 			setCachedSourceFile(cacheKey, content);
-			return { error: null, content };
+			return { error: null, content, absolutePath: null, repoUrl };
 		},
 
 		async loadCrateGraph(name: string, _version: string) {
 			// Check workspace first
 			const ws = await this.loadWorkspace();
 			if (ws) {
-				const found = ws.crates.find((c) => c.name === name || c.id === name);
+				const normalized = normalizeCrateName(name);
+				const found = ws.crates.find((c) => normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized);
 				if (found) return found;
 			}
 
@@ -968,9 +945,8 @@ export function createLocalProvider(): DataProvider {
 			const ws = await this.loadWorkspace();
 			if (ws) {
 				// Check if crate is in workspace
-				const inWorkspace = ws.crates.some(
-					(c) => c.id === name || c.name === name
-				);
+				const normalizedName = normalizeCrateName(name);
+				const inWorkspace = ws.crates.some((c) => normalizeCrateName(c.id) === normalizedName || normalizeCrateName(c.name) === normalizedName);
 				if (inWorkspace) {
 					const crates: Array<{
 						id: string;
@@ -980,21 +956,18 @@ export function createLocalProvider(): DataProvider {
 					}> = ws.crates.map((c) => ({
 						id: c.id,
 						name: c.name,
-						version: c.version
+						version: c.version,
 					}));
 					for (const ext of ws.external_crates) {
-						const extVersion =
-							ext.version ?? (isStdCrate(ext.name) ? 'stable' : 'latest');
+						const extVersion = ext.version ?? (isStdCrate(ext.name) ? 'stable' : 'latest');
 						crates.push({
 							id: ext.id,
 							name: ext.name,
 							version: extVersion,
-							is_external: true
+							is_external: true,
 						});
 					}
-					const current = crates.find(
-						(c) => c.id === name || c.name === name
-					);
+					const current = crates.find((c) => c.id === name || c.name === name);
 
 					// Fire-and-forget: auto-trigger std crate parsing for available sysroot JSON
 					autoTriggerStdCrates(crates);
@@ -1002,7 +975,7 @@ export function createLocalProvider(): DataProvider {
 					return {
 						name: current?.name ?? name,
 						version: current?.version ?? version,
-						crates
+						crates,
 					};
 				}
 			}
@@ -1012,7 +985,11 @@ export function createLocalProvider(): DataProvider {
 			return lc.getIndex(name, version);
 		},
 
-		async loadNodeDetail(name: string, version: string, nodeId: string): Promise<NodeDetail | null> {
+		async loadNodeDetail(
+			name: string,
+			version: string,
+			nodeId: string,
+		): Promise<NodeDetail | null> {
 			const lc = getCache();
 
 			// Load node and its edges
@@ -1023,11 +1000,13 @@ export function createLocalProvider(): DataProvider {
 
 			// Collect all edges - start with direct edges
 			const allEdges = [...nodeEdges];
-			const edgeSet = new Set(nodeEdges.map(e => `${e.from}|${e.to}|${e.kind}`));
+			const edgeSet = new Set(nodeEdges.map((e) => `${e.from}|${e.to}|${e.kind}`));
 
 			// For types with impl blocks, follow Defines edges to get impl -> method edges
 			// This enables showing methods in the detail view
-			const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(node.kind);
+			const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(
+				node.kind,
+			);
 			if (isTypeNode) {
 				const implIds: string[] = [];
 				for (const edge of nodeEdges) {
@@ -1068,8 +1047,32 @@ export function createLocalProvider(): DataProvider {
 			return {
 				node,
 				edges: allEdges,
-				relatedNodes
+				relatedNodes,
 			};
+		},
+
+		async loadTreeRootsDirect(name: string, version: string): Promise<TreeNodeDTO[] | null> {
+			const lc = getCache();
+			const results = lc.getTreeRootsDirect(name, version);
+			return results.map(({ node, hasChildren }) => ({
+				node: nodeToSummary(node),
+				hasChildren,
+			}));
+		},
+
+		async loadTreeChildrenDirect(name: string, version: string, parentId: string): Promise<TreeNodeDTO[] | null> {
+			const lc = getCache();
+			const results = lc.getTreeChildrenDirect(name, version, parentId);
+			return results.map(({ node, hasChildren }) => ({
+				node: nodeToSummary(node),
+				hasChildren,
+			}));
+		},
+
+		async loadTreeAncestorsDirect(name: string, version: string, nodeId: string): Promise<NodeSummary[] | null> {
+			const lc = getCache();
+			const nodes = lc.getTreeAncestorsDirect(name, version, nodeId);
+			return nodes.map(nodeToSummary);
 		},
 
 		async getCrossEdgeData(nodeId: string): Promise<CrossEdgeData> {
@@ -1079,13 +1082,13 @@ export function createLocalProvider(): DataProvider {
 				edges: result.edges.map((edge) => ({
 					...edge,
 					kind: edge.kind as EdgeKind,
-					confidence: edge.confidence as Confidence
+					confidence: edge.confidence as Confidence,
 				})),
 				nodes: result.nodes.map((node) => ({
 					...node,
 					kind: node.kind as NodeKind,
-					visibility: node.visibility as Visibility
-				}))
+					visibility: node.visibility as Visibility,
+				})),
 			};
 		},
 
@@ -1099,7 +1102,7 @@ export function createLocalProvider(): DataProvider {
 				}
 				const dbStatus = lc.getStatus('rust', name, version);
 				if (dbStatus.status !== 'unknown') {
-					const action = classifyStatusAction(dbStatus);
+					const action = statusAction.classify(dbStatus);
 					return action ? { ...dbStatus, action } : dbStatus;
 				}
 
@@ -1125,7 +1128,7 @@ export function createLocalProvider(): DataProvider {
 				const lc = getCache();
 				const dbStatus = lc.getStatus('rust', name, version);
 				if (dbStatus.status !== 'unknown') {
-					const action = classifyStatusAction(dbStatus);
+					const action = statusAction.classify(dbStatus);
 					return action ? { ...dbStatus, action } : dbStatus;
 				}
 
@@ -1136,13 +1139,19 @@ export function createLocalProvider(): DataProvider {
 				}
 			} catch {}
 
-			// Check workspace
+			// Check workspace (normalize to underscores: URL uses hyphens, workspace uses underscores)
 			const ws = await this.loadWorkspace();
 			if (ws) {
-				const found = ws.crates.some(
-					(c) => c.name === name || c.id === name
-				);
+				const normalized = normalizeCrateName(name);
+				const found = ws.crates.some((c) => normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized);
 				if (found) return { status: 'ready' };
+			}
+
+			// Auto-trigger parse for unknown external crates (mirrors Cloudflare behavior)
+			if (isValidCrateName(name) && isValidVersion(version)) {
+				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				startParse(name, version);
+				return { status: 'processing' };
 			}
 
 			return { status: 'unknown' };
@@ -1153,7 +1162,9 @@ export function createLocalProvider(): DataProvider {
 				// Check if sysroot JSON is available (no install consent)
 				const stdInfo = await findStdJson(name, version);
 				if (!stdInfo.available) {
-					return Result.err(new NotAvailableError({ message: `${name}@${version} not available in sysroot` }));
+					return Result.err(
+						new NotAvailableError({ message: `${name}@${version} not available in sysroot` }),
+					);
 				}
 				const lc = getCache();
 				if (!force && lc.hasCrate(name, version)) {
@@ -1193,9 +1204,34 @@ export function createLocalProvider(): DataProvider {
 			return Result.ok(undefined);
 		},
 
+		async ensureParsed(name: string, version: string): Promise<void> {
+			const lc = getCache();
+			// Already finalized?
+			if (lc.hasCrate(name, version)) return;
+
+			const key = parseKey(name, version);
+
+			// Already in flight? Just await it.
+			let promise = inFlight.get(key);
+			if (!promise) {
+				// Not in flight and not parsed — trigger if valid
+				if (!isValidCrateName(name) || !isValidVersion(version)) return;
+				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				startParse(name, version);
+				promise = inFlight.get(key);
+			}
+
+			if (promise) {
+				// Wait for completion or timeout (large crates get partial data via streaming)
+				await Promise.race([promise, new Promise<void>((r) => setTimeout(r, 15_000))]);
+			}
+		},
+
 		async triggerStdInstall(name: string, version: string) {
 			if (!isStdCrate(name)) {
-				return Result.err(new ValidationError({ message: `${name} is not a standard library crate` }));
+				return Result.err(
+					new ValidationError({ message: `${name} is not a standard library crate` }),
+				);
 			}
 			const lc = getCache();
 			if (lc.hasCrate(name, version)) {
@@ -1212,7 +1248,7 @@ export function createLocalProvider(): DataProvider {
 			return results.map((r) => ({
 				name: r.name,
 				version: r.version,
-				description: r.description
+				description: r.description,
 			}));
 		},
 
@@ -1221,7 +1257,7 @@ export function createLocalProvider(): DataProvider {
 			return results.map((r) => ({
 				name: r.name,
 				version: r.version,
-				description: r.description
+				description: r.description,
 			}));
 		},
 
@@ -1232,9 +1268,8 @@ export function createLocalProvider(): DataProvider {
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
 			const ws = await this.loadWorkspace();
-			const localVersion = ws?.crates.find(
-				(c) => c.id === name || c.name === name
-			)?.version;
+			const normalizedName = normalizeCrateName(name);
+			const localVersion = ws?.crates.find((c) => normalizeCrateName(c.id) === normalizedName || normalizeCrateName(c.name) === normalizedName)?.version;
 			// Try both hyphen and underscore variants for registry lookup
 			let registryVersions: string[] = [];
 			for (const variant of crateNameVariants(name)) {
@@ -1244,11 +1279,7 @@ export function createLocalProvider(): DataProvider {
 			if (localVersion && !registryVersions.includes(localVersion)) {
 				return [localVersion, ...registryVersions];
 			}
-			return registryVersions.length > 0
-				? registryVersions
-				: localVersion
-					? [localVersion]
-					: [];
+			return registryVersions.length > 0 ? registryVersions : localVersion ? [localVersion] : [];
 		},
 
 		async resolveVersion(name: string, version: string): Promise<string> {
@@ -1258,28 +1289,10 @@ export function createLocalProvider(): DataProvider {
 			}
 			return version;
 		},
-
 	};
-
-	// ── Provider internals for WebSocket handler ──
-
-	function getLatestProgress(ecosystem: string, name: string, version: string): unknown {
-		const key = `${ecosystem}:${name}:${version}`;
-		const state = progressState.get(key);
-		if (!state?.snapshot) return null;
-		return {
-			type: 'snapshot',
-			sequence: state.sequence,
-			contentId: state.contentId,
-			tree: state.snapshot,
-			nodeCount: state.snapshot.nodes.length,
-			edgeCount: state.snapshot.edges.length
-		};
-	}
 
 	providerInternals = {
 		getCache,
-		getLatestProgress,
 		getCrateStatus: (name: string, version: string) => provider.getCrateStatus(name, version),
 	};
 
@@ -1287,8 +1300,10 @@ export function createLocalProvider(): DataProvider {
 }
 
 /** Build-time entry point — imported via the `$provider` alias (see vite.config.js). */
+let _singleton: DataProvider | null = null;
 export function createProvider(_event: RequestEvent): DataProvider {
-	return createLocalProvider();
+	if (!_singleton) _singleton = createLocalProvider();
+	return _singleton;
 }
 
 /**
@@ -1296,20 +1311,26 @@ export function createProvider(_event: RequestEvent): DataProvider {
  * Called from the /api/events/ws route.
  */
 export function handleWsUpgrade(event: RequestEvent): Response {
+	log.info`handleWsUpgrade called platform=${String(typeof event.platform)} keys=${event.platform ? Object.keys(event.platform).join(',') : 'none'}`;
 	const server = event.platform?.server;
 	if (!server) {
+		log.warn`handleWsUpgrade: no server on platform`;
 		return new Response('No Bun server available for WebSocket upgrade', { status: 500 });
 	}
 
 	if (!providerInternals) {
+		log.warn`handleWsUpgrade: provider not initialized`;
 		return new Response('Provider not initialized', { status: 500 });
 	}
 
 	const handlers = createHandlers(providerInternals);
+	log.info`handleWsUpgrade: attempting upgrade`;
 	const upgraded = server.upgrade(event.request, { data: handlers });
 	if (!upgraded) {
+		log.warn`handleWsUpgrade: upgrade returned false`;
 		return new Response('WebSocket upgrade failed', { status: 400 });
 	}
+	log.info`handleWsUpgrade: upgrade success`;
 	// Bun handles the 101 response internally
 	return new Response(null, { status: 101 });
 }

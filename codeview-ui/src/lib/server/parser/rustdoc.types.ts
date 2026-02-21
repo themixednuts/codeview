@@ -344,7 +344,14 @@ export type Type =
 	| 'infer'
 	| { raw_pointer: { is_mutable: boolean; type: Type } }
 	| { borrowed_ref: { lifetime: string | null; is_mutable: boolean; type: Type } }
-	| { qualified_path: { name: string; args: GenericArgs | null; self_type: Type; trait: Path | null } };
+	| {
+			qualified_path: {
+				name: string;
+				args: GenericArgs | null;
+				self_type: Type;
+				trait: Path | null;
+			};
+	  };
 
 export interface Path {
 	path: string;
@@ -393,26 +400,22 @@ export type WherePredicate =
 	| { eq_predicate: { lhs: Type; rhs: Term } };
 
 export type GenericBound =
-	| { trait_bound: { trait: Path; generic_params: GenericParamDef[]; modifier: TraitBoundModifier } }
+	| {
+			trait_bound: { trait: Path; generic_params: GenericParamDef[]; modifier: TraitBoundModifier };
+	  }
 	| { outlives: string }
 	| { use: PreciseCapturingArg[] };
 
 export type TraitBoundModifier = 'none' | 'maybe' | 'maybe_const';
 
-export type PreciseCapturingArg =
-	| { lifetime: string }
-	| { param: string };
+export type PreciseCapturingArg = { lifetime: string } | { param: string };
 
 export type GenericArgs =
 	| { angle_bracketed: { args: GenericArg[]; constraints: AssocItemConstraint[] } }
 	| { parenthesized: { inputs: Type[]; output: Type | null } }
 	| 'return_type_notation';
 
-export type GenericArg =
-	| { type: Type }
-	| { lifetime: string }
-	| { const: Constant }
-	| 'infer';
+export type GenericArg = { type: Type } | { lifetime: string } | { const: Constant } | 'infer';
 
 export interface AssocItemConstraint {
 	name: string;
@@ -420,13 +423,9 @@ export interface AssocItemConstraint {
 	binding: AssocItemConstraintKind;
 }
 
-export type AssocItemConstraintKind =
-	| { equality: Term }
-	| { constraint: GenericBound[] };
+export type AssocItemConstraintKind = { equality: Term } | { constraint: GenericBound[] };
 
-export type Term =
-	| { type: Type }
-	| { constant: Constant };
+export type Term = { type: Type } | { constant: Constant };
 
 // ---------------------------------------------------------------------------
 // Helpers for discriminated union access

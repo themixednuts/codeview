@@ -78,14 +78,10 @@ async function execRustup(args: string[], timeout = EXEC_TIMEOUT): Promise<strin
  * Returns paths, version, and available JSON crate docs.
  */
 export async function detectSysroot(toolchain?: string): Promise<SysrootInfo> {
-	const rustcArgs = toolchain
-		? [`+${toolchain}`, '--print', 'sysroot']
-		: ['--print', 'sysroot'];
+	const rustcArgs = toolchain ? [`+${toolchain}`, '--print', 'sysroot'] : ['--print', 'sysroot'];
 	const sysrootPath = await execRustc(rustcArgs);
 
-	const versionArgs = toolchain
-		? [`+${toolchain}`, '--version']
-		: ['--version'];
+	const versionArgs = toolchain ? [`+${toolchain}`, '--version'] : ['--version'];
 	const versionLine = await execRustc(versionArgs);
 	const toolchainVersion = parseRustcVersion(versionLine);
 
@@ -106,13 +102,15 @@ export async function detectSysroot(toolchain?: string): Promise<SysrootInfo> {
 async function getDefaultSysroot(): Promise<SysrootInfo | null> {
 	if (cachedSysroot) return cachedSysroot;
 	if (!pendingDetect) {
-		pendingDetect = detectSysroot().then((info) => {
-			cachedSysroot = info;
-			log.info`Detected sysroot: ${info.sysrootPath} (${info.toolchainVersion}), json crates: ${info.availableCrates.join(', ') || 'none'}`;
-			return info;
-		}).finally(() => {
-			pendingDetect = null;
-		});
+		pendingDetect = detectSysroot()
+			.then((info) => {
+				cachedSysroot = info;
+				log.info`Detected sysroot: ${info.sysrootPath} (${info.toolchainVersion}), json crates: ${info.availableCrates.join(', ') || 'none'}`;
+				return info;
+			})
+			.finally(() => {
+				pendingDetect = null;
+			});
 	}
 	try {
 		return await pendingDetect;
@@ -127,13 +125,15 @@ async function getToolchainSysroot(toolchain: string): Promise<SysrootInfo | nul
 	if (cached) return cached;
 	let pending = pendingToolchainDetect.get(toolchain);
 	if (!pending) {
-		pending = detectSysroot(toolchain).then((info) => {
-			toolchainCache.set(toolchain, info);
-			log.info`Detected ${toolchain} sysroot: ${info.sysrootPath} (${info.toolchainVersion}), json crates: ${info.availableCrates.join(', ') || 'none'}`;
-			return info;
-		}).finally(() => {
-			pendingToolchainDetect.delete(toolchain);
-		});
+		pending = detectSysroot(toolchain)
+			.then((info) => {
+				toolchainCache.set(toolchain, info);
+				log.info`Detected ${toolchain} sysroot: ${info.sysrootPath} (${info.toolchainVersion}), json crates: ${info.availableCrates.join(', ') || 'none'}`;
+				return info;
+			})
+			.finally(() => {
+				pendingToolchainDetect.delete(toolchain);
+			});
 		pendingToolchainDetect.set(toolchain, pending);
 	}
 	try {
@@ -170,10 +170,7 @@ function checkCrateInSysroot(crateName: string, info: SysrootInfo): StdJsonResul
  * Checks the default toolchain first, then falls back to the
  * toolchain implied by the version string (e.g. nightly for "1.94.0-nightly").
  */
-export async function findStdJson(
-	crateName: string,
-	version: string
-): Promise<StdJsonResult> {
+export async function findStdJson(crateName: string, version: string): Promise<StdJsonResult> {
 	// Try default toolchain first
 	const defaultInfo = await getDefaultSysroot();
 	if (defaultInfo && versionMatchesSysroot(version, defaultInfo)) {
@@ -204,7 +201,7 @@ export async function installStdDocs(toolchain: string): Promise<SysrootInfo> {
 	log.info`Installing rust-docs-json for toolchain ${toolchain}`;
 	await execRustup(
 		['component', 'add', 'rust-docs-json', '--toolchain', toolchain],
-		INSTALL_TIMEOUT
+		INSTALL_TIMEOUT,
 	);
 
 	// Clear all caches and re-detect

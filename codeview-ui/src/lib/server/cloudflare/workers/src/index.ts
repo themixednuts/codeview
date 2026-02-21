@@ -15,5 +15,5 @@ export { ParseCrateWorkflow } from '$cloudflare/workflows/parse';
 export default {
 	async fetch() {
 		return new Response('codeview-workers: not a public endpoint', { status: 404 });
-	}
+	},
 };

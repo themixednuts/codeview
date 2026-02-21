@@ -1,6 +1,5 @@
-import { Result } from 'better-result';
 import { DurableObject } from 'cloudflare:workers';
-import { and, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { drizzle, type DrizzleSqliteDODatabase } from 'drizzle-orm/durable-sqlite';
 import { migrate } from 'drizzle-orm/durable-sqlite/migrator';
 import { getLogger } from '$lib/log';
@@ -8,9 +7,23 @@ import migrations from '$lib/server/db/migrations/migrations';
 import { crateStatus, crossEdges, nodeIndex } from '$lib/server/db/schema';
 import { isValidEcosystem, isValidCrateName, isValidVersion } from '$lib/server/validation';
 import { isStdCrate } from '$lib/std';
-import type { GraphStore } from '$cloudflare/store';
 
 const log = getLogger('registry');
+const nowMs = () => (globalThis.performance?.now ? globalThis.performance.now() : Date.now());
+const PROCESSING_LEASE_TTL_MS = 20 * 60 * 1000;
+const STEP_STAGES: Record<string, string> = {
+	resolving: '1/5',
+	fetching: '2/5',
+	parsing: '3/5',
+	storing: '4/5',
+	indexing: '5/5',
+};
+
+function formatStep(step: string | undefined): string {
+	if (!step) return 'none';
+	const stage = STEP_STAGES[step];
+	return stage ? `${step}(${stage})` : step;
+}
 
 type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 
@@ -18,6 +31,12 @@ export interface CrateStatusResult {
 	status: CrateStatusValue;
 	error?: string;
 	step?: string;
+}
+
+export interface ParseRequestResult {
+	created: boolean;
+	status: CrateStatusResult;
+	reason: string;
 }
 
 /**
@@ -30,8 +49,18 @@ export interface CrateStatusResult {
 export class CrateRegistry extends DurableObject {
 	private db: DrizzleSqliteDODatabase;
 	private stepMap = new Map<string, string>();
-	private progressSnapshots = new Map<string, { sequence: number; contentId?: string; tree: unknown; contiguous: boolean }>();
-	private progressMeta = new Map<string, { sequence: number; contentId?: string }>();
+	private stepStartedAt = new Map<string, number>();
+	private crossEdgeIngestStats = new Map<
+		string,
+		{
+			calls: number;
+			totalMs: number;
+			totalEdges: number;
+			totalNodes: number;
+			maxMs: number;
+			slowCalls: number;
+		}
+	>();
 	private appEnv: Env;
 
 	constructor(ctx: DurableObjectState, env: Env) {
@@ -65,7 +94,7 @@ export class CrateRegistry extends DurableObject {
 		// Send connection acknowledgment
 		pair[1].send(JSON.stringify({ type: 'connected', connectionId }));
 
-		log.info`ws connect connectionId=${connectionId}`;
+		log.info`ws connect connectionId=${connectionId} sockets=${String(this.ctx.getWebSockets().length)}`;
 
 		return new Response(null, { status: 101, webSocket: pair[0] });
 	}
@@ -84,6 +113,13 @@ export class CrateRegistry extends DurableObject {
 		}
 
 		const { action, tags = [] } = parsed;
+
+		if (action === 'ping') {
+			try {
+				ws.send(JSON.stringify({ type: 'pong' }));
+			} catch {}
+			return;
+		}
 
 		if (action === 'subscribe' && tags.length > 0) {
 			// Get current subscription tags from attachment
@@ -120,8 +156,14 @@ export class CrateRegistry extends DurableObject {
 	/**
 	 * Called when a WebSocket connection closes (survives hibernation).
 	 */
-	async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
-		log.debug`ws close code=${String(code)} reason=${reason || '(none)'}`;
+	async webSocketClose(
+		ws: WebSocket,
+		code: number,
+		reason: string,
+		wasClean: boolean,
+	): Promise<void> {
+		const connectionId = this.getWsConnectionId(ws);
+		log.info`ws close connectionId=${connectionId} code=${String(code)} clean=${String(wasClean)} reason=${reason || '(none)'} sockets=${String(this.ctx.getWebSockets().length)}`;
 		// Cloudflare automatically cleans up the WebSocket from getWebSockets()
 	}
 
@@ -129,7 +171,16 @@ export class CrateRegistry extends DurableObject {
 	 * Called when a WebSocket encounters an error.
 	 */
 	async webSocketError(ws: WebSocket, error: unknown): Promise<void> {
-		log.warn`ws error: ${String(error)}`;
+		const connectionId = this.getWsConnectionId(ws);
+		log.warn`ws error connectionId=${connectionId}: ${String(error)}`;
+	}
+
+	private getWsConnectionId(ws: WebSocket): string {
+		try {
+			const tags = this.ctx.getTags(ws);
+			if (tags.length > 0 && tags[0]) return tags[0];
+		} catch {}
+		return 'unknown';
 	}
 
 	// ── Typed emit helpers ──
@@ -146,7 +197,7 @@ export class CrateRegistry extends DurableObject {
 		},
 		edges: (nodeId: string, data: { type: 'cross-edges'; nodeId: string }) => {
 			this.broadcastToTag(`edge:${nodeId}`, data);
-		}
+		},
 	};
 
 	// ── Tag management via DO WebSocket attachment serialization ──
@@ -198,11 +249,8 @@ export class CrateRegistry extends DurableObject {
 	 */
 	private async getInitialDataForTag(tag: string): Promise<unknown> {
 		if (tag.startsWith('progress:')) {
-			const parts = tag.split(':');
-			if (parts.length === 4) {
-				const [, ecosystem, name, version] = parts;
-				return this.getProgressSnapshot(ecosystem, name, version);
-			}
+			// No snapshot accumulation — client picks up from next live event
+			return null;
 		} else if (tag.startsWith('processing:')) {
 			const parts = tag.split(':');
 			if (parts.length === 2 && isValidEcosystem(parts[1])) {
@@ -220,6 +268,13 @@ export class CrateRegistry extends DurableObject {
 					return this.autoTriggerParse(ecosystem, name, version);
 				}
 
+				// Self-heal: workflow may have crashed after storing tree to R2
+				if (status.status === 'failed' && ecosystem === 'rust') {
+					const healed = await this.healFailedStatus(ecosystem, name, version);
+					if (healed) return healed;
+					log.warn`getInitialDataForTag ${tag} returning failed (heal did not find tree in R2) error=${status.error ?? '(none)'}`;
+				}
+
 				return status;
 			}
 		}
@@ -230,52 +285,145 @@ export class CrateRegistry extends DurableObject {
 	 * Check graph presence and auto-trigger parsing for unknown crates.
 	 * Mirrors the auto-trigger logic in cloudflare/provider.ts getCrateStatus().
 	 */
-	private async autoTriggerParse(ecosystem: string, name: string, version: string): Promise<CrateStatusResult> {
-		// Registry status can lag — check if graph data already exists and heal
+	private async autoTriggerParse(
+		ecosystem: string,
+		name: string,
+		version: string,
+	): Promise<CrateStatusResult> {
+		// Registry status can lag — check if graph data already exists in R2 and heal
 		try {
-			const graphStore = this.appEnv.GRAPH_STORE as unknown as DurableObjectNamespace<GraphStore>;
-			const graphStub = graphStore.get(graphStore.idFromName(`${ecosystem}/${name}/${version}`));
-			const hasGraph = await graphStub.hasCrate(ecosystem, name, version);
-			if (hasGraph) {
+			const r2 = this.appEnv.CRATE_GRAPHS as R2Bucket;
+			const head = await r2.head(`${ecosystem}/${name}/${version}/tree.json`);
+			if (head) {
 				await this.setStatus(ecosystem, name, version, 'ready');
 				return { status: 'ready' };
 			}
 		} catch {}
 
-		// Validate and trigger parse workflow
-		if (isValidCrateName(name) && isValidVersion(version)) {
-			const workflow = this.appEnv.PARSE_CRATE as Workflow;
-			await Promise.all([
-				this.setStatus(ecosystem, name, version, 'processing'),
-				workflow.create({ params: { ecosystem, name, version } })
-			]);
-			return { status: 'processing' };
+		if (!isValidCrateName(name) || !isValidVersion(version)) {
+			return { status: 'unknown' };
 		}
 
-		return { status: 'unknown' };
+		const enqueue = await this.requestParse(ecosystem, name, version, {
+			source: 'registry.autoTriggerParse',
+		});
+		return enqueue.status;
+	}
+
+	async requestParse(
+		ecosystem: string,
+		name: string,
+		version: string,
+		options?: { force?: boolean; source?: string },
+	): Promise<ParseRequestResult> {
+		const force = options?.force ?? false;
+		const source = options?.source ?? 'unknown';
+		if (!isValidCrateName(name) || !isValidVersion(version)) {
+			log.warn`parse.enqueue.skip source=${source} crate=${ecosystem}:${name}:${version} reason=invalid-identifier`;
+			return {
+				created: false,
+				status: { status: 'unknown' },
+				reason: 'invalid-identifier',
+			};
+		}
+
+		const row = this.db
+			.select({
+				status: crateStatus.status,
+				error: crateStatus.error,
+				updatedAt: crateStatus.updatedAt,
+				lastStep: crateStatus.lastStep,
+			})
+			.from(crateStatus)
+			.where(
+				and(
+					eq(crateStatus.ecosystem, ecosystem),
+					eq(crateStatus.name, name),
+					eq(crateStatus.version, version),
+				),
+			)
+			.get();
+
+		const stepKey = `${ecosystem}:${name}:${version}`;
+		const step = this.stepMap.get(stepKey) ?? row?.lastStep ?? undefined;
+		const status = (row?.status as CrateStatusValue | undefined) ?? 'unknown';
+		const leaseAgeMs = row ? Math.max(0, Date.now() - row.updatedAt) : null;
+
+		if (!force && status === 'ready') {
+			log.info`parse.enqueue.skip source=${source} crate=${ecosystem}:${name}:${version} reason=already-ready`;
+			return {
+				created: false,
+				status: { status, ...(row?.error ? { error: row.error } : {}) },
+				reason: 'already-ready',
+			};
+		}
+
+		if (!force && status === 'processing') {
+			if (leaseAgeMs !== null && leaseAgeMs <= PROCESSING_LEASE_TTL_MS) {
+				log.info`parse.enqueue.skip source=${source} crate=${ecosystem}:${name}:${version} reason=lease-active leaseAgeMs=${String(leaseAgeMs)} step=${step ?? '(none)'}`;
+				return {
+					created: false,
+					status: { status: 'processing', ...(step ? { step } : {}) },
+					reason: 'lease-active',
+				};
+			}
+
+			log.warn`parse.enqueue.reclaim source=${source} crate=${ecosystem}:${name}:${version} reason=lease-stale leaseAgeMs=${String(leaseAgeMs ?? -1)} ttlMs=${String(PROCESSING_LEASE_TTL_MS)} step=${step ?? '(none)'}`;
+		}
+
+		await this.setStatus(ecosystem, name, version, 'processing', undefined, step ?? 'resolving');
+
+		const workflow = this.appEnv.PARSE_CRATE as Workflow<{
+			ecosystem: string;
+			name: string;
+			version: string;
+		}>;
+		try {
+			await workflow.create({ params: { ecosystem, name, version } });
+			log.info`parse.enqueue.create source=${source} crate=${ecosystem}:${name}:${version} force=${String(force)} previousStatus=${status}`;
+			return { created: true, status: { status: 'processing' }, reason: 'created' };
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			if (/already exists/i.test(message)) {
+				log.warn`parse.enqueue.duplicate source=${source} crate=${ecosystem}:${name}:${version} reason=workflow-instance-exists error=${message}`;
+				return {
+					created: false,
+					status: { status: 'processing', ...(step ? { step } : {}) },
+					reason: 'workflow-instance-exists',
+				};
+			}
+			log.error`parse.enqueue.error source=${source} crate=${ecosystem}:${name}:${version} error=${message}`;
+			return {
+				created: false,
+				status: { status: 'processing', ...(step ? { step } : {}) },
+				reason: 'enqueue-error',
+			};
+		}
 	}
 
 	/**
-	 * Get progress snapshot for reconnection.
+	 * Self-heal from 'failed' status when tree data exists in R2.
+	 * Workflow may have crashed (e.g. DO RPC size limit) after successfully
+	 * storing the tree. Uses R2 head check (cheap, no DO RPC).
 	 */
-	async getProgressSnapshot(ecosystem: string, name: string, version: string): Promise<unknown> {
-		const tag = `progress:${ecosystem}:${name}:${version}`;
-		const snapshot = this.progressSnapshots.get(tag);
-		if (!snapshot) return null;
-
-		const counts = Result.try(() => {
-			const tree = snapshot.tree as { nodes?: unknown[]; edges?: unknown[] };
-			return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
-		}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
-
-		return {
-			type: 'snapshot',
-			sequence: snapshot.sequence,
-			contentId: snapshot.contentId,
-			tree: snapshot.tree,
-			nodeCount: counts.nodeCount,
-			edgeCount: counts.edgeCount
-		};
+	private async healFailedStatus(
+		ecosystem: string,
+		name: string,
+		version: string,
+	): Promise<CrateStatusResult | null> {
+		try {
+			const r2 = this.appEnv.CRATE_GRAPHS as R2Bucket;
+			const head = await r2.head(`${ecosystem}/${name}/${version}/tree.json`);
+			if (head) {
+				log.info`healFailedStatus ${ecosystem}:${name}:${version} tree exists in R2 (${String(head.size)} bytes), promoting to ready`;
+				await this.setStatus(ecosystem, name, version, 'ready');
+				return { status: 'ready' };
+			}
+			log.debug`healFailedStatus ${ecosystem}:${name}:${version} no tree in R2`;
+		} catch (err) {
+			log.warn`healFailedStatus ${ecosystem}:${name}:${version} error: ${String(err)}`;
+		}
+		return null;
 	}
 
 	// ============================================================
@@ -284,14 +432,18 @@ export class CrateRegistry extends DurableObject {
 
 	async getStatus(ecosystem: string, name: string, version: string): Promise<CrateStatusResult> {
 		const row = this.db
-			.select({ status: crateStatus.status, error: crateStatus.error })
+			.select({
+				status: crateStatus.status,
+				error: crateStatus.error,
+				lastStep: crateStatus.lastStep,
+			})
 			.from(crateStatus)
 			.where(
 				and(
 					eq(crateStatus.ecosystem, ecosystem),
 					eq(crateStatus.name, name),
-					eq(crateStatus.version, version)
-				)
+					eq(crateStatus.version, version),
+				),
 			)
 			.get();
 		if (!row) {
@@ -299,12 +451,19 @@ export class CrateRegistry extends DurableObject {
 			return { status: 'unknown' };
 		}
 		const stepKey = `${ecosystem}:${name}:${version}`;
-		const step = row.status === 'processing' ? this.stepMap.get(stepKey) : undefined;
-		log.debug`getStatus ${ecosystem}:${name}:${version} → ${row.status} step=${step ?? '(none)'}`;
+		const step =
+			row.status === 'processing'
+				? (this.stepMap.get(stepKey) ?? row.lastStep ?? undefined)
+				: undefined;
+		if (row.status === 'failed') {
+			log.warn`getStatus ${ecosystem}:${name}:${version} → failed error=${row.error ?? '(none)'}`;
+		} else {
+			log.debug`getStatus ${ecosystem}:${name}:${version} → ${row.status} step=${step ?? '(none)'}`;
+		}
 		return {
 			status: row.status as CrateStatusValue,
 			...(row.error ? { error: row.error } : {}),
-			...(step ? { step } : {})
+			...(step ? { step } : {}),
 		};
 	}
 
@@ -315,20 +474,34 @@ export class CrateRegistry extends DurableObject {
 		status: CrateStatusValue,
 		error?: string,
 		step?: string,
-		action?: string
+		action?: string,
 	): Promise<void> {
-		log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'} error=${error ?? '(none)'}`;
+		if (status === 'failed') {
+			log.warn`setStatus ${ecosystem}:${name}:${version} → failed error=${error ?? '(none)'}`;
+		} else {
+			log.debug`setStatus ${ecosystem}:${name}:${version} status=${status} step=${step ?? '(none)'}`;
+		}
 		const now = Date.now();
 		const stepKey = `${ecosystem}:${name}:${version}`;
-		const progressTag = `progress:${ecosystem}:${name}:${version}`;
+		const previousStep = this.stepMap.get(stepKey);
+		const previousStepStartedAt = this.stepStartedAt.get(stepKey);
+		const nextStep = status === 'processing' ? (step ?? previousStep ?? null) : null;
 		if (status === 'processing' && step) {
-			this.stepMap.set(stepKey, step);
-			if (step === 'resolving') {
-				this.progressSnapshots.delete(progressTag);
-				this.progressMeta.delete(progressTag);
+			if (previousStep !== step) {
+				const elapsedMs =
+					typeof previousStepStartedAt === 'number' ? now - previousStepStartedAt : 0;
+				log.info`status.transition ${ecosystem}:${name}:${version} ${formatStep(previousStep)} -> ${formatStep(step)} elapsedMs=${String(elapsedMs)}`;
+				this.stepStartedAt.set(stepKey, now);
 			}
+			this.stepMap.set(stepKey, step);
 		} else if (status !== 'processing') {
+			if (previousStep) {
+				const elapsedMs =
+					typeof previousStepStartedAt === 'number' ? now - previousStepStartedAt : 0;
+				log.info`status.transition ${ecosystem}:${name}:${version} ${formatStep(previousStep)} -> ${status} elapsedMs=${String(elapsedMs)}`;
+			}
 			this.stepMap.delete(stepKey);
+			this.stepStartedAt.delete(stepKey);
 		}
 
 		this.db
@@ -339,27 +512,63 @@ export class CrateRegistry extends DurableObject {
 				version,
 				status,
 				error: error ?? null,
-				updatedAt: now
+				lastStep: nextStep,
+				updatedAt: now,
 			})
 			.onConflictDoUpdate({
 				target: [crateStatus.ecosystem, crateStatus.name, crateStatus.version],
 				set: {
 					status,
 					error: error ?? null,
-					updatedAt: now
-				}
+					lastStep: nextStep,
+					updatedAt: now,
+				},
 			})
 			.run();
 
 		// Broadcast status update via WebSocket
 		const currentStep = this.stepMap.get(stepKey);
-		const message: CrateStatusResult = { status, ...(error ? { error } : {}), ...(currentStep ? { step: currentStep } : {}), ...(action ? { action } : {}) };
+		const message: CrateStatusResult = {
+			status,
+			...(error ? { error } : {}),
+			...(currentStep ? { step: currentStep } : {}),
+			...(action ? { action } : {}),
+		};
 		log.debug`broadcast ${ecosystem}:${name}:${version}`;
 		this.emit.status(name, version, message);
 
 		// Broadcast processing count change
 		const processingCount = await this.getProcessingCount(ecosystem);
 		this.emit.processing(ecosystem, { type: 'processing', count: processingCount });
+	}
+
+	async touchProcessing(
+		ecosystem: string,
+		name: string,
+		version: string,
+		step?: string,
+	): Promise<void> {
+		const now = Date.now();
+		const key = `${ecosystem}:${name}:${version}`;
+		const currentStep = step ?? this.stepMap.get(key) ?? null;
+		if (currentStep) {
+			this.stepMap.set(key, currentStep);
+		}
+		this.db
+			.update(crateStatus)
+			.set({
+				updatedAt: now,
+				...(currentStep ? { lastStep: currentStep } : {}),
+			})
+			.where(
+				and(
+					eq(crateStatus.ecosystem, ecosystem),
+					eq(crateStatus.name, name),
+					eq(crateStatus.version, version),
+					eq(crateStatus.status, 'processing'),
+				),
+			)
+			.run();
 	}
 
 	// ============================================================
@@ -370,72 +579,15 @@ export class CrateRegistry extends DurableObject {
 		ecosystem: string,
 		name: string,
 		version: string,
-		data: { type: string; sequence?: number; contentId?: string; nodeCount?: number; edgeCount?: number; tree?: unknown; totalItems?: number }
+		data: {
+			type: string;
+			nodeCount?: number;
+			edgeCount?: number;
+			totalItems?: number;
+		},
 	): Promise<void> {
-		const tag = `progress:${ecosystem}:${name}:${version}`;
-		let payload = data;
-		if (data.tree && (data.nodeCount === undefined || data.edgeCount === undefined)) {
-			const counts = Result.try(() => {
-				const tree = data.tree as { nodes?: unknown[]; edges?: unknown[] };
-				return { nodeCount: tree.nodes?.length ?? 0, edgeCount: tree.edges?.length ?? 0 };
-			}).unwrapOr({ nodeCount: 0, edgeCount: 0 });
-			payload = {
-				...data,
-				nodeCount: data.nodeCount ?? counts.nodeCount,
-				edgeCount: data.edgeCount ?? counts.edgeCount
-			};
-		}
-		if (typeof payload.sequence === 'number' || payload.contentId) {
-			this.progressMeta.set(tag, {
-				sequence: payload.sequence ?? 0,
-				contentId: payload.contentId
-			});
-		}
-		if (payload.tree) {
-			const incoming = Result.try(() => payload.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
-			const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes : [];
-			const incomingEdges = Array.isArray(incoming.edges) ? incoming.edges : [];
-			const seq = payload.sequence ?? 0;
-			const prior = this.progressSnapshots.get(tag);
-
-			if ((payload.type === 'snapshot' || payload.type === 'complete')) {
-				this.progressSnapshots.set(tag, {
-					sequence: seq,
-					contentId: payload.contentId,
-					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
-					contiguous: true
-				});
-			} else if (payload.type === 'delta' && prior && prior.contiguous) {
-				const priorTree = Result.try(() => prior.tree as { nodes?: unknown[]; edges?: unknown[] }).unwrapOr({ nodes: [], edges: [] });
-				const priorNodes = Array.isArray(priorTree.nodes) ? priorTree.nodes : [];
-				const priorEdges = Array.isArray(priorTree.edges) ? priorTree.edges : [];
-				const sameContent = !payload.contentId || !prior.contentId || payload.contentId === prior.contentId;
-				const isContiguous = seq === prior.sequence + 1;
-				if (sameContent && isContiguous) {
-					for (const node of incomingNodes) priorNodes.push(node);
-					for (const edge of incomingEdges) priorEdges.push(edge);
-					this.progressSnapshots.set(tag, {
-						sequence: seq,
-						contentId: payload.contentId ?? prior.contentId,
-						tree: { nodes: priorNodes, edges: priorEdges },
-						contiguous: true
-					});
-				} else {
-					this.progressSnapshots.delete(tag);
-				}
-			} else if (payload.type === 'delta' && seq === 0) {
-				this.progressSnapshots.set(tag, {
-					sequence: seq,
-					contentId: payload.contentId,
-					tree: { nodes: incomingNodes.slice(), edges: incomingEdges.slice() },
-					contiguous: true
-				});
-			} else {
-				this.progressSnapshots.delete(tag);
-			}
-		}
-		log.debug`broadcastProgress ${ecosystem}:${name}:${version} type=${payload.type} nodes=${payload.nodeCount ?? 0}`;
-		this.emit.progress(name, version, payload);
+		log.debug`broadcastProgress ${ecosystem}:${name}:${version} type=${data.type} nodes=${data.nodeCount ?? 0}`;
+		this.emit.progress(name, version, data);
 	}
 
 	// ============================================================
@@ -458,27 +610,53 @@ export class CrateRegistry extends DurableObject {
 			kind: string;
 			visibility: string;
 			is_external?: boolean;
-		}>
+		}>,
 	): Promise<void> {
-		const touchedNodes = new Set<string>();
-		for (const edge of edges) {
-			touchedNodes.add(edge.from);
-			touchedNodes.add(edge.to);
-		}
+		await this.beginCrossEdgeIngest(ecosystem, name, version);
+		await this.appendCrossEdgeBatch(ecosystem, name, version, edges, nodes);
+	}
 
+	async beginCrossEdgeIngest(ecosystem: string, name: string, version: string): Promise<void> {
+		this.crossEdgeIngestStats.delete(`${ecosystem}:${name}:${version}`);
 		this.db
 			.delete(crossEdges)
 			.where(
 				and(
 					eq(crossEdges.ecosystem, ecosystem),
 					eq(crossEdges.sourceName, name),
-					eq(crossEdges.sourceVersion, version)
-				)
+					eq(crossEdges.sourceVersion, version),
+				),
 			)
 			.run();
+	}
+
+	async appendCrossEdgeBatch(
+		ecosystem: string,
+		name: string,
+		version: string,
+		edges: Array<{
+			from: string;
+			to: string;
+			kind: string;
+			confidence: string;
+		}>,
+		nodes: Array<{
+			id: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			is_external?: boolean;
+		}>,
+	): Promise<void> {
+		const statsKey = `${ecosystem}:${name}:${version}`;
+		const ingestStartedAt = nowMs();
+		let edgeInsertBatches = 0;
+		let nodeUpsertBatches = 0;
 
 		if (edges.length > 0) {
-			const BATCH = 10;
+			const SQL_VARIABLE_LIMIT = 100;
+			const EDGE_INSERT_COLUMNS = 7;
+			const BATCH = Math.max(1, Math.floor(SQL_VARIABLE_LIMIT / EDGE_INSERT_COLUMNS));
 			const rows = edges.map((edge) => ({
 				ecosystem,
 				sourceName: name,
@@ -486,32 +664,43 @@ export class CrateRegistry extends DurableObject {
 				fromId: edge.from,
 				toId: edge.to,
 				kind: edge.kind,
-				confidence: edge.confidence
+				confidence: edge.confidence,
 			}));
 			for (let i = 0; i < rows.length; i += BATCH) {
+				const chunk = rows.slice(i, i + BATCH);
+				const batchStartedAt = nowMs();
 				this.db
 					.insert(crossEdges)
-					.values(rows.slice(i, i + BATCH))
+					.values(chunk)
 					.onConflictDoNothing()
 					.run();
+				edgeInsertBatches += 1;
+				const batchElapsedMs = nowMs() - batchStartedAt;
+				if (batchElapsedMs >= 150) {
+					log.warn`cross-edge.edges.slow-batch crate=${name}@${version} batch=${String(edgeInsertBatches)} rows=${String(chunk.length)} elapsedMs=${batchElapsedMs.toFixed(1)}`;
+				}
 			}
 		}
 
 		if (nodes.length > 0) {
 			const now = Date.now();
-			const BATCH = 10;
+			const SQL_VARIABLE_LIMIT = 100;
+			const NODE_UPSERT_COLUMNS = 6;
+			const BATCH = Math.max(1, Math.floor(SQL_VARIABLE_LIMIT / NODE_UPSERT_COLUMNS));
 			const rows = nodes.map((node) => ({
 				nodeId: node.id,
 				name: node.name,
 				kind: node.kind,
 				visibility: node.visibility,
 				isExternal: Boolean(node.is_external),
-				updatedAt: now
+				updatedAt: now,
 			}));
 			for (let i = 0; i < rows.length; i += BATCH) {
+				const chunk = rows.slice(i, i + BATCH);
+				const batchStartedAt = nowMs();
 				this.db
 					.insert(nodeIndex)
-					.values(rows.slice(i, i + BATCH))
+					.values(chunk)
 					.onConflictDoUpdate({
 						target: nodeIndex.nodeId,
 						set: {
@@ -519,47 +708,93 @@ export class CrateRegistry extends DurableObject {
 							kind: sql`excluded.kind`,
 							visibility: sql`excluded.visibility`,
 							isExternal: sql`excluded.is_external`,
-							updatedAt: sql`excluded.updated_at`
-						}
+							updatedAt: sql`excluded.updated_at`,
+						},
 					})
 					.run();
+				nodeUpsertBatches += 1;
+				const batchElapsedMs = nowMs() - batchStartedAt;
+				if (batchElapsedMs >= 150) {
+					log.warn`cross-edge.nodes.slow-batch crate=${name}@${version} batch=${String(nodeUpsertBatches)} rows=${String(chunk.length)} elapsedMs=${batchElapsedMs.toFixed(1)}`;
+				}
 			}
 		}
 
-		// Broadcast edge updates via WebSocket
-		for (const nodeId of touchedNodes) {
-			this.emit.edges(nodeId, { type: 'cross-edges', nodeId });
+		const ingestElapsedMs = nowMs() - ingestStartedAt;
+		const stats = this.crossEdgeIngestStats.get(statsKey) ?? {
+			calls: 0,
+			totalMs: 0,
+			totalEdges: 0,
+			totalNodes: 0,
+			maxMs: 0,
+			slowCalls: 0,
+		};
+		stats.calls += 1;
+		stats.totalMs += ingestElapsedMs;
+		stats.totalEdges += edges.length;
+		stats.totalNodes += nodes.length;
+		if (ingestElapsedMs > stats.maxMs) {
+			stats.maxMs = ingestElapsedMs;
+		}
+		if (ingestElapsedMs >= 150) {
+			stats.slowCalls += 1;
+		}
+		this.crossEdgeIngestStats.set(statsKey, stats);
+
+		if (ingestElapsedMs >= 150 || stats.calls % 100 === 0) {
+			const avgMs = stats.totalMs / stats.calls;
+			log.info`cross-edge.ingest crate=${name}@${version} call=${String(stats.calls)} callEdges=${String(edges.length)} callNodes=${String(nodes.length)} edgeBatches=${String(edgeInsertBatches)} nodeBatches=${String(nodeUpsertBatches)} elapsedMs=${ingestElapsedMs.toFixed(1)} avgMs=${avgMs.toFixed(1)} maxMs=${stats.maxMs.toFixed(1)} totalEdges=${String(stats.totalEdges)} totalNodes=${String(stats.totalNodes)} slowCalls=${String(stats.slowCalls)}`;
 		}
 	}
 
 	async getCrossEdgeData(
 		ecosystem: string,
-		nodeId: string
+		nodeId: string,
 	): Promise<{
 		edges: Array<{ from: string; to: string; kind: string; confidence: string }>;
-		nodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }>;
+		nodes: Array<{
+			id: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			is_external?: boolean;
+		}>;
 	}> {
-		const edgeRows = this.db
+		const outboundRows = this.db
 			.select({
 				fromId: crossEdges.fromId,
 				toId: crossEdges.toId,
 				kind: crossEdges.kind,
-				confidence: crossEdges.confidence
+				confidence: crossEdges.confidence,
 			})
 			.from(crossEdges)
-			.where(
-				and(
-					eq(crossEdges.ecosystem, ecosystem),
-					or(eq(crossEdges.fromId, nodeId), eq(crossEdges.toId, nodeId))
-				)
-			)
+			.where(and(eq(crossEdges.ecosystem, ecosystem), eq(crossEdges.fromId, nodeId)))
 			.all();
-		const edges = edgeRows.map((row) => ({
-			from: row.fromId,
-			to: row.toId,
-			kind: row.kind,
-			confidence: row.confidence
-		}));
+		const inboundRows = this.db
+			.select({
+				fromId: crossEdges.fromId,
+				toId: crossEdges.toId,
+				kind: crossEdges.kind,
+				confidence: crossEdges.confidence,
+			})
+			.from(crossEdges)
+			.where(and(eq(crossEdges.ecosystem, ecosystem), eq(crossEdges.toId, nodeId)))
+			.all();
+		const edgeRows = outboundRows.concat(inboundRows);
+		const edgeKeys = new Set<string>();
+		const edges = edgeRows
+			.filter((row) => {
+				const key = `${row.fromId}|${row.toId}|${row.kind}|${row.confidence}`;
+				if (edgeKeys.has(key)) return false;
+				edgeKeys.add(key);
+				return true;
+			})
+			.map((row) => ({
+				from: row.fromId,
+				to: row.toId,
+				kind: row.kind,
+				confidence: row.confidence,
+			}));
 
 		const nodeIds = new Set<string>();
 		for (const edge of edges) {
@@ -567,12 +802,24 @@ export class CrateRegistry extends DurableObject {
 			nodeIds.add(edge.to);
 		}
 
-		const nodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }> = [];
+		const nodes: Array<{
+			id: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			is_external?: boolean;
+		}> = [];
 		if (nodeIds.size === 0) return { edges, nodes };
 
 		const allIds = Array.from(nodeIds);
 		const QUERY_BATCH = 50;
-		const rows: Array<{ nodeId: string; name: string; kind: string; visibility: string; isExternal: boolean }> = [];
+		const rows: Array<{
+			nodeId: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			isExternal: boolean;
+		}> = [];
 		for (let i = 0; i < allIds.length; i += QUERY_BATCH) {
 			const batch = allIds.slice(i, i + QUERY_BATCH);
 			const batchRows = this.db
@@ -581,7 +828,7 @@ export class CrateRegistry extends DurableObject {
 					name: nodeIndex.name,
 					kind: nodeIndex.kind,
 					visibility: nodeIndex.visibility,
-					isExternal: nodeIndex.isExternal
+					isExternal: nodeIndex.isExternal,
 				})
 				.from(nodeIndex)
 				.where(inArray(nodeIndex.nodeId, batch))
@@ -595,7 +842,7 @@ export class CrateRegistry extends DurableObject {
 				name: row.name,
 				kind: row.kind,
 				visibility: row.visibility,
-				is_external: row.isExternal
+				is_external: row.isExternal,
 			});
 		}
 
@@ -608,7 +855,7 @@ export class CrateRegistry extends DurableObject {
 
 	async getProcessingCrates(
 		ecosystem: string,
-		limit = 20
+		limit = 20,
 	): Promise<Array<{ name: string; version: string }>> {
 		const rows = this.db
 			.select({ name: crateStatus.name, version: crateStatus.version })
@@ -619,7 +866,7 @@ export class CrateRegistry extends DurableObject {
 			.all();
 		return rows.map((row) => ({
 			name: row.name,
-			version: row.version
+			version: row.version,
 		}));
 	}
 

@@ -8,15 +8,14 @@
  */
 import type { ServerWebSocket } from 'bun';
 import type { CrateStatus } from '$lib/schema';
-import type { ParseProgress } from '../parser/streaming/adapter';
 import { getLogger } from '$lib/log';
 
 const log = getLogger('local-ws');
 
 // ── Connection state ──
 
-interface WsConnection {
-	ws: ServerWebSocket<WsData>;
+export interface WsConnection {
+	ws: { send(data: string): void };
 	tags: Set<string>;
 }
 
@@ -28,14 +27,15 @@ interface WsData {
 	drain?(ws: ServerWebSocket<WsData>): void;
 }
 
-const connections = new Map<string, WsConnection>();
+/** Exported for the Vite dev plugin — dev-mode WS upgrades bypass SvelteKit routes. */
+export const connections = new Map<string, WsConnection>();
 
 // ── Broadcasting ──
 
 /**
  * Broadcast a tagged message to all WebSocket clients subscribed to `tag`.
  */
-function broadcast<T = unknown>(tag: string, data: T): void {
+function broadcastToTag<T = unknown>(tag: string, data: T): void {
 	const payload = JSON.stringify({ tag, data });
 	const dead: string[] = [];
 
@@ -54,30 +54,43 @@ function broadcast<T = unknown>(tag: string, data: T): void {
 	}
 }
 
-// ── Typed realtime namespace ──
+// ── Typed emit helpers (matches cloudflare registry.emit) ──
 
-export const realtime = {
-	status: {
-		emit(name: string, version: string, data: CrateStatus) {
-			broadcast(`rust:${name}:${version}`, data);
-		}
+export const emit = {
+	status(name: string, version: string, data: CrateStatus) {
+		broadcastToTag(`rust:${name}:${version}`, data);
 	},
-	progress: {
-		emit(name: string, version: string, data: ParseProgress) {
-			broadcast(`progress:rust:${name}:${version}`, data);
-		}
+	progress(name: string, version: string, data: unknown) {
+		broadcastToTag(`progress:rust:${name}:${version}`, data);
 	},
-	processing: {
-		emit(ecosystem: string, data: { type: 'processing'; count: number }) {
-			broadcast(`processing:${ecosystem}`, data);
-		}
+	processing(ecosystem: string, data: { type: 'processing'; count: number }) {
+		broadcastToTag(`processing:${ecosystem}`, data);
 	},
-	edges: {
-		emit(nodeId: string, data: { type: 'cross-edges'; nodeId: string }) {
-			broadcast(`edge:${nodeId}`, data);
-		}
-	}
+	edges(nodeId: string, data: { type: 'cross-edges'; nodeId: string }) {
+		broadcastToTag(`edge:${nodeId}`, data);
+	},
 };
+
+// ── Progress broadcasting (counts-only, no snapshot accumulation) ──
+
+/**
+ * Broadcast a progress update. No snapshot accumulation — the sidebar
+ * uses lazy RPC instead of streaming tree data.
+ */
+export function broadcastProgress(
+	ecosystem: string,
+	name: string,
+	version: string,
+	data: {
+		type: string;
+		nodeCount?: number;
+		edgeCount?: number;
+		totalItems?: number;
+	},
+): void {
+	log.debug`broadcastProgress ${ecosystem}:${name}:${version} type=${data.type} nodes=${data.nodeCount ?? 0}`;
+	emit.progress(name, version, data);
+}
 
 // ── Provider internals interface ──
 
@@ -89,7 +102,6 @@ export interface LocalProviderInternals {
 		getStatus(ecosystem: string, name: string, version: string): CrateStatus;
 		getProcessingCount(ecosystem: string): number;
 	};
-	getLatestProgress(ecosystem: string, name: string, version: string): unknown;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
 }
 
@@ -103,7 +115,6 @@ export function createHandlers(internals: LocalProviderInternals) {
 	return {
 		open(ws: ServerWebSocket<WsData>) {
 			const connectionId = crypto.randomUUID();
-			// Attach connectionId to the ws data for later lookup
 			ws.data.connectionId = connectionId;
 			connections.set(connectionId, { ws, tags: new Set() });
 
@@ -128,12 +139,16 @@ export function createHandlers(internals: LocalProviderInternals) {
 
 			const { action, tags = [] } = parsed;
 
+			if (action === 'ping') {
+				ws.send(JSON.stringify({ type: 'pong' }));
+				return;
+			}
+
 			if (action === 'subscribe' && tags.length > 0) {
 				log.debug`subscribe connectionId=${connectionId} tags=[${tags.join(', ')}]`;
 				for (const tag of tags) {
 					conn.tags.add(tag);
 				}
-				// Send initial state for each tag
 				sendInitialState(ws, tags, internals);
 			} else if (action === 'unsubscribe' && tags.length > 0) {
 				log.debug`unsubscribe connectionId=${connectionId} tags=[${tags.join(', ')}]`;
@@ -153,25 +168,17 @@ export function createHandlers(internals: LocalProviderInternals) {
 
 // ── Initial state dispatch ──
 
-async function sendInitialState(
-	ws: ServerWebSocket<WsData>,
+/** Exported for the Vite dev plugin. Accepts any object with .send(). */
+export async function sendInitialState(
+	ws: { send(data: string): void },
 	tags: string[],
-	internals: LocalProviderInternals
+	internals: LocalProviderInternals,
 ): Promise<void> {
 	for (const tag of tags) {
 		try {
 			if (tag.startsWith('progress:')) {
-				// progress:ecosystem:name:version
-				const parts = tag.split(':');
-				if (parts.length === 4) {
-					const [, ecosystem, name, version] = parts;
-					const data = internals.getLatestProgress(ecosystem, name, version);
-					if (data) {
-						ws.send(JSON.stringify({ tag, data }));
-					}
-				}
+				// No snapshot accumulation — client picks up from next live event
 			} else if (tag.startsWith('processing:')) {
-				// processing:ecosystem
 				const parts = tag.split(':');
 				if (parts.length === 2) {
 					const ecosystem = parts[1];
@@ -180,7 +187,6 @@ async function sendInitialState(
 					ws.send(JSON.stringify({ tag, data: { type: 'processing', count } }));
 				}
 			} else if (!tag.startsWith('edge:')) {
-				// Crate status: ecosystem:name:version (e.g. rust:serde:1.0.0)
 				const parts = tag.split(':');
 				if (parts.length === 3) {
 					const [, name, version] = parts;
@@ -190,7 +196,6 @@ async function sendInitialState(
 					}
 				}
 			}
-			// edge: tags have no initial data
 		} catch (err) {
 			log.warn`initial state error for ${tag}: ${String(err)}`;
 		}

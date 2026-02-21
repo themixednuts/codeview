@@ -7,14 +7,20 @@
 
 export {
 	createRustdocJsonParser,
-	processParsedElement,
 	createParseState,
+	// Async generator API (preferred)
+	iterateRustdocStream,
+	iterateRustdocByteStream,
+	iterateRustdocResponse,
+	// Legacy callback API
 	parseRustdocStream,
 	parseRustdocByteStream,
 	parseRustdocResponse,
+	type RustdocElement,
+	type IterateOptions,
 	type StreamingParseCallbacks,
 	type ParseState,
-	type ParsedElementInfo
+	type ParsedElementInfo,
 } from './parser';
 
 export {
@@ -22,5 +28,5 @@ export {
 	createStreamingGraphBuilder,
 	DEFAULT_BATCH_SIZE,
 	type BuilderCheckpoint,
-	type BatchCallbacks
+	type BatchCallbacks,
 } from './builder';

@@ -22,7 +22,7 @@ import type {
 	FieldInfo,
 	VariantInfo,
 	FunctionSignature as FunctionSignatureOut,
-	Graph
+	Graph,
 } from '$lib/graph';
 import { getLogger } from '$lib/log';
 import { normalizeCrateName } from '$lib/crate-names';
@@ -42,7 +42,7 @@ import type {
 	StructKind,
 	VariantKind,
 	Attribute,
-	Visibility as RdtVisibility
+	Visibility as RdtVisibility,
 } from '../rustdoc.types';
 import type { StreamingParseCallbacks } from './parser';
 
@@ -111,6 +111,42 @@ interface ExternalCrateInfo {
 	name: string;
 }
 
+type DeferredNodeKindMetadata =
+	| { kind: 'none' }
+	| {
+			kind: 'function';
+			signature: FunctionSignatureOut;
+			generics: string[] | null;
+			whereClause: string[] | null;
+	  }
+	| {
+			kind: 'struct';
+			generics: string[] | null;
+			whereClause: string[] | null;
+			structKind: StructKind;
+	  }
+	| {
+			kind: 'union';
+			generics: string[] | null;
+			whereClause: string[] | null;
+			fieldIds: Id[];
+	  }
+	| {
+			kind: 'enum';
+			generics: string[] | null;
+			whereClause: string[] | null;
+			variantIds: Id[];
+	  };
+
+interface DeferredNodeMetadata {
+	visibility: Visibility;
+	span: Span | null;
+	attrs: string[];
+	docs: string | null;
+	links: Record<string, Id>;
+	kindMeta: DeferredNodeKindMetadata;
+}
+
 // ---------------------------------------------------------------------------
 // Streaming Graph Builder
 // ---------------------------------------------------------------------------
@@ -120,6 +156,8 @@ export class StreamingGraphBuilder {
 	private readonly crateName: string;
 	private readonly batchSize: number;
 	private readonly skipExternalNodes: boolean;
+	private readonly retainItemIndex: boolean;
+	private readonly dedupeEdgesInMemory: boolean;
 	private readonly batchCallbacks: BatchCallbacks;
 	private readonly storageCallbacks: ProgressiveStorageCallbacks | null;
 
@@ -127,8 +165,7 @@ export class StreamingGraphBuilder {
 	private nodes: Node[] = [];
 	private edges: Edge[] = [];
 
-	// Always used - for dedup and O(1) lookup
-	private nodeCache = new Set<string>();
+	// Always used - for O(1) lookup
 	private nodeIndex = new Map<string, Node>(); // O(1) node lookup
 	private edgeCache = new Set<string>();
 
@@ -143,10 +180,12 @@ export class StreamingGraphBuilder {
 	private unresolvedEdgeCount = 0;
 	private unresolvedImplCount = 0;
 
-	// Path index (built from $.paths.*)
-	private pathIndex = new Map<Id, { path: string[]; crateId: number; kind: string }>();
+	// Path index (built from $.paths.*) maps rustdoc item id -> canonical node id
+	private pathIndex = new Map<Id, string>();
 	// Item index (built from $.index.*) for metadata enrichment (docs/fields/variants/signatures)
 	private itemIndex = new Map<Id, Item>();
+	// Metadata deferred until the matching path is processed.
+	private deferredMetadata = new Map<Id, DeferredNodeMetadata>();
 
 	// External crates
 	private externalCrates: ExternalCrateInfo[] = [];
@@ -176,14 +215,20 @@ export class StreamingGraphBuilder {
 		options: {
 			batchSize?: number;
 			skipExternalNodes?: boolean;
+			/** Keep full item objects for finalize-time metadata enrichment. */
+			retainItemIndex?: boolean;
+			/** Deduplicate edges in-memory (higher memory usage). */
+			dedupeEdgesInMemory?: boolean;
 			batchCallbacks?: BatchCallbacks;
 			/** Progressive storage - when set, nodes/edges stored directly to DB without accumulating in memory */
 			storageCallbacks?: ProgressiveStorageCallbacks;
-		} = {}
+		} = {},
 	) {
 		this.crateName = normalizeCrateName(crateName);
 		this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
 		this.skipExternalNodes = options.skipExternalNodes ?? true;
+		this.retainItemIndex = options.retainItemIndex ?? true;
+		this.dedupeEdgesInMemory = options.dedupeEdgesInMemory ?? true;
 		this.batchCallbacks = options.batchCallbacks ?? {};
 		this.storageCallbacks = options.storageCallbacks ?? null;
 
@@ -254,7 +299,7 @@ export class StreamingGraphBuilder {
 			},
 			onError: (error) => {
 				log.error`parse error: ${error}`;
-			}
+			},
 		};
 	}
 
@@ -264,10 +309,15 @@ export class StreamingGraphBuilder {
 	private processItem(idStr: string, item: Item): void {
 		this.lastItemId = idStr;
 		const itemId = Number(idStr);
-		this.itemIndex.set(itemId, item);
+		if (this.retainItemIndex || this.shouldRetainReferencedItem(item)) {
+			this.itemIndex.set(itemId, item);
+		}
 
 		try {
-			this.applyItemMetadata(itemId, item);
+			const applied = this.applyItemMetadata(itemId, item);
+			if (!applied && !this.retainItemIndex && this.shouldDeferNodeMetadata(item.inner)) {
+				this.deferredMetadata.set(itemId, this.toDeferredNodeMetadata(item));
+			}
 
 			if ('impl' in item.inner) {
 				// Process impl block
@@ -296,21 +346,14 @@ export class StreamingGraphBuilder {
 	private processPath(idStr: string, summary: ItemSummary): void {
 		const itemId = Number(idStr);
 
-		// Store in path index for later resolution
-		this.pathIndex.set(itemId, {
-			path: summary.path,
-			crateId: summary.crate_id,
-			kind: summary.kind
-		});
-
 		if (this.localCrateId === null && summary.path[0] === this.crateName) {
 			this.localCrateId = summary.crate_id;
 			this.flushDeferredPathsFor(summary.crate_id);
 		}
 
 		const crateKnown =
-			(this.localCrateId !== null && summary.crate_id === this.localCrateId)
-			|| this.externalCrateNames.has(summary.crate_id);
+			(this.localCrateId !== null && summary.crate_id === this.localCrateId) ||
+			this.externalCrateNames.has(summary.crate_id);
 		if (!crateKnown) {
 			const pending = this.deferredPathsByCrate.get(summary.crate_id) ?? [];
 			pending.push({ id: itemId, summary });
@@ -322,9 +365,6 @@ export class StreamingGraphBuilder {
 	}
 
 	private processResolvedPath(itemId: Id, summary: ItemSummary): void {
-		// INCREMENTAL: resolve pending edges only after crate mapping for this path is known.
-		this.resolvePendingEdgesFor(itemId);
-
 		// Skip internal/generated paths
 		if (summary.path.length === 0) return;
 		if (summary.path.some((seg) => seg === '_' || seg.startsWith('__'))) return;
@@ -343,7 +383,8 @@ export class StreamingGraphBuilder {
 
 		// Create node
 		const nodeId = this.joinPath(itemCrateName, summary.path);
-		if (!this.nodeCache.has(nodeId)) {
+		this.pathIndex.set(itemId, nodeId);
+		if (!this.nodeIndex.has(nodeId)) {
 			const name = summary.path[summary.path.length - 1] ?? nodeId;
 
 			const node: Node = {
@@ -352,11 +393,14 @@ export class StreamingGraphBuilder {
 				kind: nodeKind,
 				visibility: 'Unknown', // Will be updated when we see the item
 				attrs: [],
-				is_external: isExternal || undefined
+				is_external: isExternal || undefined,
 			};
 
 			this.addNode(node);
 		}
+
+		// INCREMENTAL: resolve pending edges only after crate mapping for this path is known.
+		this.resolvePendingEdgesFor(itemId);
 
 		// Track this item for impl->method edge creation
 		this.processedItemNodes.set(itemId, nodeId);
@@ -367,15 +411,21 @@ export class StreamingGraphBuilder {
 			this.addEdge(implNodeId, nodeId, 'Defines', 'Static');
 		}
 
-		// Add Contains edge from parent (only if not an impl item - impls define their methods)
+		// Add Contains edge from parent (skip impl nodes/items; impl relationships are
+		// modeled via Defines/Implements edges from the target type)
 		const parentId = this.parentPathId(itemCrateName, summary.path);
-		if (parentId && parentId !== nodeId && !implNodeId) {
+		if (parentId && parentId !== nodeId && !implNodeId && nodeKind !== 'Impl') {
 			this.addEdge(parentId, nodeId, 'Contains', 'Static');
 		}
 
 		// If the full item already arrived, apply rich metadata now.
 		const item = this.itemIndex.get(itemId);
 		if (item) this.applyItemMetadata(itemId, item);
+
+		if (!this.retainItemIndex) {
+			const deferred = this.deferredMetadata.get(itemId);
+			if (deferred) this.applyDeferredMetadata(itemId, deferred);
+		}
 	}
 
 	/**
@@ -388,7 +438,7 @@ export class StreamingGraphBuilder {
 		this.externalCrateNames.set(crateId, normalizedName);
 		this.externalCrates.push({
 			id: normalizedName,
-			name: crate.name
+			name: crate.name,
 		});
 		this.flushDeferredPathsFor(crateId);
 	}
@@ -437,7 +487,7 @@ export class StreamingGraphBuilder {
 		const forTypeName = this.implForTypeName(impl.for);
 		const traitName = impl.trait ? this.cleanPath(impl.trait.path) : null;
 
-		if (!this.nodeCache.has(implNodeId)) {
+		if (!this.nodeIndex.has(implNodeId)) {
 			const name = this.implNodeName(forTypeName, traitName);
 			const implType: ImplType | null = impl.trait ? 'Trait' : 'Inherent';
 
@@ -454,7 +504,7 @@ export class StreamingGraphBuilder {
 				docs: item.docs ?? null,
 				impl_type: implType,
 				parent_impl: null,
-				impl_trait: null // Will be resolved later
+				impl_trait: null, // Will be resolved later
 			};
 
 			this.addNode(node);
@@ -467,20 +517,16 @@ export class StreamingGraphBuilder {
 			traitId: implTraitId,
 			forTypeName,
 			traitName,
-			items: impl.items
+			items: impl.items,
 		};
 
 		// Try immediate resolution
 		const forResolved = forTypeId !== null ? this.resolveId(forTypeId) : null;
 		const traitResolved = implTraitId !== null ? this.resolveId(implTraitId) : null;
 
-		if (forResolved || (forTypeId === null)) {
+		if (forResolved || forTypeId === null) {
 			// Can resolve now
 			this.tryResolveImplEdge(implEdge);
-			if (!forResolved && forTypeId === null) {
-				// Fallback: attach unresolved impls to the crate root for visibility.
-				this.addEdge(itemCrateName, implNodeId, 'Defines', 'Static');
-			}
 		} else {
 			// Queue by forTypeId for later resolution
 			if (forTypeId !== null) {
@@ -514,7 +560,7 @@ export class StreamingGraphBuilder {
 	 */
 	private createImplItemNode(itemId: Id, item: Item, implNodeId: string): void {
 		const inner = item.inner;
-		
+
 		// Determine node kind from item inner type
 		// Associated items in impls use specific kinds matching rustdoc schema
 		let nodeKind: NodeKind | null = null;
@@ -531,25 +577,25 @@ export class StreamingGraphBuilder {
 			// Fallback for older rustdoc versions
 			nodeKind = 'Constant';
 		}
-		
+
 		if (!nodeKind) return;
-		
+
 		const name = item.name ?? `item-${itemId}`;
 		// Use impl-scoped node ID to match Rust parser pattern
 		const nodeId = `${implNodeId}::${name}`;
-		
-		if (this.nodeCache.has(nodeId)) {
+
+		if (this.nodeIndex.has(nodeId)) {
 			// Node already exists, just track and add edge
 			this.processedItemNodes.set(itemId, nodeId);
 			this.addEdge(implNodeId, nodeId, 'Defines', 'Static');
 			return;
 		}
-		
+
 		const itemCrateName = this.crateNameForId(item.crate_id);
 		const isExternal = itemCrateName !== this.crateName;
-		
+
 		if (isExternal && this.skipExternalNodes) return;
-		
+
 		const node: Node = {
 			id: nodeId,
 			name,
@@ -559,9 +605,9 @@ export class StreamingGraphBuilder {
 			attrs: this.formatAttributes(item.attrs),
 			is_external: isExternal || undefined,
 			docs: item.docs ?? null,
-			parent_impl: implNodeId
+			parent_impl: implNodeId,
 		};
-		
+
 		// Add type-specific data
 		if ('function' in inner) {
 			const sig = inner.function.sig;
@@ -571,7 +617,7 @@ export class StreamingGraphBuilder {
 				output: sig.output ? this.formatType(sig.output) : null,
 				is_async: header.is_async,
 				is_unsafe: header.is_unsafe,
-				is_const: header.is_const
+				is_const: header.is_const,
 			};
 			node.generics = this.extractGenerics(inner.function.generics);
 			node.where_clause = this.extractWhereClause(inner.function.generics);
@@ -585,7 +631,7 @@ export class StreamingGraphBuilder {
 			node.type_name = this.formatType(assocConst.type);
 			node.const_value = assocConst.value ?? null;
 		}
-		
+
 		this.addNode(node);
 		this.processedItemNodes.set(itemId, nodeId);
 		this.addEdge(implNodeId, nodeId, 'Defines', 'Static');
@@ -599,19 +645,10 @@ export class StreamingGraphBuilder {
 		const inner = item.inner;
 
 		// Determine owner node ID
-		let ownerId: string | null = null;
-
-		if ('impl' in inner) {
-			const itemCrateName = this.crateNameForId(item.crate_id);
-			ownerId = `${itemCrateName}::impl-${itemId}`;
-		} else {
-			// Try to resolve from path index (may not be available yet during streaming)
-			const pathInfo = this.pathIndex.get(itemId);
-			if (pathInfo) {
-				const cn = this.crateNameForId(pathInfo.crateId);
-				ownerId = this.joinPath(cn, pathInfo.path);
-			}
-		}
+		const ownerId =
+			'impl' in inner
+				? `${this.crateNameForId(item.crate_id)}::impl-${itemId}`
+				: (this.pathIndex.get(itemId) ?? null);
 
 		if (!ownerId) return;
 
@@ -647,7 +684,7 @@ export class StreamingGraphBuilder {
 				fromId: ownerId,
 				toTypeId: typeId,
 				kind: 'UsesType',
-				confidence: 'Static'
+				confidence: 'Static',
 			};
 
 			// Try to resolve immediately if path already known
@@ -797,8 +834,17 @@ export class StreamingGraphBuilder {
 
 		// Apply rich per-item metadata once all paths/items are available.
 		const tMeta = performance.now();
-		for (const [itemId, item] of this.itemIndex) {
-			this.applyItemMetadata(itemId, item);
+		if (this.retainItemIndex) {
+			for (const [itemId, item] of this.itemIndex) {
+				this.applyItemMetadata(itemId, item);
+			}
+			this.itemIndex.clear();
+		} else {
+			for (const [itemId, metadata] of this.deferredMetadata) {
+				this.applyDeferredMetadata(itemId, metadata);
+			}
+			this.deferredMetadata.clear();
+			this.itemIndex.clear();
 		}
 		if (this.storageCallbacks && this.updatedNodes.size > 0) {
 			const updates: Node[] = [];
@@ -835,7 +881,7 @@ export class StreamingGraphBuilder {
 			nodeCount: this._nodeCount,
 			pendingEdgeCount: 0,
 			lastItemId: this.lastItemId,
-			phase: 'complete'
+			phase: 'complete',
 		});
 
 		const total = performance.now() - t0;
@@ -848,7 +894,7 @@ export class StreamingGraphBuilder {
 			edgeCount: this._edgeCount,
 			externalCrates: this.externalCrates,
 			root: this.root,
-			crateVersion: this.crateVersion
+			crateVersion: this.crateVersion,
 		};
 	}
 
@@ -864,7 +910,7 @@ export class StreamingGraphBuilder {
 			nodeCount: this._nodeCount,
 			pendingEdgeCount: pendingCount,
 			lastItemId: this.lastItemId,
-			phase: 'streaming'
+			phase: 'streaming',
 		};
 	}
 
@@ -873,9 +919,8 @@ export class StreamingGraphBuilder {
 	// ---------------------------------------------------------------------------
 
 	private addNode(node: Node): void {
-		if (this.nodeCache.has(node.id)) return;
+		if (this.nodeIndex.has(node.id)) return;
 
-		this.nodeCache.add(node.id);
 		this.nodeIndex.set(node.id, node);
 		this._nodeCount++;
 
@@ -893,9 +938,10 @@ export class StreamingGraphBuilder {
 
 	private addEdge(from: string, to: string, kind: EdgeKind, confidence: Confidence): void {
 		const key = `${from}|${to}|${kind}`;
-		if (this.edgeCache.has(key)) return;
-
-		this.edgeCache.add(key);
+		if (this.dedupeEdgesInMemory) {
+			if (this.edgeCache.has(key)) return;
+			this.edgeCache.add(key);
+		}
 		const edge: Edge = { from, to, kind, confidence };
 		this._edgeCount++;
 
@@ -942,7 +988,7 @@ export class StreamingGraphBuilder {
 	}
 
 	private ensureCrateNode(crateName: string, visibility: Visibility, isExternal: boolean): void {
-		if (this.nodeCache.has(crateName)) return;
+		if (this.nodeIndex.has(crateName)) return;
 
 		this.addNode({
 			id: crateName,
@@ -950,28 +996,24 @@ export class StreamingGraphBuilder {
 			kind: 'Crate',
 			visibility,
 			attrs: [],
-			is_external: isExternal || undefined
+			is_external: isExternal || undefined,
 		});
 	}
 
-	private ensureModuleNodes(
-		crateName: string,
-		path: string[],
-		isExternal: boolean
-	): void {
+	private ensureModuleNodes(crateName: string, path: string[], isExternal: boolean): void {
 		if (path.length <= 1) return;
 
 		let parentId = crateName;
 		for (let i = 0; i < path.length - 1; i++) {
 			const moduleId = this.joinPath(crateName, path.slice(0, i + 1));
-			if (!this.nodeCache.has(moduleId)) {
+			if (!this.nodeIndex.has(moduleId)) {
 				this.addNode({
 					id: moduleId,
 					name: path[i],
 					kind: 'Module',
 					visibility: 'Unknown',
 					attrs: [],
-					is_external: isExternal || undefined
+					is_external: isExternal || undefined,
 				});
 			}
 			if (parentId !== moduleId) {
@@ -986,11 +1028,7 @@ export class StreamingGraphBuilder {
 	// ---------------------------------------------------------------------------
 
 	private resolveId(id: Id): string | null {
-		const pathInfo = this.pathIndex.get(id);
-		if (!pathInfo) return null;
-
-		const cn = this.crateNameForId(pathInfo.crateId);
-		return this.joinPath(cn, pathInfo.path);
+		return this.pathIndex.get(id) ?? null;
 	}
 
 	private crateNameForId(crateId: number): string {
@@ -1023,51 +1061,81 @@ export class StreamingGraphBuilder {
 
 	private mapItemKind(kind: string): NodeKind | null {
 		switch (kind) {
-			case 'module': return 'Module';
-			case 'struct': return 'Struct';
-			case 'struct_field': return 'StructField';
-			case 'union': return 'Union';
-			case 'enum': return 'Enum';
-			case 'variant': return 'Variant';
-			case 'trait': return 'Trait';
-			case 'trait_alias': return 'TraitAlias';
-			case 'impl': return 'Impl';
-			case 'function': return 'Function';
-			case 'type_alias': return 'TypeAlias';
-			case 'assoc_type': return 'AssocType';
-			case 'constant': return 'Constant';
-			case 'assoc_const': return 'AssocConst';
-			case 'static': return 'Static';
-			case 'macro': return 'Macro';
-			case 'primitive': return 'Primitive';
-			case 'extern_crate': return 'ExternCrate';
-			case 'import': return 'Import';
-			case 'proc_attribute': return 'ProcMacro';
-			case 'proc_derive': return 'ProcMacro';
-			default: return null;
+			case 'module':
+				return 'Module';
+			case 'struct':
+				return 'Struct';
+			case 'struct_field':
+				return 'StructField';
+			case 'union':
+				return 'Union';
+			case 'enum':
+				return 'Enum';
+			case 'variant':
+				return 'Variant';
+			case 'trait':
+				return 'Trait';
+			case 'trait_alias':
+				return 'TraitAlias';
+			case 'impl':
+				return 'Impl';
+			case 'function':
+				return 'Function';
+			case 'type_alias':
+				return 'TypeAlias';
+			case 'assoc_type':
+				return 'AssocType';
+			case 'constant':
+				return 'Constant';
+			case 'assoc_const':
+				return 'AssocConst';
+			case 'static':
+				return 'Static';
+			case 'macro':
+				return 'Macro';
+			case 'primitive':
+				return 'Primitive';
+			case 'extern_crate':
+				return 'ExternCrate';
+			case 'import':
+				return 'Import';
+			case 'proc_attribute':
+				return 'ProcMacro';
+			case 'proc_derive':
+				return 'ProcMacro';
+			default:
+				return null;
 		}
 	}
 
 	private mapVisibility(vis: RdtVisibility): Visibility {
 		if (typeof vis === 'string') {
 			switch (vis) {
-				case 'public': return 'Public';
-				case 'crate': return 'Crate';
-				case 'default': return 'Inherited';
-				default: return 'Unknown';
+				case 'public':
+					return 'Public';
+				case 'crate':
+					return 'Crate';
+				case 'default':
+					return 'Inherited';
+				default:
+					return 'Unknown';
 			}
 		}
 		if (vis && typeof vis === 'object' && 'restricted' in vis) return 'Restricted';
 		return 'Unknown';
 	}
 
-	private mapSpan(span: { filename: string; begin: [number, number]; end: [number, number] }): Span {
+	private mapSpan(span: {
+		filename: string;
+		begin: [number, number];
+		end: [number, number];
+	}): Span {
 		return {
 			file: span.filename,
 			line: span.begin[0],
 			column: span.begin[1],
 			end_line: span.end[0],
-			end_column: span.end[1]
+			end_column: span.end[1],
 		};
 	}
 
@@ -1112,7 +1180,8 @@ export class StreamingGraphBuilder {
 	private formatBoundsStr(bounds: GenericBound[]): string[] {
 		return bounds
 			.map((b) => {
-				if ('trait_bound' in b) return b.trait_bound?.trait?.path ? this.cleanPath(b.trait_bound.trait.path) : null;
+				if ('trait_bound' in b)
+					return b.trait_bound?.trait?.path ? this.cleanPath(b.trait_bound.trait.path) : null;
 				if ('outlives' in b) return b.outlives;
 				return null;
 			})
@@ -1188,13 +1257,11 @@ export class StreamingGraphBuilder {
 	// Item metadata enrichment
 	// ---------------------------------------------------------------------------
 
-	private applyItemMetadata(itemId: Id, item: Item): void {
-		const pathInfo = this.pathIndex.get(itemId);
-		if (!pathInfo) return;
-		const crateName = this.crateNameForId(pathInfo.crateId);
-		const nodeId = this.joinPath(crateName, pathInfo.path);
+	private applyItemMetadata(itemId: Id, item: Item): boolean {
+		const nodeId = this.pathIndex.get(itemId);
+		if (!nodeId) return false;
 		const node = this.nodeIndex.get(nodeId);
-		if (!node) return;
+		if (!node) return false;
 
 		let changed = false;
 		const nextVisibility = this.mapVisibility(item.visibility);
@@ -1237,7 +1304,7 @@ export class StreamingGraphBuilder {
 				output: sig.output ? this.formatType(sig.output) : null,
 				is_async: header.is_async,
 				is_unsafe: header.is_unsafe,
-				is_const: header.is_const
+				is_const: header.is_const,
 			};
 			if (JSON.stringify(node.signature ?? null) !== JSON.stringify(nextSig)) {
 				node.signature = nextSig;
@@ -1265,9 +1332,14 @@ export class StreamingGraphBuilder {
 				changed = true;
 			}
 			const nextFields = this.extractStructFields(inner.struct.kind);
-			if (!this.arrayShallowEqual(node.fields ?? null, nextFields, (a, b) =>
-				a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility
-			)) {
+			if (
+				!this.arrayShallowEqual(
+					node.fields ?? null,
+					nextFields,
+					(a, b) =>
+						a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility,
+				)
+			) {
 				node.fields = nextFields;
 				changed = true;
 			}
@@ -1283,9 +1355,14 @@ export class StreamingGraphBuilder {
 				changed = true;
 			}
 			const nextFields = this.extractFieldList(inner.union.fields);
-			if (!this.arrayShallowEqual(node.fields ?? null, nextFields, (a, b) =>
-				a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility
-			)) {
+			if (
+				!this.arrayShallowEqual(
+					node.fields ?? null,
+					nextFields,
+					(a, b) =>
+						a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility,
+				)
+			) {
 				node.fields = nextFields;
 				changed = true;
 			}
@@ -1301,17 +1378,267 @@ export class StreamingGraphBuilder {
 				changed = true;
 			}
 			const nextVariants = this.extractVariants(inner.enum.variants);
-			if (!this.arrayShallowEqual(node.variants ?? null, nextVariants, (a, b) =>
-				a.name === b.name && this.arrayShallowEqual(a.fields, b.fields, (x, y) =>
-					x.name === y.name && x.type_name === y.type_name && x.visibility === y.visibility
+			if (
+				!this.arrayShallowEqual(
+					node.variants ?? null,
+					nextVariants,
+					(a, b) =>
+						a.name === b.name &&
+						this.arrayShallowEqual(
+							a.fields,
+							b.fields,
+							(x, y) =>
+								x.name === y.name && x.type_name === y.type_name && x.visibility === y.visibility,
+						),
 				)
-			)) {
+			) {
 				node.variants = nextVariants;
 				changed = true;
 			}
 		}
 
 		if (changed) this.updatedNodes.add(node.id);
+		return true;
+	}
+
+	private applyDeferredMetadata(itemId: Id, metadata: DeferredNodeMetadata): boolean {
+		const nodeId = this.pathIndex.get(itemId);
+		if (!nodeId) return false;
+		const node = this.nodeIndex.get(nodeId);
+		if (!node) return false;
+
+		let changed = false;
+		if (node.visibility !== metadata.visibility) {
+			node.visibility = metadata.visibility;
+			changed = true;
+		}
+		if (JSON.stringify(node.span ?? null) !== JSON.stringify(metadata.span)) {
+			node.span = metadata.span;
+			changed = true;
+		}
+		if (!this.arrayShallowEqual(node.attrs ?? [], metadata.attrs)) {
+			node.attrs = metadata.attrs;
+			changed = true;
+		}
+		if ((node.docs ?? null) !== metadata.docs) {
+			node.docs = metadata.docs;
+			changed = true;
+		}
+
+		const nextDocLinks: Record<string, string> = {};
+		for (const [label, targetId] of Object.entries(metadata.links)) {
+			const resolved = this.resolveId(targetId);
+			if (resolved) nextDocLinks[label] = resolved;
+		}
+		if (!this.recordShallowEqual(node.doc_links ?? {}, nextDocLinks)) {
+			node.doc_links = Object.keys(nextDocLinks).length > 0 ? nextDocLinks : undefined;
+			changed = true;
+		}
+
+		const kindMeta = metadata.kindMeta;
+		if (kindMeta.kind === 'function') {
+			if (JSON.stringify(node.signature ?? null) !== JSON.stringify(kindMeta.signature)) {
+				node.signature = kindMeta.signature;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.generics ?? null, kindMeta.generics)) {
+				node.generics = kindMeta.generics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, kindMeta.whereClause)) {
+				node.where_clause = kindMeta.whereClause;
+				changed = true;
+			}
+		} else if (kindMeta.kind === 'struct') {
+			if (!this.arrayShallowEqual(node.generics ?? null, kindMeta.generics)) {
+				node.generics = kindMeta.generics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, kindMeta.whereClause)) {
+				node.where_clause = kindMeta.whereClause;
+				changed = true;
+			}
+			const nextFields = this.extractStructFields(kindMeta.structKind);
+			if (
+				!this.arrayShallowEqual(
+					node.fields ?? null,
+					nextFields,
+					(a, b) =>
+						a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility,
+				)
+			) {
+				node.fields = nextFields;
+				changed = true;
+			}
+		} else if (kindMeta.kind === 'union') {
+			if (!this.arrayShallowEqual(node.generics ?? null, kindMeta.generics)) {
+				node.generics = kindMeta.generics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, kindMeta.whereClause)) {
+				node.where_clause = kindMeta.whereClause;
+				changed = true;
+			}
+			const nextFields = this.extractFieldList(kindMeta.fieldIds);
+			if (
+				!this.arrayShallowEqual(
+					node.fields ?? null,
+					nextFields,
+					(a, b) =>
+						a.name === b.name && a.type_name === b.type_name && a.visibility === b.visibility,
+				)
+			) {
+				node.fields = nextFields;
+				changed = true;
+			}
+		} else if (kindMeta.kind === 'enum') {
+			if (!this.arrayShallowEqual(node.generics ?? null, kindMeta.generics)) {
+				node.generics = kindMeta.generics;
+				changed = true;
+			}
+			if (!this.arrayShallowEqual(node.where_clause ?? null, kindMeta.whereClause)) {
+				node.where_clause = kindMeta.whereClause;
+				changed = true;
+			}
+			const nextVariants = this.extractVariants(kindMeta.variantIds);
+			if (
+				!this.arrayShallowEqual(
+					node.variants ?? null,
+					nextVariants,
+					(a, b) =>
+						a.name === b.name &&
+						this.arrayShallowEqual(
+							a.fields,
+							b.fields,
+							(x, y) =>
+								x.name === y.name && x.type_name === y.type_name && x.visibility === y.visibility,
+						),
+				)
+			) {
+				node.variants = nextVariants;
+				changed = true;
+			}
+		}
+
+		if (changed) this.updatedNodes.add(node.id);
+		return true;
+	}
+
+	private shouldRetainReferencedItem(item: Item): boolean {
+		const inner = item.inner;
+		return 'variant' in inner || 'struct_field' in inner;
+	}
+
+	private shouldDeferNodeMetadata(inner: ItemEnum): boolean {
+		return (
+			'module' in inner ||
+			'extern_crate' in inner ||
+			'use' in inner ||
+			'struct' in inner ||
+			'union' in inner ||
+			'enum' in inner ||
+			'function' in inner ||
+			'trait' in inner ||
+			'trait_alias' in inner ||
+			'type_alias' in inner ||
+			'constant' in inner ||
+			'static' in inner ||
+			'macro' in inner ||
+			'proc_macro' in inner ||
+			'primitive' in inner ||
+			'assoc_const' in inner ||
+			'assoc_type' in inner
+		);
+	}
+
+	private toDeferredNodeMetadata(item: Item): DeferredNodeMetadata {
+		const inner = item.inner;
+		const visibility = this.mapVisibility(item.visibility);
+		const span = item.span ? this.mapSpan(item.span) : null;
+		const attrs = this.formatAttributes(item.attrs);
+		const docs = item.docs ?? null;
+		const links = item.links ?? {};
+
+		if ('function' in inner) {
+			const sig = inner.function.sig;
+			const header = inner.function.header;
+			return {
+				visibility,
+				span,
+				attrs,
+				docs,
+				links,
+				kindMeta: {
+					kind: 'function',
+					signature: {
+						inputs: sig.inputs.map(([name, ty]) => ({ name, type_name: this.formatType(ty) })),
+						output: sig.output ? this.formatType(sig.output) : null,
+						is_async: header.is_async,
+						is_unsafe: header.is_unsafe,
+						is_const: header.is_const,
+					},
+					generics: this.extractGenerics(inner.function.generics),
+					whereClause: this.extractWhereClause(inner.function.generics),
+				},
+			};
+		}
+
+		if ('struct' in inner) {
+			return {
+				visibility,
+				span,
+				attrs,
+				docs,
+				links,
+				kindMeta: {
+					kind: 'struct',
+					generics: this.extractGenerics(inner.struct.generics),
+					whereClause: this.extractWhereClause(inner.struct.generics),
+					structKind: inner.struct.kind,
+				},
+			};
+		}
+
+		if ('union' in inner) {
+			return {
+				visibility,
+				span,
+				attrs,
+				docs,
+				links,
+				kindMeta: {
+					kind: 'union',
+					generics: this.extractGenerics(inner.union.generics),
+					whereClause: this.extractWhereClause(inner.union.generics),
+					fieldIds: inner.union.fields,
+				},
+			};
+		}
+
+		if ('enum' in inner) {
+			return {
+				visibility,
+				span,
+				attrs,
+				docs,
+				links,
+				kindMeta: {
+					kind: 'enum',
+					generics: this.extractGenerics(inner.enum.generics),
+					whereClause: this.extractWhereClause(inner.enum.generics),
+					variantIds: inner.enum.variants,
+				},
+			};
+		}
+
+		return {
+			visibility,
+			span,
+			attrs,
+			docs,
+			links,
+			kindMeta: { kind: 'none' },
+		};
 	}
 
 	private extractStructFields(kind: StructKind): FieldInfo[] | null {
@@ -1347,7 +1674,7 @@ export class StreamingGraphBuilder {
 		return {
 			name: item.name ?? fallbackName,
 			type_name: this.formatType(inner.struct_field),
-			visibility: this.mapVisibility(item.visibility)
+			visibility: this.mapVisibility(item.visibility),
 		};
 	}
 
@@ -1372,7 +1699,7 @@ export class StreamingGraphBuilder {
 			}
 			variants.push({
 				name: item.name ?? `Variant${id}`,
-				fields
+				fields,
 			});
 		}
 		return variants.length > 0 ? variants : null;
@@ -1381,7 +1708,7 @@ export class StreamingGraphBuilder {
 	private arrayShallowEqual<T>(
 		a: T[] | null,
 		b: T[] | null,
-		equals: (x: T, y: T) => boolean = (x, y) => x === y
+		equals: (x: T, y: T) => boolean = (x, y) => x === y,
 	): boolean {
 		if (a === b) return true;
 		if (!a || !b) return false;
@@ -1413,11 +1740,16 @@ export class StreamingGraphBuilder {
 	private attributeToString(attr: Attribute): string | null {
 		if (typeof attr === 'string') {
 			switch (attr) {
-				case 'non_exhaustive': return '#[non_exhaustive]';
-				case 'automatically_derived': return '#[automatically_derived]';
-				case 'macro_export': return '#[macro_export]';
-				case 'no_mangle': return '#[no_mangle]';
-				default: return attr;
+				case 'non_exhaustive':
+					return '#[non_exhaustive]';
+				case 'automatically_derived':
+					return '#[automatically_derived]';
+				case 'macro_export':
+					return '#[macro_export]';
+				case 'no_mangle':
+					return '#[no_mangle]';
+				default:
+					return attr;
 			}
 		}
 		if ('must_use' in attr) {
@@ -1536,10 +1868,12 @@ export function createStreamingGraphBuilder(
 	options?: {
 		batchSize?: number;
 		skipExternalNodes?: boolean;
+		retainItemIndex?: boolean;
+		dedupeEdgesInMemory?: boolean;
 		batchCallbacks?: BatchCallbacks;
 		/** Progressive storage callbacks - when set, nodes/edges stored directly to DB */
 		storageCallbacks?: ProgressiveStorageCallbacks;
-	}
+	},
 ): StreamingGraphBuilder {
 	return new StreamingGraphBuilder(crateName, options);
 }

@@ -1,45 +1,45 @@
 /// <reference types="@types/bun" />
-import { Result } from "better-result";
-import { Database } from "bun:sqlite";
-import { drizzle } from "drizzle-orm/bun-sqlite";
-import { formatToMillis, type MigrationMeta } from "drizzle-orm/migrator";
-import type { SQLiteSyncDialect } from "drizzle-orm/sqlite-core/dialect";
-import type { SQLiteSession } from "drizzle-orm/sqlite-core/session";
-import { and, count, desc, eq, inArray, or, sql } from "drizzle-orm";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { mkdirSync } from "node:fs";
-import { createHash } from "node:crypto";
-import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from "../db/schema";
-import { normalizeCrateName } from "../validation";
-import type { CrateGraph, Node, Edge } from "$lib/graph";
-import type { CrateIndex, CrateTree } from "$lib/schema";
-import { getLogger } from "$lib/log";
+import { Result } from 'better-result';
+import { Database } from 'bun:sqlite';
+import { drizzle } from 'drizzle-orm/bun-sqlite';
+import { formatToMillis, type MigrationMeta } from 'drizzle-orm/migrator';
+import type { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core/dialect';
+import type { SQLiteSession } from 'drizzle-orm/sqlite-core/session';
+import { and, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from '../db/schema';
+import { normalizeCrateName } from '../validation';
+import type { CrateGraph, Node, Edge } from '$lib/graph';
+import type { CrateIndex, CrateTree } from '$lib/schema';
+import { getLogger } from '$lib/log';
 
 const log = getLogger('cache');
 
-const sqlModules = import.meta.glob("../db/migrations/*/migration.sql", {
-	query: "?raw",
+const sqlModules = import.meta.glob('../db/migrations/*/migration.sql', {
+	query: '?raw',
 	eager: true,
-	import: "default",
+	import: 'default',
 }) as Record<string, string>;
 
 const migrations: MigrationMeta[] = Object.entries(sqlModules)
 	.map(([path, sql]) => {
-		const folderName = path.split("/").at(-2)!;
+		const folderName = path.split('/').at(-2)!;
 		return {
-			sql: sql.split("--> statement-breakpoint"),
+			sql: sql.split('--> statement-breakpoint'),
 			bps: true,
 			folderMillis: formatToMillis(folderName.slice(0, 14)),
-			hash: createHash("sha256").update(sql).digest("hex"),
+			hash: createHash('sha256').update(sql).digest('hex'),
 		};
 	})
 	.sort((a, b) => a.folderMillis - b.folderMillis);
 
-const CACHE_DIR = join(homedir(), ".codeview");
-const CACHE_DB = join(CACHE_DIR, "cache.sqlite");
+const CACHE_DIR = join(homedir(), '.codeview');
+const CACHE_DB = join(CACHE_DIR, 'cache.sqlite');
 
-type CrateStatusValue = "unknown" | "processing" | "ready" | "failed";
+type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 
 export interface CrateStatusResult {
 	status: CrateStatusValue;
@@ -81,13 +81,15 @@ export class LocalCache {
 		return normalizeCrateName(name);
 	}
 
-
 	constructor() {
 		mkdirSync(CACHE_DIR, { recursive: true });
-		this.db = drizzle({ client: new Database(CACHE_DB) });
+		const client = new Database(CACHE_DB);
+		client.exec('PRAGMA journal_mode = WAL;');
+		client.exec('PRAGMA busy_timeout = 5000;');
+		this.db = drizzle({ client });
 		const { dialect, session } = this.db as unknown as {
 			dialect: SQLiteSyncDialect;
-			session: SQLiteSession<"sync", unknown>;
+			session: SQLiteSession<'sync', unknown>;
 		};
 		dialect.migrate(migrations, session);
 
@@ -100,16 +102,13 @@ export class LocalCache {
 				lastStep: crateStatus.lastStep,
 			})
 			.from(crateStatus)
-			.where(eq(crateStatus.status, "processing"))
+			.where(eq(crateStatus.status, 'processing'))
 			.all();
 		if (zombies.length > 0) {
 			for (const z of zombies) {
-				log.debug`Cleaning zombie: ${z.name}@${z.version} (was on step: ${z.lastStep ?? "unknown"})`;
+				log.debug`Cleaning zombie: ${z.name}@${z.version} (was on step: ${z.lastStep ?? 'unknown'})`;
 			}
-			this.db
-				.delete(crateStatus)
-				.where(eq(crateStatus.status, "processing"))
-				.run();
+			this.db.delete(crateStatus).where(eq(crateStatus.status, 'processing')).run();
 		}
 	}
 
@@ -122,7 +121,7 @@ export class LocalCache {
 			.from(crateGraphs)
 			.where(
 				and(
-					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.ecosystem, 'rust'),
 					eq(crateGraphs.name, n),
 					eq(crateGraphs.version, version),
 				),
@@ -152,7 +151,7 @@ export class LocalCache {
 			.from(crateGraphs)
 			.where(
 				and(
-					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.ecosystem, 'rust'),
 					eq(crateGraphs.name, n),
 					eq(crateGraphs.version, version),
 				),
@@ -167,7 +166,7 @@ export class LocalCache {
 			.from(nodeDetails)
 			.where(
 				and(
-					eq(nodeDetails.ecosystem, "rust"),
+					eq(nodeDetails.ecosystem, 'rust'),
 					eq(nodeDetails.crateName, n),
 					eq(nodeDetails.crateVersion, version),
 				),
@@ -191,11 +190,7 @@ export class LocalCache {
 			})
 			.from(edges)
 			.where(
-				and(
-					eq(edges.ecosystem, "rust"),
-					eq(edges.crateName, n),
-					eq(edges.crateVersion, version),
-				),
+				and(eq(edges.ecosystem, 'rust'), eq(edges.crateName, n), eq(edges.crateVersion, version)),
 			)
 			.all();
 
@@ -230,7 +225,7 @@ export class LocalCache {
 			.from(nodeDetails)
 			.where(
 				and(
-					eq(nodeDetails.ecosystem, "rust"),
+					eq(nodeDetails.ecosystem, 'rust'),
 					eq(nodeDetails.crateName, n),
 					eq(nodeDetails.crateVersion, version),
 					eq(nodeDetails.nodeId, nodeId),
@@ -257,7 +252,7 @@ export class LocalCache {
 			.from(edges)
 			.where(
 				and(
-					eq(edges.ecosystem, "rust"),
+					eq(edges.ecosystem, 'rust'),
 					eq(edges.crateName, n),
 					eq(edges.crateVersion, version),
 					or(eq(edges.fromId, nodeId), eq(edges.toId, nodeId)),
@@ -280,7 +275,7 @@ export class LocalCache {
 			.from(crateGraphs)
 			.where(
 				and(
-					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.ecosystem, 'rust'),
 					eq(crateGraphs.name, n),
 					eq(crateGraphs.version, version),
 				),
@@ -302,7 +297,7 @@ export class LocalCache {
 			.from(crateGraphs)
 			.where(
 				and(
-					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.ecosystem, 'rust'),
 					eq(crateGraphs.name, n),
 					eq(crateGraphs.version, version),
 				),
@@ -329,7 +324,7 @@ export class LocalCache {
 		this.db
 			.insert(crateGraphs)
 			.values({
-				ecosystem: "rust",
+				ecosystem: 'rust',
 				name: n,
 				version,
 				indexJson: JSON.stringify(index),
@@ -355,7 +350,7 @@ export class LocalCache {
 			.delete(nodeDetails)
 			.where(
 				and(
-					eq(nodeDetails.ecosystem, "rust"),
+					eq(nodeDetails.ecosystem, 'rust'),
 					eq(nodeDetails.crateName, n),
 					eq(nodeDetails.crateVersion, version),
 				),
@@ -364,10 +359,25 @@ export class LocalCache {
 		this.db
 			.delete(edges)
 			.where(
+				and(eq(edges.ecosystem, 'rust'), eq(edges.crateName, n), eq(edges.crateVersion, version)),
+			)
+			.run();
+	}
+
+	/**
+	 * Update only the index JSON for a crate without clearing nodes/edges.
+	 * Used after progressive parsing has already stored nodes/edges.
+	 */
+	updateIndex(name: string, version: string, index: CrateIndex): void {
+		const n = this.norm(name);
+		this.db
+			.update(crateGraphs)
+			.set({ indexJson: JSON.stringify(index) })
+			.where(
 				and(
-					eq(edges.ecosystem, "rust"),
-					eq(edges.crateName, n),
-					eq(edges.crateVersion, version),
+					eq(crateGraphs.ecosystem, 'rust'),
+					eq(crateGraphs.name, n),
+					eq(crateGraphs.version, version),
 				),
 			)
 			.run();
@@ -380,7 +390,7 @@ export class LocalCache {
 		if (nodes.length === 0) return;
 		const n = this.norm(name);
 		const rows = nodes.map((node) => ({
-			ecosystem: "rust",
+			ecosystem: 'rust',
 			crateName: n,
 			crateVersion: version,
 			nodeId: node.id,
@@ -394,7 +404,12 @@ export class LocalCache {
 				.insert(nodeDetails)
 				.values(rows.slice(i, i + BATCH))
 				.onConflictDoUpdate({
-					target: [nodeDetails.ecosystem, nodeDetails.crateName, nodeDetails.crateVersion, nodeDetails.nodeId],
+					target: [
+						nodeDetails.ecosystem,
+						nodeDetails.crateName,
+						nodeDetails.crateVersion,
+						nodeDetails.nodeId,
+					],
 					set: { nodeJson: sql`excluded.node_json` },
 				})
 				.run();
@@ -408,7 +423,7 @@ export class LocalCache {
 		if (edgeList.length === 0) return;
 		const n = this.norm(name);
 		const rows = edgeList.map((edge) => ({
-			ecosystem: "rust",
+			ecosystem: 'rust',
 			crateName: n,
 			crateVersion: version,
 			fromId: edge.from,
@@ -431,7 +446,13 @@ export class LocalCache {
 	/**
 	 * Finalize crate storage - store tree summary and update counts.
 	 */
-	finalizeCrate(name: string, version: string, tree: CrateTree, nodeCount: number, edgeCount: number): void {
+	finalizeCrate(
+		name: string,
+		version: string,
+		tree: CrateTree,
+		nodeCount: number,
+		edgeCount: number,
+	): void {
 		const n = this.norm(name);
 		const now = Date.now();
 		this.db
@@ -444,7 +465,7 @@ export class LocalCache {
 			})
 			.where(
 				and(
-					eq(crateGraphs.ecosystem, "rust"),
+					eq(crateGraphs.ecosystem, 'rust'),
 					eq(crateGraphs.name, n),
 					eq(crateGraphs.version, version),
 				),
@@ -473,7 +494,11 @@ export class LocalCache {
 	getStatus(ecosystem: string, name: string, version: string): CrateStatusResult {
 		const n = this.norm(name);
 		const row = this.db
-			.select({ status: crateStatus.status, error: crateStatus.error, lastStep: crateStatus.lastStep })
+			.select({
+				status: crateStatus.status,
+				error: crateStatus.error,
+				lastStep: crateStatus.lastStep,
+			})
 			.from(crateStatus)
 			.where(
 				and(
@@ -483,12 +508,13 @@ export class LocalCache {
 				),
 			)
 			.get();
-		if (!row) return { status: "unknown" };
+		if (!row) return { status: 'unknown' };
 		// Prefer in-memory step (most up-to-date), fall back to DB
 		const stepKey = `${ecosystem}:${n}:${version}`;
-		const step = row.status === "processing"
-			? (this.stepMap.get(stepKey) ?? row.lastStep ?? undefined)
-			: undefined;
+		const step =
+			row.status === 'processing'
+				? (this.stepMap.get(stepKey) ?? row.lastStep ?? undefined)
+				: undefined;
 		return {
 			status: row.status as CrateStatusValue,
 			...(row.error ? { error: row.error } : {}),
@@ -507,9 +533,9 @@ export class LocalCache {
 		const n = this.norm(name);
 		const now = Date.now();
 		const stepKey = `${ecosystem}:${n}:${version}`;
-		if (status === "processing" && step) {
+		if (status === 'processing' && step) {
 			this.stepMap.set(stepKey, step);
-		} else if (status !== "processing") {
+		} else if (status !== 'processing') {
 			this.stepMap.delete(stepKey);
 		}
 
@@ -540,7 +566,7 @@ export class LocalCache {
 		return this.db
 			.select({ name: crateStatus.name, version: crateStatus.version })
 			.from(crateStatus)
-			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, "processing")))
+			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, 'processing')))
 			.orderBy(desc(crateStatus.updatedAt))
 			.limit(limit)
 			.all();
@@ -550,7 +576,7 @@ export class LocalCache {
 		const row = this.db
 			.select({ count: count() })
 			.from(crateStatus)
-			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, "processing")))
+			.where(and(eq(crateStatus.ecosystem, ecosystem), eq(crateStatus.status, 'processing')))
 			.get();
 		return Number(row?.count ?? 0);
 	}
@@ -562,7 +588,13 @@ export class LocalCache {
 		name: string,
 		version: string,
 		edges: Array<{ from: string; to: string; kind: string; confidence: string }>,
-		nodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }>,
+		nodes: Array<{
+			id: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			is_external?: boolean;
+		}>,
 	): void {
 		const n = this.norm(name);
 		this.db
@@ -631,7 +663,13 @@ export class LocalCache {
 		nodeId: string,
 	): {
 		edges: Array<{ from: string; to: string; kind: string; confidence: string }>;
-		nodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }>;
+		nodes: Array<{
+			id: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			is_external?: boolean;
+		}>;
 	} {
 		const edgeRows = this.db
 			.select({
@@ -661,7 +699,13 @@ export class LocalCache {
 			nodeIds.add(edge.to);
 		}
 
-		const resultNodes: Array<{ id: string; name: string; kind: string; visibility: string; is_external?: boolean }> = [];
+		const resultNodes: Array<{
+			id: string;
+			name: string;
+			kind: string;
+			visibility: string;
+			is_external?: boolean;
+		}> = [];
 		if (nodeIds.size === 0) return { edges, nodes: resultNodes };
 
 		const allIds = Array.from(nodeIds);
@@ -692,12 +736,147 @@ export class LocalCache {
 
 		return { edges, nodes: resultNodes };
 	}
+
+	// ── Direct tree queries (work mid-parse, before treeJson is finalized) ──
+
+	/**
+	 * Find root tree nodes directly from the DB (works mid-parse).
+	 * Uses the crate root node ID (underscored crate name) — O(1) lookup.
+	 * During progressive parsing, edge-based root detection is unreliable
+	 * because parent edges arrive in batches, so we just find the known root.
+	 */
+	getTreeRootsDirect(
+		name: string,
+		version: string,
+	): { node: Node; hasChildren: boolean }[] {
+		const n = this.norm(name);
+		// Rust crate root node ID is the underscore-normalized name
+		const rootNodeId = n.replace(/-/g, '_');
+
+		const node = this.getNodeById(name, version, rootNodeId);
+		if (!node || node.is_external) return [];
+
+		// Check if root has structural children
+		const hasKids = this.db
+			.select({ id: edges.fromId })
+			.from(edges)
+			.where(
+				and(
+					eq(edges.ecosystem, 'rust'),
+					eq(edges.crateName, n),
+					eq(edges.crateVersion, version),
+					eq(edges.fromId, rootNodeId),
+					inArray(edges.kind, ['Contains', 'Defines']),
+				),
+			)
+			.limit(1)
+			.get();
+
+		return [{ node, hasChildren: !!hasKids }];
+	}
+
+	/**
+	 * Get children of a tree node directly from edges table.
+	 */
+	getTreeChildrenDirect(
+		name: string,
+		version: string,
+		parentId: string,
+	): { node: Node; hasChildren: boolean }[] {
+		const n = this.norm(name);
+		const eco = 'rust';
+		const structuralKinds = ['Contains', 'Defines'];
+
+		const childEdges = this.db
+			.select({ toId: edges.toId })
+			.from(edges)
+			.where(
+				and(
+					eq(edges.ecosystem, eco),
+					eq(edges.crateName, n),
+					eq(edges.crateVersion, version),
+					eq(edges.fromId, parentId),
+					inArray(edges.kind, structuralKinds),
+				),
+			)
+			.all();
+
+		const children: { node: Node; hasChildren: boolean }[] = [];
+		for (const row of childEdges) {
+			const node = this.getNodeById(name, version, row.toId);
+			if (!node || node.is_external) continue;
+			// Check if this child has children of its own
+			const hasKids = this.db
+				.select({ id: edges.fromId })
+				.from(edges)
+				.where(
+					and(
+						eq(edges.ecosystem, eco),
+						eq(edges.crateName, n),
+						eq(edges.crateVersion, version),
+						eq(edges.fromId, row.toId),
+						inArray(edges.kind, structuralKinds),
+					),
+				)
+				.limit(1)
+				.get();
+			children.push({ node, hasChildren: !!hasKids });
+		}
+		return children;
+	}
+
+	/**
+	 * Walk parent chain iteratively from edges table.
+	 */
+	getTreeAncestorsDirect(name: string, version: string, nodeId: string): Node[] {
+		const n = this.norm(name);
+		const eco = 'rust';
+		const structuralKinds = ['Contains', 'Defines'];
+		const ancestors: Node[] = [];
+		let current = nodeId;
+		const visited = new Set<string>();
+
+		while (!visited.has(current)) {
+			visited.add(current);
+			const parentEdge = this.db
+				.select({ fromId: edges.fromId })
+				.from(edges)
+				.where(
+					and(
+						eq(edges.ecosystem, eco),
+						eq(edges.crateName, n),
+						eq(edges.crateVersion, version),
+						eq(edges.toId, current),
+						inArray(edges.kind, structuralKinds),
+					),
+				)
+				.limit(1)
+				.get();
+			if (!parentEdge) break;
+			const parentNode = this.getNodeById(name, version, parentEdge.fromId);
+			if (!parentNode) break;
+			ancestors.unshift(parentNode);
+			current = parentEdge.fromId;
+		}
+		return ancestors;
+	}
 }
 
 function summarizeNode(n: Node): CrateTree['nodes'][number] {
 	return {
-		id: n.id, name: n.name, kind: n.kind, visibility: n.visibility, is_external: n.is_external,
-		...(n.kind === 'Impl' ? { impl_trait: n.impl_trait, generics: n.generics, where_clause: n.where_clause, bound_links: n.bound_links } : {})
+		id: n.id,
+		name: n.name,
+		kind: n.kind,
+		visibility: n.visibility,
+		is_external: n.is_external,
+		...(n.kind === 'Impl'
+			? {
+					impl_trait: n.impl_trait,
+					generics: n.generics,
+					where_clause: n.where_clause,
+					bound_links: n.bound_links,
+				}
+			: {}),
 	};
 }
 
@@ -705,7 +884,10 @@ function computeTreeSummary(graph: CrateGraph): CrateTree {
 	const internalNodes = graph.nodes.filter((n) => !n.is_external);
 	const internalIds = new Set(internalNodes.map((n) => n.id));
 	const treeEdges = graph.edges.filter(
-		(e) => (e.kind === 'Contains' || e.kind === 'Defines') && internalIds.has(e.from) && internalIds.has(e.to)
+		(e) =>
+			(e.kind === 'Contains' || e.kind === 'Defines') &&
+			internalIds.has(e.from) &&
+			internalIds.has(e.to),
 	);
 	return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
 }

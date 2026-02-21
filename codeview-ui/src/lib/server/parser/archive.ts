@@ -19,7 +19,7 @@ const TEXT_DECODER = new TextDecoder();
 
 export async function fetchSourceArchive(
 	url: string,
-	options: SourceArchiveOptions
+	options: SourceArchiveOptions,
 ): Promise<SourceArchiveOutcome> {
 	const headers: Record<string, string> = { ...(options.headers ?? {}) };
 	if (options.userAgent && !headers['User-Agent']) {
@@ -34,7 +34,10 @@ export async function fetchSourceArchive(
 	}
 
 	if (!response.ok) {
-		return { status: 'error', message: `Archive fetch failed: ${response.status} ${response.statusText}` };
+		return {
+			status: 'error',
+			message: `Archive fetch failed: ${response.status} ${response.statusText}`,
+		};
 	}
 
 	return extractSourcesFromTarGz(response, options);
@@ -43,7 +46,7 @@ export async function fetchSourceArchive(
 export async function fetchSourceFileFromArchive(
 	url: string,
 	targetFile: string,
-	options: SourceArchiveOptions
+	options: SourceArchiveOptions,
 ): Promise<SourceFileArchiveOutcome> {
 	const headers: Record<string, string> = { ...(options.headers ?? {}) };
 	if (options.userAgent && !headers['User-Agent']) {
@@ -58,7 +61,10 @@ export async function fetchSourceFileFromArchive(
 	}
 
 	if (!response.ok) {
-		return { status: 'error', message: `Archive fetch failed: ${response.status} ${response.statusText}` };
+		return {
+			status: 'error',
+			message: `Archive fetch failed: ${response.status} ${response.statusText}`,
+		};
 	}
 
 	return extractSourceFileFromTarGz(response, targetFile, options);
@@ -66,7 +72,7 @@ export async function fetchSourceFileFromArchive(
 
 export async function extractSourcesFromTarGz(
 	response: Response,
-	options: SourceArchiveOptions
+	options: SourceArchiveOptions,
 ): Promise<SourceArchiveOutcome> {
 	if (!response.body) {
 		return { status: 'error', message: 'Archive response missing body' };
@@ -78,7 +84,7 @@ export async function extractSourcesFromTarGz(
 	} catch (err) {
 		return {
 			status: 'error',
-			message: err instanceof Error ? err.message : 'Failed to create gzip stream'
+			message: err instanceof Error ? err.message : 'Failed to create gzip stream',
 		};
 	}
 
@@ -110,9 +116,7 @@ export async function extractSourcesFromTarGz(
 		const rawPath = pendingLongPath ?? header.name;
 		pendingLongPath = null;
 
-		const pathWithPrefix = header.prefix
-			? `${header.prefix}/${rawPath}`
-			: rawPath;
+		const pathWithPrefix = header.prefix ? `${header.prefix}/${rawPath}` : rawPath;
 
 		if (stripPrefix === null) {
 			const cleaned = pathWithPrefix.replace(/^\.\/+/, '');
@@ -162,7 +166,7 @@ export async function extractSourcesFromTarGz(
 export async function extractSourceFileFromTarGz(
 	response: Response,
 	targetFile: string,
-	options: SourceArchiveOptions
+	options: SourceArchiveOptions,
 ): Promise<SourceFileArchiveOutcome> {
 	if (!response.body) {
 		return { status: 'error', message: 'Archive response missing body' };
@@ -174,7 +178,7 @@ export async function extractSourceFileFromTarGz(
 	} catch (err) {
 		return {
 			status: 'error',
-			message: err instanceof Error ? err.message : 'Failed to create gzip stream'
+			message: err instanceof Error ? err.message : 'Failed to create gzip stream',
 		};
 	}
 
@@ -206,9 +210,7 @@ export async function extractSourceFileFromTarGz(
 		const rawPath = pendingLongPath ?? header.name;
 		pendingLongPath = null;
 
-		const pathWithPrefix = header.prefix
-			? `${header.prefix}/${rawPath}`
-			: rawPath;
+		const pathWithPrefix = header.prefix ? `${header.prefix}/${rawPath}` : rawPath;
 
 		if (stripPrefix === null) {
 			const cleaned = pathWithPrefix.replace(/^\.\/+/, '');
@@ -277,7 +279,10 @@ function normalizeArchivePath(path: string, stripPrefix: string | null): string 
 }
 
 function buildTargetCandidates(path: string): Set<string> {
-	const normalized = path.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+	const normalized = path
+		.replace(/\\/g, '/')
+		.replace(/^\.\/+/, '')
+		.replace(/^\/+/, '');
 	const withSrc = normalized.startsWith('src/') ? normalized : `src/${normalized}`;
 	const withoutSrc = normalized.startsWith('src/') ? normalized.slice('src/'.length) : normalized;
 	const set = new Set<string>();
@@ -313,7 +318,7 @@ function parseTarHeader(block: Uint8Array): {
 		name: name.trimEnd(),
 		size: parseOctal(sizeRaw),
 		typeflag,
-		prefix: prefix.trimEnd()
+		prefix: prefix.trimEnd(),
 	};
 }
 

@@ -1,7 +1,16 @@
 import { Result } from 'better-result';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { Confidence, CrateGraph, EdgeKind, Node, Edge, NodeKind, Visibility, Workspace } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeDetail } from '$lib/schema';
+import type {
+	Confidence,
+	CrateGraph,
+	EdgeKind,
+	Node,
+	Edge,
+	NodeKind,
+	Visibility,
+	Workspace,
+} from '$lib/graph';
+import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from '$lib/schema';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, isRustChannel } from '$lib/std';
 import type { CrossEdgeData, DataProvider } from '../provider';
@@ -14,14 +23,39 @@ import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
 import { ValidationError, NotAvailableError, RateLimitError } from '../errors';
 import { checkRateLimitPolicy } from './ratelimit';
-import { isValidCrateName, isValidVersion, crateNameVariants, normalizeCrateName } from '../validation';
+import {
+	isValidCrateName,
+	isValidVersion,
+	crateNameVariants,
+	normalizeCrateName,
+} from '../validation';
 import { getLogger } from '$lib/log';
-import { USER_AGENT, SOURCE_MAX_BYTES, resolveSourceFileFromMap, selectSourceProviders, classifyStatusAction } from '../provider-utils';
+import { USER_AGENT, SOURCE_MAX_BYTES, statusAction, source, type SourceProviderMode } from '../provider-utils';
+import type { PackageMetadata } from '../registry/types';
 
 const log = getLogger('cloudflare');
 
+/** Build a GitHub file URL from package metadata, or null if repo info unavailable. */
+function buildGitHubFileUrl(metadata: PackageMetadata, filePath: string): string | null {
+	const repoUrl = metadata.repositoryUrl;
+	if (!repoUrl) return null;
+	try {
+		const url = new URL(repoUrl);
+		if (!url.hostname.includes('github.com')) return null;
+		const path = url.pathname.replace(/\.git$/, '').replace(/\/+$/, '');
+		const normalizedFile = filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+		return `https://github.com${path}/blob/v${metadata.version}/${normalizedFile}`;
+	} catch {
+		return null;
+	}
+}
+
 /** Get a GraphStore stub for a specific crate */
-function getCrateGraphStore(env: AppEnv, name: string, version: string): DurableObjectStub<GraphStore> {
+function getCrateGraphStore(
+	env: AppEnv,
+	name: string,
+	version: string,
+): DurableObjectStub<GraphStore> {
 	return env.GRAPH_STORE.get(env.GRAPH_STORE.idFromName(`rust/${name}/${version}`));
 }
 
@@ -39,7 +73,9 @@ type AppEnv = Omit<Env, 'GRAPH_STORE' | 'CRATE_REGISTRY' | 'PARSE_CRATE'> & {
 };
 
 async function resolveStdVersion(
-	r2: R2Bucket, name: string, version: string
+	r2: R2Bucket,
+	name: string,
+	version: string,
 ): Promise<string | null> {
 	if (!isStdCrate(name) || !isRustChannel(version)) return version;
 	const obj = await r2.get(`rust/${name}/${version}.json`);
@@ -57,7 +93,7 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 		crateName: string,
 		crateVersion: string,
 		file: string,
-		sourceProvider: 'auto' | 'crates-io' | 'github'
+		sourceProvider: SourceProviderMode,
 	): string {
 		return `${crateName}|${crateVersion}|${sourceProvider}|${file}`;
 	}
@@ -90,35 +126,36 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			relativePath: string,
 			crateName?: string,
 			crateVersion?: string,
-			sourceProvider: 'auto' | 'crates-io' | 'github' = 'auto'
+			sourceProvider: SourceProviderMode = 'auto',
 		) {
 			// Get crate-specific GraphStore if available
-			const graphStub = crateName && crateVersion
-				? getCrateGraphStore(env, crateName, crateVersion)
-				: env.GRAPH_STORE.get(env.GRAPH_STORE.idFromName('default'));
+			const graphStub =
+				crateName && crateVersion
+					? getCrateGraphStore(env, crateName, crateVersion)
+					: env.GRAPH_STORE.get(env.GRAPH_STORE.idFromName('default'));
 
 			// Check DO cache first
 			const cachedFile = await graphStub.getSourceFile(relativePath);
-			if (cachedFile) return { error: null, content: cachedFile };
+			if (cachedFile) return { error: null, content: cachedFile, absolutePath: null, repoUrl: null };
 
 			if (!crateName || !crateVersion) {
-				return { error: 'Source file not available', content: null };
+				return { error: 'Source file not available', content: null, absolutePath: null, repoUrl: null };
 			}
 
 			const cacheKey = sourceCacheKey(crateName, crateVersion, relativePath, sourceProvider);
 			const cachedContent = getCachedSourceFile(cacheKey);
 			if (cachedContent !== null) {
-				return { error: null, content: cachedContent };
+				return { error: null, content: cachedContent, absolutePath: null, repoUrl: null };
 			}
 
 			const sourceAdapterResult = getSourceAdapter('rust');
 			if (sourceAdapterResult.isErr()) {
-				return { error: sourceAdapterResult.error.message, content: null };
+				return { error: sourceAdapterResult.error.message, content: null, absolutePath: null, repoUrl: null };
 			}
 
 			const registryResult = getRegistry('rust');
 			if (registryResult.isErr()) {
-				return { error: registryResult.error.message, content: null };
+				return { error: registryResult.error.message, content: null, absolutePath: null, repoUrl: null };
 			}
 
 			let metadata: Awaited<ReturnType<typeof registryResult.value.resolve>> | null = null;
@@ -130,20 +167,30 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				}
 			}
 			if (!metadata) {
-				return { error: 'Source metadata unavailable', content: null };
+				return { error: 'Source metadata unavailable', content: null, absolutePath: null, repoUrl: null };
 			}
 
-			if ((sourceProvider === 'auto' || sourceProvider === 'crates-io') && metadata.sourceArchiveUrl) {
+			const repoUrl = buildGitHubFileUrl(metadata, relativePath);
+
+			if (
+				(sourceProvider === 'auto' || sourceProvider === 'crates-io') &&
+				metadata.sourceArchiveUrl
+			) {
 				const direct = await fetchSourceFileFromArchive(metadata.sourceArchiveUrl, relativePath, {
 					maxBytes: SOURCE_MAX_BYTES,
-					userAgent: USER_AGENT
+					userAgent: USER_AGENT,
 				});
 				if (direct.status === 'ok') {
 					setCachedSourceFile(cacheKey, direct.content);
-					return { error: null, content: direct.content };
+					return { error: null, content: direct.content, absolutePath: null, repoUrl };
 				}
 				if (sourceProvider === 'crates-io') {
-					return { error: direct.status === 'error' ? direct.message : 'Source file not available', content: null };
+					return {
+						error: direct.status === 'error' ? direct.message : 'Source file not available',
+						content: null,
+						absolutePath: null,
+						repoUrl: null,
+					};
 				}
 			}
 
@@ -151,28 +198,28 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				ecosystem: 'rust',
 				name: metadata.name,
 				version: metadata.version,
-				metadata
+				metadata,
 			});
-			const selectedProviders = selectSourceProviders(providers, sourceProvider);
+			const selectedProviders = source.selectProviders(providers, sourceProvider);
 			const files = await fetchSourcesWithProviders(
 				selectedProviders,
 				{ ecosystem: 'rust', name: metadata.name, version: metadata.version, metadata },
 				{
 					maxBytes: SOURCE_MAX_BYTES,
 					userAgent: USER_AGENT,
-					githubToken: env.GITHUB_TOKEN
-				}
+					githubToken: env.GITHUB_TOKEN,
+				},
 			);
 			if (!files) {
-				return { error: 'Source file not available', content: null };
+				return { error: 'Source file not available', content: null, absolutePath: null, repoUrl: null };
 			}
 
-			const content = resolveSourceFileFromMap(files, relativePath);
+			const content = source.resolveFromMap(files, relativePath);
 			if (content === null) {
-				return { error: 'File not found', content: null };
+				return { error: 'File not found', content: null, absolutePath: null, repoUrl: null };
 			}
 			setCachedSourceFile(cacheKey, content);
-			return { error: null, content };
+			return { error: null, content, absolutePath: null, repoUrl };
 		},
 
 		async loadCrateGraph(name: string, version: string) {
@@ -181,13 +228,13 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			if (!resolved) return null;
 
 			const graphStub = getCrateGraphStore(env, name, resolved);
-			const hasCrate = await graphStub.hasCrate('rust', name, resolved);
-			if (!hasCrate) return null;
+			const meta = await graphStub.getCrateMeta('rust', name, resolved);
+			if (!meta || !meta.committed || (meta.nodeCount === 0 && meta.edgeCount === 0)) return null;
 
 			// Reconstruct graph from nodes/edges
 			const [nodes, edges] = await Promise.all([
 				graphStub.getNodesForCrate('rust', name, resolved),
-				graphStub.getEdgesForCrate('rust', name, resolved)
+				graphStub.getEdgesForCrate('rust', name, resolved),
 			]);
 
 			const normalizedName = normalizeCrateName(name);
@@ -196,8 +243,64 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				name: normalizedName,
 				version: resolved,
 				nodes,
-				edges
+				edges,
 			} as CrateGraph;
+		},
+
+		async loadTreeRootsDirect(name: string, version: string): Promise<TreeNodeDTO[] | null> {
+			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
+			if (!resolved) return [];
+			const graphStub = getCrateGraphStore(env, name, resolved);
+			const roots = await graphStub.getTreeRootsDirect('rust', name, resolved);
+			return roots.map(({ node, hasChildren }) => ({
+				node: {
+					id: node.id,
+					name: node.name,
+					kind: node.kind,
+					visibility: node.visibility,
+					is_external: node.is_external,
+				},
+				hasChildren,
+			}));
+		},
+
+		async loadTreeChildrenDirect(
+			name: string,
+			version: string,
+			parentId: string,
+		): Promise<TreeNodeDTO[] | null> {
+			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
+			if (!resolved) return [];
+			const graphStub = getCrateGraphStore(env, name, resolved);
+			const children = await graphStub.getTreeChildrenDirect('rust', name, resolved, parentId);
+			return children.map(({ node, hasChildren }) => ({
+				node: {
+					id: node.id,
+					name: node.name,
+					kind: node.kind,
+					visibility: node.visibility,
+					is_external: node.is_external,
+				},
+				hasChildren,
+			}));
+		},
+
+		async loadTreeAncestorsDirect(
+			name: string,
+			version: string,
+			nodeId: string,
+		): Promise<NodeSummary[] | null> {
+			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
+			if (!resolved) return [];
+			const graphStub = getCrateGraphStore(env, name, resolved);
+			const ancestors = await graphStub.getTreeAncestorsDirect('rust', name, resolved, nodeId);
+			return ancestors.map((node) => ({
+				id: node.id,
+				name: node.name,
+				kind: node.kind,
+				visibility: node.visibility,
+				is_external: node.is_external,
+			}));
 		},
 
 		async loadCrateTree(name: string, version: string): Promise<CrateTree | null> {
@@ -222,6 +325,10 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			// Fall back to DO
 			const graphStub = getCrateGraphStore(env, name, resolved);
 			const meta = await graphStub.getCrateMeta('rust', name, resolved);
+			if (!meta?.committed) {
+				log.info`loadCrateTree(cf) source=do name=${name} version=${resolved} committed=no`;
+				return null;
+			}
 			const treeJson = meta?.treeJson;
 			if (!treeJson) {
 				log.info`loadCrateTree(cf) source=do name=${name} version=${resolved} hit=no`;
@@ -252,7 +359,7 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			// Fall back to DO
 			const graphStub = getCrateGraphStore(env, name, resolved);
 			const meta = await graphStub.getCrateMeta('rust', name, resolved);
-			if (!meta?.indexJson) return null;
+			if (!meta?.committed || !meta.indexJson) return null;
 
 			const result = Result.try(() => JSON.parse(meta.indexJson) as CrateIndex);
 			if (result.isErr()) {
@@ -262,7 +369,11 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return result.value;
 		},
 
-		async loadNodeDetail(name: string, version: string, nodeId: string): Promise<NodeDetail | null> {
+		async loadNodeDetail(
+			name: string,
+			version: string,
+			nodeId: string,
+		): Promise<NodeDetail | null> {
 			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
 			if (!resolved) return null;
 
@@ -271,18 +382,20 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			// Load node and its edges concurrently
 			const [node, nodeEdges] = await Promise.all([
 				graphStub.getNode('rust', name, resolved, nodeId),
-				graphStub.getEdgesForNode('rust', name, resolved, nodeId)
+				graphStub.getEdgesForNode('rust', name, resolved, nodeId),
 			]);
 
 			if (!node) return null;
 
 			// Collect all edges - start with direct edges
 			const allEdges = [...nodeEdges];
-			const edgeSet = new Set(nodeEdges.map(e => `${e.from}|${e.to}|${e.kind}`));
+			const edgeSet = new Set(nodeEdges.map((e) => `${e.from}|${e.to}|${e.kind}`));
 
 			// For types with impl blocks, follow Defines edges to get impl -> method edges
 			// This enables showing methods in the detail view
-			const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(node.kind);
+			const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(
+				node.kind,
+			);
 			const implIds: string[] = [];
 			if (isTypeNode) {
 				for (const edge of nodeEdges) {
@@ -294,8 +407,8 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 
 			// Load edges from impl blocks (to get Contains/Defines -> Function edges)
 			if (implIds.length > 0) {
-				const implEdgePromises = implIds.map(implId => 
-					graphStub.getEdgesForNode('rust', name, resolved, implId)
+				const implEdgePromises = implIds.map((implId) =>
+					graphStub.getEdgesForNode('rust', name, resolved, implId),
 				);
 				const implEdgesArrays = await Promise.all(implEdgePromises);
 				for (const implEdges of implEdgesArrays) {
@@ -328,7 +441,7 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return {
 				node,
 				edges: allEdges,
-				relatedNodes
+				relatedNodes,
 			};
 		},
 
@@ -338,14 +451,26 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				edges: result.edges.map((edge) => ({
 					...edge,
 					kind: edge.kind as EdgeKind,
-					confidence: edge.confidence as Confidence
+					confidence: edge.confidence as Confidence,
 				})),
 				nodes: result.nodes.map((node) => ({
 					...node,
 					kind: node.kind as NodeKind,
-					visibility: node.visibility as Visibility
-				}))
+					visibility: node.visibility as Visibility,
+				})),
 			};
+		},
+
+		async searchNodesDirect(
+			crateName: string,
+			crateVersion: string,
+			queryText: string,
+			limit = 200,
+		): Promise<NodeSummary[] | null> {
+			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, crateName, crateVersion);
+			if (!resolved) return [];
+			const graphStub = getCrateGraphStore(env, crateName, resolved);
+			return await graphStub.searchNodeSummaries('rust', crateName, resolved, queryText, limit);
 		},
 
 		async getCrateStatus(name: string, version: string) {
@@ -358,38 +483,52 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 				}
 				return {
 					status: 'failed' as const,
-					error: `Std crate ${name}@${version} not available. Pre-built graphs are generated via CI.`
+					error: `Std crate ${name}@${version} not available. Pre-built graphs are generated via CI.`,
 				};
 			}
 			const current = await registryStub.getStatus('rust', name, version);
+			log.debug`getCrateStatus ${name}@${version} registry=${current.status}${current.error ? ` error=${current.error}` : ''}`;
 			// Registry status can lag/reset while graph data already exists.
 			// Promote to ready and heal registry state from graph presence.
-			if (current.status === 'unknown') {
+			// Covers both 'unknown' (registry reset) and 'failed' (workflow crash
+			// after tree was already stored to R2).
+			if (current.status === 'unknown' || current.status === 'failed') {
 				try {
-					const graphStub = getCrateGraphStore(env, name, version);
-					const hasGraph = await graphStub.hasCrate('rust', name, version);
-					if (hasGraph) {
+					// R2 head check is cheap and avoids DO RPC serialization limits
+					const head = await env.CRATE_GRAPHS.head(`rust/${name}/${version}/tree.json`);
+					log.debug`getCrateStatus ${name}@${version} R2 head=${head ? `${String(head.size)}B` : 'miss'}`;
+					if (head) {
 						await registryStub.setStatus('rust', name, version, 'ready');
+						log.info`getCrateStatus ${name}@${version} healed failed→ready (tree in R2)`;
 						return { status: 'ready' as const };
 					}
-				} catch {}
+				} catch (err) {
+					log.warn`getCrateStatus ${name}@${version} R2 head error: ${String(err)}`;
+				}
 			}
 			// Auto-trigger parse for unknown crates
 			if (current.status === 'unknown' && isValidCrateName(name) && isValidVersion(version)) {
-				await Promise.all([
-					registryStub.setStatus('rust', name, version, 'processing'),
-					env.PARSE_CRATE.create({ params: { ecosystem: 'rust' as const, name, version } })
-				]);
-				return { status: 'processing' as const };
+				const enqueue = await registryStub.requestParse('rust', name, version, {
+					source: 'provider.getCrateStatus',
+				});
+				return enqueue.status;
 			}
 			// Re-derive action from error message (not stored in DB)
-			const action = classifyStatusAction(current);
-			return action ? { ...current, action } : current;
+			const action = statusAction.classify(current);
+			const result = action ? { ...current, action } : current;
+			if (result.status === 'failed') {
+				log.warn`getCrateStatus ${name}@${version} returning failed error=${current.error ?? '(none)'} action=${action ?? 'none'}`;
+			}
+			return result;
 		},
 
 		async triggerParse(name: string, version: string, force?: boolean) {
 			if (isStdCrate(name)) {
-				return Result.err(new NotAvailableError({ message: `${name} is a standard library crate and cannot be parsed on-demand` }));
+				return Result.err(
+					new NotAvailableError({
+						message: `${name} is a standard library crate and cannot be parsed on-demand`,
+					}),
+				);
 			}
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
@@ -404,19 +543,23 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 
 			if (!force) {
 				const current = await registryStub.getStatus('rust', name, version);
-				if (current.status === 'processing' || current.status === 'ready') return Result.ok(undefined);
+				if (current.status === 'processing' || current.status === 'ready')
+					return Result.ok(undefined);
 			}
 
-			// Set status and trigger workflow concurrently
-			await Promise.all([
-				registryStub.setStatus('rust', name, version, 'processing'),
-				env.PARSE_CRATE.create({ params: { ecosystem: 'rust', name, version } })
-			]);
+			await registryStub.requestParse('rust', name, version, {
+				force: Boolean(force),
+				source: 'provider.triggerParse',
+			});
 			return Result.ok(undefined);
 		},
 
 		async triggerStdInstall(_name: string, _version: string) {
-			return Result.err(new NotAvailableError({ message: 'std crate installation is not available in hosted mode' }));
+			return Result.err(
+				new NotAvailableError({
+					message: 'std crate installation is not available in hosted mode',
+				}),
+			);
 		},
 
 		async searchRegistry(query: string) {
@@ -426,7 +569,7 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return results.map((r) => ({
 				name: r.name,
 				version: r.version,
-				description: r.description
+				description: r.description,
 			}));
 		},
 
@@ -437,7 +580,7 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return results.map((r) => ({
 				name: r.name,
 				version: r.version,
-				description: r.description
+				description: r.description,
 			}));
 		},
 
@@ -445,13 +588,12 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			return await registryStub.getProcessingCrates('rust', limit);
 		},
 
-
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
 			if (isStdCrate(name)) {
 				// Check all channels concurrently
 				const channelNames = ['stable', 'nightly', 'beta'] as const;
 				const results = await Promise.all(
-					channelNames.map((ch) => env.CRATE_GRAPHS.head(`rust/${name}/${ch}.json`))
+					channelNames.map((ch) => env.CRATE_GRAPHS.head(`rust/${name}/${ch}.json`)),
 				);
 				const channels = channelNames.filter((_, i) => results[i] !== null);
 				return channels.length > 0 ? channels : ['stable'];
@@ -481,7 +623,6 @@ export function createCloudflareProvider(env: AppEnv, event?: RequestEvent): Dat
 			const resolved = await resolveStdVersion(env.CRATE_GRAPHS, name, version);
 			return resolved ?? version;
 		},
-
 	};
 }
 

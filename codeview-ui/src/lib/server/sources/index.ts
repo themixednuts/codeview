@@ -6,7 +6,9 @@ import { UnsupportedEcosystemError } from '../errors';
 
 const adapters = new Map<Ecosystem, SourceAdapter>();
 
-export function getSourceAdapter(ecosystem: Ecosystem): Result<SourceAdapter, UnsupportedEcosystemError> {
+export function getSourceAdapter(
+	ecosystem: Ecosystem,
+): Result<SourceAdapter, UnsupportedEcosystemError> {
 	let adapter = adapters.get(ecosystem);
 	if (adapter) return Result.ok(adapter);
 

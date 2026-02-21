@@ -23,7 +23,7 @@ export function collectManifests(sourceFiles: Map<string, string>): ManifestEntr
 			workspaceMembers: members,
 			workspaceExclude: exclude,
 			libPath,
-			bins
+			bins,
 		});
 	}
 	return manifests;
@@ -31,7 +31,7 @@ export function collectManifests(sourceFiles: Map<string, string>): ManifestEntr
 
 export function selectManifestForCrate(
 	crateName: string,
-	manifests: ManifestEntry[]
+	manifests: ManifestEntry[],
 ): ManifestEntry | null {
 	if (manifests.length === 0) return null;
 
@@ -43,7 +43,7 @@ export function selectManifestForCrate(
 	for (const workspace of workspaces.sort((a, b) => a.path.length - b.path.length)) {
 		const memberPaths = resolveWorkspaceMembers(
 			workspace,
-			manifests.map((m) => m.path)
+			manifests.map((m) => m.path),
 		);
 		for (const memberPath of memberPaths) {
 			const entry = byPath.get(memberPath);
@@ -62,7 +62,7 @@ export function selectManifestForCrate(
 
 export function filterSourceFilesForManifest(
 	sourceFiles: Map<string, string>,
-	manifest: ManifestEntry
+	manifest: ManifestEntry,
 ): Map<string, string> {
 	const baseDir = manifestDir(manifest.path);
 	if (!baseDir) return new Map(sourceFiles);
@@ -78,7 +78,7 @@ export function filterSourceFilesForManifest(
 
 export function resolveRootFile(
 	manifest: ManifestEntry,
-	sourceFiles: Map<string, string>
+	sourceFiles: Map<string, string>,
 ): string | null {
 	const baseDir = manifestDir(manifest.path);
 	const candidates: string[] = [];
@@ -109,7 +109,7 @@ export function resolveRootFile(
 
 export function resolveRootFileForCrate(
 	crateName: string,
-	sourceFiles: Map<string, string>
+	sourceFiles: Map<string, string>,
 ): string | null {
 	const manifests = collectManifests(sourceFiles);
 	const manifest = selectManifestForCrate(crateName, manifests);
@@ -132,7 +132,10 @@ export function manifestDir(path: string): string {
 }
 
 export function normalizePath(path: string): string {
-	return path.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/^\/+/, '');
+	return path
+		.replace(/\\/g, '/')
+		.replace(/^\.\/+/, '')
+		.replace(/^\/+/, '');
 }
 
 function parsePackageName(content: string): string | null {
@@ -145,11 +148,11 @@ function parseManifestPaths(content: string): {
 	bins: { name?: string; path?: string }[];
 } {
 	const libSection = extractSection(content, 'lib');
-	const libPath = libSection ? readKey(libSection, 'path') ?? undefined : undefined;
+	const libPath = libSection ? (readKey(libSection, 'path') ?? undefined) : undefined;
 	const binSections = extractArraySections(content, 'bin');
 	const bins = binSections.map((section) => ({
 		name: readKey(section, 'name') ?? undefined,
-		path: readKey(section, 'path') ?? undefined
+		path: readKey(section, 'path') ?? undefined,
 	}));
 	return { libPath, bins };
 }
@@ -159,7 +162,7 @@ function parseWorkspace(content: string): { members: string[]; exclude: string[]
 	if (!section) return { members: [], exclude: [] };
 	return {
 		members: parseStringArray(section, 'members'),
-		exclude: parseStringArray(section, 'exclude')
+		exclude: parseStringArray(section, 'exclude'),
 	};
 }
 
@@ -179,17 +182,14 @@ function parseStringArray(section: string, key: string): string[] {
 	return values.map((value) => normalizePath(value));
 }
 
-function resolveWorkspaceMembers(
-	root: ManifestEntry,
-	manifestPaths: string[]
-): string[] {
+function resolveWorkspaceMembers(root: ManifestEntry, manifestPaths: string[]): string[] {
 	const rootDir = manifestDir(root.path);
 	const rootPrefix = rootDir ? `${rootDir}/` : '';
 	const candidates = manifestPaths
 		.filter((path) => path.startsWith(rootPrefix))
 		.map((path) => ({
 			path,
-			rel: path.slice(rootPrefix.length)
+			rel: path.slice(rootPrefix.length),
 		}));
 
 	const include = new Set<string>();

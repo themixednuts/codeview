@@ -1,7 +1,8 @@
 import type { Result } from 'better-result';
-import type { Edge, Workspace, CrateGraph } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeSummary, NodeDetail } from '$lib/schema';
+import type { Edge, Node, Workspace, CrateGraph } from '$lib/graph';
+import type { CrateIndex, CrateTree, NodeSummary, NodeDetail, TreeNodeDTO } from '$lib/schema';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
+import type { SourceProviderMode } from './provider-utils';
 
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 
@@ -31,10 +32,12 @@ export interface DataProvider {
 		relativePath: string,
 		crateName?: string,
 		crateVersion?: string,
-		sourceProvider?: 'auto' | 'crates-io' | 'github'
+		sourceProvider?: SourceProviderMode,
 	): Promise<{
 		error: string | null;
 		content: string | null;
+		absolutePath: string | null;
+		repoUrl: string | null;
 	}>;
 
 	// Cloud multi-crate mode
@@ -43,10 +46,28 @@ export interface DataProvider {
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
 	/** Load a single node with its edges and related nodes (progressive loading) */
 	loadNodeDetail?(name: string, version: string, nodeId: string): Promise<NodeDetail | null>;
+	/** Direct tree queries — work mid-parse before treeJson is finalized. */
+	loadTreeRootsDirect?(name: string, version: string): Promise<TreeNodeDTO[] | null>;
+	loadTreeChildrenDirect?(name: string, version: string, parentId: string): Promise<TreeNodeDTO[] | null>;
+	loadTreeAncestorsDirect?(name: string, version: string, nodeId: string): Promise<NodeSummary[] | null>;
+	/** Hosted node search without loading full crate graph payloads. */
+	searchNodesDirect?(
+		name: string,
+		version: string,
+		query: string,
+		limit?: number,
+	): Promise<NodeSummary[] | null>;
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
-	triggerParse(name: string, version: string, force?: boolean): Promise<Result<void, ValidationError | NotAvailableError | RateLimitError>>;
-	triggerStdInstall(name: string, version: string): Promise<Result<void, ValidationError | NotAvailableError>>;
+	triggerParse(
+		name: string,
+		version: string,
+		force?: boolean,
+	): Promise<Result<void, ValidationError | NotAvailableError | RateLimitError>>;
+	triggerStdInstall(
+		name: string,
+		version: string,
+	): Promise<Result<void, ValidationError | NotAvailableError>>;
 	searchRegistry(query: string): Promise<CrateSummaryResult[]>;
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
@@ -55,6 +76,14 @@ export interface DataProvider {
 	/** Resolve version aliases ("latest", channel names) to an actual semver.
 	 *  Returns the input unchanged if it's already a concrete version. */
 	resolveVersion(name: string, version: string): Promise<string>;
+
+	/**
+	 * Trigger parsing if needed and wait for completion (or timeout).
+	 * Used by SSR layout load so RPC queries run after data is available.
+	 * For small crates, completes fully. For large crates, returns after
+	 * timeout with partial data from progressive storage.
+	 */
+	ensureParsed?(name: string, version: string): Promise<void>;
 }
 
 /**

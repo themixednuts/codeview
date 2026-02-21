@@ -30,7 +30,7 @@ export interface RateLimitEnv {
 const POLICY_KEYS: Record<RateLimitScope, keyof RateLimitEnv> = {
 	api: 'RATE_LIMIT_POLICY_API',
 	parse: 'RATE_LIMIT_POLICY_PARSE',
-	ws: 'RATE_LIMIT_POLICY_WS'
+	ws: 'RATE_LIMIT_POLICY_WS',
 };
 
 function coerceTier(value: string | undefined): RateLimitTier | null {
@@ -44,7 +44,7 @@ function coerceTier(value: string | undefined): RateLimitTier | null {
 
 export async function checkRateLimit(
 	limiter: RateLimit | undefined,
-	key: string
+	key: string,
 ): Promise<boolean> {
 	if (!limiter) return true;
 	const result = await Result.tryPromise(async () => {
@@ -61,10 +61,12 @@ export async function checkRateLimit(
 export function resolveRateLimitTier(
 	event: RequestEvent,
 	env: RateLimitEnv | undefined,
-	scope: RateLimitScope
+	scope: RateLimitScope,
 ): RateLimitTier {
 	const policyKey = POLICY_KEYS[scope];
-	const override = coerceTier((env?.[policyKey] as string | undefined) ?? env?.RATE_LIMIT_TIER_OVERRIDE);
+	const override = coerceTier(
+		(env?.[policyKey] as string | undefined) ?? env?.RATE_LIMIT_TIER_OVERRIDE,
+	);
 	if (override) return override;
 
 	const locals = event.locals as { user?: { plan?: string } };
@@ -76,7 +78,7 @@ export function resolveRateLimitTier(
 export function resolveRateLimiter(
 	env: RateLimitEnv | undefined,
 	scope: RateLimitScope,
-	tier: RateLimitTier
+	tier: RateLimitTier,
 ): RateLimit | undefined {
 	if (!env) return undefined;
 	if (scope === 'api') {
@@ -95,7 +97,9 @@ export function resolveRateLimiter(
 }
 
 function getActorKey(event: RequestEvent): string {
-	const locals = event.locals as { user?: { id?: string | number; login?: string; username?: string } };
+	const locals = event.locals as {
+		user?: { id?: string | number; login?: string; username?: string };
+	};
 	const userId = locals.user?.id ?? locals.user?.login ?? locals.user?.username;
 	if (userId !== undefined && userId !== null && `${userId}`.trim()) {
 		return `user:${userId}`;
@@ -107,7 +111,7 @@ function getActorKey(event: RequestEvent): string {
 export function buildRateLimitKey(
 	event: RequestEvent,
 	scope: RateLimitScope,
-	suffix?: string
+	suffix?: string,
 ): string {
 	const parts = [getActorKey(event), scope];
 	if (suffix) parts.push(suffix);
@@ -117,7 +121,7 @@ export function buildRateLimitKey(
 export async function checkRateLimitPolicy(
 	event: RequestEvent,
 	scope: RateLimitScope,
-	options?: { key?: string; keySuffix?: string }
+	options?: { key?: string; keySuffix?: string },
 ): Promise<boolean> {
 	const env = event.platform?.env as RateLimitEnv | undefined;
 	const tier = resolveRateLimitTier(event, env, scope);
