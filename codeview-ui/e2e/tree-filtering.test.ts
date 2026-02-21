@@ -1,26 +1,4 @@
-import { test, expect } from './fixtures';
-
-/**
- * Navigate to a workspace crate and wait for tree + kind filters to load.
- */
-async function setupCrateView(page: import('@playwright/test').Page, safeGoto: (path: string) => Promise<void>) {
-	await safeGoto('/');
-	const workspaceSection = page.locator('#workspace-crates');
-	await expect(workspaceSection).toBeVisible({ timeout: 15_000 });
-
-	const firstCard = workspaceSection.locator('a').first();
-	await firstCard.click();
-	await page.waitForURL(/\/[\w_-]+\/\d+\.\d+\.\d+/);
-
-	const sidebar = page.locator('.w-80');
-	await expect(sidebar).toBeVisible({ timeout: 15_000 });
-
-	// Wait for tree to load
-	const treeLinks = sidebar.locator('.overflow-auto a');
-	await expect(treeLinks.first()).toBeVisible({ timeout: 10_000 });
-
-	return sidebar;
-}
+import { test, expect, setupCrateView } from './fixtures';
 
 test.describe('Graph Tree & Filtering', () => {
 	test('tree renders with top-level items', async ({ page, safeGoto }) => {
@@ -49,56 +27,49 @@ test.describe('Graph Tree & Filtering', () => {
 	test('clicking kind filter highlights it', async ({ page, safeGoto }) => {
 		const sidebar = await setupCrateView(page, safeGoto);
 
-		const firstButton = sidebar.locator('.flex-wrap button[data-kind]').first();
-		await expect(firstButton).toBeVisible({ timeout: 5_000 });
+		// Find a non-disabled kind filter button
+		const enabledButtons = sidebar.locator('.flex-wrap button[data-kind]:not([disabled])');
+		await expect(enabledButtons.first()).toBeVisible({ timeout: 5_000 });
+		const firstButton = enabledButtons.first();
 		await expect(firstButton).not.toHaveAttribute('data-active', 'true');
 
-		await page.evaluate(() => {
-			(document.querySelector('.flex-wrap button[data-kind]') as HTMLElement)?.click();
-		});
+		await firstButton.click();
 		await expect(firstButton).toHaveAttribute('data-active', 'true', { timeout: 5_000 });
 	});
 
 	test('clicking active kind filter deactivates it', async ({ page, safeGoto }) => {
 		const sidebar = await setupCrateView(page, safeGoto);
 
-		const firstButton = sidebar.locator('.flex-wrap button[data-kind]').first();
-		await expect(firstButton).toBeVisible({ timeout: 5_000 });
+		// Find a non-disabled kind filter button
+		const enabledButtons = sidebar.locator('.flex-wrap button[data-kind]:not([disabled])');
+		await expect(enabledButtons.first()).toBeVisible({ timeout: 5_000 });
+		const firstButton = enabledButtons.first();
 
 		// Activate
-		await page.evaluate(() => {
-			(document.querySelector('.flex-wrap button[data-kind]') as HTMLElement)?.click();
-		});
+		await firstButton.click();
 		await expect(firstButton).toHaveAttribute('data-active', 'true', { timeout: 5_000 });
 
 		// Deactivate
-		await page.evaluate(() => {
-			(document.querySelector('.flex-wrap button[data-kind]') as HTMLElement)?.click();
-		});
+		await firstButton.click();
 		await expect(firstButton).not.toHaveAttribute('data-active', { timeout: 5_000 });
 	});
 
 	test('sidebar search shows results', async ({ page, safeGoto }) => {
 		const sidebar = await setupCrateView(page, safeGoto);
 
-		// Find the sidebar search input
 		const searchInput = sidebar.locator('input[name="q"]');
 		await expect(searchInput).toBeVisible();
 
-		// Type a search query — use a term likely to exist in any Rust crate
 		await searchInput.fill('new');
 		await searchInput.press('Enter');
 
-		// Wait for search results or "No results" message
 		await page.waitForTimeout(2000);
 
-		// Should show either results or "No results for"
 		const resultCount = sidebar.locator('.overflow-auto >> text=/\\d+ result/');
 		const noResults = sidebar.locator('text=No results for');
 		const hasResults = await resultCount.isVisible().catch(() => false);
 		const hasNoResults = await noResults.isVisible().catch(() => false);
 
-		// One of them should be true
 		expect(hasResults || hasNoResults).toBe(true);
 	});
 
@@ -118,11 +89,9 @@ test.describe('Graph Tree & Filtering', () => {
 	test('clearing sidebar search restores tree', async ({ page, safeGoto }) => {
 		const sidebar = await setupCrateView(page, safeGoto);
 
-		// Count tree links before search
 		const treeLinks = sidebar.locator('.overflow-auto a');
 		const countBefore = await treeLinks.count();
 
-		// Search for something
 		const searchInput = sidebar.locator('input[name="q"]');
 		await searchInput.fill('test');
 		await searchInput.press('Enter');
@@ -133,7 +102,6 @@ test.describe('Graph Tree & Filtering', () => {
 		await searchInput.press('Enter');
 		await page.waitForTimeout(2000);
 
-		// Tree should be back
 		const countAfter = await treeLinks.count();
 		expect(countAfter).toBe(countBefore);
 	});
