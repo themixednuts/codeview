@@ -7,7 +7,7 @@ export function isValidCrateNameParam(value: string | null | undefined): value i
 
 export function isValidVersionParam(value: string | null | undefined): value is string {
 	if (typeof value !== 'string') return false;
-	if (value === 'latest' || value === 'stable' || value === 'beta' || value === 'nightly') return true;
+	if (value === 'latest' || value === 'stable' || value === 'beta' || value === 'nightly')
+		return true;
 	return VERSION_RE.test(value);
 }
-

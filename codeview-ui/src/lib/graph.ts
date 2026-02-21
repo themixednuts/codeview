@@ -14,7 +14,7 @@ import type {
 	EdgeSchema,
 	CrateGraphSchema,
 	ExternalCrateSchema,
-	WorkspaceSchema
+	WorkspaceSchema,
 } from '$lib/schema';
 
 export type NodeKind = v.InferOutput<typeof NodeKindSchema>;

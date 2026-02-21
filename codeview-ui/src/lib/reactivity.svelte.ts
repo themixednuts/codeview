@@ -13,7 +13,7 @@ export type KeyedMemoOptions<K, T = unknown> = {
 export function arrayEqual<T>(
 	a: readonly T[],
 	b: readonly T[],
-	equals: (a: T, b: T) => boolean = Object.is
+	equals: (a: T, b: T) => boolean = Object.is,
 ): boolean {
 	if (a.length !== b.length) return false;
 	for (let i = 0; i < a.length; i++) {
@@ -109,7 +109,7 @@ export class Memo<T> {
 
 	constructor(
 		compute: () => T,
-		equalsOrOptions: ((a: T, b: T) => boolean) | MemoOptions<T> = shallowEqual
+		equalsOrOptions: ((a: T, b: T) => boolean) | MemoOptions<T> = shallowEqual,
 	) {
 		this.#compute = compute;
 		if (typeof equalsOrOptions === 'function') {
@@ -150,7 +150,7 @@ export class KeyedMemo<T, K = unknown> {
 	constructor(
 		key: () => K,
 		compute: () => T,
-		equalsKeyOrOptions: ((a: K, b: K) => boolean) | KeyedMemoOptions<K, T> = Object.is
+		equalsKeyOrOptions: ((a: K, b: K) => boolean) | KeyedMemoOptions<K, T> = Object.is,
 	) {
 		this.#key = key;
 		this.#compute = compute;

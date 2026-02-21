@@ -24,6 +24,6 @@ export function createTickTracker(cat: string, label: string) {
 				lastKey = key;
 				perfTick(cat, label);
 			}
-		}
+		},
 	};
 }

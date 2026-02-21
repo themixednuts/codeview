@@ -11,7 +11,7 @@ export const STD_CRATES = new Set([
 	'std_detect',
 	'panic_unwind',
 	'panic_abort',
-	'unwind'
+	'unwind',
 ]);
 
 // Subset that ships rustdoc JSON via the `rust-docs-json` component

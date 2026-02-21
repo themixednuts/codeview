@@ -3,9 +3,10 @@ import { getPerfLogger } from './log';
 type DetailFn<T> = string | ((result: T) => string);
 
 const perfNow = () => (globalThis.performance?.now ? globalThis.performance.now() : Date.now());
-const raf = typeof requestAnimationFrame === 'function'
-	? requestAnimationFrame
-	: (cb: (time: number) => void) => setTimeout(() => cb(perfNow()), 16);
+const raf =
+	typeof requestAnimationFrame === 'function'
+		? requestAnimationFrame
+		: (cb: (time: number) => void) => setTimeout(() => cb(perfNow()), 16);
 
 function resolveDetail<T>(detail: DetailFn<T> | undefined, result: T): string {
 	if (!detail) return '';
@@ -23,7 +24,7 @@ export const perf = {
 		cat: string,
 		label: string,
 		fn: () => T,
-		opts?: { threshold?: number; detail?: DetailFn<T> }
+		opts?: { threshold?: number; detail?: DetailFn<T> },
 	): T {
 		const t0 = perfNow();
 		const result = fn();
@@ -39,7 +40,7 @@ export const perf = {
 		cat: string,
 		label: string,
 		fn: () => Promise<T>,
-		opts?: { threshold?: number; detail?: DetailFn<T> }
+		opts?: { threshold?: number; detail?: DetailFn<T> },
 	): Promise<T> {
 		const t0 = perfNow();
 		const result = await fn();
@@ -51,12 +52,7 @@ export const perf = {
 		return result;
 	},
 
-	timeAlways<T>(
-		cat: string,
-		label: string,
-		fn: () => T,
-		opts?: { detail?: DetailFn<T> }
-	): T {
+	timeAlways<T>(cat: string, label: string, fn: () => T, opts?: { detail?: DetailFn<T> }): T {
 		const t0 = perfNow();
 		const result = fn();
 		const dt = perfNow() - t0;
@@ -72,7 +68,7 @@ export const perf = {
 			end() {
 				const dt = perfNow() - t0;
 				logger.debug(`${label} ${dt.toFixed(0)}ms`);
-			}
+			},
 		};
 	},
 
@@ -82,11 +78,7 @@ export const perf = {
 		getPerfLogger(cat).debug(`${label}${suffix}`);
 	},
 
-	frame<T>(
-		cat: string,
-		label: string,
-		fn: () => T
-	): T {
+	frame<T>(cat: string, label: string, fn: () => T): T {
 		const t0 = perfNow();
 		const result = fn();
 		const dt = perfNow() - t0;
@@ -105,7 +97,7 @@ export const perf = {
 			raf(() => {
 				const logger = getPerfLogger(cat);
 				logger.debug(
-					`${label} recomputed ${entry!.count}x this frame (${entry!.totalMs.toFixed(1)}ms total)`
+					`${label} recomputed ${entry!.count}x this frame (${entry!.totalMs.toFixed(1)}ms total)`,
 				);
 				entry!.count = 0;
 				entry!.totalMs = 0;
@@ -114,7 +106,7 @@ export const perf = {
 		}
 
 		return result;
-	}
+	},
 };
 
 const _frameCounters = new Map<string, { count: number; totalMs: number; scheduled: boolean }>();

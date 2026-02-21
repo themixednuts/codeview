@@ -37,11 +37,7 @@ function kindPrefix(kind: NodeKind): string | null {
  * @param kind    Optional NodeKind for the target — enables kind-prefixed URLs
  * @param version Optional version string (defaults to "latest" / "stable")
  */
-export function externalDocsUrl(
-	nodeId: string,
-	kind?: NodeKind,
-	version?: string
-): string {
+export function externalDocsUrl(nodeId: string, kind?: NodeKind, version?: string): string {
 	const parts = nodeId.split('::');
 	const crate = parts[0];
 	if (!crate) return `https://docs.rs/${nodeId}`;
@@ -79,7 +75,5 @@ export function externalDocsUrl(
 
 	// Fallback: no kind info — use path-only URL (docs.rs will resolve)
 	const fullPath = parts.slice(1).join('/');
-	return isStd
-		? `${baseUrl}/${fullPath}/index.html`
-		: `${baseUrl}/${fullPath}/`;
+	return isStd ? `${baseUrl}/${fullPath}/index.html` : `${baseUrl}/${fullPath}/`;
 }

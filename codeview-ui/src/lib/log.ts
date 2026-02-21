@@ -5,7 +5,7 @@ import {
 	getStreamSink,
 	getLogger as _getLogger,
 	type LogLevel,
-	isLogLevel
+	isLogLevel,
 } from '@logtape/logtape';
 
 let configured = false;
@@ -69,7 +69,7 @@ function buildFileSink(): Record<string, ReturnType<typeof getStreamSink>> {
 					},
 					close() {
 						ws.end();
-					}
+					},
 				})
 			: null;
 		if (!webStream) return {};
@@ -79,16 +79,15 @@ function buildFileSink(): Record<string, ReturnType<typeof getStreamSink>> {
 					const ts = new Date(record.timestamp).toISOString();
 					const level = record.level.toUpperCase();
 					const cat = record.category.slice(1).join(':');
-					const msg = record.message
-						.map((p) => (typeof p === 'function' ? p() : p))
-						.join('');
+					const msg = record.message.map((p) => (typeof p === 'function' ? p() : p)).join('');
 					const props =
 						record.properties && Object.keys(record.properties).length > 0
-							? ' ' + Result.try(() => JSON.stringify(record.properties)).unwrapOr('[unserializable]')
+							? ' ' +
+								Result.try(() => JSON.stringify(record.properties)).unwrapOr('[unserializable]')
 							: '';
 					return `${ts} ${level} [${cat}] ${msg}${props}\n`;
-				}
-			})
+				},
+			}),
 		};
 	} catch {
 		return {};
@@ -112,35 +111,34 @@ export async function setupLogging(): Promise<void> {
 				formatter: (record) => {
 					const cat = record.category.slice(1).join(':');
 					const prefix = `[${cat}]`;
-					const msg = record.message
-						.map((p) => (typeof p === 'function' ? p() : p))
-						.join('');
+					const msg = record.message.map((p) => (typeof p === 'function' ? p() : p)).join('');
 					const props =
 						record.properties && Object.keys(record.properties).length > 0
-							? ' ' + Result.try(() => JSON.stringify(record.properties)).unwrapOr('[unserializable]')
+							? ' ' +
+								Result.try(() => JSON.stringify(record.properties)).unwrapOr('[unserializable]')
 							: '';
 					return [`${prefix} ${msg}${props}`];
-				}
+				},
 			}),
-			...fileSinks
+			...fileSinks,
 		},
 		loggers: [
 			{
 				category: ['logtape', 'meta'],
-				sinks: []
+				sinks: [],
 			},
 			{
 				category: ['codeview', 'perf'],
 				sinks: perfEnabled ? allSinks : [],
 				parentSinks: 'override',
-				lowestLevel: 'debug'
+				lowestLevel: 'debug',
 			},
 			{
 				category: ['codeview'],
 				sinks: allSinks,
-				lowestLevel: logLevel
-			}
-		]
+				lowestLevel: logLevel,
+			},
+		],
 	});
 }
 

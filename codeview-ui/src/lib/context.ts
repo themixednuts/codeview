@@ -1,7 +1,7 @@
 import { panic } from 'better-result';
 import { getContext, setContext, hasContext } from 'svelte';
-import type { Edge, Node } from '$lib/graph';
-import type { ParseProgressConnection } from '$lib/sse';
+import type { ParseProgressConnection } from '$lib/realtime';
+import type { NodeSummary } from '$lib/schema';
 
 /**
  * Type-safe reactive context. Stores a getter function internally so
@@ -46,20 +46,39 @@ class ReactiveContext<T> {
 	}
 }
 
-export type Theme = 'light' | 'dark';
+export type Theme = 'light' | 'dark' | 'system';
+/** The effective theme after resolving 'system' to the OS preference. */
+export type ResolvedTheme = 'light' | 'dark';
 export type ExternalLinkMode = 'codeview' | 'docs';
 export type SourceProviderMode = 'auto' | 'crates-io' | 'github';
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
+export type VcsMode = 'git' | 'jj';
 
 // --- Root layout contexts ---
 export const themeCtx = new ReactiveContext<Theme>('theme');
+export const resolvedThemeCtx = new ReactiveContext<ResolvedTheme>('resolvedTheme');
 export const extLinkModeCtx = new ReactiveContext<ExternalLinkMode>('extLinkMode');
 export const sourceProviderModeCtx = new ReactiveContext<SourceProviderMode>('sourceProviderMode');
+export const vcsModeCtx = new ReactiveContext<VcsMode>('vcsMode');
+export const editorSchemeCtx = new ReactiveContext<string>('editorScheme');
 
 // --- Crate layout contexts ---
-export const getNodeUrlCtx = new ReactiveContext<(id: string, parent?: string) => string>('getNodeUrl');
+export const getNodeUrlCtx = new ReactiveContext<(id: string) => string>(
+	'getNodeUrl',
+);
 export const crateVersionsCtx = new ReactiveContext<Record<string, string>>('crateVersions');
-export const graphForDisplayCtx = new ReactiveContext<{ nodes: Node[]; edges: Edge[] } | null>('graphForDisplay');
 export const crateStatusCtx = new ReactiveContext<CrateStatusValue>('crateStatus');
 /** Parse progress connection - properties are reactive via $state */
-export const parseProgressCtx = new ReactiveContext<ParseProgressConnection | null>('parseProgress');
+export const parseProgressCtx = new ReactiveContext<ParseProgressConnection | null>(
+	'parseProgress',
+);
+
+/** Ancestor IDs from nodeView — tells GraphTree which nodes to expand. */
+export type ExpandPath = {
+	ancestors: NodeSummary[];
+} | null;
+export const expandPathCtx = new ReactiveContext<ExpandPath>('expandPath');
+export const setExpandPathCtx = new ReactiveContext<(path: ExpandPath) => void>('setExpandPath');
+
+/** Reactive URL search params singleton for tree state (shared layout ↔ GraphTree). */
+export const treeParamsCtx = new ReactiveContext<import('svelte/reactivity').SvelteURLSearchParams | null>('treeParams');

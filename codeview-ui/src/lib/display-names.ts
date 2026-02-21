@@ -21,7 +21,7 @@ export const kindLabels: Record<NodeKind, string> = {
 	Primitive: 'Primitive',
 	ExternCrate: 'Extern crate',
 	Import: 'Import',
-	ProcMacro: 'Proc macro'
+	ProcMacro: 'Proc macro',
 };
 
 export const visibilityLabels: Record<Visibility, string> = {
@@ -29,7 +29,7 @@ export const visibilityLabels: Record<Visibility, string> = {
 	Crate: 'Crate',
 	Restricted: 'Restricted',
 	Inherited: 'Inherited',
-	Unknown: 'Unknown'
+	Unknown: 'Unknown',
 };
 
 export const edgeLabels: Record<EdgeKind, string> = {
@@ -40,29 +40,29 @@ export const edgeLabels: Record<EdgeKind, string> = {
 	CallsStatic: 'Calls',
 	CallsRuntime: 'Runtime calls',
 	Derives: 'Derives',
-	ReExports: 'Re-exports'
+	ReExports: 'Re-exports',
 };
 
 export const nodeKindOrder: NodeKind[] = [
 	'Crate',
 	'Module',
+	'TypeAlias',
 	'Struct',
 	'StructField',
 	'Enum',
 	'Variant',
-	'Trait',
-	'Impl',
-	'Function',
-	'TypeAlias',
-	'AssocType',
 	'Union',
-	'TraitAlias',
+	'Function',
+	'AssocType',
 	'Constant',
 	'AssocConst',
 	'Static',
 	'Macro',
+	'ProcMacro',
 	'Primitive',
 	'ExternCrate',
 	'Import',
-	'ProcMacro'
+	'Impl',
+	'Trait',
+	'TraitAlias',
 ];
