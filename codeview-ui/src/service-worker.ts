@@ -14,7 +14,7 @@ sw.addEventListener('install', (event) => {
 		caches
 			.open(CACHE_NAME)
 			.then((cache) => cache.addAll(PRECACHE_ASSETS))
-			.then(() => sw.skipWaiting())
+			.then(() => sw.skipWaiting()),
 	);
 });
 
@@ -22,8 +22,10 @@ sw.addEventListener('activate', (event) => {
 	event.waitUntil(
 		caches
 			.keys()
-			.then((keys) => Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))))
-			.then(() => sw.clients.claim())
+			.then((keys) =>
+				Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))),
+			)
+			.then(() => sw.clients.claim()),
 	);
 });
 
@@ -46,9 +48,9 @@ sw.addEventListener('fetch', (event) => {
 			caches.match(event.request).then((r) => {
 				if (r) return r;
 				return fetch(event.request).catch(
-					() => new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
+					() => new Response('Offline', { status: 503, statusText: 'Service Unavailable' }),
 				);
-			})
+			}),
 		);
 		return;
 	}
@@ -76,9 +78,11 @@ sw.addEventListener('fetch', (event) => {
 				return response;
 			})
 			.catch(() =>
-				caches.match(event.request).then(
-					(r) => r ?? new Response('Offline', { status: 503, statusText: 'Service Unavailable' })
-				)
-			)
+				caches
+					.match(event.request)
+					.then(
+						(r) => r ?? new Response('Offline', { status: 503, statusText: 'Service Unavailable' }),
+					),
+			),
 	);
 });

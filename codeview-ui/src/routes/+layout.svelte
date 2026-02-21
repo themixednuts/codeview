@@ -1,226 +1,298 @@
 <script lang="ts">
-  import '../app.css';
-  import { browser } from '$app/environment';
-  import { afterNavigate, onNavigate } from '$app/navigation';
-  import { getProcessingCrates } from '$lib/rpc/crate.remote';
-  import { ProcessingStatusConnection } from '$lib/sse';
-  import { isHosted } from '$lib/platform';
-  import { onMount } from 'svelte';
-  import { perf } from '$lib/perf';
-  import { themeCtx, extLinkModeCtx, sourceProviderModeCtx, type Theme, type ExternalLinkMode, type SourceProviderMode } from '$lib/context';
-  import { Loader2Icon } from '@lucide/svelte';
+	import '../app.css';
+	import { browser } from '$app/environment';
+	import { afterNavigate, onNavigate } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { getProcessingCrates } from '$lib/rpc/crate.remote';
+	import { ProcessingStatusConnection } from '$lib/realtime';
+	import { onMount } from 'svelte';
+	import { perf } from '$lib/perf';
+	import {
+		themeCtx,
+		resolvedThemeCtx,
+		extLinkModeCtx,
+		sourceProviderModeCtx,
+		vcsModeCtx,
+		editorSchemeCtx,
+		type Theme,
+		type ResolvedTheme,
+		type ExternalLinkMode,
+		type SourceProviderMode,
+		type VcsMode,
+	} from '$lib/context';
+	import { LoaderCircleIcon, SettingsIcon } from '@lucide/svelte';
+	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
+	import { Toaster } from '$lib/shadcn/ui/sonner';
 
-  let navSpan: ReturnType<typeof perf.begin> | null = null;
+	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
-  onNavigate((navigation) => {
-    const from = navigation.from?.url?.pathname ?? '';
-    const to = navigation.to?.url?.pathname ?? '';
-    navSpan = perf.begin('nav', `${from} → ${to}`);
+	onNavigate((navigation) => {
+		const from = navigation.from?.url?.pathname ?? '';
+		const to = navigation.to?.url?.pathname ?? '';
+		navSpan = perf.begin('nav', `${from} → ${to}`);
 
-    // View transitions disabled — they block on `navigation.complete` which includes
-    // async data fetching (getNodeDetail). Cross-crate navs were taking 16+ seconds
-    // because the browser held the old-page snapshot while waiting for the RPC.
-    // The graph component has its own CSS transitions for smooth visual updates.
-  });
+		// View transitions disabled — they block on `navigation.complete` which includes
+		// async data fetching (getNodeDetail). Cross-crate navs were taking 16+ seconds
+		// because the browser held the old-page snapshot while waiting for the RPC.
+		// The graph component has its own CSS transitions for smooth visual updates.
+	});
 
-  afterNavigate(() => {
-    if (navSpan) {
-      navSpan.end();
-      navSpan = null;
-    }
-  });
+	afterNavigate(() => {
+		if (navSpan) {
+			navSpan.end();
+			navSpan = null;
+		}
+	});
 
-  let { children } = $props();
+	let { children } = $props();
 
-  const processingConn = new ProcessingStatusConnection();
-  const processingCount = $derived(processingConn.count);
-  let showProcessing = $state(false);
-  const processingListQuery = $derived(
-    showProcessing ? getProcessingCrates({ refresh: processingCount }) : null
-  );
+	const processingConn = new ProcessingStatusConnection();
+	const processingCount = $derived(processingConn.count);
+	let showProcessing = $state(false);
+	const processingListQuery = $derived(
+		showProcessing ? getProcessingCrates({ refresh: processingCount }) : null,
+	);
 
-  onMount(() => {
-    if (!isHosted || !browser) return () => processingConn.destroy();
-    const syncProcessingStream = () => {
-      if (document.visibilityState === 'visible') {
-        processingConn.connect('rust');
-      } else {
-        processingConn.disconnect();
-      }
-    };
-    syncProcessingStream();
-    document.addEventListener('visibilitychange', syncProcessingStream);
-    return () => {
-      document.removeEventListener('visibilitychange', syncProcessingStream);
-      processingConn.destroy();
-    };
-  });
+	function openProcessingPopover() {
+		showProcessing = true;
+	}
 
-  const THEME_KEY = 'codeview-theme';
-  const EXT_LINK_KEY = 'codeview-ext-link-mode';
-  const SOURCE_PROVIDER_KEY = 'codeview-source-provider-mode';
+	function closeProcessingPopover() {
+		showProcessing = false;
+	}
 
-  function getInitialExtLinkMode(): ExternalLinkMode {
-    if (!browser) return 'codeview';
-    const stored = localStorage.getItem(EXT_LINK_KEY);
-    if (stored === 'codeview' || stored === 'docs') return stored;
-    return 'codeview';
-  }
+	function handleProcessingBlur(event: FocusEvent) {
+		const next = event.relatedTarget;
+		if (!(next instanceof Node)) {
+			closeProcessingPopover();
+			return;
+		}
+		const current = event.currentTarget;
+		if (!(current instanceof HTMLElement)) {
+			closeProcessingPopover();
+			return;
+		}
+		if (!current.contains(next)) closeProcessingPopover();
+	}
 
-  let extLinkMode = $state<ExternalLinkMode>('codeview');
-  let sourceProviderMode = $state<SourceProviderMode>('auto');
 
-  extLinkModeCtx.set(() => extLinkMode);
-  sourceProviderModeCtx.set(() => sourceProviderMode);
+	onMount(() => {
+		if (!browser) return () => processingConn.destroy();
+		const syncProcessingStream = () => {
+			if (document.visibilityState === 'visible') {
+				processingConn.connect('rust');
+			} else {
+				processingConn.disconnect();
+			}
+		};
+		syncProcessingStream();
+		document.addEventListener('visibilitychange', syncProcessingStream);
+		return () => {
+			document.removeEventListener('visibilitychange', syncProcessingStream);
+			processingConn.destroy();
+		};
+	});
 
-  function toggleExtLinkMode() {
-    extLinkMode = extLinkMode === 'codeview' ? 'docs' : 'codeview';
-    if (browser) localStorage.setItem(EXT_LINK_KEY, extLinkMode);
-  }
+	const THEME_KEY = 'codeview-theme';
+	const EXT_LINK_KEY = 'codeview-ext-link-mode';
+	const SOURCE_PROVIDER_KEY = 'codeview-source-provider-mode';
+	const VCS_KEY = 'codeview-vcs';
 
-  function getInitialSourceProviderMode(): SourceProviderMode {
-    if (!browser) return 'auto';
-    const stored = localStorage.getItem(SOURCE_PROVIDER_KEY);
-    if (stored === 'auto' || stored === 'crates-io' || stored === 'github') return stored;
-    return 'auto';
-  }
+	function getInitialExtLinkMode(): ExternalLinkMode {
+		if (!browser) return 'codeview';
+		const stored = localStorage.getItem(EXT_LINK_KEY);
+		if (stored === 'codeview' || stored === 'docs') return stored;
+		return 'codeview';
+	}
 
-  function cycleSourceProviderMode() {
-    sourceProviderMode =
-      sourceProviderMode === 'auto'
-        ? 'crates-io'
-        : sourceProviderMode === 'crates-io'
-          ? 'github'
-          : 'auto';
-    if (browser) localStorage.setItem(SOURCE_PROVIDER_KEY, sourceProviderMode);
-  }
+	let extLinkMode = $state<ExternalLinkMode>('codeview');
+	let sourceProviderMode = $state<SourceProviderMode>('auto');
+	let vcsMode = $state<VcsMode>('git');
+	let editorScheme = $state('vscode://file/{path}:{line}');
 
-  function getInitialTheme(): Theme {
-    if (!browser) return 'light';
-    const stored = localStorage.getItem(THEME_KEY);
-    if (stored === 'light' || stored === 'dark') return stored;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
+	extLinkModeCtx.set(() => extLinkMode);
+	sourceProviderModeCtx.set(() => sourceProviderMode);
+	vcsModeCtx.set(() => vcsMode);
+	editorSchemeCtx.set(() => editorScheme);
 
-  let theme = $state<Theme>('light');
+	function setExtLinkMode(mode: ExternalLinkMode) {
+		extLinkMode = mode;
+		if (browser) localStorage.setItem(EXT_LINK_KEY, mode);
+	}
 
-  themeCtx.set(() => theme);
+	function getInitialSourceProviderMode(): SourceProviderMode {
+		if (!browser) return 'auto';
+		const stored = localStorage.getItem(SOURCE_PROVIDER_KEY);
+		if (stored === 'auto' || stored === 'crates-io' || stored === 'github') return stored;
+		return 'auto';
+	}
 
-  function applyTheme(next: Theme) {
-    theme = next;
-    if (!browser) return;
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem(THEME_KEY, next);
-  }
+	function setSourceProviderMode(mode: SourceProviderMode) {
+		sourceProviderMode = mode;
+		if (browser) localStorage.setItem(SOURCE_PROVIDER_KEY, mode);
+	}
 
-  function toggleTheme() {
-    applyTheme(theme === 'dark' ? 'light' : 'dark');
-  }
+	function getInitialVcsMode(): VcsMode {
+		if (!browser) return 'git';
+		const stored = localStorage.getItem(VCS_KEY);
+		if (stored === 'git' || stored === 'jj') return stored;
+		return 'git';
+	}
 
-  onMount(() => {
-    applyTheme(getInitialTheme());
-    extLinkMode = getInitialExtLinkMode();
-    sourceProviderMode = getInitialSourceProviderMode();
-  });
+	function setVcsMode(mode: VcsMode) {
+		vcsMode = mode;
+		if (browser) localStorage.setItem(VCS_KEY, mode);
+	}
+
+	function setEditorScheme(scheme: string) {
+		editorScheme = scheme;
+	}
+
+	function resolveTheme(pref: Theme): 'light' | 'dark' {
+		if (pref === 'system') {
+			return browser && window.matchMedia('(prefers-color-scheme: dark)').matches
+				? 'dark'
+				: 'light';
+		}
+		return pref;
+	}
+
+	function getInitialTheme(): Theme {
+		if (!browser) return 'light';
+		const stored = localStorage.getItem(THEME_KEY);
+		if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
+		return 'system';
+	}
+
+	let theme = $state<Theme>('light');
+	let resolved = $state<ResolvedTheme>('light');
+
+	themeCtx.set(() => theme);
+	resolvedThemeCtx.set(() => resolved);
+
+	function applyTheme(next: Theme) {
+		theme = next;
+		if (!browser) return;
+		resolved = resolveTheme(next);
+		document.documentElement.dataset.theme = resolved;
+		localStorage.setItem(THEME_KEY, next);
+	}
+
+	onMount(() => {
+		applyTheme(getInitialTheme());
+		extLinkMode = getInitialExtLinkMode();
+		sourceProviderMode = getInitialSourceProviderMode();
+		vcsMode = getInitialVcsMode();
+
+		// Listen for OS theme changes when in system mode
+		const mql = window.matchMedia('(prefers-color-scheme: dark)');
+		const onSystemChange = () => {
+			if (theme === 'system') {
+				resolved = resolveTheme('system');
+				document.documentElement.dataset.theme = resolved;
+			}
+		};
+		mql.addEventListener('change', onSystemChange);
+		return () => mql.removeEventListener('change', onSystemChange);
+	});
+
+	// ── Settings drawer ──
+	let settingsOpen = $state(false);
 </script>
 
 <svelte:head>
-  <title>Codeview</title>
+	<title>Codeview</title>
 </svelte:head>
 
-<div class="flex h-screen flex-col bg-[var(--bg)]">
-  <!-- Header -->
-  <header
-    class="flex items-center justify-between border-b border-[var(--panel-border)] bg-[var(--panel-solid)] px-6 py-3 text-sm text-[var(--muted)] shadow-[0_8px_24px_rgba(38,28,20,0.06)]"
-  >
-    <a href="/" class="text-base font-semibold tracking-tight text-[var(--ink)]">Codeview</a>
-    <div class="flex items-center gap-2">
-      {#if processingCount > 0}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="relative"
-          onmouseenter={() => showProcessing = true}
-          onmouseleave={() => showProcessing = false}
-        >
-          <span class="badge badge-sm" title="Background parses running">
-            Parsing {processingCount}
-          </span>
-          {#if showProcessing}
-            <div
-              class="absolute right-0 mt-2 w-64 rounded-[var(--radius-card)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel-solid)] p-2 shadow-[var(--shadow-soft)] z-20"
-            >
-              <div class="px-2 pb-1 text-[10px] uppercase tracking-wider text-[var(--muted)]">
-                Background parses
-              </div>
-              {#if processingListQuery}
-                <svelte:boundary>
-                  {@const crates = await processingListQuery}
-                  {#if crates && crates.length > 0}
-                    <div class="space-y-1">
-                      {#each crates as crate (crate.name)}
-                        <div class="flex items-center justify-between gap-2 rounded-[var(--radius-chip)] corner-squircle bg-[var(--panel)] px-2 py-1">
-                          <span class="text-xs font-medium text-[var(--ink)] truncate">{crate.name}</span>
-                          <span class="badge badge-sm">{crate.version}</span>
-                        </div>
-                      {/each}
-                    </div>
-                  {:else}
-                    <div class="px-2 py-2 text-xs text-[var(--muted)]">No active parses</div>
-                  {/if}
-                  {#snippet pending()}
-                    <div class="flex items-center gap-2 px-2 py-2">
-                      <Loader2Icon class="animate-spin" size={12} />
-                      <span class="text-xs text-[var(--muted)]">Loading...</span>
-                    </div>
-                  {/snippet}
-                </svelte:boundary>
-              {:else}
-                <div class="px-2 py-2 text-xs text-[var(--muted)]">No active parses</div>
-              {/if}
-            </div>
-          {/if}
-        </div>
-      {/if}
-      <button
-        type="button"
-        class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]"
-        aria-pressed={extLinkMode === 'docs'}
-        title={extLinkMode === 'docs' ? 'External links open docs.rs — click to use codeview' : 'External links stay in codeview — click to use docs.rs'}
-        onclick={toggleExtLinkMode}
-      >
-        <span
-          class="h-2 w-2 rounded-full"
-          style="background-color: {extLinkMode === 'docs' ? 'var(--accent)' : 'var(--muted)'}"
-        ></span>
-        <span>{extLinkMode === 'docs' ? 'docs.rs' : 'Codeview'}</span>
-      </button>
-      <button
-        type="button"
-        class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]"
-        title="Source provider (click to cycle): auto -> crates.io -> github"
-        onclick={cycleSourceProviderMode}
-      >
-        <span
-          class="h-2 w-2 rounded-full"
-          style="background-color: {sourceProviderMode === 'auto' ? 'var(--accent)' : 'var(--muted)'}"
-        ></span>
-        <span>Source: {sourceProviderMode}</span>
-      </button>
-      <button
-        type="button"
-        class="inline-flex items-center gap-2 rounded-[var(--radius-chip)] corner-squircle px-2 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--panel-strong)] hover:text-[var(--ink)]"
-        aria-pressed={theme === 'dark'}
-        title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        onclick={toggleTheme}
-      >
-        <span
-          class="h-2 w-2 rounded-full"
-          style="background-color: {theme === 'dark' ? 'var(--accent)' : 'var(--muted)'}"
-        ></span>
-        <span>{theme === 'dark' ? 'Dark' : 'Light'}</span>
-      </button>
-    </div>
-  </header>
+<div class="flex h-screen flex-col bg-(--bg)">
+	<!-- Header -->
+	<header
+		class="flex items-center justify-between border-b border-(--panel-border) bg-(--panel-solid) px-6 py-3 text-sm text-(--muted)"
+	>
+		<a href={resolve('/')} class="text-base font-semibold tracking-tight text-(--ink)">Codeview</a>
+		<div class="flex items-center gap-2">
+			{#if processingCount > 0}
+				<div
+					class="relative"
+					onfocusin={openProcessingPopover}
+					onfocusout={handleProcessingBlur}
+				>
+					<button
+						type="button"
+						class="badge badge-sm"
+						title="Background parses running"
+						aria-expanded={showProcessing}
+						aria-haspopup="dialog"
+						onclick={() => (showProcessing = !showProcessing)}
+					>
+						Parsing {processingCount}
+					</button>
+					{#if showProcessing}
+						<div
+							class="corner-squircle absolute right-0 z-20 mt-2 w-64 rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-2 shadow-(--shadow-soft)"
+							role="dialog"
+							aria-label="Background parses"
+						>
+							<div class="px-2 pb-1 text-[10px] tracking-wider text-(--muted) uppercase">
+								Background parses
+							</div>
+							{#if processingListQuery}
+								<svelte:boundary>
+									{@const crates = await processingListQuery}
+									{#if crates && crates.length > 0}
+										<div class="space-y-1">
+											{#each crates as crate (crate.name)}
+												<div
+													class="corner-squircle flex items-center justify-between gap-2 rounded-(--radius-chip) bg-(--panel) px-2 py-1"
+												>
+													<span class="truncate text-xs font-medium text-(--ink)">{crate.name}</span
+													>
+													<span class="badge badge-sm">{crate.version}</span>
+												</div>
+											{/each}
+										</div>
+									{:else}
+										<div class="p-2 text-xs text-(--muted)">No active parses</div>
+									{/if}
+									{#snippet pending()}
+										<div class="flex items-center gap-2 p-2">
+											<LoaderCircleIcon class="animate-spin" size={12} />
+											<span class="text-xs text-(--muted)">Loading...</span>
+										</div>
+									{/snippet}
+								</svelte:boundary>
+							{:else}
+								<div class="p-2 text-xs text-(--muted)">No active parses</div>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<button
+				type="button"
+				class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-chip) px-2 py-1 text-xs font-medium text-(--muted) transition hover:bg-(--panel-strong) hover:text-(--ink)"
+				title="Settings"
+				onclick={() => (settingsOpen = true)}
+			>
+				<SettingsIcon size={14} />
+			</button>
+		</div>
+	</header>
 
-  {@render children()}
+	{@render children()}
 </div>
+
+<SettingsDrawer
+	bind:open={settingsOpen}
+	{theme}
+	{extLinkMode}
+	{sourceProviderMode}
+	{vcsMode}
+	onThemeChange={applyTheme}
+	onExtLinkModeChange={setExtLinkMode}
+	onSourceProviderModeChange={setSourceProviderMode}
+	onVcsModeChange={setVcsMode}
+	onEditorSchemeChange={setEditorScheme}
+/>
+
+<Toaster position="bottom-right" expand={false} />
