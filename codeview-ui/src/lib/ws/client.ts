@@ -1,6 +1,13 @@
 import { getLogger } from '$lib/log';
+import type { RealtimeCallback, RealtimeClient } from '$lib/realtime/types';
 
 const log = getLogger('ws-client');
+
+const RECONNECT_DELAY_INITIAL_MS = 500;
+const RECONNECT_DELAY_MAX_MS = 5000;
+const CONNECT_ACK_TIMEOUT_MS = 10_000;
+const HEARTBEAT_INTERVAL_MS = 10_000;
+const HEARTBEAT_STALE_MS = 30_000;
 
 /**
  * Browser WebSocket client for real-time event subscriptions.
@@ -14,19 +21,25 @@ const log = getLogger('ws-client');
  *   Client -> Server:  { action: "subscribe",   tags: [...] }
  *                       { action: "unsubscribe", tags: [...] }
  */
-export type RealtimeCallback<T = unknown> = (data: T) => void;
+export type { RealtimeCallback };
 
-export class Client implements Disposable, AsyncDisposable {
+export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 	#ws: WebSocket | null = null;
 	#subscriptions = new Map<string, Set<RealtimeCallback>>();
 	#connectionId: string | null = null;
 	#destroyed = false;
 	#connecting = false;
 	#connected = false;
+	#currentUrl: string | null = null;
 
 	// Reconnect state
-	#retryDelay = 500;
+	#retryDelay = RECONNECT_DELAY_INITIAL_MS;
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
+	#connectAckTimer: ReturnType<typeof setTimeout> | null = null;
+
+	// Liveness / heartbeat
+	#heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+	#lastServerActivityMs = 0;
 
 	// Pending subscribe/unsubscribe batched while disconnected
 	#pendingSubscribes = new Set<string>();
@@ -49,8 +62,10 @@ export class Client implements Disposable, AsyncDisposable {
 
 		if (isNew) {
 			if (this.#connected && this.#ws) {
+				log.debug`subscribe ${tag} (direct)`;
 				this.#send({ action: 'subscribe', tags: [tag] });
 			} else {
+				log.debug`subscribe ${tag} (pending)`;
 				this.#pendingSubscribes.add(tag);
 				this.#ensureConnection();
 			}
@@ -66,6 +81,7 @@ export class Client implements Disposable, AsyncDisposable {
 		if (!callbacks) return;
 
 		callbacks.delete(callback as RealtimeCallback);
+		log.debug`unsubscribe ${tag} (remaining=${String(callbacks.size)})`;
 
 		if (callbacks.size === 0) {
 			this.#subscriptions.delete(tag);
@@ -90,6 +106,8 @@ export class Client implements Disposable, AsyncDisposable {
 	destroy(): void {
 		this.#destroyed = true;
 		this.#cancelRetry();
+		this.#stopHeartbeat();
+		this.#cancelConnectAckTimer();
 		this.#closeSocket();
 		this.#subscriptions.clear();
 		this.#pendingSubscribes.clear();
@@ -116,13 +134,28 @@ export class Client implements Disposable, AsyncDisposable {
 		if (this.#destroyed) return;
 		this.#connecting = true;
 		this.#cancelRetry();
+		this.#cancelConnectAckTimer();
 
 		const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-		const url = `${protocol}//${location.host}/api/events/ws`;
+		// In dev, Vite can't proxy WS under Bun — connect directly to the Bun side-server
+		const host = import.meta.env.DEV ? `${location.hostname}:15173` : location.host;
+		const url = `${protocol}//${host}/api/events/ws`;
+		this.#currentUrl = url;
 
 		log.debug`connecting to ${url}`;
 
 		const ws = new WebSocket(url);
+		this.#connectAckTimer = setTimeout(() => {
+			if (this.#destroyed) return;
+			if (!this.#connecting || this.#connected) return;
+			if (this.#ws !== ws) return;
+			log.warn`connect ack timeout url=${url}`;
+			try {
+				ws.close();
+			} catch {
+				this.#onDisconnect();
+			}
+		}, CONNECT_ACK_TIMEOUT_MS);
 
 		ws.onopen = () => {
 			log.debug`socket open`;
@@ -134,24 +167,38 @@ export class Client implements Disposable, AsyncDisposable {
 		};
 
 		ws.onclose = (event) => {
-			log.debug`socket closed code=${String(event.code)} reason=${event.reason || '(none)'}`;
+			const reason = event.reason || '(none)';
+			if (event.code === 1000) {
+				log.debug`socket closed code=${String(event.code)} reason=${reason}`;
+			} else {
+				log.warn`socket closed code=${String(event.code)} reason=${reason} url=${url}`;
+			}
 			this.#onDisconnect();
 		};
 
 		ws.onerror = () => {
-			log.warn`socket error`;
-			// onclose will fire after onerror
+			log.warn`socket error url=${url} readyState=${String(ws.readyState)}`;
+			if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+				try {
+					ws.close();
+				} catch {
+					this.#onDisconnect();
+				}
+			}
 		};
 
 		this.#ws = ws;
 	}
 
 	#onMessage(raw: string): void {
+		this.#lastServerActivityMs = Date.now();
+
 		let msg: { type?: string; connectionId?: string; tag?: string; data?: unknown };
 		try {
 			msg = JSON.parse(raw);
 		} catch {
-			log.warn`invalid JSON from server`;
+			const preview = raw.length > 120 ? `${raw.slice(0, 120)}...` : raw;
+			log.warn`invalid JSON from server payload=${preview}`;
 			return;
 		}
 
@@ -160,7 +207,9 @@ export class Client implements Disposable, AsyncDisposable {
 			this.#connectionId = msg.connectionId;
 			this.#connected = true;
 			this.#connecting = false;
-			this.#retryDelay = 500;
+			this.#retryDelay = RECONNECT_DELAY_INITIAL_MS;
+			this.#cancelConnectAckTimer();
+			this.#startHeartbeat();
 			log.debug`connected id=${msg.connectionId}`;
 
 			// Subscribe to all active tags
@@ -168,10 +217,14 @@ export class Client implements Disposable, AsyncDisposable {
 			return;
 		}
 
+		if (msg.type === 'pong') {
+			return;
+		}
+
 		// Tagged data message
 		if (msg.tag) {
 			const callbacks = this.#subscriptions.get(msg.tag);
-			if (callbacks) {
+			if (callbacks && callbacks.size > 0) {
 				for (const cb of callbacks) {
 					try {
 						cb(msg.data);
@@ -179,11 +232,15 @@ export class Client implements Disposable, AsyncDisposable {
 						log.error`callback error for ${msg.tag}: ${String(err)}`;
 					}
 				}
+			} else {
+				log.debug`msg ${msg.tag} → no callbacks`;
 			}
 		}
 	}
 
 	#onDisconnect(): void {
+		this.#cancelConnectAckTimer();
+		this.#stopHeartbeat();
 		this.#connected = false;
 		this.#connecting = false;
 		this.#connectionId = null;
@@ -198,6 +255,7 @@ export class Client implements Disposable, AsyncDisposable {
 
 		// Only reconnect if we have subscriptions
 		if (this.#subscriptions.size > 0) {
+			log.debug`disconnect with active subscriptions=${String(this.#subscriptions.size)} url=${this.#currentUrl ?? '(none)'}`;
 			this.#scheduleReconnect();
 		}
 	}
@@ -226,6 +284,8 @@ export class Client implements Disposable, AsyncDisposable {
 	}
 
 	#closeSocket(): void {
+		this.#cancelConnectAckTimer();
+		this.#stopHeartbeat();
 		this.#connected = false;
 		this.#connecting = false;
 		if (this.#ws) {
@@ -250,13 +310,48 @@ export class Client implements Disposable, AsyncDisposable {
 			}
 		}, delay);
 
-		this.#retryDelay = Math.min(this.#retryDelay * 2, 5000);
+		this.#retryDelay = Math.min(this.#retryDelay * 2, RECONNECT_DELAY_MAX_MS);
 	}
 
 	#cancelRetry(): void {
 		if (this.#retryTimer) {
 			clearTimeout(this.#retryTimer);
 			this.#retryTimer = null;
+		}
+	}
+
+	#cancelConnectAckTimer(): void {
+		if (this.#connectAckTimer) {
+			clearTimeout(this.#connectAckTimer);
+			this.#connectAckTimer = null;
+		}
+	}
+
+	#startHeartbeat(): void {
+		this.#stopHeartbeat();
+		this.#lastServerActivityMs = Date.now();
+		this.#heartbeatTimer = setInterval(() => {
+			if (!this.#connected || !this.#ws || this.#ws.readyState !== WebSocket.OPEN) return;
+
+			const idleMs = Date.now() - this.#lastServerActivityMs;
+			if (idleMs > HEARTBEAT_STALE_MS) {
+				log.warn`stale connection idleMs=${String(idleMs)} forcing reconnect`;
+				try {
+					this.#ws.close();
+				} catch {
+					this.#onDisconnect();
+				}
+				return;
+			}
+
+			this.#send({ action: 'ping' });
+		}, HEARTBEAT_INTERVAL_MS);
+	}
+
+	#stopHeartbeat(): void {
+		if (this.#heartbeatTimer) {
+			clearInterval(this.#heartbeatTimer);
+			this.#heartbeatTimer = null;
 		}
 	}
 }

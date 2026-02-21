@@ -9,7 +9,12 @@ type OutgoingMessage =
 	| { type: 'ready'; id: number }
 	| { type: 'data'; id: number; payload: unknown }
 	| { type: 'warn'; id: number; error: string }
-	| { type: 'end'; id: number; reason: 'eof' | 'aborted' | 'fetch-error' | 'bad-response' | 'read-error'; detail?: string };
+	| {
+			type: 'end';
+			id: number;
+			reason: 'eof' | 'aborted' | 'fetch-error' | 'bad-response' | 'read-error';
+			detail?: string;
+	  };
 
 const ctx = self as DedicatedWorkerGlobalScope;
 

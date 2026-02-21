@@ -1,4 +1,4 @@
-import type { RealtimeCallback } from '$lib/ws/client';
+import type { RealtimeCallback, RealtimeClient } from '$lib/realtime/types';
 import { getLogger } from '$lib/log';
 import { SSEConnection, type SSEEndReason } from './connection';
 
@@ -13,7 +13,7 @@ interface SharedEventMessage {
  * Replaces multiple per-crate connections with one shared connection.
  * Subscriptions are managed via POST /api/events/subscribe
  */
-export class Client extends SSEConnection {
+export class Client extends SSEConnection implements RealtimeClient {
 	private subscriptions = new Map<string, Set<RealtimeCallback>>();
 	private clientId: string | null = null;
 	private pingInterval: ReturnType<typeof setInterval> | null = null;
@@ -124,8 +124,8 @@ export class Client extends SSEConnection {
 				body: JSON.stringify({
 					clientId: this.clientId,
 					action: 'subscribe',
-					tags
-				})
+					tags,
+				}),
 			});
 
 			if (!response.ok) {
@@ -140,9 +140,10 @@ export class Client extends SSEConnection {
 			}
 
 			// Apply initialData immediately (server returns current state for each tag)
-			const payload = await response.json().catch(() => null) as
-				| { success?: boolean; initialData?: Record<string, unknown> }
-				| null;
+			const payload = (await response.json().catch(() => null)) as {
+				success?: boolean;
+				initialData?: Record<string, unknown>;
+			} | null;
 
 			const initialData = payload?.initialData;
 			if (initialData) {
@@ -177,8 +178,8 @@ export class Client extends SSEConnection {
 				body: JSON.stringify({
 					clientId: this.clientId,
 					action: 'unsubscribe',
-					tags
-				})
+					tags,
+				}),
 			});
 		} catch (err) {
 			this.log.error`unsubscribe error: ${String(err)}`;
@@ -197,8 +198,8 @@ export class Client extends SSEConnection {
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					clientId: this.clientId,
-					action: 'ping'
-				})
+					action: 'ping',
+				}),
 			});
 		} catch (err) {
 			this.log.debug`ping failed: ${String(err)}`;

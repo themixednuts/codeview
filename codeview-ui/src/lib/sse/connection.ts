@@ -81,7 +81,11 @@ export abstract class SSEConnection implements Disposable, AsyncDisposable {
 		const sessionId = ++this.#sessionId;
 		this.#currentSession = sessionId;
 		this.#ensureWorker();
-		this.#worker?.postMessage({ type: 'connect', id: sessionId, endpoint: this.endpoint } satisfies WorkerCommand);
+		this.#worker?.postMessage({
+			type: 'connect',
+			id: sessionId,
+			endpoint: this.endpoint,
+		} satisfies WorkerCommand);
 	}
 
 	#ensureWorker() {
