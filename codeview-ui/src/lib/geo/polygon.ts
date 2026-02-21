@@ -7,12 +7,11 @@ export function polygonIncludesPoint(point: Point, polygon: Polygon): boolean {
 	const n = polygon.length;
 	let inside = false;
 	for (let i = 0, j = n - 1; i < n; j = i++) {
-		const xi = polygon[i].x, yi = polygon[i].y;
-		const xj = polygon[j].x, yj = polygon[j].y;
-		if (
-			yi > point.y !== yj > point.y &&
-			point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi
-		) {
+		const xi = polygon[i].x,
+			yi = polygon[i].y;
+		const xj = polygon[j].x,
+			yj = polygon[j].y;
+		if (yi > point.y !== yj > point.y && point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi) {
 			inside = !inside;
 		}
 	}
@@ -24,8 +23,10 @@ export function polygonIncludesPointNonZero(point: Point, polygon: Polygon): boo
 	const n = polygon.length;
 	let winding = 0;
 	for (let i = 0, j = n - 1; i < n; j = i++) {
-		const xi = polygon[i].x, yi = polygon[i].y;
-		const xj = polygon[j].x, yj = polygon[j].y;
+		const xi = polygon[i].x,
+			yi = polygon[i].y;
+		const xj = polygon[j].x,
+			yj = polygon[j].y;
 		if (yj <= point.y) {
 			if (yi > point.y) {
 				if ((xj - point.x) * (yi - point.y) - (xi - point.x) * (yj - point.y) > 0) {
@@ -43,11 +44,7 @@ export function polygonIncludesPointNonZero(point: Point, polygon: Polygon): boo
 	return winding !== 0;
 }
 
-export function pointOnPolygon(
-	p: Point,
-	poly: Polygon,
-	threshold: number = PRECISION
-): boolean {
+export function pointOnPolygon(p: Point, poly: Polygon, threshold: number = PRECISION): boolean {
 	const n = poly.length;
 	for (let i = 0, j = n - 1; i < n; j = i++) {
 		if (pointOnLineSegment(p, [poly[j], poly[i]], threshold)) return true;

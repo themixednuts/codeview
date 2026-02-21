@@ -14,7 +14,7 @@ export type {
 	Ellipse,
 	Curve,
 	Triangle,
-	InclusiveRange
+	InclusiveRange,
 } from './types';
 
 // Utils
@@ -31,7 +31,7 @@ export {
 	pointRotateDegs,
 	pointTranslate,
 	pointScaleFromOrigin,
-	isPointWithinBounds
+	isPointWithinBounds,
 } from './point';
 
 // Vector
@@ -46,7 +46,7 @@ export {
 	vectorMagnitude,
 	vectorMagnitudeSq,
 	vectorNormalize,
-	vectorNormal
+	vectorNormal,
 } from './vector';
 
 // Angle
@@ -57,7 +57,7 @@ export {
 	normalizeRadians,
 	isRightAngleRads,
 	radiansBetweenAngles,
-	radiansDifference
+	radiansDifference,
 } from './angle';
 
 // Segment
@@ -67,7 +67,7 @@ export {
 	distanceToLineSegment,
 	pointOnLineSegment,
 	lineSegmentIntersectionPoints,
-	lineSegmentsDistance
+	lineSegmentsDistance,
 } from './segment';
 
 // Polygon
@@ -75,14 +75,11 @@ export {
 	polygonIncludesPoint,
 	polygonIncludesPointNonZero,
 	pointOnPolygon,
-	triangleIncludesPoint
+	triangleIncludesPoint,
 } from './polygon';
 
 // Rect
-export {
-	rectangleIntersectLineSegment,
-	rectangleIntersectRectangle
-} from './rect';
+export { rectangleIntersectLineSegment, rectangleIntersectRectangle } from './rect';
 
 // Ellipse
 export {
@@ -90,7 +87,7 @@ export {
 	ellipseTouchesPoint,
 	ellipseDistanceFromPoint,
 	ellipseSegmentInterceptPoints,
-	ellipseLineIntersectionPoints
+	ellipseLineIntersectionPoints,
 } from './ellipse';
 
 // Curve
@@ -104,13 +101,8 @@ export {
 	curveClosestPoint,
 	curvePointDistance,
 	curveCatmullRomCubicApproxPoints,
-	curveOffsetPoints
+	curveOffsetPoints,
 } from './curve';
 
 // Range
-export {
-	rangeInclusive,
-	rangesOverlap,
-	rangeIncludesValue,
-	rangeIntersection
-} from './range';
+export { rangeInclusive, rangesOverlap, rangeIncludesValue, rangeIntersection } from './range';

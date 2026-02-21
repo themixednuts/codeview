@@ -12,7 +12,7 @@ export function ellipseIncludesPoint(p: Point, e: Ellipse): boolean {
 export function ellipseTouchesPoint(
 	point: Point,
 	e: Ellipse,
-	threshold: number = PRECISION
+	threshold: number = PRECISION,
 ): boolean {
 	return ellipseDistanceFromPoint(point, e) <= threshold;
 }
@@ -39,8 +39,8 @@ export function ellipseDistanceFromPoint(p: Point, e: Ellipse): number {
 		const qy = py - ey;
 		const r = Math.hypot(ry, rx);
 		const q = Math.hypot(qy, qx);
-		tx = clamp((qx * r / q + ex) / a, 0, 1);
-		ty = clamp((qy * r / q + ey) / b, 0, 1);
+		tx = clamp(((qx * r) / q + ex) / a, 0, 1);
+		ty = clamp(((qy * r) / q + ey) / b, 0, 1);
 		const t = Math.hypot(ty, tx);
 		tx /= t;
 		ty /= t;
@@ -50,10 +50,7 @@ export function ellipseDistanceFromPoint(p: Point, e: Ellipse): number {
 }
 
 /** Parametric quadratic intersection of ellipse with a line segment. */
-export function ellipseSegmentInterceptPoints(
-	e: Ellipse,
-	segment: LineSegment
-): Point[] {
+export function ellipseSegmentInterceptPoints(e: Ellipse, segment: LineSegment): Point[] {
 	const { center, halfWidth: a, halfHeight: b } = e;
 	const dx = segment[1].x - segment[0].x;
 	const dy = segment[1].y - segment[0].y;
@@ -73,7 +70,7 @@ export function ellipseSegmentInterceptPoints(
 		if (t >= 0 && t <= 1) {
 			results.push({
 				x: segment[0].x + dx * t,
-				y: segment[0].y + dy * t
+				y: segment[0].y + dy * t,
 			});
 		}
 	} else {
@@ -83,7 +80,7 @@ export function ellipseSegmentInterceptPoints(
 			if (t >= 0 && t <= 1) {
 				results.push({
 					x: segment[0].x + dx * t,
-					y: segment[0].y + dy * t
+					y: segment[0].y + dy * t,
 				});
 			}
 		}
@@ -92,10 +89,7 @@ export function ellipseSegmentInterceptPoints(
 }
 
 /** Intersection of an ellipse with an infinite line (defined by two points). */
-export function ellipseLineIntersectionPoints(
-	e: Ellipse,
-	line: LineSegment
-): Point[] {
+export function ellipseLineIntersectionPoints(e: Ellipse, line: LineSegment): Point[] {
 	const { center, halfWidth: a, halfHeight: b } = e;
 	const gx = line[0].x - center.x;
 	const gy = line[0].y - center.y;

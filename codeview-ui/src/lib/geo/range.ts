@@ -13,10 +13,7 @@ export function rangeIncludesValue(value: number, range: InclusiveRange): boolea
 	return value >= range[0] && value <= range[1];
 }
 
-export function rangeIntersection(
-	r1: InclusiveRange,
-	r2: InclusiveRange
-): InclusiveRange | null {
+export function rangeIntersection(r1: InclusiveRange, r2: InclusiveRange): InclusiveRange | null {
 	const start = Math.max(r1[0], r2[0]);
 	const end = Math.min(r1[1], r2[1]);
 	if (start > end) return null;

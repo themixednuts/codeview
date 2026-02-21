@@ -13,7 +13,7 @@ export function rectangleIntersectLineSegment(rect: Rect, segment: LineSegment):
 		[tl, tr],
 		[tr, br],
 		[br, bl],
-		[bl, tl]
+		[bl, tl],
 	];
 
 	const results: Point[] = [];
@@ -26,10 +26,5 @@ export function rectangleIntersectLineSegment(rect: Rect, segment: LineSegment):
 
 /** AABB overlap test (separating axis). */
 export function rectangleIntersectRectangle(r1: Rect, r2: Rect): boolean {
-	return (
-		r1.x < r2.x + r2.w &&
-		r1.x + r1.w > r2.x &&
-		r1.y < r2.y + r2.h &&
-		r1.y + r1.h > r2.y
-	);
+	return r1.x < r2.x + r2.w && r1.x + r1.w > r2.x && r1.y < r2.y + r2.h && r1.y + r1.h > r2.y;
 }

@@ -3,26 +3,26 @@ import type { Edge, Node } from '$lib/graph';
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
 export type VisNode = {
-  node: Node;
-  x: number;
-  y: number;
-  baseX: number;
-  baseY: number;
-  angle: number;
-  isCenter: boolean;
-  edgeKind: string;
-  direction: 'in' | 'out' | 'center';
-  layer: number;
-  indexInLayer: number;
-  totalInLayer: number;
-  layoutRadius: number;
+	node: Node;
+	x: number;
+	y: number;
+	baseX: number;
+	baseY: number;
+	angle: number;
+	isCenter: boolean;
+	edgeKind: string;
+	direction: 'in' | 'out' | 'center';
+	layer: number;
+	indexInLayer: number;
+	totalInLayer: number;
+	layoutRadius: number;
 };
 
 export type VisEdge = {
-  from: VisNode;
-  to: VisNode;
-  kind: string;
-  direction: 'in' | 'out';
+	from: VisNode;
+	to: VisNode;
+	kind: string;
+	direction: 'in' | 'out';
 };
 
 export const LAYOUT_WIDTH = 700;
@@ -40,16 +40,16 @@ export const ARROWHEAD_LENGTH = 12;
 
 // Legacy layout types (from layout.ts)
 export type LayoutNode = Node & {
-  x?: number | null;
-  y?: number | null;
+	x?: number | null;
+	y?: number | null;
 };
 
 export type LayoutLink = Edge & {
-  source: LayoutNode | string | number;
-  target: LayoutNode | string | number;
+	source: LayoutNode | string | number;
+	target: LayoutNode | string | number;
 };
 
 export type LayoutState = {
-  nodes: LayoutNode[];
-  links: LayoutLink[];
+	nodes: LayoutNode[];
+	links: LayoutLink[];
 };

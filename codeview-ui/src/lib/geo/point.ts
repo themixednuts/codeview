@@ -30,7 +30,7 @@ export function pointRotateRads(point: Point, center: Point, angle: number): Poi
 	const dy = point.y - center.y;
 	return {
 		x: dx * cos - dy * sin + center.x,
-		y: dx * sin + dy * cos + center.y
+		y: dx * sin + dy * cos + center.y,
 	};
 }
 
@@ -45,7 +45,7 @@ export function pointTranslate(p: Point, v: Vec2): Point {
 export function pointScaleFromOrigin(p: Point, mid: Point, multiplier: number): Point {
 	return {
 		x: mid.x + (p.x - mid.x) * multiplier,
-		y: mid.y + (p.y - mid.y) * multiplier
+		y: mid.y + (p.y - mid.y) * multiplier,
 	};
 }
 
