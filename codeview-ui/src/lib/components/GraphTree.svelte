@@ -1,556 +1,510 @@
 <script lang="ts">
-  import type { Graph, Node, NodeKind } from '$lib/graph';
-  import { SvelteSet } from 'svelte/reactivity';
-  import { kindOrder, matchesFilter, type TreeNode } from '$lib/tree';
-  import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
-  import TreeItem from './TreeItem.svelte';
-  import VirtualTree from './VirtualTree.svelte';
-  import { perf } from '$lib/perf';
-  import { perfTick } from '$lib/perf.svelte';
-  import { getLogger } from '$lib/log';
+	import type { Node, NodeKind } from '$lib/graph';
+	import type { TreeNodeDTO } from '$lib/schema';
+	import type { CrateStatusValue } from '$lib/context';
+	import { SvelteSet } from 'svelte/reactivity';
+	import { CHILDREN_PLACEHOLDER, matchesFilter, type TreeNode } from '$lib/tree';
+	import { expandPathCtx, treeParamsCtx } from '$lib/context';
+	import { getTreeChildren } from '$lib/rpc/children.remote';
+	import { getTreeAncestors } from '$lib/rpc/ancestors.remote';
+	import VirtualTree from './VirtualTree.svelte';
+	import { perf } from '$lib/perf';
+	import { perfTick } from '$lib/perf.svelte';
+	import { getLogger } from '$lib/log';
 
-  let {
-    graph,
-    selected,
-    getNodeUrl,
-    filter,
-    kindFilter
-  } = $props<{
-    graph: Graph | null;
-    selected: Node | null;
-    getNodeUrl: (id: string, parent?: string) => string;
-    filter: string;
-    kindFilter: Set<NodeKind>;
-  }>();
-  const log = getLogger('graph-tree');
+	let {
+		roots = null,
+		crateName = '',
+		crateVersion = '',
+		selected = null,
+		selectedId = '',
+		getNodeUrl,
+		filter,
+		kindFilter,
+		rootChildren = null,
+	} = $props<{
+		/** Root DTOs from server. */
+		roots?: TreeNodeDTO[] | null;
+		/** Crate name for children RPC calls. */
+		crateName?: string;
+		/** Crate version for children RPC calls. */
+		crateVersion?: string;
+		selected?: Node | null;
+		/** Selected node ID — used for highlighting and auto-expand. */
+		selectedId?: string;
+		getNodeUrl: (id: string) => string;
+		filter: string;
+		kindFilter: Set<NodeKind>;
+		rootChildren?: { id: string; children: TreeNodeDTO[] } | null;
+		status?: CrateStatusValue;
+	}>();
+	const log = getLogger('graph-tree');
 
-  const expandedIds = new SvelteSet<string>();
-  // Tracks nodes the user explicitly collapsed — prevents selectedAncestorIds
-  // from forcing ancestor nodes back open after the user collapses them.
-  const collapsedIds = new SvelteSet<string>();
+	/** Pre-fetched expand path from DetailView via context (ancestors + children). */
+	const expandPath = $derived(expandPathCtx.getOr(null));
 
-  const indexedNodes = new Map<string, Node>();
-  const indexedParentMap = new Map<string, string>();
-  const indexedChildIds = new Map<string, string[]>();
-  const indexedRootIds: string[] = [];
-  const indexedTreeNodes = new Map<string, TreeNode>();
-  const indexedRootTreeNodes: TreeNode[] = [];
+	/** Reactive URL params singleton from layout — tree writes `ex` param here. */
+	const treeParams = treeParamsCtx.getOr(null);
 
-  let indexedNodeArrayRef: Graph['nodes'] | null = null;
-  let indexedEdgeArrayRef: Graph['edges'] | null = null;
-  let indexedNodeLength = 0;
-  let indexedEdgeLength = 0;
-  let indexedVersion = 0;
-  let renderedTreeVersion = -1;
-  let renderedTreeRoots: TreeNode[] = [];
+	/** Effective selected node ID — from explicit selectedId prop or selected.id. */
+	const selId = $derived(selectedId || selected?.id || null);
 
-  function compareNodeIds(a: string, b: string): number {
-    const an = indexedNodes.get(a);
-    const bn = indexedNodes.get(b);
-    if (!an && !bn) return a.localeCompare(b);
-    if (!an) return 1;
-    if (!bn) return -1;
-    const kindDiff = (kindOrder[an.kind] ?? 99) - (kindOrder[bn.kind] ?? 99);
-    if (kindDiff !== 0) return kindDiff;
-    return an.name.localeCompare(bn.name);
-  }
+	const expandedIds = new SvelteSet<string>();
+	// Tracks nodes the user explicitly collapsed — prevents selectedAncestorIds
+	// from forcing ancestor nodes back open after the user collapses them.
+	const collapsedIds = new SvelteSet<string>();
 
-  function insertSortedUnique(list: string[], id: string) {
-    let lo = 0;
-    let hi = list.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      const cmp = compareNodeIds(id, list[mid]);
-      if (cmp === 0 && list[mid] === id) return;
-      if (cmp > 0) lo = mid + 1;
-      else hi = mid;
-    }
-    if (list[lo] === id) return;
-    list.splice(lo, 0, id);
-  }
+	// Seed expanded IDs from URL synchronously during init — MUST happen before
+	// any $effect runs, otherwise the extraExpandedIds write-effect fires first
+	// with empty expandedIds and deletes `ex` from treeParams.
+	if (treeParams) {
+		const ex = treeParams.get('ex');
+		if (ex) {
+			for (const id of ex.split(',').filter(Boolean)) expandedIds.add(id);
+		}
+	}
 
-  function removeId(list: string[], id: string) {
-    const idx = list.indexOf(id);
-    if (idx >= 0) list.splice(idx, 1);
-  }
+	// ── Children cache ──────────────────────────────────────────────────
 
-  function resetIndex() {
-    indexedNodes.clear();
-    indexedParentMap.clear();
-    indexedChildIds.clear();
-    indexedRootIds.length = 0;
-    indexedTreeNodes.clear();
-    indexedRootTreeNodes.length = 0;
-    indexedNodeArrayRef = null;
-    indexedEdgeArrayRef = null;
-    indexedNodeLength = 0;
-    indexedEdgeLength = 0;
-    indexedVersion += 1;
-  }
+	// Cache of fetched children (survives expand/collapse cycles)
+	const childrenCache = new Map<string, TreeNodeDTO[]>();
+	// Version counter bumped when cache changes (triggers reactive derivations)
+	let cacheVersion = $state(0);
 
-  function rebuildIndex(graph: Graph) {
-    resetIndex();
+	$effect(() => {
+		if (!rootChildren?.id) return;
+		const rootId = rootChildren.id;
+		if (collapsedIds.has(rootId)) return;
+		const cached = childrenCache.get(rootId);
+		const shouldRefresh =
+			!cached ||
+			(rootChildren.children.length > cached.length && rootChildren.children.length > 0) ||
+			(status === 'ready' && cached.length === 0 && rootChildren.children.length > 0);
+		if (!shouldRefresh) return;
+		childrenCache.set(rootId, rootChildren.children);
+		if (expandedIds.size === 0 || expandedIds.has(rootId)) {
+			expandedIds.add(rootId);
+		}
+		cacheVersion += 1;
+	});
 
-    // Pass 1: register nodes.
-    for (const node of graph.nodes) {
-      indexedNodes.set(node.id, node);
-      indexedChildIds.set(node.id, []);
-    }
+	function dtoToTreeNode(dto: TreeNodeDTO): TreeNode {
+		return {
+			node: dto.node as Node,
+			children: dto.hasChildren ? CHILDREN_PLACEHOLDER : [],
+			selectable: true,
+		};
+	}
 
-    // Pass 2: register parent links from structural edges.
-    for (const edge of graph.edges) {
-      if (edge.kind !== "Contains" && edge.kind !== "Defines") continue;
-      if (indexedParentMap.has(edge.to)) continue;
-      if (!indexedNodes.has(edge.from) || !indexedNodes.has(edge.to)) continue;
-      indexedParentMap.set(edge.to, edge.from);
-      const children = indexedChildIds.get(edge.from);
-      if (children) children.push(edge.to);
-    }
+	/** Pure cache reader — returns cached children as TreeNodes, or [] if not yet fetched. */
+	function getChildren(parentId: string): TreeNode[] {
+		const cached = childrenCache.get(parentId);
+		if (!cached) return [];
+		return cached.map(dtoToTreeNode);
+	}
 
-    // Pass 3: sort child lists once.
-    for (const children of indexedChildIds.values()) {
-      if (children.length > 1) children.sort(compareNodeIds);
-    }
+	// Build a parentMap from the fetched children cache
+	const parentMap = $derived.by(() => {
+		// Trigger re-evaluation when cache changes
+		void cacheVersion;
+		const map = new Map<string, string>();
+		for (const [parentId, children] of childrenCache) {
+			for (const child of children) {
+				map.set(child.node.id, parentId);
+			}
+		}
+		return map;
+	});
 
-    // Pass 4: roots.
-    for (const nodeId of indexedNodes.keys()) {
-      if (!indexedParentMap.has(nodeId)) indexedRootIds.push(nodeId);
-    }
-    if (indexedRootIds.length > 1) indexedRootIds.sort(compareNodeIds);
+	// ── Derived state ────────────────────────────────────────────
 
-    // Pass 5: create tree nodes once.
-    for (const nodeId of indexedNodes.keys()) {
-      const node = indexedNodes.get(nodeId);
-      if (!node) continue;
-      indexedTreeNodes.set(nodeId, { node, children: [], selectable: true });
-    }
+	// Root DTOs → TreeNodes (children resolved lazily by VirtualTree via resolveChildren)
+	const baseTree = $derived(
+		roots?.length ? roots.map(dtoToTreeNode) : ([] as TreeNode[]),
+	);
 
-    // Pass 6: attach children.
-    for (const [parentId, children] of indexedChildIds) {
-      const parentTree = indexedTreeNodes.get(parentId);
-      if (!parentTree || children.length === 0) continue;
-      for (const childId of children) {
-        const childTree = indexedTreeNodes.get(childId);
-        if (childTree) parentTree.children.push(childTree);
-      }
-    }
+	function filterTree(trees: TreeNode[], filter: string, kindFilter: Set<NodeKind>): TreeNode[] {
+		function filterNode(tn: TreeNode): TreeNode | null {
+			const children =
+				tn.children === CHILDREN_PLACEHOLDER ? getChildren(tn.node.id) : tn.children;
 
-    // Pass 7: root tree nodes.
-    for (const rootId of indexedRootIds) {
-      const rootTree = indexedTreeNodes.get(rootId);
-      if (rootTree) indexedRootTreeNodes.push(rootTree);
-    }
-  }
+			const filteredChildren: TreeNode[] = [];
+			for (const child of children) {
+				const next = filterNode(child);
+				if (next) filteredChildren.push(next);
+			}
 
-  function compareTreeNodes(a: TreeNode, b: TreeNode): number {
-    const kindDiff = (kindOrder[a.node.kind] ?? 99) - (kindOrder[b.node.kind] ?? 99);
-    if (kindDiff !== 0) return kindDiff;
-    return a.node.name.localeCompare(b.node.name);
-  }
+			const selfMatches = matchesFilter(tn.node, filter, kindFilter);
+			if (!selfMatches && filteredChildren.length === 0) return null;
+			if (filteredChildren.length === children.length && children === tn.children) return tn;
+			return {
+				node: tn.node,
+				selectable: tn.selectable,
+				children: filteredChildren,
+			};
+		}
 
-  function insertSortedUniqueTreeNode(list: TreeNode[], node: TreeNode) {
-    let lo = 0;
-    let hi = list.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      const cmp = compareTreeNodes(node, list[mid]);
-      if (cmp === 0 && list[mid].node.id === node.node.id) return;
-      if (cmp > 0) lo = mid + 1;
-      else hi = mid;
-    }
-    if (list[lo]?.node.id === node.node.id) return;
-    list.splice(lo, 0, node);
-  }
+		const result: TreeNode[] = [];
+		for (const tree of trees) {
+			const filtered = filterNode(tree);
+			if (filtered) result.push(filtered);
+		}
+		return result;
+	}
 
-  function removeTreeNodeById(list: TreeNode[], nodeId: string) {
-    const idx = list.findIndex((n) => n.node.id === nodeId);
-    if (idx >= 0) list.splice(idx, 1);
-  }
+	const normalizedFilter = $derived(filter.trim().toLowerCase());
 
-  function ensureTreeNode(nodeId: string): TreeNode | null {
-    const node = indexedNodes.get(nodeId);
-    if (!node) return null;
-    const existing = indexedTreeNodes.get(nodeId);
-    if (existing) {
-      if (existing.node !== node) existing.node = node;
-      return existing;
-    }
-    const created: TreeNode = { node, children: [], selectable: true };
-    indexedTreeNodes.set(nodeId, created);
-    return created;
-  }
+	const tree = $derived.by(() => {
+		if (baseTree.length === 0) return [];
+		if (!normalizedFilter && kindFilter.size === 0) {
+			return baseTree;
+		}
+		return perf.time('derived', 'filterTree', () =>
+			filterTree(baseTree, normalizedFilter, kindFilter),
+		);
+	});
 
-  function attachTreeNode(nodeId: string): boolean {
-    const treeNode = ensureTreeNode(nodeId);
-    if (!treeNode) return false;
+	const selectedAncestorIds = $derived.by(() => {
+		if (!selId) return [] as string[];
+		// Read parentMap (triggers when cache changes)
+		const map = parentMap;
+		const ancestors: string[] = [];
+		let currentId = selId;
+		while (map.has(currentId)) {
+			const pid = map.get(currentId)!;
+			ancestors.push(pid);
+			currentId = pid;
+		}
+		return ancestors;
+	});
 
-    const parentId = indexedParentMap.get(nodeId);
-    if (!parentId) {
-      insertSortedUniqueTreeNode(indexedRootTreeNodes, treeNode);
-      return true;
-    }
+	const expandedIdsForRender = $derived.by(() => {
+		const result = new Set<string>();
+		for (const id of expandedIds) result.add(id);
+		for (const id of selectedAncestorIds) {
+			if (!collapsedIds.has(id)) result.add(id);
+		}
+		return result;
+	});
 
-    const parentTree = ensureTreeNode(parentId);
-    if (!parentTree) return false;
-    removeTreeNodeById(indexedRootTreeNodes, nodeId);
-    insertSortedUniqueTreeNode(parentTree.children, treeNode);
-    return true;
-  }
+	// Extra expanded IDs = user-expanded branches not part of the selected node's ancestors.
+	// These are persisted in the URL `ex` param so tree state survives refresh.
+	// Uses both selectedAncestorIds (from lazy parentMap) and expandPath (from server)
+	// to reliably exclude ancestors even before children cache is populated.
+	const extraExpandedIds = $derived.by(() => {
+		const ancestorSet = new Set(selectedAncestorIds);
+		if (expandPath) {
+			for (const a of expandPath.ancestors) ancestorSet.add(a.id);
+		}
+		const extra: string[] = [];
+		for (const id of expandedIds) {
+			if (id !== selId && !ancestorSet.has(id)) {
+				extra.push(id);
+			}
+		}
+		extra.sort();
+		return extra;
+	});
 
-  function addIndexedNode(node: Node): boolean {
-    const existed = indexedNodes.has(node.id);
-    indexedNodes.set(node.id, node);
-    if (!existed) {
-      if (!indexedParentMap.has(node.id)) insertSortedUnique(indexedRootIds, node.id);
-      let changed = attachTreeNode(node.id);
-      for (const childId of indexedChildIds.get(node.id) ?? []) {
-        changed = attachTreeNode(childId) || changed;
-      }
-      return changed;
-    }
-    return false;
-  }
+	// Write extra expanded IDs to treeParams (side effect: writing to shared state)
+	$effect(() => {
+		if (!treeParams) return;
+		const val = extraExpandedIds.join(',');
+		if (val) treeParams.set('ex', val);
+		else treeParams.delete('ex');
+	});
 
-  function addIndexedEdge(from: string, to: string): boolean {
-    if (indexedParentMap.has(to)) return false;
-    indexedParentMap.set(to, from);
-    const children = indexedChildIds.get(from) ?? [];
-    if (!indexedChildIds.has(from)) indexedChildIds.set(from, children);
-    insertSortedUnique(children, to);
-    removeId(indexedRootIds, to);
-    attachTreeNode(to);
-    return true;
-  }
+	// Auto-expand the selected node when selection changes.
+	let lastAutoExpandedId: string | null = null;
+	$effect.pre(() => {
+		if (selId && selId !== lastAutoExpandedId) {
+			lastAutoExpandedId = selId;
+			collapsedIds.clear();
+			void expandAndFetch(selId);
+		}
+	});
 
-  function appendIndex(graph: Graph, nodeStart: number, edgeStart: number): boolean {
-    let changed = false;
+	// Reset internal state on cross-crate navigation (avoids stale tree data
+	// when the component stays mounted through an {#if} transition).
+	let lastCrateKey = '';
+	let lastReadyKey = '';
+	let lastRootExpandKey = '';
+	let lastReadyExpandKey = '';
+	$effect(() => {
+		const key = `${crateName}@${crateVersion}`;
+		if (!key || key === '@' || key === lastCrateKey) return;
+		if (lastCrateKey) {
+			childrenCache.clear();
+			expandedIds.clear();
+			collapsedIds.clear();
+			lastExpandKey = null;
+			lastAutoExpandedId = null;
+			lastReadyKey = '';
+			cacheVersion += 1;
+			treeParams?.delete('ex');
+			log.debug`crate changed ${lastCrateKey} → ${key}, reset tree state`;
+		}
+		// First mount seeding from URL is done synchronously at component init
+		// (above expandedIds declaration) to prevent the extraExpandedIds write-effect
+		// from clearing treeParams before this effect runs.
+		lastCrateKey = key;
+	});
 
-    for (let i = nodeStart; i < graph.nodes.length; i++) {
-      if (addIndexedNode(graph.nodes[i])) changed = true;
-    }
+	$effect(() => {
+		if (!crateName || !crateVersion) return;
+		if (!baseTree.length) return;
+		if (filter || kindFilter.size > 0) return;
+		const rootId = baseTree[0].node.id;
+		if (!rootId) return;
+		if (selId && selId !== rootId) return;
+		if (expandedIds.size > 0 || collapsedIds.has(rootId)) return;
+		const key = `${crateName}@${crateVersion}:${rootId}`;
+		if (lastRootExpandKey === key) return;
+		lastRootExpandKey = key;
+		void expandAndFetch(rootId);
+	});
 
-    for (let i = edgeStart; i < graph.edges.length; i++) {
-      const edge = graph.edges[i];
-      if (edge.kind !== 'Contains' && edge.kind !== 'Defines') continue;
-      if (addIndexedEdge(edge.from, edge.to)) changed = true;
-    }
+	$effect(() => {
+		if (!crateName || !crateVersion) return;
+		if (status !== 'ready') return;
+		const key = `${crateName}@${crateVersion}`;
+		if (lastReadyKey === key) return;
+		lastReadyKey = key;
 
-    return changed;
-  }
+		const expanded = Array.from(expandedIds);
+		for (const id of expanded) {
+			childrenCache.delete(id);
+		}
+		if (expanded.length > 0) cacheVersion += 1;
+		for (const id of expanded) {
+			void expandAndFetch(id);
+		}
+		log.debug`tree cache refreshed on ready for ${key}`;
+	});
 
-  function ensureIndexed(graph: Graph): 'rebuild' | 'delta' | 'noop' {
-    const requiresRebuild =
-      indexedNodeArrayRef !== graph.nodes ||
-      indexedEdgeArrayRef !== graph.edges ||
-      graph.nodes.length < indexedNodeLength ||
-      graph.edges.length < indexedEdgeLength;
+	$effect(() => {
+		if (!crateName || !crateVersion) return;
+		if (status !== 'ready') return;
+		if (filter || kindFilter.size > 0) return;
+		if (!baseTree.length) return;
+		if (expandedIds.size > 0) return;
+		const rootId = baseTree[0]?.node.id;
+		if (!rootId || collapsedIds.has(rootId)) return;
+		const expandKey = `${crateName}@${crateVersion}:${rootId}`;
+		if (lastReadyExpandKey === expandKey) return;
+		lastReadyExpandKey = expandKey;
+		void expandAndFetch(rootId);
+	});
 
-    if (requiresRebuild) {
-      rebuildIndex(graph);
-      indexedNodeArrayRef = graph.nodes;
-      indexedEdgeArrayRef = graph.edges;
-      indexedNodeLength = graph.nodes.length;
-      indexedEdgeLength = graph.edges.length;
-      indexedVersion += 1;
-      return 'rebuild';
-    }
+	// Expand the tree path to the selected node.
+	// Prefers pre-fetched context data from nodeView; falls back to RPC.
+	let lastExpandKey: string | null = null;
+	$effect(() => {
+		if (!selId || !crateName || !crateVersion) return;
 
-    if (graph.nodes.length === indexedNodeLength && graph.edges.length === indexedEdgeLength) {
-      return 'noop';
-    }
+		// Dedup key includes selId + whether we have expandPath.
+		// This lets the effect re-run when expandPath arrives after initial render
+		// (e.g. when treeRoots resolves before nodeView sets the expand path).
+		const key = expandPath ? `${selId}:ctx` : `${selId}:rpc`;
+		if (key === lastExpandKey) return;
+		lastExpandKey = key;
 
-    const changed = appendIndex(graph, indexedNodeLength, indexedEdgeLength);
-    indexedNodeLength = graph.nodes.length;
-    indexedEdgeLength = graph.edges.length;
-    if (changed) indexedVersion += 1;
-    return changed ? 'delta' : 'noop';
-  }
+		if (expandPath) {
+			// Fetch children for path ancestors + selected + any user-expanded (from URL `ex`)
+			// in one batch, then expand. query.batch groups all calls into 1 HTTP request.
+			fetchAndExpand(
+				[...expandPath.ancestors.map((a) => a.id), selId],
+				expandPath,
+				crateName,
+				crateVersion,
+			);
+			return;
+		}
 
-  function filterTree(trees: TreeNode[], filter: string, kindFilter: Set<NodeKind>): TreeNode[] {
-    function filterNode(node: TreeNode): TreeNode | null {
-      const filteredChildren: TreeNode[] = [];
-      for (const child of node.children) {
-        const next = filterNode(child);
-        if (next) filteredChildren.push(next);
-      }
+		// Fallback: fetch ancestors + children (edge case: direct GraphTree usage without DetailView)
+		expandToNode(selId, crateName, crateVersion);
+	});
 
-      const selfMatches = matchesFilter(node.node, filter, kindFilter);
-      if (!selfMatches && filteredChildren.length === 0) return null;
-      if (filteredChildren.length === node.children.length) return node;
-      return {
-        node: node.node,
-        selectable: node.selectable,
-        children: filteredChildren
-      };
-    }
+	/** Fetch children for the given IDs + any already-expanded nodes, then expand ancestors. */
+	async function fetchAndExpand(
+		pathIds: string[],
+		path: NonNullable<typeof expandPath>,
+		crate: string,
+		ver: string,
+	) {
+		// Include already-expanded IDs (from URL `ex` param) so they have children too
+		const allIds = [...new Set([...pathIds, ...expandedIds])];
+		const idsToFetch = allIds.filter((id) => !childrenCache.has(id));
 
-    const result: TreeNode[] = [];
-    for (const tree of trees) {
-      const filtered = filterNode(tree);
-      if (filtered) result.push(filtered);
-    }
-    return result;
-  }
+		if (idsToFetch.length > 0) {
+			try {
+				const results = await Promise.all(
+					idsToFetch.map((id) =>
+						getTreeChildren({ name: crate, version: ver, nodeId: id }),
+					),
+				);
+				for (let i = 0; i < idsToFetch.length; i++) {
+					childrenCache.set(idsToFetch[i], results[i]);
+				}
+			} catch (err) {
+				log.warn`fetchAndExpand failed: ${String(err)}`;
+			}
+		}
 
-  function cloneTree(nodes: TreeNode[]): TreeNode[] {
-    const out: TreeNode[] = [];
-    for (const node of nodes) {
-      const clonedChildren = cloneTree(node.children);
-      out.push({
-        node: node.node,
-        selectable: node.selectable,
-        children: clonedChildren
-      });
-    }
-    return out;
-  }
+		for (const ancestor of path.ancestors) {
+			expandedIds.add(ancestor.id);
+			collapsedIds.delete(ancestor.id);
+		}
+		expandedIds.add(pathIds[pathIds.length - 1]);
+		cacheVersion += 1;
+	}
 
-  const normalizedFilter = $derived(filter.trim().toLowerCase());
+	/** Fallback: resolve ancestors via RPC, fetch their children, then expand. */
+	async function expandToNode(nodeId: string, crate: string, ver: string) {
+		try {
+			const ancestors = await getTreeAncestors({
+				name: crate,
+				version: ver,
+				nodeId,
+			});
+			if (!ancestors.length) return;
 
-  const indexedTreeMemo = new KeyedMemo(
-    () => keyOf(graph?.nodes, graph?.edges, graph?.nodes.length ?? 0, graph?.edges.length ?? 0),
-    () => {
-      if (!graph) {
-        resetIndex();
-        renderedTreeVersion = -1;
-        renderedTreeRoots = [];
-        return {
-          tree: [] as TreeNode[],
-          parentMap: indexedParentMap,
-          version: indexedVersion
-        };
-      }
-      const mode = ensureIndexed(graph);
-      if (indexedVersion !== renderedTreeVersion) {
-        const t0 = performance.now();
-        // Avoid deep clone of the full tree on large crates.
-        renderedTreeRoots = indexedRootTreeNodes;
-        renderedTreeVersion = indexedVersion;
-        const ms = performance.now() - t0;
-        if (ms > 120) {
-          log.warn`cloneTree slow ${Math.round(ms)}ms nodes=${graph.nodes.length} edges=${graph.edges.length} mode=${mode}`;
-        }
-      }
-      const tree = perf.time('derived', 'baseTree', () => renderedTreeRoots, {
-        detail: () => `${graph.nodes.length}n ${mode}`
-      });
-      return {
-        tree,
-        parentMap: indexedParentMap,
-        version: indexedVersion
-      };
-    },
-    { equalsKey: keyEqual }
-  );
-  const indexedTree = $derived(indexedTreeMemo.current);
-  const parentMap = $derived(indexedTree.parentMap);
-  const baseTree = $derived(indexedTree.tree);
+			const idsToFetch = ancestors
+				.map((a) => a.id)
+				.filter((id) => !childrenCache.has(id));
+			if (idsToFetch.length > 0) {
+				const results = await Promise.all(
+					idsToFetch.map((id) =>
+						getTreeChildren({ name: crate, version: ver, nodeId: id }),
+					),
+				);
+				for (let i = 0; i < idsToFetch.length; i++) {
+					childrenCache.set(idsToFetch[i], results[i]);
+				}
+			}
 
-  const tree = $derived.by(() => {
-    if (!graph) return [];
-    if (!normalizedFilter && kindFilter.size === 0) {
-      return baseTree;
-    }
-    return perf.time('derived', 'filterTree', () => filterTree(baseTree, normalizedFilter, kindFilter));
-  });
+			for (const ancestor of ancestors) {
+				expandedIds.add(ancestor.id);
+				collapsedIds.delete(ancestor.id);
+			}
+			expandedIds.add(nodeId);
+			cacheVersion += 1;
+		} catch (err) {
+			log.warn`expandToNode failed for ${nodeId}: ${String(err)}`;
+		}
+	}
 
-  const ancestorMemo = new KeyedMemo(
-    () => keyOf(selected?.id ?? null, indexedTree.version),
-    () => {
-    const selId = selected?.id;
-    if (!selId) return [] as string[];
-    const ancestors: string[] = [];
-    let currentId = selId;
-    while (parentMap.has(currentId)) {
-      const pid = parentMap.get(currentId)!;
-      ancestors.push(pid);
-      currentId = pid;
-    }
-    return ancestors;
-    },
-    { equalsKey: keyEqual }
-  );
-  const selectedAncestorIds = $derived(ancestorMemo.current);
+	function toggleExpand(id: string) {
+		if (expandedIdsForRender.has(id)) {
+			expandedIds.delete(id);
+			collapsedIds.add(id);
+		} else {
+			expandAndFetch(id);
+		}
+	}
 
-  const expandedIdsForRender = new SvelteSet<string>();
-  const expandedIdsForRenderScratch = new Set<string>();
-  let expandedVersion = $state(0);
-  $effect(() => {
-    perf.time('derived', 'expandedIdsForRender', () => {
-      expandedIdsForRenderScratch.clear();
-      for (const id of expandedIds) expandedIdsForRenderScratch.add(id);
-      for (const id of selectedAncestorIds) {
-        if (!collapsedIds.has(id)) expandedIdsForRenderScratch.add(id);
-      }
+	/** Fetch children (if not cached), then expand the node. */
+	async function expandAndFetch(id: string) {
+		if (!childrenCache.has(id) && crateName && crateVersion) {
+			try {
+				const children = await getTreeChildren({
+					name: crateName,
+					version: crateVersion,
+					nodeId: id,
+				});
+				childrenCache.set(id, children);
+			} catch (err) {
+				log.warn`children fetch failed for ${id}: ${String(err)}`;
+				return;
+			}
+		}
+		expandedIds.add(id);
+		collapsedIds.delete(id);
+		cacheVersion += 1;
+	}
 
-      let changed = false;
-      for (const id of expandedIdsForRender) {
-        if (!expandedIdsForRenderScratch.has(id)) {
-          expandedIdsForRender.delete(id);
-          changed = true;
-        }
-      }
-      for (const id of expandedIdsForRenderScratch) {
-        if (!expandedIdsForRender.has(id)) {
-          expandedIdsForRender.add(id);
-          changed = true;
-        }
-      }
-      if (changed) expandedVersion += 1;
-      return expandedIdsForRender;
-    }, {
-      detail: () => `${expandedIdsForRender.size} ids`
-    });
-  });
+	function collapseAll() {
+		expandedIds.clear();
+		collapsedIds.clear();
+	}
 
-  // Auto-expand the selected node when selection changes.
-  // Uses $effect.pre so the mutation happens before DOM reconciliation,
-  // avoiding cascading re-renders that corrupt keyed {#each} blocks.
-  let lastAutoExpandedId: string | null = null;
-  $effect.pre(() => {
-    if (selected && selected.id !== lastAutoExpandedId) {
-      lastAutoExpandedId = selected.id;
-      expandedIds.add(selected.id);
-      collapsedIds.clear();
-    }
-  });
+	function expandAll() {
+		if (!tree.length) return;
+		const toExpand = new Set<string>();
+		const stack: TreeNode[] = [...tree];
+		while (stack.length) {
+			const node = stack.pop();
+			if (!node) break;
+			const children =
+				node.children === CHILDREN_PLACEHOLDER ? getChildren(node.node.id) : node.children;
+			if (children.length > 0) {
+				toExpand.add(node.node.id);
+				for (const child of children) stack.push(child);
+			}
+		}
+		if (toExpand.size === 0) return;
+		expandedIds.clear();
+		collapsedIds.clear();
+		for (const id of toExpand) expandedIds.add(id);
+		cacheVersion += 1;
+	}
 
-  function toggleExpand(id: string) {
-    if (expandedIdsForRender.has(id)) {
-      expandedIds.delete(id);
-      collapsedIds.add(id);
-    } else {
-      expandedIds.add(id);
-      collapsedIds.delete(id);
-    }
-  }
-
-  /** Row-click logic: toggle only for non-selectable nodes. */
-  function selectExpand(
-    id: string,
-    _isSelected: boolean,
-    isExpanded: boolean,
-    hasChildren: boolean,
-    selectable: boolean
-  ) {
-    if (selectable || !hasChildren) return;
-    toggleExpand(id);
-  }
-
-  function expandAll() {
-    if (!graph) return;
-    collapsedIds.clear();
-    expandedIds.clear();
-    for (const node of graph.nodes) {
-      expandedIds.add(node.id);
-    }
-  }
-
-  function collapseAll() {
-    expandedIds.clear();
-    collapsedIds.clear();
-  }
-
-  // Use virtualization for large trees
-  const useVirtualization = $derived(graph ? graph.nodes.length > 500 : false);
-
-  // Track render timing
-  let lastGraphId = '';
-  $effect(() => {
-    const gid = graph?.nodes[0]?.id ?? '';
-    if (gid !== lastGraphId) {
-      lastGraphId = gid;
-      perfTick('render', 'GraphTree tick');
-    }
-  });
-
+	// Track render timing
+	let lastGraphId = '';
+	$effect(() => {
+		const gid = roots?.[0]?.node.id ?? '';
+		if (gid !== lastGraphId) {
+			lastGraphId = gid;
+			perfTick('render', 'GraphTree tick');
+		}
+	});
 </script>
 
 <div class="flex h-full flex-col">
-  <div class="flex items-center gap-2 border-b border-[var(--panel-border)] px-3 py-2">
-    <button
-      type="button"
-      class="badge badge-sm hover:bg-[var(--panel-strong)] transition-colors"
-      onclick={expandAll}
-    >
-      Expand all
-    </button>
-    <button
-      type="button"
-      class="badge badge-sm hover:bg-[var(--panel-strong)] transition-colors"
-      onclick={collapseAll}
-    >
-      Collapse all
-    </button>
-  </div>
+	<div class="flex items-center gap-2 border-b border-(--panel-border) px-3 py-2">
+		<button
+			type="button"
+			class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
+			onclick={collapseAll}
+		>
+			Collapse all
+		</button>
+		<button
+			type="button"
+			class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
+			onclick={expandAll}
+		>
+			Expand all
+		</button>
+	</div>
 
-  {#if tree.length === 0}
-    <div class="flex-1 p-2">
-      <p class="p-4 text-center text-sm text-[var(--muted)]">
-        {filter || kindFilter.size > 0 ? 'No matching items' : 'No items to display'}
-      </p>
-    </div>
-  {:else if useVirtualization}
-    <svelte:boundary>
-      <VirtualTree
-        {tree}
-        treeVersion={indexedTree.version}
-        expandedVersion={expandedVersion}
-        {selected}
-        {getNodeUrl}
-        expandedIds={expandedIdsForRender}
-        onToggleExpand={toggleExpand}
-        onSelectExpand={selectExpand}
-        filter={normalizedFilter}
-        {kindFilter}
-      />
-      {#snippet failed(error, reset)}
-        <div class="p-4 text-sm text-[var(--danger)]">
-          <p>Tree render error</p>
-          <button type="button" class="mt-1 text-[var(--accent)] hover:underline" onclick={reset}>Retry</button>
-        </div>
-      {/snippet}
-    </svelte:boundary>
-  {:else}
-    <svelte:boundary>
-      <div class="flex-1 overflow-auto p-2" style="scrollbar-gutter: stable;">
-        {#each tree as item (item.node.id)}
-          {@render treeItem(item, 0, undefined)}
-        {/each}
-      </div>
-      {#snippet failed(error, reset)}
-        <div class="p-4 text-sm text-[var(--danger)]">
-          <p>Tree render error</p>
-          <button type="button" class="mt-1 text-[var(--accent)] hover:underline" onclick={reset}>Retry</button>
-        </div>
-      {/snippet}
-    </svelte:boundary>
-  {/if}
+	{#if tree.length === 0}
+		<div class="flex-1 p-2">
+			<p class="p-4 text-center text-sm text-(--muted)">
+				{filter || kindFilter.size > 0 ? 'No matching items' : 'No items to display'}
+			</p>
+		</div>
+	{:else}
+		<svelte:boundary>
+			<VirtualTree
+				{tree}
+				treeVersion={cacheVersion}
+				selectedId={selId}
+				{getNodeUrl}
+				expandedIds={expandedIdsForRender}
+				onToggleExpand={toggleExpand}
+				filter={normalizedFilter}
+				{kindFilter}
+				resolveChildren={getChildren}
+			/>
+			{#snippet failed(error, reset)}
+				<div class="p-4 text-sm text-(--danger)">
+					<p>Tree render error</p>
+					<button type="button" class="mt-1 text-(--accent) hover:underline" onclick={reset}>
+						Retry
+					</button>
+				</div>
+			{/snippet}
+		</svelte:boundary>
+	{/if}
 </div>
-
-{#snippet treeItem(item: TreeNode, depth: number, parentId: string | undefined)}
-  {@const hasChildren = item.children.length > 0}
-  {@const isExpanded = expandedIdsForRender.has(item.node.id)}
-  {@const isSelected = item.selectable && selected?.id === item.node.id}
-  {@const matches = matchesFilter(item.node, normalizedFilter, kindFilter)}
-
-  <TreeItem
-    node={item.node}
-    {depth}
-    {hasChildren}
-    {isExpanded}
-    {isSelected}
-    dimmed={!matches}
-    selectable={item.selectable}
-    href={getNodeUrl(item.node.id, parentId)}
-    onToggle={() => { if (hasChildren) toggleExpand(item.node.id); }}
-    onSelect={() => {
-      if (!item.selectable && hasChildren) toggleExpand(item.node.id);
-    }}
-  />
-  {#if hasChildren && isExpanded}
-    {#each item.children as child (child.node.id)}
-      {@render treeItem(child, depth + 1, item.node.id)}
-    {/each}
-  {/if}
-{/snippet}

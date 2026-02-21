@@ -1,197 +1,250 @@
 <script lang="ts">
-  import type { Node, NodeKind } from '$lib/graph';
-  import type { Attachment } from 'svelte/attachments';
-  import { matchesFilter, type TreeNode } from '$lib/tree';
-  import { KeyedMemo, Memo, arrayEqual, keyEqual, keyOf } from '$lib/reactivity.svelte';
-  import TreeItem from './TreeItem.svelte';
-  import { perf } from '$lib/perf';
-  import { getLogger } from '$lib/log';
+	import type { NodeKind } from '$lib/graph';
+	import type { Attachment } from 'svelte/attachments';
+	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
+	import { KeyedMemo, Memo, arrayEqual, keyEqual, keyOf } from '$lib/reactivity.svelte';
+	import TreeItem from './TreeItem.svelte';
+	import { perf } from '$lib/perf';
+	import { getLogger } from '$lib/log';
 
-  interface FlatNode {
-    treeNode: TreeNode;
-    depth: number;
-    isExpanded: boolean;
-    hasChildren: boolean;
-    parentId: string | undefined;
-  }
+	interface FlatNode {
+		treeNode: TreeNode;
+		depth: number;
+		isExpanded: boolean;
+		hasChildren: boolean;
+		parentId: string | undefined;
+	}
 
-  let {
-    tree,
-    treeVersion,
-    expandedVersion,
-    selected,
-    getNodeUrl,
-    expandedIds,
-    onToggleExpand,
-    onSelectExpand,
-    filter,
-    kindFilter
-  } = $props<{
-    tree: TreeNode[];
-    treeVersion: number;
-    expandedVersion: number;
-    selected: Node | null;
-    getNodeUrl: (id: string, parent?: string) => string;
-    expandedIds: Set<string>;
-    onToggleExpand: (id: string) => void;
-    /** Row-click expand logic: toggle for non-selectable nodes */
-    onSelectExpand: (id: string, isSelected: boolean, isExpanded: boolean, hasChildren: boolean, selectable: boolean) => void;
-    filter: string;
-    kindFilter: Set<NodeKind>;
-  }>();
-  const log = getLogger('virtual-tree');
+	let {
+		tree,
+		treeVersion,
+		selectedId = null,
+		getNodeUrl,
+		expandedIds,
+		onToggleExpand,
+		filter,
+		kindFilter,
+		resolveChildren,
+	} = $props<{
+		tree: TreeNode[];
+		treeVersion: number;
+		selectedId?: string | null;
+		getNodeUrl: (id: string) => string;
+		expandedIds: Set<string>;
+		onToggleExpand: (id: string) => void;
+		filter: string;
+		kindFilter: Set<NodeKind>;
+		/** Read children from cache (pure, no side effects). */
+		resolveChildren: (parentId: string) => TreeNode[];
+	}>();
+	const log = getLogger('virtual-tree');
 
-  const ITEM_HEIGHT = 32;
-  const OVERSCAN = 5;
+	const ITEM_HEIGHT = 32;
+	const OVERSCAN = 5;
 
-  let scrollTop = $state(0);
-  let containerHeight = $state(400);
+	let scrollTop = $state(0);
+	let containerHeight = $state(400);
 
-  // Flatten visible tree nodes.
-  // Wrapped in Memo to stabilize the reference — prevents downstream rerenders
-  // when the tree/expandedIds signals fire but produce the same flat list.
-  const flatNodesMemo = new KeyedMemo(
-    () => keyOf(treeVersion, expandedVersion, tree),
-    () => {
-      const t0 = performance.now();
-      const flattened = perf.time('derived', 'flatNodes', () => {
-        const result: FlatNode[] = [];
-        function flatten(nodes: TreeNode[], depth: number, parentId: string | undefined) {
-          for (const treeNode of nodes) {
-            const hasChildren = treeNode.children.length > 0;
-            const isExpanded = expandedIds.has(treeNode.node.id);
+	// Track which TreeNodes have been lazily sorted (children may arrive unsorted
+	// from query-mode rebuilds to avoid blocking the main thread with O(n log n) sort).
+	const lazySorted = new WeakSet<TreeNode>();
 
-            result.push({
-              treeNode,
-              depth,
-              isExpanded,
-              hasChildren,
-              parentId
-            });
+	// Fast path: when nothing is expanded, the flat list is just roots at depth 0.
+	// We can skip the O(n) flatten entirely and compute visible items directly.
+	const fastPath = $derived(expandedIds.size === 0);
 
-            if (hasChildren && isExpanded) {
-              flatten(treeNode.children, depth + 1, treeNode.node.id);
-            }
-          }
-        }
+	// Full flatten — only computed when nodes are expanded.
+	const flatNodesMemo = new KeyedMemo(
+		() => (fastPath ? keyOf('skip') : keyOf(treeVersion, expandedIds, tree)),
+		() => {
+			if (fastPath) return [] as FlatNode[];
+			const t0 = performance.now();
+			const flattened = perf.time(
+				'derived',
+				'flatNodes',
+				() => {
+					const result: FlatNode[] = [];
+					const sorted = lazySorted;
+					const resolve = resolveChildren;
+					function flatten(nodes: TreeNode[], depth: number, parentId: string | undefined) {
+						for (const treeNode of nodes) {
+							const hasChildren = treeNode.children.length > 0;
+							const isExpanded = expandedIds.has(treeNode.node.id);
 
-        flatten(tree, 0, undefined);
-        return result;
-      }, {
-        detail: (r) => `${r.length} items`
-      });
-      const ms = performance.now() - t0;
-      if (ms > 120) {
-        log.warn`flatNodes slow ${Math.round(ms)}ms items=${flattened.length} treeVersion=${treeVersion} expandedVersion=${expandedVersion}`;
-      }
-      return flattened;
-    },
-    {
-      equalsKey: keyEqual,
-      equalsValue: (a, b) => arrayEqual(a, b, (x, y) => x.treeNode === y.treeNode && x.isExpanded === y.isExpanded)
-    }
-  );
-  const flatNodes = $derived(flatNodesMemo.current);
+							result.push({
+								treeNode,
+								depth,
+								isExpanded,
+								hasChildren,
+								parentId,
+							});
 
-  // Calculate visible range — Memo stabilizes the reference when values unchanged.
-  const visibleRangeMemo = new Memo(() => {
-    const start = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
-    const visibleCount = Math.ceil(containerHeight / ITEM_HEIGHT) + OVERSCAN * 2;
-    const end = Math.min(flatNodes.length, start + visibleCount);
-    return { start, end };
-  });
-  const visibleRange = $derived(visibleRangeMemo.current);
+							if (hasChildren && isExpanded) {
+								// Resolve children from cache (pure reader, no side effects)
+								const children = treeNode.children === CHILDREN_PLACEHOLDER
+									? resolve(treeNode.node.id)
+									: treeNode.children;
+								// Lazy sort: sort children on first access when expanding
+								if (children.length > 1 && !sorted.has(treeNode)) {
+									children.sort(compareTreeNodes);
+									sorted.add(treeNode);
+								}
+								flatten(children, depth + 1, treeNode.node.id);
+							}
+						}
+					}
 
-  // Get visible nodes
-  const visibleNodes = $derived(flatNodes.slice(visibleRange.start, visibleRange.end));
+					flatten(tree, 0, undefined);
+					return result;
+				},
+				{
+					detail: (r) => `${r.length} items`,
+				},
+			);
+			const ms = performance.now() - t0;
+			if (ms > 120) {
+				log.warn`flatNodes slow ${Math.round(ms)}ms items=${flattened.length} treeVersion=${treeVersion} expandedIds=${expandedIds.size}`;
+			}
+			return flattened;
+		},
+		{
+			equalsKey: keyEqual,
+			equalsValue: (a, b) =>
+				arrayEqual(a, b, (x, y) => x.treeNode === y.treeNode && x.isExpanded === y.isExpanded),
+		},
+	);
+	const flatNodesFull = $derived(flatNodesMemo.current);
 
-  // Total height for scroll
-  const totalHeight = $derived(flatNodes.length * ITEM_HEIGHT);
+	// Total item count — fast path uses tree length directly (O(1))
+	const totalCount = $derived(fastPath ? tree.length : flatNodesFull.length);
 
-  // Offset for positioning visible items
-  const offsetY = $derived(visibleRange.start * ITEM_HEIGHT);
+	// Calculate visible range
+	const visibleRangeMemo = new Memo(() => {
+		const start = Math.max(0, Math.floor(scrollTop / ITEM_HEIGHT) - OVERSCAN);
+		const visibleCount = Math.ceil(containerHeight / ITEM_HEIGHT) + OVERSCAN * 2;
+		const end = Math.min(totalCount, start + visibleCount);
+		return { start, end };
+	});
+	const visibleRange = $derived(visibleRangeMemo.current);
 
-  const attachScrollListener: Attachment<HTMLDivElement> = (node) => {
-    const handleScroll = () => {
-      scrollTop = node.scrollTop;
-    };
-    handleScroll();
-    node.addEventListener('scroll', handleScroll, { passive: true });
-    return () => {
-      node.removeEventListener('scroll', handleScroll);
-    };
-  };
+	// Visible nodes — fast path builds only ~30 FlatNode objects directly from tree
+	const visibleNodes = $derived.by(() => {
+		const { start, end } = visibleRange;
+		if (fastPath) {
+			const result: FlatNode[] = [];
+			for (let i = start; i < end && i < tree.length; i++) {
+				const treeNode = tree[i];
+				result.push({
+					treeNode,
+					depth: 0,
+					isExpanded: false,
+					hasChildren: treeNode.children.length > 0,
+					parentId: undefined,
+				});
+			}
+			return result;
+		}
+		return flatNodesFull.slice(start, end);
+	});
 
-  // Track last scrolled-to selection to avoid re-scrolling
-  let lastScrolledToId: string | null = null;
+	// Total height for scroll
+	const totalHeight = $derived(totalCount * ITEM_HEIGHT);
 
-  const attachAutoScroll = (
-    selectedId: string | null,
-    nodes: FlatNode[],
-    height: number
-  ): Attachment<HTMLDivElement> => {
-    return (node) => {
-      // Only scroll if selection changed
-      if (selectedId === lastScrolledToId) return;
-      lastScrolledToId = selectedId;
+	// Offset for positioning visible items
+	const offsetY = $derived(visibleRange.start * ITEM_HEIGHT);
 
-      if (!selectedId) return;
+	const attachScrollListener: Attachment<HTMLDivElement> = (node) => {
+		const handleScroll = () => {
+			scrollTop = node.scrollTop;
+		};
+		handleScroll();
+		node.addEventListener('scroll', handleScroll, { passive: true });
+		return () => {
+			node.removeEventListener('scroll', handleScroll);
+		};
+	};
 
-      const selectedIndex = nodes.findIndex(
-        (item) => item.treeNode.node.id === selectedId
-      );
+	// Track last scrolled-to selection to avoid re-scrolling
+	let lastScrolledToId: string | null = null;
 
-      if (selectedIndex === -1) return;
+	const attachAutoScroll = (
+		selectedId: string | null,
+		count: number,
+		height: number,
+	): Attachment<HTMLDivElement> => {
+		return (node) => {
+			// Only scroll if selection changed
+			if (selectedId === lastScrolledToId) return;
+			lastScrolledToId = selectedId;
 
-      const itemTop = selectedIndex * ITEM_HEIGHT;
-      const itemBottom = itemTop + ITEM_HEIGHT;
-      const viewTop = node.scrollTop;
-      const viewBottom = viewTop + height;
+			if (!selectedId) return;
 
-      // Only scroll if item is not fully visible
-      if (itemTop < viewTop) {
-        node.scrollTo({ top: itemTop - ITEM_HEIGHT, behavior: 'smooth' });
-      } else if (itemBottom > viewBottom) {
-        node.scrollTo({ top: itemBottom - height + ITEM_HEIGHT, behavior: 'smooth' });
-      }
-    };
-  };
+			// Find the selected index — fast path searches tree directly
+			let selectedIndex = -1;
+			if (fastPath) {
+				selectedIndex = tree.findIndex((t: TreeNode) => t.node.id === selectedId);
+			} else {
+				selectedIndex = flatNodesFull.findIndex(
+					(item) => item.treeNode.node.id === selectedId,
+				);
+			}
 
+			if (selectedIndex === -1) return;
+
+			const itemTop = selectedIndex * ITEM_HEIGHT;
+			const itemBottom = itemTop + ITEM_HEIGHT;
+			const viewTop = node.scrollTop;
+			const viewBottom = viewTop + height;
+
+			// Only scroll if item is not fully visible
+			if (itemTop < viewTop) {
+				node.scrollTo({ top: itemTop - ITEM_HEIGHT, behavior: 'smooth' });
+			} else if (itemBottom > viewBottom) {
+				node.scrollTo({ top: itemBottom - height + ITEM_HEIGHT, behavior: 'smooth' });
+			}
+		};
+	};
 </script>
 
 <svelte:boundary>
-  <div
-    {@attach attachScrollListener}
-    {@attach attachAutoScroll(selected?.id ?? null, flatNodes, containerHeight)}
-    class="flex-1 overflow-auto p-2"
-    style="scrollbar-gutter: stable;"
-    bind:clientHeight={containerHeight}
-  >
-    <div style="height: {totalHeight}px; position: relative;">
-      <div style="transform: translateY({offsetY}px);">
-        {#each visibleNodes as { treeNode, depth, isExpanded, hasChildren, parentId } (`${parentId ?? 'root'}::${treeNode.node.id}`)}
-          {@const isSel = treeNode.selectable && selected?.id === treeNode.node.id}
-          <TreeItem
-            node={treeNode.node}
-            {depth}
-            {hasChildren}
-            {isExpanded}
-            isSelected={isSel}
-            dimmed={!matchesFilter(treeNode.node, filter, kindFilter)}
-            selectable={treeNode.selectable}
-            href={getNodeUrl(treeNode.node.id, parentId)}
-            onToggle={() => { if (hasChildren) onToggleExpand(treeNode.node.id); }}
-            onSelect={() => onSelectExpand(treeNode.node.id, isSel, isExpanded, hasChildren, treeNode.selectable)}
-            itemHeight={ITEM_HEIGHT}
-          />
-        {/each}
-      </div>
-    </div>
-  </div>
-  {#snippet failed(error, reset)}
-    <div class="flex-1 p-4 text-sm text-[var(--danger)]">
-      <p>Tree render error</p>
-      <button type="button" class="mt-1 text-[var(--accent)] hover:underline" onclick={reset}>Retry</button>
-    </div>
-  {/snippet}
+	<div
+		{@attach attachScrollListener}
+		{@attach attachAutoScroll(selectedId, totalCount, containerHeight)}
+		class="flex-1 overflow-auto p-2"
+		style="scrollbar-gutter: stable;"
+		bind:clientHeight={containerHeight}
+	>
+		<div style="height: {totalHeight}px; position: relative;">
+			<div style="transform: translateY({offsetY}px);">
+				{#each visibleNodes as { treeNode, depth, isExpanded, hasChildren, parentId } (`${parentId ?? 'root'}::${treeNode.node.id}`)}
+					{@const isSel = treeNode.selectable && selectedId === treeNode.node.id}
+					<TreeItem
+						node={treeNode.node}
+						{depth}
+						{hasChildren}
+						{isExpanded}
+						isSelected={isSel}
+						dimmed={!matchesFilter(treeNode.node, filter, kindFilter)}
+						selectable={treeNode.selectable}
+						href={getNodeUrl(treeNode.node.id)}
+						onToggle={() => {
+							if (hasChildren) onToggleExpand(treeNode.node.id);
+						}}
+						onSelect={() => {
+							if (!treeNode.selectable && hasChildren) onToggleExpand(treeNode.node.id);
+						}}
+						itemHeight={ITEM_HEIGHT}
+					/>
+				{/each}
+			</div>
+		</div>
+	</div>
+	{#snippet failed(error, reset)}
+		<div class="flex-1 p-4 text-sm text-(--danger)">
+			<p>Tree render error</p>
+			<button type="button" class="mt-1 text-(--accent) hover:underline" onclick={reset}>
+				Retry
+			</button>
+		</div>
+	{/snippet}
 </svelte:boundary>
