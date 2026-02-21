@@ -1,18 +1,12 @@
 import { defineConfig } from '@playwright/test';
 
-/**
- * The local server (`bun run local`) picks a random port and prints:
- *   Codeview UI running at http://127.0.0.1:{port}
- *
- * We use a fixed port via the PORT env var for test predictability.
- */
-const PORT = 4321;
+const PORT = 8787;
 
 export default defineConfig({
 	testDir: './e2e',
 	testMatch: '**/*.test.ts',
 	fullyParallel: false,
-	workers: 1, // SQLite single-writer; SSE state is per-process
+	workers: 1,
 	retries: 1, // Svelte 5 event delegation can occasionally miss clicks
 	timeout: 30_000,
 	expect: { timeout: 10_000 },
@@ -28,10 +22,9 @@ export default defineConfig({
 		}
 	],
 	webServer: {
-		command: `cargo run -p codeview-cli -- ui . --port ${PORT}`,
-		cwd: '..',
+		command: 'bun run e2e/run-cf-dev-supervisor.mjs',
 		port: PORT,
-		timeout: 120_000, // Cargo build can be slow
+		timeout: 120_000,
 		reuseExistingServer: !process.env.CI
 	}
 });

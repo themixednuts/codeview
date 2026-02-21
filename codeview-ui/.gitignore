@@ -6,3 +6,6 @@ src/lib/server/db/migrations/migrations.js
 tmp/
 cf-dev.log
 cf-dev.err
+
+# Localflare generated files
+.localflare/

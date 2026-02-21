@@ -1,0 +1,7 @@
+.svelte-kit/
+.wrangler/
+build/
+node_modules/
+bun.lock
+src/lib/server/cloudflare/workers/dist/
+src/lib/server/db/migrations/
