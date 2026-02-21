@@ -1,76 +1,124 @@
 <script lang="ts">
-  import { probeAvailableDocsVersion } from '$lib/rpc/crate.remote';
-  import { Loader2Icon } from '@lucide/svelte';
+	import { probeAvailableDocsVersion, triggerCrateParseForm } from '$lib/rpc/crate.remote';
+	import { goto } from '$app/navigation';
+	import { resolve } from '$app/paths';
+	import { LoaderCircleIcon } from '@lucide/svelte';
 
-  let { crateName, version, crateVersionOptions, onRetry }: {
-    crateName: string | undefined;
-    version: string | undefined;
-    crateVersionOptions: string[];
-    onRetry: () => void;
-  } = $props();
+	let {
+		crateName,
+		version,
+		crateVersionOptions,
+		onRetryStart,
+		onRetryError,
+	}: {
+		crateName: string | undefined;
+		version: string | undefined;
+		crateVersionOptions: string[];
+		onRetryStart?: () => void;
+		onRetryError?: (message: string) => void;
+	} = $props();
 
-  let suggestedVersion = $derived(
-    crateName && version && crateVersionOptions.length > 1
-      ? await probeAvailableDocsVersion({ name: crateName, currentVersion: version, candidates: crateVersionOptions })
-      : null
-  );
+	const retryForm = triggerCrateParseForm;
+	let lastFormKey = '';
+	$effect(() => {
+		if (!crateName || !version) return;
+		const key = `${crateName}@${version}`;
+		if (key === lastFormKey) return;
+		lastFormKey = key;
+		retryForm.fields.set({ name: crateName, version, force: true });
+	});
+
+	const canRetry = $derived(!!crateName && !!version);
+
+	function goBack() {
+		void goto(resolve('/'));
+	}
+
+	let suggestedVersion = $derived(
+		crateName && version && crateVersionOptions.length > 1
+			? await probeAvailableDocsVersion({
+					name: crateName,
+					currentVersion: version,
+					candidates: crateVersionOptions,
+				})
+			: null,
+	);
 </script>
 
 <div class="flex flex-1 items-center justify-center">
-  <div class="text-center max-w-md">
-    <div class="mb-2 text-lg font-semibold text-[var(--ink)]">
-      Documentation not available yet
-    </div>
-    <div class="mb-4 text-sm text-[var(--muted)]">
-      docs.rs hasn't published rustdoc JSON for
-      <code class="rounded bg-[var(--panel-strong)] px-1 py-0.5 text-xs"
-        >{crateName} {version}</code
-      >. This usually takes a few minutes after a new release.
-    </div>
+	<div
+		class="corner-squircle max-w-md animate-[float-in_0.5s_ease-out] rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-8 text-center shadow-(--shadow-soft)"
+	>
+		<div class="mb-2 text-lg font-semibold text-(--ink)">Documentation not available yet</div>
+		<div class="mb-4 text-sm text-(--muted)">
+			docs.rs hasn't published rustdoc JSON for
+			<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">{crateName} {version}</code>
+			. This usually takes a few minutes after a new release.
+		</div>
 
-    <svelte:boundary>
-      {#snippet pending()}
-        <div class="mb-4 flex items-center justify-center gap-2 text-sm text-[var(--muted)]">
-          <Loader2Icon class="h-3.5 w-3.5 animate-spin" />
-          <span>Checking other versions...</span>
-        </div>
-      {/snippet}
+		<svelte:boundary>
+			{#snippet pending()}
+				<div class="mb-4 flex items-center justify-center gap-2 text-sm text-(--muted)">
+					<LoaderCircleIcon class="size-3.5 animate-spin" />
+					<span>Checking other versions...</span>
+				</div>
+			{/snippet}
+			{#snippet failed(error, reset)}
+				<div class="mb-4 text-sm text-(--danger)">
+					Failed to check alternate versions.
+					<button type="button" class="ml-2 text-(--accent) hover:underline" onclick={reset}>
+						Try again
+					</button>
+				</div>
+			{/snippet}
 
-      {#if suggestedVersion && crateName}
-        <a
-          href="/{crateName}/{suggestedVersion}"
-          class="mb-4 inline-block rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 text-sm text-[var(--accent)] hover:bg-[var(--panel-strong)] transition-colors"
-        >
-          Try version {suggestedVersion} instead
-        </a>
-      {/if}
-    </svelte:boundary>
+			{#if suggestedVersion && crateName}
+				<a
+					href={resolve(`/${crateName}/${suggestedVersion}`)}
+					class="corner-squircle mb-4 inline-block rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--accent) transition-colors hover:bg-(--panel-strong)"
+				>
+					Try version {suggestedVersion} instead
+				</a>
+			{/if}
+		</svelte:boundary>
 
-    <div class="flex items-center justify-center gap-3 mt-2">
-      {#if crateName && version}
-        <a
-          href="https://docs.rs/crate/{crateName}/{version}"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 text-sm text-[var(--muted)] hover:text-[var(--ink)] transition-colors"
-        >
-          View on docs.rs
-        </a>
-      {/if}
-      <button
-        type="button"
-        class="rounded-[var(--radius-control)] corner-squircle bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 transition-opacity"
-        onclick={onRetry}
-      >
-        Retry
-      </button>
-      <button
-        type="button"
-        class="rounded-[var(--radius-control)] corner-squircle border border-[var(--panel-border)] bg-[var(--panel)] px-4 py-2 text-sm text-[var(--muted)] hover:text-[var(--ink)] transition-colors"
-        onclick={() => history.back()}
-      >
-        Go back
-      </button>
-    </div>
-  </div>
+		<div class="mt-2 flex items-center justify-center gap-3">
+			{#if crateName && version}
+				<a
+					href="https://docs.rs/crate/{crateName}/{version}"
+					target="_blank"
+					rel="noopener noreferrer"
+					class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"
+				>
+					View on docs.rs
+				</a>
+			{/if}
+			<form
+				{...retryForm.enhance(async ({ submit }) => {
+					if (!canRetry) return;
+					onRetryStart?.();
+					try {
+						await submit();
+					} catch (err) {
+						onRetryError?.(err instanceof Error ? err.message : String(err));
+					}
+				})}
+			>
+				<button
+					type="submit"
+					disabled={!canRetry}
+					class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+				>
+					Retry
+				</button>
+			</form>
+			<button
+				type="button"
+				class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"
+				onclick={goBack}
+			>
+				Go back
+			</button>
+		</div>
+	</div>
 </div>
