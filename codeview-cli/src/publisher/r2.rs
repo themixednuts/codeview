@@ -108,84 +108,147 @@ impl S3Backend {
     }
 }
 
+/// Retry policy for R2 calls.  R2 occasionally returns 5xx or times
+/// out under cron load; a tight retry loop with linear backoff
+/// (1s / 2s / 4s) absorbs the vast majority without giving up too
+/// quickly. Four attempts total — the final failure surfaces as a
+/// transient error and the GHA wrapper marks the job for retry on the
+/// next sweep.
+const R2_RETRIES: u32 = 4;
+
+async fn with_retries<T, F, Fut, ClassErr>(
+    op: &str,
+    classify: ClassErr,
+    mut f: F,
+) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, anyhow::Error>>,
+    ClassErr: Fn(&anyhow::Error) -> bool, // true = retryable
+{
+    let mut attempt = 0;
+    let mut last_err: Option<anyhow::Error> = None;
+    while attempt < R2_RETRIES {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(err) => {
+                if !classify(&err) || attempt + 1 == R2_RETRIES {
+                    return Err(err.context(format!("{op} (after {} attempts)", attempt + 1)));
+                }
+                let delay = std::time::Duration::from_secs(1u64 << attempt);
+                eprintln!("[r2] {op} failed (attempt {}): {err:#}; retrying in {:?}", attempt + 1, delay);
+                tokio::time::sleep(delay).await;
+                last_err = Some(err);
+                attempt += 1;
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("{op}: retry budget exhausted")))
+}
+
+/// S3 SDK errors are transient when the service responded 5xx or the
+/// request never got a reply (DNS/TLS/timeout). 4xx is permanent —
+/// retrying won't help.
+fn s3_is_transient(err: &anyhow::Error) -> bool {
+    let s = format!("{err:#}");
+    // Cheap string-shape match avoids deep SDK error wrangling.  False
+    // positives just mean we retry briefly on an already-permanent
+    // failure, which is fine.
+    s.contains("dispatch failure")
+        || s.contains("timeout")
+        || s.contains("connection")
+        || s.contains("500")
+        || s.contains("502")
+        || s.contains("503")
+        || s.contains("504")
+}
+
 #[async_trait::async_trait]
 impl R2 for S3Backend {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        match self
-            .client
-            .get_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let bytes = resp
-                    .body
-                    .collect()
-                    .await
-                    .with_context(|| format!("R2 get {key}: collect body"))?
-                    .into_bytes()
-                    .to_vec();
-                Ok(Some(bytes))
-            }
-            Err(err) => {
-                // The SDK exposes a NoSuchKey shape via the service-error
-                // discriminator — anything else is a genuine failure.
-                if let aws_sdk_s3::error::SdkError::ServiceError(ref se) = err
-                    && se.err().is_no_such_key()
-                {
-                    return Ok(None);
+        let op = format!("R2 get {key}");
+        with_retries(&op, s3_is_transient, || async {
+            match self
+                .client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let bytes = resp
+                        .body
+                        .collect()
+                        .await
+                        .with_context(|| format!("collect body for {key}"))?
+                        .into_bytes()
+                        .to_vec();
+                    Ok(Some(bytes))
                 }
-                Err(err).with_context(|| format!("R2 get {key}"))
+                Err(err) => {
+                    if let aws_sdk_s3::error::SdkError::ServiceError(ref se) = err
+                        && se.err().is_no_such_key()
+                    {
+                        return Ok(None);
+                    }
+                    Err(anyhow::Error::new(err))
+                }
             }
-        }
+        })
+        .await
     }
 
     async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
-        self.client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(key)
-            .content_type(content_type)
-            .body(bytes.into())
-            .send()
-            .await
-            .with_context(|| format!("R2 put {key}"))?;
-        Ok(())
+        let op = format!("R2 put {key}");
+        // Clone bytes per attempt — small JSON shards, cost is negligible.
+        with_retries(&op, s3_is_transient, || async {
+            self.client
+                .put_object()
+                .bucket(&self.bucket)
+                .key(key)
+                .content_type(content_type)
+                .body(bytes.clone().into())
+                .send()
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::new)
+        })
+        .await
     }
 
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
-        let mut out = Vec::new();
-        let mut continuation: Option<String> = None;
-        loop {
-            let mut req = self
-                .client
-                .list_objects_v2()
-                .bucket(&self.bucket)
-                .prefix(prefix);
-            if let Some(token) = continuation.take() {
-                req = req.continuation_token(token);
-            }
-            let resp = req
-                .send()
-                .await
-                .with_context(|| format!("R2 list {prefix}"))?;
-            for obj in resp.contents() {
-                if let Some(k) = obj.key() {
-                    out.push(k.to_string());
+        let op = format!("R2 list {prefix}");
+        with_retries(&op, s3_is_transient, || async {
+            let mut out = Vec::new();
+            let mut continuation: Option<String> = None;
+            loop {
+                let mut req = self
+                    .client
+                    .list_objects_v2()
+                    .bucket(&self.bucket)
+                    .prefix(prefix);
+                if let Some(token) = continuation.take() {
+                    req = req.continuation_token(token);
                 }
-            }
-            if resp.is_truncated().unwrap_or(false) {
-                continuation = resp.next_continuation_token().map(|s| s.to_string());
-                if continuation.is_none() {
+                let resp = req.send().await.map_err(anyhow::Error::new)?;
+                for obj in resp.contents() {
+                    if let Some(k) = obj.key() {
+                        out.push(k.to_string());
+                    }
+                }
+                if resp.is_truncated().unwrap_or(false) {
+                    continuation = resp.next_continuation_token().map(|s| s.to_string());
+                    if continuation.is_none() {
+                        break;
+                    }
+                } else {
                     break;
                 }
-            } else {
-                break;
             }
-        }
-        Ok(out)
+            Ok(out)
+        })
+        .await
     }
 }
 

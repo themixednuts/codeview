@@ -6,20 +6,27 @@
 //!
 //! Subcommand map:
 //!
-//! - `sweep`     — scan R2 catalog + crates.io, emit a matrix JSON of
-//!                  stale `(name, version)` pairs.
+//! - `sweep` — scan R2 catalog + crates.io, emit a matrix JSON of stale
+//!   `(name, version)` pairs.
 //! - `parse-one` — fetch one crate's rustdoc JSON from docs.rs, parse,
-//!                  build artifacts, upload, record freshness.
-//! - `catalog`   — derive `rust/catalog.json` from the freshness index.
-//! - `mimic`     — dev-time loop: sweep + parse-one over a small set,
-//!                  against local R2.
+//!   build artifacts, upload, record freshness.
+//! - `catalog` — derive `rust/catalog.json` from the freshness index.
+//! - `mimic` — dev-time loop: sweep + parse-one over a small set,
+//!   against local R2.
 
 pub mod catalog;
 pub mod mimic;
 pub mod parse_one;
 pub mod sweep;
 
+use std::sync::Arc;
+
+use anyhow::Result;
 use clap::{Args, Subcommand};
+
+use crate::publisher::docs_rs;
+use crate::publisher::freshness::FreshnessRegistry;
+use crate::publisher::r2::{R2, Target, build_backend};
 
 #[derive(Debug, Subcommand)]
 pub enum CronCommand {
@@ -39,12 +46,53 @@ pub struct CronArgs {
     pub command: CronCommand,
 }
 
-pub async fn dispatch(args: CronArgs) -> anyhow::Result<()> {
+pub async fn dispatch(args: CronArgs) -> Result<()> {
     match args.command {
         CronCommand::Sweep(s) => sweep::run(s).await,
         CronCommand::ParseOne(s) => parse_one::run(s).await,
         CronCommand::Catalog(s) => catalog::run(s).await,
         CronCommand::Mimic(s) => mimic::run(s).await,
+    }
+}
+
+// ─── Shared cron context ──────────────────────────────────────────────
+
+/// Common setup every cron subcommand needs: an R2 backend (local or
+/// remote), a `FreshnessRegistry` over the same backend, an HTTP client
+/// with sensible timeouts/UA, and the parser revision the freshness
+/// check predicates on.
+///
+/// Subcommands construct this once via [`CronContext::build`] instead of
+/// each repeating the four-line setup. Pure DRY — same wire shape per
+/// subcommand, just different inputs.
+pub struct CronContext {
+    pub r2: Arc<dyn R2>,
+    pub freshness: FreshnessRegistry,
+    pub http: reqwest::Client,
+    pub parser_revision: String,
+}
+
+impl CronContext {
+    /// `bucket` is the R2 bucket name (typically `"crate-graphs"`).
+    /// Reads `STATIC_R2_TARGET` to decide local vs. remote.
+    pub async fn build(bucket: &str) -> Result<Self> {
+        let target = Target::from_env()?;
+        let r2 = build_backend(target, bucket).await?;
+        let freshness = FreshnessRegistry::new(r2.clone());
+        let http = docs_rs::http_client()?;
+        let parser_revision = parser_revision();
+        Ok(Self {
+            r2,
+            freshness,
+            http,
+            parser_revision,
+        })
+    }
+
+    /// Short hash for log lines.
+    pub fn parser_revision_short(&self) -> &str {
+        let max = self.parser_revision.len().min(8);
+        &self.parser_revision[..max]
     }
 }
 

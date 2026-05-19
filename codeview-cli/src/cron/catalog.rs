@@ -10,8 +10,9 @@ use anyhow::Result;
 use clap::Args;
 use serde::Serialize;
 
-use crate::publisher::freshness::FreshnessRegistry;
-use crate::publisher::r2::{CATALOG_KEY, Target, build_backend, write_json};
+use crate::publisher::r2::{CATALOG_KEY, write_json};
+
+use super::CronContext;
 
 #[derive(Debug, Args)]
 pub struct Catalog {
@@ -43,10 +44,8 @@ struct CatalogEntry {
 }
 
 pub async fn run(args: Catalog) -> Result<()> {
-    let target = Target::from_env()?;
-    let r2 = build_backend(target, &args.bucket).await?;
-    let freshness = FreshnessRegistry::new(r2.clone());
-    let entries = freshness.list_all().await?;
+    let ctx = CronContext::build(&args.bucket).await?;
+    let entries = ctx.freshness.list_all().await?;
 
     let mut crates: Vec<CatalogEntry> = entries
         .into_iter()
@@ -72,7 +71,7 @@ pub async fn run(args: Catalog) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&catalog)?);
         return Ok(());
     }
-    write_json(&r2, CATALOG_KEY, &catalog).await?;
+    write_json(&ctx.r2, CATALOG_KEY, &catalog).await?;
     eprintln!("[catalog] wrote {CATALOG_KEY}");
     Ok(())
 }

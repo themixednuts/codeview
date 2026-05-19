@@ -168,28 +168,27 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     );
 
     // ─── 4. Idempotent skip if same output ───────────────────────
-    if !force {
-        if let Some(existing) = freshness
+    if !force
+        && let Some(existing) = freshness
             .latest(name)
             .await
             .map_err(PublishError::Transient)?
-            && existing.graph_hash == graph_hash
-            && existing.version == version
-        {
-            eprintln!("[parse-one] graph unchanged — refreshing registry only");
-            let refreshed = FreshnessEntry {
-                parsed_at: chrono::Utc::now().to_rfc3339(),
-                parser_revision: parser_revision.to_string(),
-                schema_version,
-                rustdoc_hash: Some(rustdoc_hash),
-                ..existing
-            };
-            freshness
-                .record(&refreshed)
-                .await
-                .map_err(PublishError::Transient)?;
-            return Ok(Outcome::ParserBumpedSameOutput);
-        }
+        && existing.graph_hash == graph_hash
+        && existing.version == version
+    {
+        eprintln!("[parse-one] graph unchanged — refreshing registry only");
+        let refreshed = FreshnessEntry {
+            parsed_at: chrono::Utc::now().to_rfc3339(),
+            parser_revision: parser_revision.to_string(),
+            schema_version,
+            rustdoc_hash: Some(rustdoc_hash),
+            ..existing
+        };
+        freshness
+            .record(&refreshed)
+            .await
+            .map_err(PublishError::Transient)?;
+        return Ok(Outcome::ParserBumpedSameOutput);
     }
 
     // ─── 5. Build artifacts ──────────────────────────────────────

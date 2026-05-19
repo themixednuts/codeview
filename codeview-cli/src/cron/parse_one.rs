@@ -12,10 +12,8 @@ use clap::Args;
 use crate::publisher::artifacts::{
     PublishOptions, hyphenate_crate_name, normalise_crate_name, publish_one,
 };
-use crate::publisher::freshness::FreshnessRegistry;
-use crate::publisher::r2::{Target, build_backend};
 
-use super::parser_revision;
+use super::CronContext;
 
 #[derive(Debug, Args)]
 pub struct ParseOne {
@@ -46,13 +44,10 @@ pub struct ParseOne {
 }
 
 pub async fn run(args: ParseOne) -> Result<()> {
-    let target = Target::from_env()?;
-    let r2 = build_backend(target, &args.bucket).await?;
-    let freshness = FreshnessRegistry::new(r2.clone());
+    let ctx = CronContext::build(&args.bucket).await?;
 
     let canonical = normalise_crate_name(&args.name);
     let storage = hyphenate_crate_name(&args.name);
-    let parser = parser_revision();
     let aliases_owned: Vec<String> = args
         .aliases
         .split(',')
@@ -65,7 +60,7 @@ pub async fn run(args: ParseOne) -> Result<()> {
         "[parse-one] {}@{}  parser={} schema=v{}",
         args.name,
         args.version,
-        &parser[..parser.len().min(8)],
+        ctx.parser_revision_short(),
         codeview_core::SCHEMA_VERSION,
     );
 
@@ -73,9 +68,9 @@ pub async fn run(args: ParseOne) -> Result<()> {
         name: &canonical,
         version: &args.version,
         storage_name: &storage,
-        r2,
-        freshness: &freshness,
-        parser_revision: &parser,
+        r2: ctx.r2.clone(),
+        freshness: &ctx.freshness,
+        parser_revision: &ctx.parser_revision,
         schema_version: codeview_core::SCHEMA_VERSION,
         force: args.force,
         docsrs_target: args.docsrs_target.as_deref(),

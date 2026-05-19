@@ -3,11 +3,10 @@
 //!
 //! Inputs:
 //!   - `STATIC_R2_TARGET` — local | remote
-//!   - `--watchlist`     — `catalog` (default), `top:N`, or path to a
-//!                          file with one crate name per line
-//!   - `--max-crates`    — cap on emitted matrix size
-//!   - `--force`         — comma-separated names that bypass the
-//!                          freshness check
+//!   - `--watchlist` — `catalog` (default), `top:N`, or path to a file
+//!     with one crate name per line
+//!   - `--max-crates` — cap on emitted matrix size
+//!   - `--force` — comma-separated names that bypass the freshness check
 //!
 //! Outputs:
 //!   - `stdout` (or `$MATRIX_OUT` file) → JSON `{ include: [{name, version, reason}…] }`
@@ -20,17 +19,16 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::publisher::crates_io::{self, CrateInfo};
-use crate::publisher::docs_rs;
-use crate::publisher::freshness::FreshnessRegistry;
-use crate::publisher::r2::{self, Target, build_backend, read_json};
+use crate::publisher::r2::{self, read_json};
 
-use super::parser_revision;
+use super::CronContext;
 
 #[derive(Debug, Args)]
 pub struct Sweep {
@@ -53,6 +51,12 @@ pub struct Sweep {
     /// Suppress human-readable logs (matrix JSON still goes to stdout).
     #[arg(long)]
     pub quiet: bool,
+
+    /// Inspect-only: log the matrix to stderr without writing
+    /// `$GITHUB_OUTPUT`, `$MATRIX_OUT`, or stdout. Useful for
+    /// answering "what would today's cron do?" from a dev box.
+    #[arg(long)]
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,15 +90,13 @@ pub async fn run(args: Sweep) -> Result<()> {
         }
     };
 
-    let target = Target::from_env()?;
-    let r2 = build_backend(target, &args.bucket).await?;
-    let freshness = FreshnessRegistry::new(r2.clone());
-    let parser = parser_revision();
+    let ctx = CronContext::build(&args.bucket).await?;
     let schema = codeview_core::SCHEMA_VERSION;
     log(&format!(
-        "[sweep] parser={} schema=v{}",
-        &parser[..parser.len().min(8)],
-        schema
+        "[sweep] parser={} schema=v{}{}",
+        ctx.parser_revision_short(),
+        schema,
+        if args.dry_run { " (dry-run)" } else { "" },
     ));
 
     let force: HashSet<String> = args
@@ -104,8 +106,7 @@ pub async fn run(args: Sweep) -> Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    let http = docs_rs::http_client()?;
-    let candidates = load_watchlist(&args.watchlist, &r2, &http).await?;
+    let candidates = load_watchlist(&args.watchlist, &ctx.r2, &ctx.http).await?;
     log(&format!(
         "[sweep] watchlist={} size={}",
         args.watchlist,
@@ -119,7 +120,7 @@ pub async fn run(args: Sweep) -> Result<()> {
         if matrix.len() >= args.max_crates {
             break;
         }
-        let latest = match crates_io::newest_version(&http, &candidate).await {
+        let latest = match crates_io::newest_version(&ctx.http, &candidate).await {
             Ok(Some(info)) => info,
             Ok(None) => {
                 log(&format!("[sweep] crates.io 404: {candidate}"));
@@ -131,8 +132,9 @@ pub async fn run(args: Sweep) -> Result<()> {
             }
         };
         let force_this = force.contains(&candidate);
-        let staleness = freshness
-            .check(&candidate, &latest.newest_version, &parser, schema)
+        let staleness = ctx
+            .freshness
+            .check(&candidate, &latest.newest_version, &ctx.parser_revision, schema)
             .await?;
         if !staleness.is_stale() && !force_this {
             skipped += 1;
@@ -161,6 +163,14 @@ pub async fn run(args: Sweep) -> Result<()> {
 
     let json = serde_json::to_string(&Matrix { include: matrix.clone() })?;
 
+    if args.dry_run {
+        // Don't write anywhere — caller is just inspecting.  Print the
+        // matrix to stderr so it shows alongside the per-crate STALE
+        // lines without polluting stdout.
+        log(&format!("[sweep] dry-run matrix: {json}"));
+        return Ok(());
+    }
+
     // GHA matrix output
     if let Ok(out_path) = std::env::var("GITHUB_OUTPUT") {
         let mut f = std::fs::OpenOptions::new()
@@ -184,7 +194,7 @@ pub async fn run(args: Sweep) -> Result<()> {
 
 async fn load_watchlist(
     spec: &str,
-    r2: &std::sync::Arc<dyn r2::R2>,
+    r2: &Arc<dyn r2::R2>,
     http: &reqwest::Client,
 ) -> Result<Vec<String>> {
     if spec == "catalog" {
