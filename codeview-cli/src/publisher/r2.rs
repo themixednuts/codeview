@@ -20,9 +20,13 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
 use rusqlite::Connection;
 use sha2::{Digest as _, Sha256};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Mutex;
 
 /// Async object-storage interface.  Implementations:
 ///
@@ -335,6 +339,43 @@ pub struct LocalMiniflareBackend {
     /// `None` means inherit the parent's cwd (matches the typical
     /// `bun run cron:mimic` invocation from `codeview-ui/`).
     wrangler_cwd: Option<PathBuf>,
+    /// R2 binding name from `wrangler.toml` (`[[r2_buckets]] binding =
+    /// "CRATE_GRAPHS"`).  Needed so the bulk-writer's miniflare config
+    /// matches what `wrangler dev` configures — otherwise the puts land
+    /// in a different namespace than the worker reads from.
+    binding: String,
+    /// Lazily-spawned long-running miniflare process for fast bulk
+    /// puts.  See [`BulkWriter`].
+    bulk_writer: Arc<Mutex<Option<BulkWriter>>>,
+}
+
+/// Long-running miniflare R2 writer.  Speaks JSON-Lines over stdio to
+/// `codeview-ui/scripts/bulk-put-local.ts` (Bun + miniflare 4).
+///
+/// **Why a sidecar process at all:** every `wrangler r2 object put`
+/// invocation pays ~3s of Node startup before the actual ~10ms SQLite
+/// write.  Spawning per artifact made the first `cron seed-std` run
+/// take ~2 hours for the std corpus (2071 artifacts).  Keeping one
+/// miniflare process alive across the whole batch cuts that to ~10ms
+/// per put, dominated by the SQLite WAL append.
+///
+/// **Protocol** (see `bulk-put-local.ts` for the canonical doc):
+///
+/// - Start: child writes `{"ready":true}` on stdout once miniflare is
+///   ready, then waits for requests.
+/// - Per put: caller writes one JSON line `{"key","contentType","body"}`
+///   (body base64'd) on stdin, child writes one line `{"ok":true,"key"}`
+///   or `{"ok":false,"key","err"}` on stdout.
+/// - Shutdown: stdin closes → child finishes any in-flight write,
+///   disposes miniflare, exits 0.
+///
+/// Single-flight by construction (`Mutex<Option<_>>` guards access),
+/// which matches miniflare's internal SQLite WAL serialization —
+/// pipelining wouldn't speed it up.
+struct BulkWriter {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
 }
 
 impl LocalMiniflareBackend {
@@ -363,17 +404,154 @@ impl LocalMiniflareBackend {
             .join(do_unique_key)
             .join(format!("{do_id}.sqlite"));
 
+        // Match the wrangler.toml `[[r2_buckets]] binding` value.  If
+        // the project ever runs more buckets we'll plumb this in via
+        // env or arg; today there's exactly one.
+        let binding = std::env::var("CODEVIEW_R2_BINDING")
+            .unwrap_or_else(|_| "CRATE_GRAPHS".to_string());
+
         Self {
             bucket,
             persist_to,
             db_path,
             wrangler_cwd,
+            binding,
+            bulk_writer: Arc::new(Mutex::new(None)),
         }
     }
 
     /// `{bucket}/{key}` — wrangler's expected positional shape.
     fn object_path(&self, key: &str) -> String {
         format!("{}/{key}", self.bucket)
+    }
+
+    /// Spawn the bulk-writer sidecar on first use and cache it.
+    ///
+    /// The script lives at `<wrangler_cwd>/scripts/bulk-put-local.ts`
+    /// (defaults to `codeview-ui/scripts/...` since `wrangler_cwd`
+    /// usually points at `codeview-ui`).  Once spawned, the same
+    /// process is reused for every subsequent put — that's the whole
+    /// point of going through this instead of `wrangler r2 object put`.
+    async fn ensure_bulk_writer(
+        &self,
+        guard: &mut tokio::sync::MutexGuard<'_, Option<BulkWriter>>,
+    ) -> Result<()> {
+        if guard.is_some() {
+            return Ok(());
+        }
+        let cwd = self
+            .wrangler_cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let script_path = cwd.join("scripts").join("bulk-put-local.ts");
+        let persist_to = self.persist_to_arg()?.to_string();
+
+        let mut cmd = tokio::process::Command::new("bun");
+        cmd.arg(&script_path)
+            .args([
+                "--binding",
+                &self.binding,
+                "--bucket",
+                &self.bucket,
+                "--persist-to",
+                &persist_to,
+            ])
+            .current_dir(&cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("spawn bun {}", script_path.display()))?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("bulk-writer child has no stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("bulk-writer child has no stdout")?;
+        let mut stdout = BufReader::new(stdout);
+
+        // Wait for the `{"ready":true}` handshake.  Anything else means
+        // the script crashed during miniflare setup — propagate.
+        let mut line = String::new();
+        let bytes_read = stdout
+            .read_line(&mut line)
+            .await
+            .context("read bulk-writer ready handshake")?;
+        if bytes_read == 0 {
+            anyhow::bail!("bulk-writer exited before sending ready handshake");
+        }
+        let trimmed = line.trim();
+        let parsed: serde_json::Value = serde_json::from_str(trimmed)
+            .with_context(|| format!("bulk-writer handshake not JSON: {trimmed:?}"))?;
+        if parsed.get("ready").and_then(|v| v.as_bool()) != Some(true) {
+            anyhow::bail!(
+                "bulk-writer handshake unexpected: {trimmed:?} (expected {{\"ready\":true}})"
+            );
+        }
+
+        **guard = Some(BulkWriter {
+            child,
+            stdin,
+            stdout,
+        });
+        Ok(())
+    }
+
+    /// Do one round-trip on the bulk-writer: write a request line, read
+    /// its ack.  Holds the writer's mutex across the round-trip so
+    /// stdin/stdout never interleave.
+    async fn bulk_put(&self, key: &str, bytes: &[u8], content_type: &str) -> Result<()> {
+        let mut guard = self.bulk_writer.lock().await;
+        self.ensure_bulk_writer(&mut guard).await?;
+        let writer = guard
+            .as_mut()
+            .expect("ensure_bulk_writer left None in slot");
+
+        let request = serde_json::json!({
+            "key": key,
+            "contentType": content_type,
+            "body": B64.encode(bytes),
+        });
+        let mut payload = request.to_string();
+        payload.push('\n');
+        writer
+            .stdin
+            .write_all(payload.as_bytes())
+            .await
+            .with_context(|| format!("write bulk request for {key}"))?;
+        writer
+            .stdin
+            .flush()
+            .await
+            .with_context(|| format!("flush bulk request for {key}"))?;
+
+        let mut line = String::new();
+        let bytes_read = writer
+            .stdout
+            .read_line(&mut line)
+            .await
+            .with_context(|| format!("read bulk ack for {key}"))?;
+        if bytes_read == 0 {
+            anyhow::bail!("bulk-writer closed stdout before acking {key}");
+        }
+        let trimmed = line.trim();
+        let parsed: serde_json::Value = serde_json::from_str(trimmed)
+            .with_context(|| format!("bulk ack for {key} not JSON: {trimmed:?}"))?;
+        match parsed.get("ok").and_then(|v| v.as_bool()) {
+            Some(true) => Ok(()),
+            _ => {
+                let err = parsed
+                    .get("err")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("(no err in ack)");
+                anyhow::bail!("bulk-writer ack for {key}: {err}");
+            }
+        }
     }
 
     /// `bunx wrangler` invocation with the right cwd. We use `bunx`
@@ -476,55 +654,35 @@ impl R2 for LocalMiniflareBackend {
     }
 
     async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
-        let op = format!("wrangler put {key}");
-        let object_path = self.object_path(key);
-        let persist_to = self.persist_to_arg()?.to_string();
+        // The bulk writer is the hot path. `with_retries` still wraps
+        // it so a one-off stdin-pipe hiccup (rare; happens if the
+        // sidecar crashes) gets one more chance — though in practice
+        // an EPIPE means the child is dead and we need to respawn,
+        // which `ensure_bulk_writer` handles when the next attempt
+        // sees `bulk_writer = None`.  Reset on hard error so the
+        // retry re-spawns instead of writing to a closed stdin.
+        let op = format!("bulk put {key}");
+        let bytes = Arc::new(bytes);
         let content_type = content_type.to_string();
-        with_retries(&op, wrangler_is_transient, || async {
-            let mut cmd = self.wrangler_cmd();
-            cmd.args([
-                "r2",
-                "object",
-                "put",
-                &object_path,
-                "--local",
-                "--persist-to",
-                &persist_to,
-                "--pipe",
-                "--content-type",
-                &content_type,
-            ]);
-            cmd.stdin(Stdio::piped());
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-
-            let mut child = cmd
-                .spawn()
-                .with_context(|| format!("spawn wrangler r2 object put {object_path}"))?;
-
-            // Pipe payload over stdin and close so wrangler sees EOF.
-            // Clone per-attempt so we keep retry idempotency.
-            if let Some(mut stdin) = child.stdin.take() {
-                stdin
-                    .write_all(&bytes)
-                    .await
-                    .with_context(|| format!("write payload to wrangler stdin for {object_path}"))?;
-                stdin.shutdown().await.ok();
+        with_retries(&op, wrangler_is_transient, || {
+            let bytes = bytes.clone();
+            let content_type = content_type.clone();
+            async move {
+                match self.bulk_put(key, &bytes, &content_type).await {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        // Drop the sidecar handle so the next attempt
+                        // re-spawns from scratch. A dead child stdin
+                        // can't recover via plain retry.
+                        let mut guard = self.bulk_writer.lock().await;
+                        if let Some(mut writer) = guard.take() {
+                            let _ = writer.stdin.shutdown().await;
+                            let _ = writer.child.start_kill();
+                        }
+                        Err(err)
+                    }
+                }
             }
-
-            let output = child
-                .wait_with_output()
-                .await
-                .with_context(|| format!("await wrangler r2 object put {object_path}"))?;
-
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                anyhow::bail!(
-                    "wrangler r2 object put {object_path} failed (exit {}): {stderr}",
-                    output.status.code().unwrap_or(-1)
-                );
-            }
-            Ok(())
         })
         .await
     }
