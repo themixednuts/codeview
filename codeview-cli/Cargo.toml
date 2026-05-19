@@ -38,7 +38,7 @@ aws-credential-types = "1.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
 # Async runtime (aws-sdk-s3 requires)
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "fs", "io-util", "process"] }
 futures = "0.3"
 
 # Decompress docs.rs `.json.gz`
@@ -51,20 +51,16 @@ drizzle = { version = "0.1.6", features = ["sqlite", "rusqlite", "serde"] }
 # so cargo's `links = "sqlite3"` invariant holds.
 rusqlite = { version = "0.37", features = ["bundled"] }
 
-# Hashing — graph dedup + miniflare blob etag + rustdoc-input hash
+# Hashing — graph dedup + miniflare DO-id derivation + rustdoc-input hash
 sha2 = "0.10"
-md-5 = "0.10"
 hmac = "0.12"
 hex = "0.4"
 
 # async traits without macro overhead
 async-trait = "0.1"
 
-# Timestamps for freshness entries + miniflare `uploaded` column
+# Timestamps for freshness entries
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-
-# UUIDs / random IDs for miniflare blob filenames
-rand = "0.9"
 
 # URL encoding for crate names with non-ascii or special chars
 urlencoding = "2.1"
