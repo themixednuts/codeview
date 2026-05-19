@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 import type {
 	ArgumentInfo,
+	AssocItemConstraint,
 	Confidence,
 	CrateGraph,
 	Deprecation,
@@ -8,15 +9,25 @@ import type {
 	EdgeKind,
 	ExternalCrate,
 	FieldInfo,
+	FunctionPointerSig,
 	FunctionSignature,
+	GenericArg,
+	GenericArgs,
+	GenericBound,
+	GenericParam,
+	Generics,
 	ImplCategory,
 	ImplType,
 	Node,
 	NodeKind,
+	PolyTrait,
 	Span,
+	Term,
+	TypeRef,
 	VariantInfo,
 	VariantKind,
 	Visibility,
+	WherePredicate,
 	Workspace,
 } from './generated/codeview-schema';
 
@@ -108,9 +119,212 @@ export const SpanSchema = v.object({
 	end_column: v.optional(v.nullable(v.number())),
 });
 
+// ─── Type AST (recursive) ────────────────────────────────────────────
+//
+// Mirrors codeview-core::TypeRef + Generics + GenericBound + …
+// All tagged unions use `kind` discriminator. Recursion is fed through
+// `v.lazy()` so the runtime resolves the back-references at first use.
+
+const TraitBoundModifierSchema = v.picklist(['none', 'maybe', 'maybe_const']);
+
+const PreciseCaptureSchema = v.variant('kind', [
+	v.object({ kind: v.literal('Lifetime'), name: v.string() }),
+	v.object({ kind: v.literal('Param'), name: v.string() }),
+]);
+
+export const TypeRefSchema: v.GenericSchema<TypeRef> = v.lazy(() =>
+	v.variant('kind', [
+		v.object({
+			kind: v.literal('ResolvedPath'),
+			id: v.string(),
+			path: v.string(),
+			args: v.optional(v.nullable(GenericArgsSchema)),
+		}),
+		v.object({
+			kind: v.literal('DynTrait'),
+			traits: v.array(PolyTraitSchema),
+			lifetime: v.optional(v.nullable(v.string())),
+		}),
+		v.object({ kind: v.literal('Generic'), name: v.string() }),
+		v.object({ kind: v.literal('Primitive'), name: v.string() }),
+		v.object({
+			kind: v.literal('BorrowedRef'),
+			lifetime: v.optional(v.nullable(v.string())),
+			mutable: v.boolean(),
+			inner: TypeRefSchema,
+		}),
+		v.object({ kind: v.literal('Tuple'), elements: v.array(TypeRefSchema) }),
+		v.object({ kind: v.literal('Slice'), element: TypeRefSchema }),
+		v.object({ kind: v.literal('Array'), element: TypeRefSchema, len: v.string() }),
+		v.object({
+			kind: v.literal('ImplTrait'),
+			bounds: v.array(GenericBoundSchema),
+		}),
+		v.object({
+			kind: v.literal('RawPointer'),
+			mutable: v.boolean(),
+			inner: TypeRefSchema,
+		}),
+		v.object({
+			kind: v.literal('QualifiedPath'),
+			name: v.string(),
+			args: v.optional(v.nullable(GenericArgsSchema)),
+			self_type: TypeRefSchema,
+			trait: v.optional(v.nullable(TypeRefSchema)),
+		}),
+		v.object({
+			kind: v.literal('FunctionPointer'),
+			sig: FunctionPointerSigSchema,
+		}),
+		v.object({ kind: v.literal('Infer') }),
+		v.object({ kind: v.literal('Pat'), base: TypeRefSchema, pat: v.string() }),
+	]),
+);
+
+const GenericArgsSchema: v.GenericSchema<GenericArgs> = v.lazy(() =>
+	v.variant('kind', [
+		v.object({
+			kind: v.literal('AngleBracketed'),
+			args: v.array(GenericArgSchema),
+			constraints: v.optional(v.array(AssocItemConstraintSchema)),
+		}),
+		v.object({
+			kind: v.literal('Parenthesized'),
+			inputs: v.array(TypeRefSchema),
+			output: v.optional(v.nullable(TypeRefSchema)),
+		}),
+		v.object({ kind: v.literal('ReturnTypeNotation') }),
+	]),
+);
+
+const GenericArgSchema: v.GenericSchema<GenericArg> = v.lazy(() =>
+	v.variant('kind', [
+		v.object({ kind: v.literal('Lifetime'), name: v.string() }),
+		v.object({ kind: v.literal('Type'), value: TypeRefSchema }),
+		v.object({
+			kind: v.literal('Const'),
+			expr: v.string(),
+			is_literal: v.boolean(),
+		}),
+		v.object({ kind: v.literal('Infer') }),
+	]),
+);
+
+const TermSchema: v.GenericSchema<Term> = v.lazy(() =>
+	v.variant('kind', [
+		v.object({ kind: v.literal('Type'), value: TypeRefSchema }),
+		v.object({
+			kind: v.literal('Const'),
+			expr: v.string(),
+			is_literal: v.boolean(),
+		}),
+	]),
+);
+
+const AssocItemConstraintSchema: v.GenericSchema<AssocItemConstraint> = v.lazy(() =>
+	v.object({
+		name: v.string(),
+		args: v.optional(v.nullable(GenericArgsSchema)),
+		binding: v.variant('kind', [
+			v.object({ kind: v.literal('Equality'), value: TermSchema }),
+			v.object({
+				kind: v.literal('Constraint'),
+				bounds: v.array(GenericBoundSchema),
+			}),
+		]),
+	}),
+);
+
+const PolyTraitSchema: v.GenericSchema<PolyTrait> = v.lazy(() =>
+	v.object({
+		trait: TypeRefSchema,
+		hrtb_params: v.optional(v.array(GenericParamSchema)),
+	}),
+);
+
+const FunctionPointerSigSchema: v.GenericSchema<FunctionPointerSig> = v.lazy(() =>
+	v.object({
+		inputs: v.array(
+			v.object({ name: v.string(), type: TypeRefSchema }),
+		),
+		output: v.optional(v.nullable(TypeRefSchema)),
+		is_unsafe: v.boolean(),
+		is_const: v.boolean(),
+		is_async: v.boolean(),
+		abi: v.optional(v.nullable(v.string())),
+		is_c_variadic: v.boolean(),
+		hrtb_params: v.optional(v.array(GenericParamSchema)),
+	}),
+);
+
+const GenericBoundSchema: v.GenericSchema<GenericBound> = v.lazy(() =>
+	v.variant('kind', [
+		v.object({
+			kind: v.literal('Trait'),
+			trait: TypeRefSchema,
+			modifier: TraitBoundModifierSchema,
+			hrtb_params: v.optional(v.array(GenericParamSchema)),
+		}),
+		v.object({ kind: v.literal('Outlives'), lifetime: v.string() }),
+		v.object({
+			kind: v.literal('Use'),
+			captures: v.array(PreciseCaptureSchema),
+		}),
+	]),
+);
+
+const GenericParamSchema: v.GenericSchema<GenericParam> = v.lazy(() =>
+	v.object({
+		name: v.string(),
+		kind: v.variant('kind', [
+			v.object({
+				kind: v.literal('Lifetime'),
+				outlives: v.optional(v.array(v.string())),
+			}),
+			v.object({
+				kind: v.literal('Type'),
+				bounds: v.optional(v.array(GenericBoundSchema)),
+				default: v.optional(v.nullable(TypeRefSchema)),
+				synthetic: v.optional(v.boolean()),
+			}),
+			v.object({
+				kind: v.literal('Const'),
+				type: TypeRefSchema,
+				default: v.optional(v.nullable(v.string())),
+			}),
+		]),
+	}),
+);
+
+const WherePredicateSchema: v.GenericSchema<WherePredicate> = v.lazy(() =>
+	v.variant('kind', [
+		v.object({
+			kind: v.literal('Bound'),
+			type: TypeRefSchema,
+			bounds: v.array(GenericBoundSchema),
+			hrtb_params: v.optional(v.array(GenericParamSchema)),
+		}),
+		v.object({
+			kind: v.literal('Lifetime'),
+			lifetime: v.string(),
+			outlives: v.array(v.string()),
+		}),
+		v.object({
+			kind: v.literal('Eq'),
+			lhs: TypeRefSchema,
+			rhs: TermSchema,
+		}),
+	]),
+);
+
+export const GenericsSchema = v.object({
+	params: v.optional(v.array(GenericParamSchema)),
+	where_predicates: v.optional(v.array(WherePredicateSchema)),
+});
+
 export const FieldInfoSchema = v.object({
 	name: v.string(),
-	type_name: v.string(),
+	type: TypeRefSchema,
 	visibility: VisibilitySchema,
 });
 
@@ -121,17 +335,18 @@ export const VariantInfoSchema = v.object({
 
 export const ArgumentInfoSchema = v.object({
 	name: v.string(),
-	type_name: v.string(),
+	type: TypeRefSchema,
 });
 
 export const FunctionSignatureSchema = v.object({
 	inputs: v.array(ArgumentInfoSchema),
-	output: v.optional(v.nullable(v.string())),
+	output: v.optional(v.nullable(TypeRefSchema)),
 	is_async: v.boolean(),
 	is_unsafe: v.boolean(),
 	is_const: v.boolean(),
 	abi: v.optional(v.nullable(v.string())),
 	is_c_variadic: v.optional(v.boolean()),
+	generics: v.optional(GenericsSchema),
 });
 
 export const DeprecationSchema = v.object({
@@ -162,11 +377,11 @@ export const NodeSchema = v.object({
 	fields: v.optional(v.nullable(v.array(FieldInfoSchema))),
 	variants: v.optional(v.nullable(v.array(VariantInfoSchema))),
 	signature: v.optional(v.nullable(FunctionSignatureSchema)),
-	generics: v.optional(v.nullable(v.array(v.string()))),
-	where_clause: v.optional(v.nullable(v.array(v.string()))),
+	// Structured generics (params + where-clause) — replaces the old
+	// flat-string `generics` + `where_clause` + `bound_links` triple.
+	generics: v.optional(GenericsSchema),
 	docs: v.optional(v.nullable(v.string())),
 	doc_links: v.optional(v.record(v.string(), v.string())),
-	bound_links: v.optional(v.record(v.string(), v.string())),
 	impl_type: v.optional(v.nullable(ImplTypeSchema)),
 	impl_category: v.optional(v.nullable(ImplCategorySchema)),
 	parent_impl: v.optional(v.nullable(v.string())),
@@ -174,16 +389,16 @@ export const NodeSchema = v.object({
 	provided_trait_methods: v.optional(v.nullable(v.array(v.string()))),
 	required_trait_methods: v.optional(v.nullable(v.array(v.string()))),
 	default_trait_methods: v.optional(v.nullable(v.array(v.string()))),
-	// StructField / AssocType / AssocConst: the type
-	type_name: v.optional(v.nullable(v.string())),
+	// StructField / AssocType / AssocConst / Constant / Static / TypeAlias: the type
+	type: v.optional(v.nullable(TypeRefSchema)),
 	// Variant: unit, tuple, or struct
 	variant_kind: v.optional(v.nullable(v.picklist(['unit', 'tuple', 'struct']))),
 	// Variant: discriminant value if specified
 	discriminant: v.optional(v.nullable(v.string())),
 	// AssocConst: the constant's value expression
 	const_value: v.optional(v.nullable(v.string())),
-	// AssocType: trait bounds on the associated type
-	bounds: v.optional(v.nullable(v.array(v.string()))),
+	// Trait / TraitAlias / AssocType bounds (structured)
+	bounds: v.optional(v.array(GenericBoundSchema)),
 	// Import / extern crate / macro metadata preserved from rustdoc JSON
 	import_source: v.optional(v.nullable(v.string())),
 	import_name: v.optional(v.nullable(v.string())),
@@ -247,9 +462,7 @@ export const NodeSummarySchema = v.object({
 	// Impl-specific fields (only populated for Impl nodes)
 	impl_trait: v.optional(v.nullable(v.string())),
 	impl_category: v.optional(v.nullable(ImplCategorySchema)),
-	generics: v.optional(v.nullable(v.array(v.string()))),
-	where_clause: v.optional(v.nullable(v.array(v.string()))),
-	bound_links: v.optional(v.record(v.string(), v.string())),
+	generics: v.optional(GenericsSchema),
 });
 
 /** getCrates response item */
@@ -369,6 +582,7 @@ type _WorkspaceSchemaMatchesGenerated = Assert<
 
 export type {
 	ArgumentInfo,
+	AssocItemConstraint,
 	Confidence,
 	CrateGraph,
 	Deprecation,
@@ -376,15 +590,25 @@ export type {
 	EdgeKind,
 	ExternalCrate,
 	FieldInfo,
+	FunctionPointerSig,
 	FunctionSignature,
+	GenericArg,
+	GenericArgs,
+	GenericBound,
+	GenericParam,
+	Generics,
 	ImplCategory,
 	ImplType,
 	Node,
 	NodeKind,
+	PolyTrait,
 	Span,
+	Term,
+	TypeRef,
 	VariantInfo,
 	VariantKind,
 	Visibility,
+	WherePredicate,
 	Workspace,
 };
 
@@ -400,8 +624,6 @@ export type NodeSummary = Pick<
 	| 'impl_trait'
 	| 'impl_category'
 	| 'generics'
-	| 'where_clause'
-	| 'bound_links'
 >;
 export type CrateSummary = v.InferOutput<typeof CrateSummarySchema>;
 export type CrateIndexEntry = v.InferOutput<typeof CrateIndexEntrySchema>;

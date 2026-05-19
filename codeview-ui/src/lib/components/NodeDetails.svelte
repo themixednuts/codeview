@@ -1,6 +1,18 @@
 <script lang="ts">
 	import type { Edge, EdgeKind, Node, NodeKind } from '$lib/graph';
 	import { isPublic, visibilityLabel } from '$lib/display-names';
+	import type {
+		GenericBound,
+		GenericParam,
+		TypeRef,
+		WherePredicate,
+	} from '$lib/schema';
+
+	/** Final segment of a `::`-separated path. `std::vec::Vec` → `Vec`. */
+	function pathTail(path: string): string {
+		const idx = path.lastIndexOf('::');
+		return idx >= 0 ? path.slice(idx + 2) : path;
+	}
 
 	type SelectedEdges = {
 		incoming: Edge[];
@@ -112,139 +124,6 @@
 				window.open(externalDocsUrl(nodeId, kind, version), '_blank', 'noopener,noreferrer');
 			}
 		};
-	}
-
-	type BoundSegment = { text: string; nodeId?: string };
-
-	/**
-	 * Split a generic param or where-predicate string into segments,
-	 * linking trait names that appear in the bound_links map.
-	 * e.g. "V: SQLParam + 'a" with links {"SQLParam": "drizzle_core::params::SQLParam"}
-	 * → [{text:"V: "}, {text:"SQLParam", nodeId:"..."}, {text:" + 'a"}]
-	 */
-	function splitBoundSegments(
-		text: string,
-		links: Record<string, string> | undefined,
-	): BoundSegment[] {
-		if (!links || Object.keys(links).length === 0) return [{ text }];
-
-		// Sort keys longest-first so longer trait names match before shorter substrings
-		const keys = Object.keys(links).sort((a, b) => b.length - a.length);
-
-		const segments: BoundSegment[] = [];
-		let remaining = text;
-
-		while (remaining.length > 0) {
-			let earliest = -1;
-			let matchedKey = '';
-			for (const key of keys) {
-				const idx = remaining.indexOf(key);
-				if (idx !== -1 && (earliest === -1 || idx < earliest)) {
-					earliest = idx;
-					matchedKey = key;
-				}
-			}
-			if (earliest === -1) {
-				segments.push({ text: remaining });
-				break;
-			}
-			if (earliest > 0) {
-				segments.push({ text: remaining.slice(0, earliest) });
-			}
-			segments.push({ text: matchedKey, nodeId: links[matchedKey] });
-			remaining = remaining.slice(earliest + matchedKey.length);
-		}
-		return segments;
-	}
-
-	type TypeToken =
-		| { kind: 'text'; text: string }
-		| { kind: 'open'; depth: number }
-		| { kind: 'close'; depth: number }
-		| { kind: 'comma' };
-
-	/**
-	 * Tokenize a type string into segments: bare text, angle-bracket openers/closers, and commas.
-	 * e.g. "HashMap<String, Vec<u8>>" →
-	 *   [{kind:'text',text:'HashMap'}, {kind:'open',depth:0}, {kind:'text',text:'String'},
-	 *    {kind:'comma'}, {kind:'text',text:' Vec'}, {kind:'open',depth:1}, {kind:'text',text:'u8'},
-	 *    {kind:'close',depth:1}, {kind:'close',depth:0}]
-	 */
-	function tokenizeType(text: string): TypeToken[] {
-		const tokens: TypeToken[] = [];
-		let depth = 0;
-		let buf = '';
-		for (let i = 0; i < text.length; i++) {
-			const ch = text[i];
-			if (ch === '<') {
-				if (buf) {
-					tokens.push({ kind: 'text', text: buf });
-					buf = '';
-				}
-				tokens.push({ kind: 'open', depth });
-				depth++;
-			} else if (ch === '>') {
-				if (buf) {
-					tokens.push({ kind: 'text', text: buf });
-					buf = '';
-				}
-				depth = Math.max(0, depth - 1);
-				tokens.push({ kind: 'close', depth });
-			} else if (ch === ',' && depth > 0) {
-				if (buf) {
-					tokens.push({ kind: 'text', text: buf });
-					buf = '';
-				}
-				tokens.push({ kind: 'comma' });
-			} else {
-				buf += ch;
-			}
-		}
-		if (buf) tokens.push({ kind: 'text', text: buf });
-		return tokens;
-	}
-
-	function hasGenerics(text: string): boolean {
-		return text.includes('<') && text.includes('>');
-	}
-
-	type AnnotatedToken = {
-		text: string;
-		/** Right border shaped as < (opens a generic) */
-		openerDepth: number | null;
-		/** Right borders shaped as > (closes generics — multiple for nested types like `Vec<Self>>`) */
-		closerDepths: number[];
-	};
-
-	function annotateGenericTokens(tokens: TypeToken[]): (AnnotatedToken | { kind: 'comma' })[] {
-		const result: (AnnotatedToken | { kind: 'comma' })[] = [];
-		for (let i = 0; i < tokens.length; i++) {
-			const token = tokens[i];
-			if (token.kind === 'comma') {
-				result.push({ kind: 'comma' });
-				continue;
-			}
-			if (token.kind !== 'text' || !token.text.trim()) continue;
-
-			const next = tokens[i + 1];
-
-			// Collect ALL consecutive close brackets after this text token
-			const closerDepths: number[] = [];
-			if (next?.kind === 'close') {
-				let j = i + 1;
-				while (j < tokens.length && tokens[j].kind === 'close') {
-					closerDepths.push((tokens[j] as { kind: 'close'; depth: number }).depth);
-					j++;
-				}
-			}
-
-			result.push({
-				text: token.text.trim(),
-				openerDepth: next?.kind === 'open' ? next.depth : null,
-				closerDepths,
-			});
-		}
-		return result;
 	}
 
 	// Track collapsible section refs for expand/collapse all.
@@ -364,68 +243,195 @@
 
 </script>
 
-{#snippet segmentLinks(segs: BoundSegment[])}
-	{#each segs as seg, index (index)}
-		{#if seg.nodeId && getNodeUrl}
-			{#if isExternalNode(seg.nodeId)}
-				<a
-					href={resolve(getNodeUrl(seg.nodeId))}
-					data-sveltekit-noscroll
-					onclick={externalLinkHandler(seg.nodeId)}
-					class="text-(--accent) underline-offset-2 hover:underline"
-					title="External dependency"
-				>
-					{seg.text}
-				</a>
-			{:else}
-				<a
-					href={resolve(getNodeUrl(seg.nodeId))}
-					data-sveltekit-noscroll
-					class="text-(--accent) underline-offset-2 hover:underline"
-				>
-					{seg.text}
-				</a>
-			{/if}
-		{:else}
-			{seg.text}
-		{/if}
-	{/each}
+{#snippet idLink(id: string, display: string)}
+	{#if getNodeUrl && nodeExists?.(id) && !isExternalNode(id)}
+		<a
+			href={resolve(getNodeUrl(id))}
+			data-sveltekit-noscroll
+			class="text-(--accent) underline-offset-2 hover:underline"
+		>
+			{display}
+		</a>
+	{:else if isExternalNode(id) && getNodeUrl}
+		<a
+			href={resolve(getNodeUrl(id))}
+			data-sveltekit-noscroll
+			onclick={externalLinkHandler(id)}
+			class="text-(--accent) underline-offset-2 hover:underline"
+			title="External dependency"
+		>
+			{display}
+		</a>
+	{:else}
+		{display}
+	{/if}
 {/snippet}
 
-{#snippet linkedBadge(text: string, links: Record<string, string> | undefined, strong: boolean)}
-	{#if hasGenerics(text)}
-		<span class="generic-group">
-			{#each annotateGenericTokens(tokenizeType(text)) as token, i (i)}
-				{#if 'kind' in token}
-					<span class="generic-sep">,</span>
-				{:else}
-					<code class="badge {strong ? 'badge-strong' : ''} badge-code">
-						{@render segmentLinks(splitBoundSegments(token.text, links))}
-					</code>
-					{#if token.openerDepth !== null}
-						<ChevronLeftIcon
-							class="generic-bracket"
-							size={14}
-							strokeWidth={2.5}
-							color="var(--bracket-depth-{token.openerDepth % 3})"
-						/>
-					{/if}
-					{#each token.closerDepths as depth}
-						<ChevronRightIcon
-							class="generic-bracket"
-							size={14}
-							strokeWidth={2.5}
-							color="var(--bracket-depth-{depth % 3})"
-						/>
-					{/each}
+<!-- Recursively render a TypeRef as inline content. Each ResolvedPath
+	 becomes a link to its node (when available); generic args nest as
+	 chevron-bracketed groups for visual scanning. -->
+{#snippet typeContent(t: TypeRef)}
+	{#if t.kind === 'ResolvedPath'}
+		{@render idLink(t.id, pathTail(t.path))}
+		{#if t.args}{@render genericArgs(t.args)}{/if}
+	{:else if t.kind === 'DynTrait'}
+		<span class="text-(--muted)">dyn </span>
+		{#each t.traits as poly, i (i)}
+			{#if i > 0}<span class="text-(--muted)"> + </span>{/if}
+			{@render typeContent(poly.trait)}
+		{/each}
+		{#if t.lifetime}<span class="text-(--muted)"> + {t.lifetime}</span>{/if}
+	{:else if t.kind === 'Generic'}
+		<span class="token-name">{t.name}</span>
+	{:else if t.kind === 'Primitive'}
+		<span class="token-name">{t.name}</span>
+	{:else if t.kind === 'BorrowedRef'}
+		<span class="text-(--muted)">&{t.lifetime ? `${t.lifetime} ` : ''}{t.mutable ? 'mut ' : ''}</span>
+		{@render typeContent(t.inner)}
+	{:else if t.kind === 'Tuple'}
+		<span class="text-(--muted)">(</span>
+		{#each t.elements as el, i (i)}
+			{#if i > 0}<span class="text-(--muted)">, </span>{/if}
+			{@render typeContent(el)}
+		{/each}{#if t.elements.length === 1}<span class="text-(--muted)">,</span>{/if}
+		<span class="text-(--muted)">)</span>
+	{:else if t.kind === 'Slice'}
+		<span class="text-(--muted)">[</span>{@render typeContent(t.element)}<span class="text-(--muted)">]</span>
+	{:else if t.kind === 'Array'}
+		<span class="text-(--muted)">[</span>{@render typeContent(t.element)}<span class="text-(--muted)">; {t.len}]</span>
+	{:else if t.kind === 'ImplTrait'}
+		<span class="text-(--muted)">impl </span>
+		{#each t.bounds as b, i (i)}
+			{#if i > 0}<span class="text-(--muted)"> + </span>{/if}
+			{@render boundContent(b)}
+		{/each}
+	{:else if t.kind === 'RawPointer'}
+		<span class="text-(--muted)">*{t.mutable ? 'mut ' : 'const '}</span>{@render typeContent(t.inner)}
+	{:else if t.kind === 'QualifiedPath'}
+		<span class="text-(--muted)">&lt;</span>{@render typeContent(t.self_type)}{#if t.trait}<span class="text-(--muted)"> as </span>{@render typeContent(t.trait)}{/if}<span class="text-(--muted)">&gt;::</span><span class="token-name">{t.name}</span>{#if t.args}{@render genericArgs(t.args)}{/if}
+	{:else if t.kind === 'FunctionPointer'}
+		<span class="text-(--muted)">fn(</span>
+		{#each t.sig.inputs as inp, i (i)}
+			{#if i > 0}<span class="text-(--muted)">, </span>{/if}
+			{#if inp.name}<span class="token-name">{inp.name}</span><span class="text-(--muted)">: </span>{/if}
+			{@render typeContent(inp.type)}
+		{/each}
+		<span class="text-(--muted)">)</span>
+		{#if t.sig.output}<span class="text-(--muted)"> -&gt; </span>{@render typeContent(t.sig.output)}{/if}
+	{:else if t.kind === 'Infer'}
+		<span class="token-name">_</span>
+	{:else if t.kind === 'Pat'}
+		{@render typeContent(t.base)}<span class="text-(--muted)"> is {t.pat}</span>
+	{/if}
+{/snippet}
+
+{#snippet genericArgs(args: import('$lib/schema').GenericArgs)}
+	{#if args.kind === 'AngleBracketed'}
+		{@const allParts: number = args.args.length + (args.constraints?.length ?? 0)}
+		{#if allParts > 0}
+			<ChevronLeftIcon class="generic-bracket" size={14} strokeWidth={2.5} />
+			{#each args.args as arg, i (i)}
+				{#if i > 0}<span class="generic-sep">, </span>{/if}
+				{#if arg.kind === 'Type'}
+					{@render typeContent(arg.value)}
+				{:else if arg.kind === 'Lifetime'}
+					<span class="token-name">{arg.name}</span>
+				{:else if arg.kind === 'Const'}
+					<span class="token-name">{arg.expr}</span>
+				{:else if arg.kind === 'Infer'}
+					<span class="token-name">_</span>
 				{/if}
 			{/each}
-		</span>
-	{:else}
-		<code class="badge {strong ? 'badge-strong' : ''} badge-code">
-			{@render segmentLinks(splitBoundSegments(text, links))}
-		</code>
+			{#if args.constraints && args.constraints.length > 0}
+				{#each args.constraints as c, i (i)}
+					{#if args.args.length > 0 || i > 0}<span class="generic-sep">, </span>{/if}
+					<span class="token-name">{c.name}</span>
+					{#if c.binding.kind === 'Equality'}
+						<span class="text-(--muted)"> = </span>
+						{#if c.binding.value.kind === 'Type'}{@render typeContent(c.binding.value.value)}{:else}<span class="token-name">{c.binding.value.expr}</span>{/if}
+					{:else}
+						<span class="text-(--muted)">: </span>
+						{#each c.binding.bounds as b, j (j)}
+							{#if j > 0}<span class="text-(--muted)"> + </span>{/if}
+							{@render boundContent(b)}
+						{/each}
+					{/if}
+				{/each}
+			{/if}
+			<ChevronRightIcon class="generic-bracket" size={14} strokeWidth={2.5} />
+		{/if}
+	{:else if args.kind === 'Parenthesized'}
+		<span class="text-(--muted)">(</span>
+		{#each args.inputs as inp, i (i)}
+			{#if i > 0}<span class="text-(--muted)">, </span>{/if}
+			{@render typeContent(inp)}
+		{/each}
+		<span class="text-(--muted)">)</span>
+		{#if args.output}<span class="text-(--muted)"> -&gt; </span>{@render typeContent(args.output)}{/if}
 	{/if}
+{/snippet}
+
+{#snippet boundContent(b: GenericBound)}
+	{#if b.kind === 'Trait'}
+		{#if b.modifier === 'maybe'}<span class="text-(--muted)">?</span>{/if}
+		{#if b.modifier === 'maybe_const'}<span class="text-(--muted)">~const </span>{/if}
+		{@render typeContent(b.trait)}
+	{:else if b.kind === 'Outlives'}
+		<span class="token-name">{b.lifetime}</span>
+	{:else if b.kind === 'Use'}
+		<span class="text-(--muted)">use&lt;</span>
+		{#each b.captures as c, i (i)}{#if i > 0}<span class="text-(--muted)">, </span>{/if}<span class="token-name">{c.name}</span>{/each}
+		<span class="text-(--muted)">&gt;</span>
+	{/if}
+{/snippet}
+
+{#snippet paramBadge(p: GenericParam, strong: boolean)}
+	<code class="badge {strong ? 'badge-strong' : ''} badge-code">
+		{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const </span>{/if}
+		<span class="token-name">{p.name}</span>
+		{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}
+			<span class="text-(--muted)">: </span>
+			{#each p.kind.bounds as b, i (i)}
+				{#if i > 0}<span class="text-(--muted)"> + </span>{/if}
+				{@render boundContent(b)}
+			{/each}
+		{/if}
+		{#if p.kind.kind === 'Lifetime' && p.kind.outlives && p.kind.outlives.length > 0}
+			<span class="text-(--muted)">: </span>
+			{#each p.kind.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)"> + </span>{/if}<span class="token-name">{lt}</span>{/each}
+		{/if}
+		{#if p.kind.kind === 'Const'}
+			<span class="text-(--muted)">: </span>{@render typeContent(p.kind.type)}
+			{#if p.kind.default}<span class="text-(--muted)"> = {p.kind.default}</span>{/if}
+		{/if}
+		{#if p.kind.kind === 'Type' && p.kind.default}
+			<span class="text-(--muted)"> = </span>{@render typeContent(p.kind.default)}
+		{/if}
+	</code>
+{/snippet}
+
+{#snippet wherePredBadge(pred: WherePredicate)}
+	<code class="badge badge-code">
+		{#if pred.kind === 'Bound'}
+			{@render typeContent(pred.type)}
+			<span class="text-(--muted)">: </span>
+			{#each pred.bounds as b, i (i)}{#if i > 0}<span class="text-(--muted)"> + </span>{/if}{@render boundContent(b)}{/each}
+		{:else if pred.kind === 'Lifetime'}
+			<span class="token-name">{pred.lifetime}</span>
+			<span class="text-(--muted)">: </span>
+			{#each pred.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)"> + </span>{/if}<span class="token-name">{lt}</span>{/each}
+		{:else if pred.kind === 'Eq'}
+			{@render typeContent(pred.lhs)}
+			<span class="text-(--muted)"> = </span>
+			{#if pred.rhs.kind === 'Type'}{@render typeContent(pred.rhs.value)}{:else}<span class="token-name">{pred.rhs.expr}</span>{/if}
+		{/if}
+	</code>
+{/snippet}
+
+<!-- Badge wrapping a TypeRef — used by argument types, return types,
+	 field types, where any single type expression needs a styled chip. -->
+{#snippet typeBadge(t: TypeRef, strong: boolean)}
+	<code class="badge {strong ? 'badge-strong' : ''} badge-code">{@render typeContent(t)}</code>
 {/snippet}
 
 {#snippet traitLink(traitId: string)}
@@ -460,6 +466,8 @@
 	{@const requiredCount = traitNode?.required_trait_methods?.length ?? 0}
 	{@const defaultCount = traitNode?.default_trait_methods?.length ?? 0}
 	{@const providedDefaultCount = implBlock.provided_trait_methods?.length ?? 0}
+	{@const implGenerics = implBlock.generics?.params ?? []}
+	{@const implWhere = implBlock.generics?.where_predicates ?? []}
 	<div
 		class="flex flex-wrap items-center gap-2 text-sm [contain-intrinsic-size:auto_28px] [content-visibility:auto]"
 	>
@@ -475,30 +483,20 @@
 				{implCategory}
 			</span>
 		{/if}
-		{#if implBlock.generics && implBlock.generics.length > 0}
-			{#each implBlock.generics as generic (generic)}
-				{@render linkedBadge(generic, implBlock.bound_links, true)}
+		{#if implGenerics.length > 0}
+			{#each implGenerics as p, i (i)}
+				{@render paramBadge(p, true)}
 			{/each}
 		{/if}
 		{#if implBlock.impl_trait}
 			{@render traitLink(implBlock.impl_trait)}
 			<span class="text-(--muted)">for</span>
 			<span class="token-name">{selected?.name}</span>
-		{:else}
-			{@const stripped = implBlock.name.replace(/^impl\s+/, '')}
-			{#if stripped.includes(' for ')}
-				{@const traitPart = stripped.slice(0, stripped.lastIndexOf(' for '))}
-				{@render linkedBadge(traitPart, implBlock.bound_links, true)}
-				<span class="text-(--muted)">for</span>
-				<span class="token-name">{selected?.name}</span>
-			{:else}
-				{@render linkedBadge(stripped, implBlock.bound_links, true)}
-			{/if}
 		{/if}
-		{#if implBlock.where_clause && implBlock.where_clause.length > 0}
+		{#if implWhere.length > 0}
 			<span class="text-xs font-semibold tracking-wider text-(--muted) uppercase">where</span>
-			{#each implBlock.where_clause as predicate (predicate)}
-				{@render linkedBadge(predicate, implBlock.bound_links, false)}
+			{#each implWhere as pred, i (i)}
+				{@render wherePredBadge(pred)}
 			{/each}
 		{/if}
 		{#if implBlock.impl_trait && (requiredCount > 0 || defaultCount > 0)}
@@ -573,18 +571,18 @@
 					/>
 				</div>
 			{/if}
-			{#if selected.generics && selected.generics.length > 0}
+			{#if selected.generics?.params && selected.generics.params.length > 0}
 				<div class="mt-3 flex flex-wrap items-center gap-2">
-					{#each selected.generics as generic (generic)}
-						{@render linkedBadge(generic, selected.bound_links, true)}
+					{#each selected.generics.params as p, i (i)}
+						{@render paramBadge(p, true)}
 					{/each}
 				</div>
 			{/if}
-			{#if selected.where_clause && selected.where_clause.length > 0}
+			{#if selected.generics?.where_predicates && selected.generics.where_predicates.length > 0}
 				<div class="mt-2 flex flex-wrap items-center gap-2">
 					<span class="text-xs font-semibold tracking-wider text-(--muted) uppercase">where</span>
-					{#each selected.where_clause as predicate (predicate)}
-						{@render linkedBadge(predicate, selected.bound_links, false)}
+					{#each selected.generics.where_predicates as pred, i (i)}
+						{@render wherePredBadge(pred)}
 					{/each}
 				</div>
 			{/if}
@@ -626,7 +624,7 @@
 								<div class="flex flex-wrap items-baseline gap-2">
 									<code class="badge badge-strong badge-code">{arg.name}</code>
 									<span class="text-(--muted)">:</span>
-									{@render linkedBadge(arg.type_name, selected.bound_links, false)}
+									{@render typeBadge(arg.type, false)}
 								</div>
 							{/each}
 						</div>
@@ -636,7 +634,7 @@
 					<div class="mt-4">
 						<h4 class="text-xs font-semibold tracking-wider text-(--muted) uppercase">Returns</h4>
 						<div class="mt-2">
-							{@render linkedBadge(selected.signature.output, selected.bound_links, false)}
+							{@render typeBadge(selected.signature.output, false)}
 						</div>
 					</div>
 				{/if}
@@ -672,7 +670,7 @@
 									</span>
 								</td>
 								<td class="py-2 align-baseline">
-									{@render linkedBadge(field.type_name, selected.bound_links, false)}
+									{@render typeBadge(field.type, false)}
 								</td>
 							</tr>
 						{/each}
@@ -702,11 +700,7 @@
 									<!-- Tuple variant — show types inline -->
 									<span class="font-(--font-code) text-(--muted)">
 										({#each variant.fields as field, i (field.name)}{#if i > 0},
-											{/if}{@render linkedBadge(
-												field.type_name,
-												selected.bound_links,
-												false,
-											)}{/each})
+											{/if}{@render typeBadge(field.type, false)}{/each})
 									</span>
 								{:else}
 									<span class="text-xs text-(--muted)">
@@ -722,7 +716,7 @@
 											<code class="font-(--font-code) text-(--ink)">{field.name}</code>
 											<span class="text-(--muted)">:</span>
 											<span class="font-(--font-code) text-(--muted)">
-												{@render linkedBadge(field.type_name, selected.bound_links, false)}
+												{@render typeBadge(field.type, false)}
 											</span>
 										</div>
 									{/each}
@@ -735,7 +729,7 @@
 		{/if}
 
 		<!-- Type info for StructField, AssocType, AssocConst -->
-		{#if selected.type_name && (selectedKind === 'StructField' || selectedKind === 'AssocType' || selectedKind === 'AssocConst')}
+		{#if selected.type && (selectedKind === 'StructField' || selectedKind === 'AssocType' || selectedKind === 'AssocConst')}
 			<CollapsibleSection bind:this={typeInfoRef} title="Type" defaultOpen={true}>
 				<div class="flex flex-wrap items-baseline gap-2">
 					{#if selectedKind === 'AssocConst'}
@@ -750,7 +744,7 @@
 						<code class="badge badge-strong badge-code">{selected.name}</code>
 						<span class="text-(--muted)">:</span>
 					{/if}
-					{@render linkedBadge(selected.type_name, selected.bound_links, false)}
+					{@render typeBadge(selected.type, false)}
 				</div>
 				{#if selected.const_value}
 					<div class="mt-3">
@@ -772,9 +766,9 @@
 				defaultOpen={true}
 			>
 				<div class="flex flex-wrap items-center gap-2">
-					{#each selected.bounds as bound (bound)}
-						{@render linkedBadge(bound, selected.bound_links, false)}
-						{#if selected.bounds && selected.bounds.indexOf(bound) < selected.bounds.length - 1}
+					{#each selected.bounds as bound, idx (idx)}
+						<code class="badge badge-code">{@render boundContent(bound)}</code>
+						{#if idx < selected.bounds.length - 1}
 							<span class="text-(--muted)">+</span>
 						{/if}
 					{/each}

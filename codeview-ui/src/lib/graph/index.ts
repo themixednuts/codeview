@@ -1,3 +1,38 @@
+// Re-export of the schema's data types so consumers can import everything
+// graph-related from `$lib/graph`. Schema is the source of truth via
+// schemars-generated TypeScript declarations.
+export type {
+	ArgumentInfo,
+	AssocItemConstraint,
+	Confidence,
+	CrateGraph,
+	Deprecation,
+	Edge,
+	EdgeKind,
+	ExternalCrate,
+	FieldInfo,
+	FunctionPointerSig,
+	FunctionSignature,
+	GenericArg,
+	GenericArgs,
+	GenericBound,
+	GenericParam,
+	Generics,
+	ImplCategory,
+	ImplType,
+	Node,
+	NodeKind,
+	PolyTrait,
+	Span,
+	Term,
+	TypeRef,
+	VariantInfo,
+	VariantKind,
+	Visibility,
+	WherePredicate,
+	Workspace,
+} from '$lib/schema';
+
 // Visual
 export type { NodeShape, NodeVisual, ShapeSpec } from './visual';
 export {

@@ -42,7 +42,7 @@
     "version": {
       "type": "integer",
       "format": "uint32",
-      "default": 3,
+      "default": 1,
       "minimum": 0
     }
   },
@@ -58,13 +58,80 @@
         "name": {
           "type": "string"
         },
-        "type_name": {
+        "type": {
+          "$ref": "#/$defs/TypeRef"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ]
+    },
+    "AssocItemConstraint": {
+      "description": "`IntoIterator<Item = u32, IntoIter: Clone>` — the constraints inside `<…>`.",
+      "type": "object",
+      "properties": {
+        "args": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GenericArgs"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "binding": {
+          "$ref": "#/$defs/AssocItemConstraintKind"
+        },
+        "name": {
           "type": "string"
         }
       },
       "required": [
         "name",
-        "type_name"
+        "binding"
+      ]
+    },
+    "AssocItemConstraintKind": {
+      "oneOf": [
+        {
+          "description": "`Item = u32` (type) or `BAR = 42` (const).",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Equality"
+            },
+            "value": {
+              "$ref": "#/$defs/Term"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "description": "`Item: Clone` — bounds on the associated item.",
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericBound"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "Constraint"
+            }
+          },
+          "required": [
+            "kind",
+            "bounds"
+          ]
+        }
       ]
     },
     "Confidence": {
@@ -216,8 +283,8 @@
         "name": {
           "type": "string"
         },
-        "type_name": {
-          "type": "string"
+        "type": {
+          "$ref": "#/$defs/TypeRef"
         },
         "visibility": {
           "$ref": "#/$defs/Visibility"
@@ -225,8 +292,61 @@
       },
       "required": [
         "name",
-        "type_name",
+        "type",
         "visibility"
+      ]
+    },
+    "FunctionPointerSig": {
+      "description": "Function pointer signature (the `fn(...) -> ...` part of a fn-pointer type).",
+      "type": "object",
+      "properties": {
+        "abi": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hrtb_params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GenericParam"
+          }
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/NamedTypeRef"
+          }
+        },
+        "is_async": {
+          "type": "boolean"
+        },
+        "is_c_variadic": {
+          "type": "boolean"
+        },
+        "is_const": {
+          "type": "boolean"
+        },
+        "is_unsafe": {
+          "type": "boolean"
+        },
+        "output": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypeRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "inputs",
+        "is_unsafe",
+        "is_const",
+        "is_async",
+        "is_c_variadic"
       ]
     },
     "FunctionSignature": {
@@ -237,6 +357,10 @@
             "string",
             "null"
           ]
+        },
+        "generics": {
+          "description": "Generic params + where-clause specific to this function. Trait-method\nsignatures carry their own here (separate from the impl block's\ngenerics).",
+          "$ref": "#/$defs/Generics"
         },
         "inputs": {
           "type": "array",
@@ -257,9 +381,13 @@
           "type": "boolean"
         },
         "output": {
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypeRef"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -269,6 +397,327 @@
         "is_unsafe",
         "is_const"
       ]
+    },
+    "GenericArg": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Lifetime"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Type"
+            },
+            "value": {
+              "$ref": "#/$defs/TypeRef"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "description": "Const generic value, e.g. the `42` in `IntoIter<u32, 42>`.",
+          "type": "object",
+          "properties": {
+            "expr": {
+              "type": "string"
+            },
+            "is_literal": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "Const"
+            }
+          },
+          "required": [
+            "kind",
+            "expr",
+            "is_literal"
+          ]
+        },
+        {
+          "description": "`_` placeholder in generic arg position: `Vec::<_>`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Infer"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "GenericArgs": {
+      "description": "`<…>` or `(…) -> _` arguments to a path segment.",
+      "oneOf": [
+        {
+          "description": "`<'a, T, 5, Item = u32>` — args + associated-item constraints.",
+          "type": "object",
+          "properties": {
+            "args": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericArg"
+              }
+            },
+            "constraints": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/AssocItemConstraint"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "AngleBracketed"
+            }
+          },
+          "required": [
+            "kind",
+            "args"
+          ]
+        },
+        {
+          "description": "`Fn(A, B) -> C`",
+          "type": "object",
+          "properties": {
+            "inputs": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TypeRef"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "Parenthesized"
+            },
+            "output": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypeRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "inputs"
+          ]
+        },
+        {
+          "description": "`T::method(..)` — rustdoc 1.83+ feature for return-type notation.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "ReturnTypeNotation"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "GenericBound": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "hrtb_params": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericParam"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "Trait"
+            },
+            "modifier": {
+              "$ref": "#/$defs/TraitBoundModifier"
+            },
+            "trait": {
+              "$ref": "#/$defs/TypeRef"
+            }
+          },
+          "required": [
+            "kind",
+            "trait",
+            "modifier"
+          ]
+        },
+        {
+          "description": "`: 'a` outlives bound.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Outlives"
+            },
+            "lifetime": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "lifetime"
+          ]
+        },
+        {
+          "description": "`use<'a, T>` precise-capturing bound.",
+          "type": "object",
+          "properties": {
+            "captures": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PreciseCapture"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "Use"
+            }
+          },
+          "required": [
+            "kind",
+            "captures"
+          ]
+        }
+      ]
+    },
+    "GenericParam": {
+      "description": "A single declaration in `<…>`: `T: Bound`, `'a`, `const N: usize`.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/GenericParamKind"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "kind"
+      ]
+    },
+    "GenericParamKind": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Lifetime"
+            },
+            "outlives": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericBound"
+              }
+            },
+            "default": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypeRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "Type"
+            },
+            "synthetic": {
+              "description": "Compiler-inserted synthetic parameter (e.g. lifted from\n`impl Trait` arg position) — flag so renderers can hide it.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "default": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "Const"
+            },
+            "type": {
+              "$ref": "#/$defs/TypeRef"
+            }
+          },
+          "required": [
+            "kind",
+            "type"
+          ]
+        }
+      ]
+    },
+    "Generics": {
+      "description": "Combined generic parameters + where-clause for an item. Lives on any\nitem that can be generic (fn, struct, enum, trait, impl, type alias).",
+      "type": "object",
+      "properties": {
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GenericParam"
+          }
+        },
+        "where_predicates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/WherePredicate"
+          }
+        }
+      }
     },
     "ImplCategory": {
       "type": "string",
@@ -287,6 +736,22 @@
         "Inherent"
       ]
     },
+    "NamedTypeRef": {
+      "description": "`name: TypeRef` pair — used for function inputs (both fn signatures and\nfn-pointer types). For fn-pointer types the name may be empty.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "$ref": "#/$defs/TypeRef"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ]
+    },
     "Node": {
       "type": "object",
       "properties": {
@@ -296,20 +761,11 @@
             "type": "string"
           }
         },
-        "bound_links": {
-          "description": "Resolved trait bound links from generics/where clauses:\nmaps display name (e.g., \"Clone\") to node ID (e.g., \"core::clone::Clone\")",
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
         "bounds": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "description": "Bounds on the item (trait bounds for trait/trait-alias/impl-trait\ndeclarations, assoc-type bounds, etc.). Structured.",
+          "type": "array",
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/GenericBound"
           }
         },
         "const_value": {
@@ -378,13 +834,8 @@
           }
         },
         "generics": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
+          "description": "Generic parameters + where-clause for this item. Structured; the\nflat-string `where_clause` / `bound_links` fields it replaced are\ngone. Type IDs live inside the contained `TypeRef`s already, so\nthe worker can build cross-crate links without a side table.",
+          "$ref": "#/$defs/Generics"
         },
         "has_stripped_fields": {
           "type": "boolean"
@@ -538,10 +989,15 @@
             }
           ]
         },
-        "type_name": {
-          "type": [
-            "string",
-            "null"
+        "type": {
+          "description": "The item's type (for Constant, Static, AssocConst, TypeAlias,\nAssocType, StructField with named field). Structured so the\nrenderer can produce links + syntax-aware highlighting.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TypeRef"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "variant_kind": {
@@ -565,15 +1021,6 @@
         },
         "visibility": {
           "$ref": "#/$defs/Visibility"
-        },
-        "where_clause": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
         }
       },
       "required": [
@@ -608,6 +1055,60 @@
         "ExternCrate",
         "Import",
         "ProcMacro"
+      ]
+    },
+    "PolyTrait": {
+      "description": "A trait reference with optional higher-rank lifetime quantifier, used\ninside `dyn Trait1 + Trait2` lists. The lifetime quantifier lets us\npreserve `dyn for<'a> Fn(&'a i32) -> &'a i32`.",
+      "type": "object",
+      "properties": {
+        "hrtb_params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/GenericParam"
+          }
+        },
+        "trait": {
+          "$ref": "#/$defs/TypeRef"
+        }
+      },
+      "required": [
+        "trait"
+      ]
+    },
+    "PreciseCapture": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Lifetime"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Param"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        }
       ]
     },
     "Span": {
@@ -647,6 +1148,382 @@
         "file",
         "line",
         "column"
+      ]
+    },
+    "Term": {
+      "description": "Either a type or a constant, as used in `=` constraints (`Item = T`).",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Type"
+            },
+            "value": {
+              "$ref": "#/$defs/TypeRef"
+            }
+          },
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "expr": {
+              "type": "string"
+            },
+            "is_literal": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "Const"
+            }
+          },
+          "required": [
+            "kind",
+            "expr",
+            "is_literal"
+          ]
+        }
+      ]
+    },
+    "TraitBoundModifier": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        },
+        {
+          "description": "`?Sized` — relaxes the implicit Sized bound.",
+          "type": "string",
+          "const": "maybe"
+        },
+        {
+          "description": "`~const Trait` — bound applies at both runtime and const-context.",
+          "type": "string",
+          "const": "maybe_const"
+        }
+      ]
+    },
+    "TypeRef": {
+      "description": "One type expression in any position — function arg, return, field,\ngeneric bound, where-predicate, etc. Recursive via `Box<TypeRef>`.",
+      "oneOf": [
+        {
+          "description": "Concrete named type: `Vec<T>`, `std::option::Option<T>`, `MyStruct`.\n`id` is the rustdoc Item ID — the renderer uses it to build\ncross-crate links.",
+          "type": "object",
+          "properties": {
+            "args": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GenericArgs"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "ResolvedPath"
+            },
+            "path": {
+              "description": "Path as written at the use site, e.g. \"std::vec::Vec\" or just \"Vec\".",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "path"
+          ]
+        },
+        {
+          "description": "`dyn Trait + 'a + Send`",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "DynTrait"
+            },
+            "lifetime": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "traits": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PolyTrait"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "traits"
+          ]
+        },
+        {
+          "description": "Generic type parameter: the `T` in `fn f<T>(x: T)`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Generic"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "Built-in: `i32`, `u8`, `bool`, `char`, `str`, `()`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Primitive"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "name"
+          ]
+        },
+        {
+          "description": "`&'a mut T`, `&T`, `&'static str`.",
+          "type": "object",
+          "properties": {
+            "inner": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "BorrowedRef"
+            },
+            "lifetime": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "mutable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "mutable",
+            "inner"
+          ]
+        },
+        {
+          "description": "`(A, B, C)`. Empty tuple `()` is `Primitive { name: \"()\" }` per rustdoc.",
+          "type": "object",
+          "properties": {
+            "elements": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/TypeRef"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "Tuple"
+            }
+          },
+          "required": [
+            "kind",
+            "elements"
+          ]
+        },
+        {
+          "description": "`[T]`",
+          "type": "object",
+          "properties": {
+            "element": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "Slice"
+            }
+          },
+          "required": [
+            "kind",
+            "element"
+          ]
+        },
+        {
+          "description": "`[T; N]`. `len` is the const expression as written; may be `\"N + 1\"`\nor a parameter name — not guaranteed to be a literal.",
+          "type": "object",
+          "properties": {
+            "element": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "Array"
+            },
+            "len": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "element",
+            "len"
+          ]
+        },
+        {
+          "description": "`impl Iterator<Item=T>`, `impl Trait + 'a`.",
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericBound"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "ImplTrait"
+            }
+          },
+          "required": [
+            "kind",
+            "bounds"
+          ]
+        },
+        {
+          "description": "`*const T` / `*mut T`.",
+          "type": "object",
+          "properties": {
+            "inner": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "RawPointer"
+            },
+            "mutable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "kind",
+            "mutable",
+            "inner"
+          ]
+        },
+        {
+          "description": "`<T as Trait>::Item` or `T::Item` (inherent assoc when `trait_` is None).",
+          "type": "object",
+          "properties": {
+            "args": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/GenericArgs"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "QualifiedPath"
+            },
+            "name": {
+              "type": "string"
+            },
+            "self_type": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "trait": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TypeRef"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "name",
+            "self_type"
+          ]
+        },
+        {
+          "description": "`fn(A, B) -> C`, `unsafe extern \"C\" fn() -> *const u8`.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "FunctionPointer"
+            },
+            "sig": {
+              "$ref": "#/$defs/FunctionPointerSig"
+            }
+          },
+          "required": [
+            "kind",
+            "sig"
+          ]
+        },
+        {
+          "description": "`_` — type inference placeholder. Rare in published signatures.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Infer"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Pattern type, e.g. `u32 is 1..` (unstable). `pat` is the stringified\npattern since rustdoc-types hides the inner pattern structure today.",
+          "type": "object",
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "kind": {
+              "type": "string",
+              "const": "Pat"
+            },
+            "pat": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "base",
+            "pat"
+          ]
+        }
       ]
     },
     "VariantInfo": {
@@ -741,6 +1618,85 @@
           },
           "required": [
             "kind"
+          ]
+        }
+      ]
+    },
+    "WherePredicate": {
+      "oneOf": [
+        {
+          "description": "`T: Bound1 + Bound2`, or higher-ranked `for<'a> &'a T: Trait`.",
+          "type": "object",
+          "properties": {
+            "bounds": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericBound"
+              }
+            },
+            "hrtb_params": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/GenericParam"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "Bound"
+            },
+            "type": {
+              "$ref": "#/$defs/TypeRef"
+            }
+          },
+          "required": [
+            "kind",
+            "type",
+            "bounds"
+          ]
+        },
+        {
+          "description": "`'a: 'b + 'c`",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Lifetime"
+            },
+            "lifetime": {
+              "type": "string"
+            },
+            "outlives": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "kind",
+            "lifetime",
+            "outlives"
+          ]
+        },
+        {
+          "description": "`T::Item = u32`",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Eq"
+            },
+            "lhs": {
+              "$ref": "#/$defs/TypeRef"
+            },
+            "rhs": {
+              "$ref": "#/$defs/Term"
+            }
+          },
+          "required": [
+            "kind",
+            "lhs",
+            "rhs"
           ]
         }
       ]

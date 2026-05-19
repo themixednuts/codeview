@@ -465,7 +465,7 @@ fn node_completeness_score(node: &Node) -> u32 {
     if node.signature.is_some() {
         score += 2;
     }
-    if node.generics.is_some() {
+    if !node.generics.is_empty() {
         score += 1;
     }
     if node.docs.is_some() {
@@ -955,117 +955,8 @@ fn build_graph(
                 })
                 .unwrap_or_default();
 
-            let mut bound_links = item
-                .and_then(|item| item_generics(item))
-                .map(|g| extract_bound_links(g, krate, crate_name, &path_index))
-                .unwrap_or_default();
-
-            // Add type links from signatures
-            if let Some(item) = item {
-                match &item.inner {
-                    rdt::ItemEnum::Function(f) => {
-                        bound_links.extend(extract_signature_links(
-                            &f.sig,
-                            krate,
-                            crate_name,
-                            &path_index,
-                        ));
-                    }
-                    rdt::ItemEnum::StructField(ty) => {
-                        let mut links = HashMap::new();
-                        collect_type_links(ty, krate, crate_name, &path_index, &mut links);
-                        bound_links.extend(links);
-                    }
-                    rdt::ItemEnum::Struct(s) => {
-                        let field_ids: Vec<_> = match &s.kind {
-                            rdt::StructKind::Plain { fields, .. } => fields.clone(),
-                            rdt::StructKind::Tuple(fields) => {
-                                fields.iter().filter_map(|f| *f).collect()
-                            }
-                            rdt::StructKind::Unit => vec![],
-                        };
-                        bound_links.extend(extract_field_type_links(
-                            &krate.index,
-                            &field_ids,
-                            krate,
-                            crate_name,
-                            &path_index,
-                        ));
-                    }
-                    rdt::ItemEnum::Enum(e) => {
-                        for variant_id in &e.variants {
-                            if let Some(variant_item) = krate.index.get(variant_id)
-                                && let rdt::ItemEnum::Variant(v) = &variant_item.inner
-                            {
-                                let field_ids: Vec<_> = match &v.kind {
-                                    rdt::VariantKind::Plain => vec![],
-                                    rdt::VariantKind::Tuple(fields) => {
-                                        fields.iter().filter_map(|f| *f).collect()
-                                    }
-                                    rdt::VariantKind::Struct { fields, .. } => fields.clone(),
-                                };
-                                bound_links.extend(extract_field_type_links(
-                                    &krate.index,
-                                    &field_ids,
-                                    krate,
-                                    crate_name,
-                                    &path_index,
-                                ));
-                            }
-                        }
-                    }
-                    rdt::ItemEnum::Trait(t) => {
-                        bound_links.extend(collect_bound_links(
-                            &t.bounds,
-                            krate,
-                            crate_name,
-                            &path_index,
-                        ));
-                    }
-                    rdt::ItemEnum::TraitAlias(a) => {
-                        bound_links.extend(collect_bound_links(
-                            &a.params,
-                            krate,
-                            crate_name,
-                            &path_index,
-                        ));
-                    }
-                    rdt::ItemEnum::TypeAlias(a) => {
-                        let mut links = HashMap::new();
-                        collect_type_links(&a.type_, krate, crate_name, &path_index, &mut links);
-                        bound_links.extend(links);
-                    }
-                    rdt::ItemEnum::Constant { type_, .. } => {
-                        let mut links = HashMap::new();
-                        collect_type_links(type_, krate, crate_name, &path_index, &mut links);
-                        bound_links.extend(links);
-                    }
-                    rdt::ItemEnum::Static(s) => {
-                        let mut links = HashMap::new();
-                        collect_type_links(&s.type_, krate, crate_name, &path_index, &mut links);
-                        bound_links.extend(links);
-                    }
-                    rdt::ItemEnum::AssocType { bounds, type_, .. } => {
-                        bound_links.extend(collect_bound_links(
-                            bounds,
-                            krate,
-                            crate_name,
-                            &path_index,
-                        ));
-                        if let Some(type_) = type_ {
-                            let mut links = HashMap::new();
-                            collect_type_links(type_, krate, crate_name, &path_index, &mut links);
-                            bound_links.extend(links);
-                        }
-                    }
-                    rdt::ItemEnum::AssocConst { type_, .. } => {
-                        let mut links = HashMap::new();
-                        collect_type_links(type_, krate, crate_name, &path_index, &mut links);
-                        bound_links.extend(links);
-                    }
-                    _ => {}
-                }
-            }
+            // bound_links removed: type IDs now live inline in
+            // TypeRef::ResolvedPath, so the side table is redundant.
 
             upsert_node(
                 &mut graph,
@@ -1093,10 +984,8 @@ fn build_graph(
                     variants: details.variants,
                     signature: details.signature,
                     generics: details.generics,
-                    where_clause: details.where_clause,
                     docs: details.docs,
                     doc_links,
-                    bound_links,
                     impl_type: None,
                     parent_impl: None,
                     impl_trait: None,
@@ -1104,7 +993,7 @@ fn build_graph(
                     provided_trait_methods: None,
                     required_trait_methods: details.required_trait_methods,
                     default_trait_methods: details.default_trait_methods,
-                    type_name: details.type_name,
+                    type_: details.type_,
                     variant_kind: details.variant_kind,
                     discriminant: details.discriminant,
                     const_value: details.const_value,
@@ -1213,8 +1102,7 @@ fn build_graph(
                         fields: None,
                         variants: None,
                         signature: None,
-                        generics: extract_generics(&impl_block.generics),
-                        where_clause: extract_where_clause(&impl_block.generics),
+                        generics: map_generics(&impl_block.generics),
                         docs: extract_docs(item),
                         doc_links: extract_doc_links(
                             item,
@@ -1222,12 +1110,6 @@ fn build_graph(
                             crate_name,
                             &path_index,
                             &canonical_to_alias,
-                        ),
-                        bound_links: extract_bound_links(
-                            &impl_block.generics,
-                            krate,
-                            crate_name,
-                            &path_index,
                         ),
                         impl_type,
                         parent_impl: None,
@@ -1240,11 +1122,11 @@ fn build_graph(
                         },
                         required_trait_methods: None,
                         default_trait_methods: None,
-                        type_name: None,
+                        type_: None,
                         variant_kind: None,
                         discriminant: None,
                         const_value: None,
-                        bounds: None,
+                        bounds: Vec::new(),
                         import_source: None,
                         import_name: None,
                         is_glob: false,
@@ -1323,62 +1205,6 @@ fn build_graph(
                             .clone()
                             .unwrap_or_else(|| assoc_node_id.clone());
                         let details = extract_item_details(&krate.index, assoc_item);
-                        let mut bound_links = item_generics(assoc_item)
-                            .map(|g| extract_bound_links(g, krate, crate_name, &path_index))
-                            .unwrap_or_default();
-                        match &assoc_item.inner {
-                            rdt::ItemEnum::Function(f) => {
-                                bound_links.extend(extract_signature_links(
-                                    &f.sig,
-                                    krate,
-                                    crate_name,
-                                    &path_index,
-                                ));
-                            }
-                            rdt::ItemEnum::AssocType { bounds, type_, .. } => {
-                                bound_links.extend(collect_bound_links(
-                                    bounds,
-                                    krate,
-                                    crate_name,
-                                    &path_index,
-                                ));
-                                if let Some(type_) = type_ {
-                                    let mut links = HashMap::new();
-                                    collect_type_links(
-                                        type_,
-                                        krate,
-                                        crate_name,
-                                        &path_index,
-                                        &mut links,
-                                    );
-                                    bound_links.extend(links);
-                                }
-                            }
-                            rdt::ItemEnum::AssocConst { type_, .. }
-                            | rdt::ItemEnum::Constant { type_, .. } => {
-                                let mut links = HashMap::new();
-                                collect_type_links(
-                                    type_,
-                                    krate,
-                                    crate_name,
-                                    &path_index,
-                                    &mut links,
-                                );
-                                bound_links.extend(links);
-                            }
-                            rdt::ItemEnum::TypeAlias(alias) => {
-                                let mut links = HashMap::new();
-                                collect_type_links(
-                                    &alias.type_,
-                                    krate,
-                                    crate_name,
-                                    &path_index,
-                                    &mut links,
-                                );
-                                bound_links.extend(links);
-                            }
-                            _ => {}
-                        }
                         let span = assoc_item.span.as_ref().map(map_span);
                         let deprecation = map_deprecation(assoc_item.deprecation.as_ref());
                         graph.add_node(Node {
@@ -1403,7 +1229,6 @@ fn build_graph(
                             variants: details.variants,
                             signature: details.signature,
                             generics: details.generics,
-                            where_clause: details.where_clause,
                             docs: details.docs,
                             doc_links: extract_doc_links(
                                 assoc_item,
@@ -1412,7 +1237,6 @@ fn build_graph(
                                 &path_index,
                                 &canonical_to_alias,
                             ),
-                            bound_links,
                             impl_type: None,
                             parent_impl: Some(impl_id.clone()),
                             impl_trait: None,
@@ -1420,7 +1244,7 @@ fn build_graph(
                             provided_trait_methods: None,
                             required_trait_methods: details.required_trait_methods,
                             default_trait_methods: details.default_trait_methods,
-                            type_name: details.type_name,
+                            type_: details.type_,
                             variant_kind: details.variant_kind,
                             discriminant: details.discriminant,
                             const_value: details.const_value,
@@ -1786,188 +1610,282 @@ fn clean_path(path: &str) -> String {
     path.rsplit("::").next().unwrap_or(path).to_string()
 }
 
-fn format_generic_bound(bound: &rdt::GenericBound) -> Option<String> {
-    match bound {
-        rdt::GenericBound::TraitBound { trait_, .. } => {
-            let mut text = clean_path(&trait_.path);
-            if let Some(args) = trait_.args.as_deref() {
-                text.push_str(&format_generic_args(args));
-            }
-            Some(text)
-        }
-        rdt::GenericBound::Outlives(lifetime) => Some(lifetime.clone()),
-        rdt::GenericBound::Use(_) => None,
-    }
-}
+// ─── Type AST mapping ──────────────────────────────────────────────────
+//
+// Maps `rustdoc-types::Type` (and adjacent enums) to our `TypeRef` /
+// `Generics` / `GenericBound` / etc. Faithful 1:1 mapping — preserves
+// IDs (so the worker can build cross-crate links without a side table),
+// lifetime quantifiers (higher-rank bounds), and synthetic-param flags
+// (so renderers can hide them).
 
-fn format_bounds(bounds: &[rdt::GenericBound]) -> Option<Vec<String>> {
-    let formatted: Vec<_> = bounds.iter().filter_map(format_generic_bound).collect();
-    if formatted.is_empty() {
-        None
-    } else {
-        Some(formatted)
-    }
-}
+use codeview_core::{
+    AssocItemConstraint as CvAssocItemConstraint,
+    AssocItemConstraintKind as CvAssocItemConstraintKind, FunctionPointerSig as CvFnPointerSig,
+    GenericArg as CvGenericArg, GenericArgs as CvGenericArgs, GenericBound as CvGenericBound,
+    GenericParam as CvGenericParam, GenericParamKind as CvGenericParamKind, Generics as CvGenerics,
+    NamedTypeRef as CvNamedTypeRef, PolyTrait as CvPolyTrait, PreciseCapture as CvPreciseCapture,
+    Term as CvTerm, TraitBoundModifier as CvTraitBoundModifier, TypeRef, WherePredicate as CvWherePred,
+};
 
-fn format_type(ty: &rdt::Type) -> String {
+fn map_type(ty: &rdt::Type) -> TypeRef {
     match ty {
-        rdt::Type::ResolvedPath(path) => {
-            let mut result = clean_path(&path.path);
-            if let Some(args) = &path.args {
-                result.push_str(&format_generic_args(args));
-            }
-            result
-        }
-        rdt::Type::DynTrait(dyn_trait) => {
-            let traits: Vec<_> = dyn_trait
-                .traits
-                .iter()
-                .map(|p| {
-                    let mut text = clean_path(&p.trait_.path);
-                    if let Some(args) = p.trait_.args.as_deref() {
-                        text.push_str(&format_generic_args(args));
-                    }
-                    text
-                })
-                .collect();
-            let lifetime = dyn_trait
-                .lifetime
-                .as_ref()
-                .map(|lifetime| format!(" + {lifetime}"))
-                .unwrap_or_default();
-            format!("dyn {}{}", traits.join(" + "), lifetime)
-        }
-        rdt::Type::Generic(name) => name.clone(),
-        rdt::Type::Primitive(name) => name.clone(),
-        rdt::Type::FunctionPointer(fp) => {
-            let inputs: Vec<_> = fp.sig.inputs.iter().map(|(_, t)| format_type(t)).collect();
-            let output = fp
-                .sig
-                .output
-                .as_ref()
-                .map(|t| format!(" -> {}", format_type(t)))
-                .unwrap_or_default();
-            format!("fn({}){}", inputs.join(", "), output)
-        }
-        rdt::Type::Tuple(types) => {
-            let inner: Vec<_> = types.iter().map(format_type).collect();
-            format!("({})", inner.join(", "))
-        }
-        rdt::Type::Slice(inner) => format!("[{}]", format_type(inner)),
-        rdt::Type::Array { type_, len } => format!("[{}; {}]", format_type(type_), len),
-        rdt::Type::Pat { type_, .. } => format_type(type_),
-        rdt::Type::ImplTrait(bounds) => {
-            let bound_strs: Vec<_> = bounds
-                .iter()
-                .filter_map(|b| match b {
-                    rdt::GenericBound::TraitBound { trait_, .. } => Some(clean_path(&trait_.path)),
-                    _ => None,
-                })
-                .collect();
-            format!("impl {}", bound_strs.join(" + "))
-        }
-        rdt::Type::Infer => "_".to_string(),
-        rdt::Type::RawPointer { is_mutable, type_ } => {
-            let mutability = if *is_mutable { "mut" } else { "const" };
-            format!("*{} {}", mutability, format_type(type_))
-        }
+        rdt::Type::ResolvedPath(path) => TypeRef::ResolvedPath {
+            id: path.id.0.to_string(),
+            path: path.path.clone(),
+            args: path.args.as_deref().map(|args| Box::new(map_generic_args(args))),
+        },
+        rdt::Type::DynTrait(dt) => TypeRef::DynTrait {
+            traits: dt.traits.iter().map(map_poly_trait).collect(),
+            lifetime: dt.lifetime.clone(),
+        },
+        rdt::Type::Generic(name) => TypeRef::Generic { name: name.clone() },
+        rdt::Type::Primitive(name) => TypeRef::Primitive { name: name.clone() },
+        rdt::Type::FunctionPointer(fp) => TypeRef::FunctionPointer {
+            sig: Box::new(map_function_pointer(fp)),
+        },
+        rdt::Type::Tuple(items) => TypeRef::Tuple {
+            elements: items.iter().map(map_type).collect(),
+        },
+        rdt::Type::Slice(inner) => TypeRef::Slice {
+            element: Box::new(map_type(inner)),
+        },
+        rdt::Type::Array { type_, len } => TypeRef::Array {
+            element: Box::new(map_type(type_)),
+            len: len.clone(),
+        },
+        rdt::Type::Pat { type_, __pat_unstable_do_not_use } => TypeRef::Pat {
+            base: Box::new(map_type(type_)),
+            pat: __pat_unstable_do_not_use.clone(),
+        },
+        rdt::Type::ImplTrait(bounds) => TypeRef::ImplTrait {
+            bounds: bounds.iter().map(map_generic_bound).collect(),
+        },
+        rdt::Type::Infer => TypeRef::Infer,
+        rdt::Type::RawPointer { is_mutable, type_ } => TypeRef::RawPointer {
+            mutable: *is_mutable,
+            inner: Box::new(map_type(type_)),
+        },
         rdt::Type::BorrowedRef {
-            is_mutable, type_, ..
-        } => {
-            let mutability = if *is_mutable { "mut " } else { "" };
-            format!("&{}{}", mutability, format_type(type_))
-        }
+            lifetime,
+            is_mutable,
+            type_,
+        } => TypeRef::BorrowedRef {
+            lifetime: lifetime.clone(),
+            mutable: *is_mutable,
+            inner: Box::new(map_type(type_)),
+        },
         rdt::Type::QualifiedPath {
-            self_type,
             name,
             args,
+            self_type,
             trait_,
-        } => {
-            let assoc_args = args
-                .as_deref()
-                .map(|args| format_generic_args(args))
-                .unwrap_or_default();
-            if let Some(trait_path) = trait_ {
-                let mut trait_name = clean_path(&trait_path.path);
-                if let Some(args) = trait_path.args.as_deref() {
-                    trait_name.push_str(&format_generic_args(args));
-                }
-                format!(
-                    "<{} as {}>::{}{}",
-                    format_type(self_type),
-                    trait_name,
-                    name,
-                    assoc_args
-                )
-            } else {
-                format!("<{}>::{}{}", format_type(self_type), name, assoc_args)
-            }
-        }
+        } => TypeRef::QualifiedPath {
+            name: name.clone(),
+            args: args.as_deref().map(|a| Box::new(map_generic_args(a))),
+            self_type: Box::new(map_type(self_type)),
+            trait_: trait_.as_ref().map(|p| {
+                Box::new(TypeRef::ResolvedPath {
+                    id: p.id.0.to_string(),
+                    path: p.path.clone(),
+                    args: p.args.as_deref().map(|a| Box::new(map_generic_args(a))),
+                })
+            }),
+        },
     }
 }
 
-fn format_generic_args(args: &rdt::GenericArgs) -> String {
+fn map_generic_args(args: &rdt::GenericArgs) -> CvGenericArgs {
     match args {
-        rdt::GenericArgs::AngleBracketed { args, constraints } => {
-            if args.is_empty() && constraints.is_empty() {
-                String::new()
-            } else {
-                let mut arg_strs: Vec<_> = args
-                    .iter()
-                    .map(|a| match a {
-                        rdt::GenericArg::Type(t) => format_type(t),
-                        rdt::GenericArg::Lifetime(l) => l.clone(),
-                        rdt::GenericArg::Const(c) => {
-                            c.value.clone().unwrap_or_else(|| c.expr.clone())
-                        }
-                        rdt::GenericArg::Infer => "_".to_string(),
-                    })
-                    .collect();
-                arg_strs.extend(constraints.iter().map(format_assoc_item_constraint));
-                format!("<{}>", arg_strs.join(", "))
-            }
-        }
-        rdt::GenericArgs::Parenthesized { inputs, output } => {
-            let input_strs: Vec<_> = inputs.iter().map(format_type).collect();
-            let output_str = output
-                .as_ref()
-                .map(|t| format!(" -> {}", format_type(t)))
-                .unwrap_or_default();
-            format!("({}){}", input_strs.join(", "), output_str)
-        }
-        rdt::GenericArgs::ReturnTypeNotation => "(..)".to_string(),
+        rdt::GenericArgs::AngleBracketed { args, constraints } => CvGenericArgs::AngleBracketed {
+            args: args.iter().map(map_generic_arg).collect(),
+            constraints: constraints.iter().map(map_assoc_constraint).collect(),
+        },
+        rdt::GenericArgs::Parenthesized { inputs, output } => CvGenericArgs::Parenthesized {
+            inputs: inputs.iter().map(map_type).collect(),
+            output: output.as_ref().map(|t| Box::new(map_type(t))),
+        },
+        rdt::GenericArgs::ReturnTypeNotation => CvGenericArgs::ReturnTypeNotation,
     }
 }
 
-fn format_assoc_item_constraint(constraint: &rdt::AssocItemConstraint) -> String {
-    let args = constraint
-        .args
-        .as_deref()
-        .map(format_generic_args)
-        .unwrap_or_default();
-    match &constraint.binding {
-        rdt::AssocItemConstraintKind::Equality(term) => {
-            format!("{}{} = {}", constraint.name, args, format_term(term))
-        }
-        rdt::AssocItemConstraintKind::Constraint(bounds) => {
-            let bounds = format_bounds(bounds).unwrap_or_default();
-            if bounds.is_empty() {
-                format!("{}{}", constraint.name, args)
-            } else {
-                format!("{}{}: {}", constraint.name, args, bounds.join(" + "))
-            }
-        }
+fn map_generic_arg(arg: &rdt::GenericArg) -> CvGenericArg {
+    match arg {
+        rdt::GenericArg::Lifetime(name) => CvGenericArg::Lifetime { name: name.clone() },
+        rdt::GenericArg::Type(t) => CvGenericArg::Type { value: map_type(t) },
+        rdt::GenericArg::Const(c) => CvGenericArg::Const {
+            expr: c.value.clone().unwrap_or_else(|| c.expr.clone()),
+            is_literal: c.is_literal,
+        },
+        rdt::GenericArg::Infer => CvGenericArg::Infer,
     }
 }
 
-fn format_term(term: &rdt::Term) -> String {
+fn map_assoc_constraint(c: &rdt::AssocItemConstraint) -> CvAssocItemConstraint {
+    CvAssocItemConstraint {
+        name: c.name.clone(),
+        args: c.args.as_deref().map(|a| Box::new(map_generic_args(a))),
+        binding: match &c.binding {
+            rdt::AssocItemConstraintKind::Equality(term) => CvAssocItemConstraintKind::Equality {
+                value: map_term(term),
+            },
+            rdt::AssocItemConstraintKind::Constraint(bounds) => {
+                CvAssocItemConstraintKind::Constraint {
+                    bounds: bounds.iter().map(map_generic_bound).collect(),
+                }
+            }
+        },
+    }
+}
+
+fn map_term(term: &rdt::Term) -> CvTerm {
     match term {
-        rdt::Term::Type(ty) => format_type(ty),
-        rdt::Term::Constant(constant) => constant
-            .value
-            .clone()
-            .unwrap_or_else(|| constant.expr.clone()),
+        rdt::Term::Type(t) => CvTerm::Type { value: map_type(t) },
+        rdt::Term::Constant(c) => CvTerm::Const {
+            expr: c.value.clone().unwrap_or_else(|| c.expr.clone()),
+            is_literal: c.is_literal,
+        },
     }
+}
+
+fn map_poly_trait(p: &rdt::PolyTrait) -> CvPolyTrait {
+    CvPolyTrait {
+        trait_: TypeRef::ResolvedPath {
+            id: p.trait_.id.0.to_string(),
+            path: p.trait_.path.clone(),
+            args: p
+                .trait_
+                .args
+                .as_deref()
+                .map(|a| Box::new(map_generic_args(a))),
+        },
+        hrtb_params: p.generic_params.iter().map(map_generic_param).collect(),
+    }
+}
+
+fn map_function_pointer(fp: &rdt::FunctionPointer) -> CvFnPointerSig {
+    CvFnPointerSig {
+        inputs: fp
+            .sig
+            .inputs
+            .iter()
+            .map(|(name, t)| CvNamedTypeRef {
+                name: name.clone(),
+                type_: map_type(t),
+            })
+            .collect(),
+        output: fp.sig.output.as_ref().map(map_type),
+        is_unsafe: fp.header.is_unsafe,
+        is_const: fp.header.is_const,
+        is_async: fp.header.is_async,
+        abi: format_abi(&fp.header.abi),
+        is_c_variadic: fp.sig.is_c_variadic,
+        hrtb_params: fp.generic_params.iter().map(map_generic_param).collect(),
+    }
+}
+
+fn map_generic_bound(bound: &rdt::GenericBound) -> CvGenericBound {
+    match bound {
+        rdt::GenericBound::TraitBound {
+            trait_,
+            generic_params,
+            modifier,
+        } => CvGenericBound::Trait {
+            trait_: TypeRef::ResolvedPath {
+                id: trait_.id.0.to_string(),
+                path: trait_.path.clone(),
+                args: trait_
+                    .args
+                    .as_deref()
+                    .map(|a| Box::new(map_generic_args(a))),
+            },
+            modifier: map_trait_bound_modifier(*modifier),
+            hrtb_params: generic_params.iter().map(map_generic_param).collect(),
+        },
+        rdt::GenericBound::Outlives(lifetime) => CvGenericBound::Outlives {
+            lifetime: lifetime.clone(),
+        },
+        rdt::GenericBound::Use(captures) => CvGenericBound::Use {
+            captures: captures
+                .iter()
+                .map(|c| match c {
+                    rdt::PreciseCapturingArg::Lifetime(name) => {
+                        CvPreciseCapture::Lifetime { name: name.clone() }
+                    }
+                    rdt::PreciseCapturingArg::Param(name) => {
+                        CvPreciseCapture::Param { name: name.clone() }
+                    }
+                })
+                .collect(),
+        },
+    }
+}
+
+fn map_trait_bound_modifier(m: rdt::TraitBoundModifier) -> CvTraitBoundModifier {
+    match m {
+        rdt::TraitBoundModifier::None => CvTraitBoundModifier::None,
+        rdt::TraitBoundModifier::Maybe => CvTraitBoundModifier::Maybe,
+        rdt::TraitBoundModifier::MaybeConst => CvTraitBoundModifier::MaybeConst,
+    }
+}
+
+fn map_generic_param(p: &rdt::GenericParamDef) -> CvGenericParam {
+    CvGenericParam {
+        name: p.name.clone(),
+        kind: match &p.kind {
+            rdt::GenericParamDefKind::Lifetime { outlives } => CvGenericParamKind::Lifetime {
+                outlives: outlives.clone(),
+            },
+            rdt::GenericParamDefKind::Type {
+                bounds,
+                default,
+                is_synthetic,
+            } => CvGenericParamKind::Type {
+                bounds: bounds.iter().map(map_generic_bound).collect(),
+                default: default.as_ref().map(map_type),
+                synthetic: *is_synthetic,
+            },
+            rdt::GenericParamDefKind::Const { type_, default } => CvGenericParamKind::Const {
+                type_: map_type(type_),
+                default: default.clone(),
+            },
+        },
+    }
+}
+
+fn map_where_predicate(p: &rdt::WherePredicate) -> CvWherePred {
+    match p {
+        rdt::WherePredicate::BoundPredicate {
+            type_,
+            bounds,
+            generic_params,
+        } => CvWherePred::Bound {
+            type_: map_type(type_),
+            bounds: bounds.iter().map(map_generic_bound).collect(),
+            hrtb_params: generic_params.iter().map(map_generic_param).collect(),
+        },
+        rdt::WherePredicate::LifetimePredicate {
+            lifetime,
+            outlives,
+        } => CvWherePred::Lifetime {
+            lifetime: lifetime.clone(),
+            outlives: outlives.clone(),
+        },
+        rdt::WherePredicate::EqPredicate { lhs, rhs } => CvWherePred::Eq {
+            lhs: map_type(lhs),
+            rhs: map_term(rhs),
+        },
+    }
+}
+
+fn map_generics(g: &rdt::Generics) -> CvGenerics {
+    CvGenerics {
+        params: g.params.iter().map(map_generic_param).collect(),
+        where_predicates: g.where_predicates.iter().map(map_where_predicate).collect(),
+    }
+}
+
+fn map_bounds(bounds: &[rdt::GenericBound]) -> Vec<CvGenericBound> {
+    bounds.iter().map(map_generic_bound).collect()
 }
 
 fn extract_struct_fields(
@@ -1988,7 +1906,7 @@ fn extract_struct_fields(
                     };
                     Some(FieldInfo {
                         name: format!("{}", i),
-                        type_name: format_type(ty),
+                        type_: map_type(ty),
                         visibility: map_visibility(&item.visibility),
                     })
                 })
@@ -2009,7 +1927,7 @@ fn extract_struct_fields(
                     };
                     Some(FieldInfo {
                         name: item.name.clone().unwrap_or_default(),
-                        type_name: format_type(ty),
+                        type_: map_type(ty),
                         visibility: map_visibility(&item.visibility),
                     })
                 })
@@ -2036,7 +1954,7 @@ fn extract_field_list(
             };
             Some(FieldInfo {
                 name: item.name.clone().unwrap_or_default(),
-                type_name: format_type(ty),
+                type_: map_type(ty),
                 visibility: map_visibility(&item.visibility),
             })
         })
@@ -2072,7 +1990,7 @@ fn extract_enum_variants(
                         };
                         Some(FieldInfo {
                             name: format!("{}", i),
-                            type_name: format_type(ty),
+                            type_: map_type(ty),
                             visibility: Visibility::Inherited,
                         })
                     })
@@ -2086,7 +2004,7 @@ fn extract_enum_variants(
                         };
                         Some(FieldInfo {
                             name: field_item.name.clone().unwrap_or_default(),
-                            type_name: format_type(ty),
+                            type_: map_type(ty),
                             visibility: map_visibility(&field_item.visibility),
                         })
                     })
@@ -2130,6 +2048,7 @@ fn variant_has_stripped_fields(kind: &rdt::VariantKind) -> bool {
 fn extract_function_signature(
     sig: &rdt::FunctionSignature,
     header: &rdt::FunctionHeader,
+    generics: &rdt::Generics,
 ) -> FunctionSignature {
     FunctionSignature {
         inputs: sig
@@ -2137,15 +2056,16 @@ fn extract_function_signature(
             .iter()
             .map(|(name, ty)| ArgumentInfo {
                 name: name.clone(),
-                type_name: format_type(ty),
+                type_: map_type(ty),
             })
             .collect(),
-        output: sig.output.as_ref().map(format_type),
+        output: sig.output.as_ref().map(map_type),
         is_async: header.is_async,
         is_unsafe: header.is_unsafe,
         is_const: header.is_const,
         abi: format_abi(&header.abi),
         is_c_variadic: sig.is_c_variadic,
+        generics: map_generics(generics),
     }
 }
 
@@ -2447,125 +2367,6 @@ fn collect_generic_param_def_links(
     }
 }
 
-fn extract_generics(generics: &rdt::Generics) -> Option<Vec<String>> {
-    let params: Vec<_> = generics
-        .params
-        .iter()
-        .map(|p| match &p.kind {
-            rdt::GenericParamDefKind::Type {
-                bounds, default, ..
-            } => {
-                let mut s = p.name.clone();
-                if !bounds.is_empty() {
-                    let bound_strs: Vec<_> =
-                        bounds.iter().filter_map(format_generic_bound).collect();
-                    if !bound_strs.is_empty() {
-                        s.push_str(": ");
-                        s.push_str(&bound_strs.join(" + "));
-                    }
-                }
-                if let Some(default) = default {
-                    s.push_str(" = ");
-                    s.push_str(&format_type(default));
-                }
-                s
-            }
-            rdt::GenericParamDefKind::Lifetime { .. } => p.name.clone(),
-            rdt::GenericParamDefKind::Const { type_, .. } => {
-                format!("const {}: {}", p.name, format_type(type_))
-            }
-        })
-        .collect();
-    if params.is_empty() {
-        None
-    } else {
-        Some(params)
-    }
-}
-
-/// Extract bound_links for all trait bounds in both generics params and where clauses.
-fn extract_bound_links(
-    generics: &rdt::Generics,
-    krate: &rdt::Crate,
-    crate_name: &str,
-    path_index: &PathIndex,
-) -> HashMap<String, String> {
-    let mut links = HashMap::new();
-    // From generic params
-    for param in &generics.params {
-        collect_generic_param_def_links(
-            std::slice::from_ref(param),
-            krate,
-            crate_name,
-            path_index,
-            &mut links,
-        );
-    }
-    // From where predicates
-    for pred in &generics.where_predicates {
-        match pred {
-            rdt::WherePredicate::BoundPredicate {
-                type_,
-                bounds,
-                generic_params,
-            } => {
-                collect_type_links(type_, krate, crate_name, path_index, &mut links);
-                links.extend(collect_bound_links(bounds, krate, crate_name, path_index));
-                collect_generic_param_def_links(
-                    generic_params,
-                    krate,
-                    crate_name,
-                    path_index,
-                    &mut links,
-                );
-            }
-            rdt::WherePredicate::LifetimePredicate { .. } => {}
-            rdt::WherePredicate::EqPredicate { lhs, rhs } => {
-                collect_type_links(lhs, krate, crate_name, path_index, &mut links);
-                collect_term_links(rhs, krate, crate_name, path_index, &mut links);
-            }
-        }
-    }
-    links
-}
-
-fn extract_where_clause(generics: &rdt::Generics) -> Option<Vec<String>> {
-    let predicates: Vec<_> = generics
-        .where_predicates
-        .iter()
-        .filter_map(|pred| match pred {
-            rdt::WherePredicate::BoundPredicate { type_, bounds, .. } => {
-                let ty = format_type(type_);
-                let bound_strs: Vec<_> = bounds.iter().filter_map(format_generic_bound).collect();
-                if bound_strs.is_empty() {
-                    None
-                } else {
-                    Some(format!("{}: {}", ty, bound_strs.join(" + ")))
-                }
-            }
-            rdt::WherePredicate::LifetimePredicate { lifetime, outlives } => {
-                if outlives.is_empty() {
-                    None
-                } else {
-                    Some(format!("{}: {}", lifetime, outlives.join(" + ")))
-                }
-            }
-            rdt::WherePredicate::EqPredicate { lhs, rhs } => {
-                let rhs_str = match rhs {
-                    rdt::Term::Type(ty) => format_type(ty),
-                    rdt::Term::Constant(c) => c.value.clone().unwrap_or_default(),
-                };
-                Some(format!("{} = {}", format_type(lhs), rhs_str))
-            }
-        })
-        .collect();
-    if predicates.is_empty() {
-        None
-    } else {
-        Some(predicates)
-    }
-}
-
 fn extract_docs(item: &rdt::Item) -> Option<String> {
     item.docs.clone()
 }
@@ -2600,8 +2401,8 @@ struct ItemDetails {
     fields: Option<Vec<FieldInfo>>,
     variants: Option<Vec<VariantInfo>>,
     signature: Option<FunctionSignature>,
-    generics: Option<Vec<String>>,
-    where_clause: Option<Vec<String>>,
+    /// Structured generics (params + where-clause).
+    generics: CvGenerics,
     docs: Option<String>,
     is_unsafe: bool,
     is_auto: bool,
@@ -2612,11 +2413,13 @@ struct ItemDetails {
     is_dyn_compatible: Option<bool>,
     required_trait_methods: Option<Vec<String>>,
     default_trait_methods: Option<Vec<String>>,
-    type_name: Option<String>,
+    /// Structured type expression (replaces the old `type_name: String`).
+    type_: Option<TypeRef>,
     variant_kind: Option<CvVariantKind>,
     discriminant: Option<String>,
     const_value: Option<String>,
-    bounds: Option<Vec<String>>,
+    /// Structured bounds (replaces the old `bounds: Vec<String>`).
+    bounds: Vec<CvGenericBound>,
     import_source: Option<String>,
     import_name: Option<String>,
     is_glob: bool,
@@ -2675,8 +2478,7 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
         },
         rdt::ItemEnum::Struct(item_struct) => ItemDetails {
             fields: extract_struct_fields(index, &item_struct.kind),
-            generics: extract_generics(&item_struct.generics),
-            where_clause: extract_where_clause(&item_struct.generics),
+            generics: map_generics(&item_struct.generics),
             has_stripped_fields: struct_has_stripped_fields(&item_struct.kind),
             docs,
             ..Default::default()
@@ -2692,7 +2494,7 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
                     };
                     Some(FieldInfo {
                         name: field_item.name.clone().unwrap_or_default(),
-                        type_name: format_type(ty),
+                        type_: map_type(ty),
                         visibility: map_visibility(&field_item.visibility),
                     })
                 })
@@ -2703,8 +2505,7 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
                 } else {
                     Some(fields)
                 },
-                generics: extract_generics(&item_union.generics),
-                where_clause: extract_where_clause(&item_union.generics),
+                generics: map_generics(&item_union.generics),
                 has_stripped_fields: item_union.has_stripped_fields,
                 docs,
                 ..Default::default()
@@ -2712,8 +2513,7 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
         }
         rdt::ItemEnum::Enum(item_enum) => ItemDetails {
             variants: extract_enum_variants(index, &item_enum.variants),
-            generics: extract_generics(&item_enum.generics),
-            where_clause: extract_where_clause(&item_enum.generics),
+            generics: map_generics(&item_enum.generics),
             has_stripped_variants: item_enum.has_stripped_variants,
             docs,
             ..Default::default()
@@ -2737,14 +2537,17 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
             }
         }
         rdt::ItemEnum::StructField(ty) => ItemDetails {
-            type_name: Some(format_type(ty)),
+            type_: Some(map_type(ty)),
             docs,
             ..Default::default()
         },
         rdt::ItemEnum::Function(function) => ItemDetails {
-            signature: Some(extract_function_signature(&function.sig, &function.header)),
-            generics: extract_generics(&function.generics),
-            where_clause: extract_where_clause(&function.generics),
+            signature: Some(extract_function_signature(
+                &function.sig,
+                &function.header,
+                &function.generics,
+            )),
+            generics: map_generics(&function.generics),
             docs,
             ..Default::default()
         },
@@ -2752,12 +2555,11 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
             let (required_trait_methods, default_trait_methods) =
                 trait_method_sets(index, &item_trait.items);
             ItemDetails {
-                generics: extract_generics(&item_trait.generics),
-                where_clause: extract_where_clause(&item_trait.generics),
+                generics: map_generics(&item_trait.generics),
                 is_unsafe: item_trait.is_unsafe,
                 is_auto: item_trait.is_auto,
                 is_dyn_compatible: Some(item_trait.is_dyn_compatible),
-                bounds: format_bounds(&item_trait.bounds),
+                bounds: map_bounds(&item_trait.bounds),
                 required_trait_methods,
                 default_trait_methods,
                 docs,
@@ -2765,27 +2567,25 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
             }
         }
         rdt::ItemEnum::TraitAlias(alias) => ItemDetails {
-            generics: extract_generics(&alias.generics),
-            where_clause: extract_where_clause(&alias.generics),
-            bounds: format_bounds(&alias.params),
+            generics: map_generics(&alias.generics),
+            bounds: map_bounds(&alias.params),
             docs,
             ..Default::default()
         },
         rdt::ItemEnum::TypeAlias(alias) => ItemDetails {
-            generics: extract_generics(&alias.generics),
-            where_clause: extract_where_clause(&alias.generics),
-            type_name: Some(format_type(&alias.type_)),
+            generics: map_generics(&alias.generics),
+            type_: Some(map_type(&alias.type_)),
             docs,
             ..Default::default()
         },
         rdt::ItemEnum::Constant { type_, const_ } => ItemDetails {
-            type_name: Some(format_type(type_)),
+            type_: Some(map_type(type_)),
             const_value: Some(const_.expr.clone()),
             docs,
             ..Default::default()
         },
         rdt::ItemEnum::Static(item_static) => ItemDetails {
-            type_name: Some(format_type(&item_static.type_)),
+            type_: Some(map_type(&item_static.type_)),
             const_value: Some(item_static.expr.clone()),
             is_mutable: item_static.is_mutable,
             is_unsafe: item_static.is_unsafe,
@@ -2821,15 +2621,14 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
             bounds,
             type_,
         } => ItemDetails {
-            generics: extract_generics(generics),
-            where_clause: extract_where_clause(generics),
-            bounds: format_bounds(bounds),
-            type_name: type_.as_ref().map(format_type),
+            generics: map_generics(generics),
+            bounds: map_bounds(bounds),
+            type_: type_.as_ref().map(map_type),
             docs,
             ..Default::default()
         },
         rdt::ItemEnum::AssocConst { type_, value } => ItemDetails {
-            type_name: Some(format_type(type_)),
+            type_: Some(map_type(type_)),
             const_value: value.clone(),
             docs,
             ..Default::default()
@@ -2895,11 +2694,9 @@ fn ensure_crate_node(
         fields: None,
         variants: None,
         signature: None,
-        generics: None,
-        where_clause: None,
+        generics: CvGenerics::default(),
         docs: None,
         doc_links: HashMap::new(),
-        bound_links: HashMap::new(),
         impl_type: None,
         parent_impl: None,
         impl_trait: None,
@@ -2907,11 +2704,11 @@ fn ensure_crate_node(
         provided_trait_methods: None,
         required_trait_methods: None,
         default_trait_methods: None,
-        type_name: None,
+        type_: None,
         variant_kind: None,
         discriminant: None,
         const_value: None,
-        bounds: None,
+        bounds: Vec::new(),
         import_source: None,
         import_name: None,
         is_glob: false,
@@ -2966,11 +2763,9 @@ fn ensure_module_nodes(
                 fields: None,
                 variants: None,
                 signature: None,
-                generics: None,
-                where_clause: None,
+                generics: CvGenerics::default(),
                 docs: None,
                 doc_links: HashMap::new(),
-                bound_links: HashMap::new(),
                 impl_type: None,
                 parent_impl: None,
                 impl_trait: None,
@@ -2978,11 +2773,11 @@ fn ensure_module_nodes(
                 provided_trait_methods: None,
                 required_trait_methods: None,
                 default_trait_methods: None,
-                type_name: None,
+                type_: None,
                 variant_kind: None,
                 discriminant: None,
                 const_value: None,
-                bounds: None,
+                bounds: Vec::new(),
                 import_source: None,
                 import_name: None,
                 is_glob: false,
@@ -3093,11 +2888,9 @@ fn external_stub_node(id: String, kind: NodeKind) -> Node {
         fields: None,
         variants: None,
         signature: None,
-        generics: None,
-        where_clause: None,
+        generics: CvGenerics::default(),
         docs: None,
         doc_links: HashMap::new(),
-        bound_links: HashMap::new(),
         impl_type: None,
         parent_impl: None,
         impl_trait: None,
@@ -3105,11 +2898,11 @@ fn external_stub_node(id: String, kind: NodeKind) -> Node {
         provided_trait_methods: None,
         required_trait_methods: None,
         default_trait_methods: None,
-        type_name: None,
+        type_: None,
         variant_kind: None,
         discriminant: None,
         const_value: None,
-        bounds: None,
+        bounds: Vec::new(),
         import_source: None,
         import_name: None,
         is_glob: false,
@@ -4730,11 +4523,9 @@ mod tests {
             fields: None,
             variants: None,
             signature: None,
-            generics: None,
-            where_clause: None,
+            generics: CvGenerics::default(),
             docs: None,
             doc_links: HashMap::new(),
-            bound_links: HashMap::new(),
             impl_type: None,
             parent_impl: None,
             impl_trait: None,
@@ -4742,11 +4533,11 @@ mod tests {
             provided_trait_methods: None,
             required_trait_methods: None,
             default_trait_methods: None,
-            type_name: None,
+            type_: None,
             variant_kind: None,
             discriminant: None,
             const_value: None,
-            bounds: None,
+            bounds: Vec::new(),
             import_source: None,
             import_name: None,
             is_glob: false,

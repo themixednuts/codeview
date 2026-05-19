@@ -912,8 +912,6 @@ function summarizeNode(n: Node): CrateTree['nodes'][number] {
 					impl_trait: n.impl_trait,
 					impl_category: n.impl_category,
 					generics: n.generics,
-					where_clause: n.where_clause,
-					bound_links: n.bound_links,
 				}
 			: {}),
 	};

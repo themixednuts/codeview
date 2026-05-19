@@ -10,6 +10,181 @@ export type EdgeKind =
 	| 'CallsRuntime'
 	| 'Derives'
 	| 'ReExports';
+export type GenericBound =
+	| {
+			hrtb_params?: GenericParam[];
+			kind: 'Trait';
+			modifier: TraitBoundModifier;
+			trait: TypeRef;
+	  }
+	| {
+			kind: 'Outlives';
+			lifetime: string;
+	  }
+	| {
+			captures: PreciseCapture[];
+			kind: 'Use';
+	  };
+export type GenericParamKind =
+	| {
+			kind: 'Lifetime';
+			outlives?: string[];
+	  }
+	| {
+			bounds?: GenericBound[];
+			default?: TypeRef | null;
+			kind: 'Type';
+			/**
+			 * Compiler-inserted synthetic parameter (e.g. lifted from
+			 * `impl Trait` arg position) — flag so renderers can hide it.
+			 */
+			synthetic?: boolean;
+	  }
+	| {
+			default?: string | null;
+			kind: 'Const';
+			type: TypeRef;
+	  };
+/**
+ * One type expression in any position — function arg, return, field,
+ * generic bound, where-predicate, etc. Recursive via `Box<TypeRef>`.
+ */
+export type TypeRef =
+	| {
+			args?: GenericArgs | null;
+			id: string;
+			kind: 'ResolvedPath';
+			/**
+			 * Path as written at the use site, e.g. "std::vec::Vec" or just "Vec".
+			 */
+			path: string;
+	  }
+	| {
+			kind: 'DynTrait';
+			lifetime?: string | null;
+			traits: PolyTrait[];
+	  }
+	| {
+			kind: 'Generic';
+			name: string;
+	  }
+	| {
+			kind: 'Primitive';
+			name: string;
+	  }
+	| {
+			inner: TypeRef;
+			kind: 'BorrowedRef';
+			lifetime?: string | null;
+			mutable: boolean;
+	  }
+	| {
+			elements: TypeRef[];
+			kind: 'Tuple';
+	  }
+	| {
+			element: TypeRef;
+			kind: 'Slice';
+	  }
+	| {
+			element: TypeRef;
+			kind: 'Array';
+			len: string;
+	  }
+	| {
+			bounds: GenericBound[];
+			kind: 'ImplTrait';
+	  }
+	| {
+			inner: TypeRef;
+			kind: 'RawPointer';
+			mutable: boolean;
+	  }
+	| {
+			args?: GenericArgs | null;
+			kind: 'QualifiedPath';
+			name: string;
+			self_type: TypeRef;
+			trait?: TypeRef | null;
+	  }
+	| {
+			kind: 'FunctionPointer';
+			sig: FunctionPointerSig;
+	  }
+	| {
+			kind: 'Infer';
+	  }
+	| {
+			base: TypeRef;
+			kind: 'Pat';
+			pat: string;
+	  };
+/**
+ * `<…>` or `(…) -> _` arguments to a path segment.
+ */
+export type GenericArgs =
+	| {
+			args: GenericArg[];
+			constraints?: AssocItemConstraint[];
+			kind: 'AngleBracketed';
+	  }
+	| {
+			inputs: TypeRef[];
+			kind: 'Parenthesized';
+			output?: TypeRef | null;
+	  }
+	| {
+			kind: 'ReturnTypeNotation';
+	  };
+export type GenericArg =
+	| {
+			kind: 'Lifetime';
+			name: string;
+	  }
+	| {
+			kind: 'Type';
+			value: TypeRef;
+	  }
+	| {
+			expr: string;
+			is_literal: boolean;
+			kind: 'Const';
+	  }
+	| {
+			kind: 'Infer';
+	  };
+export type AssocItemConstraintKind =
+	| {
+			kind: 'Equality';
+			value: Term;
+	  }
+	| {
+			bounds: GenericBound[];
+			kind: 'Constraint';
+	  };
+/**
+ * Either a type or a constant, as used in `=` constraints (`Item = T`).
+ */
+export type Term =
+	| {
+			kind: 'Type';
+			value: TypeRef;
+	  }
+	| {
+			expr: string;
+			is_literal: boolean;
+			kind: 'Const';
+	  };
+export type TraitBoundModifier = 'none' | 'maybe' | 'maybe_const';
+export type PreciseCapture =
+	| {
+			kind: 'Lifetime';
+			name: string;
+	  }
+	| {
+			kind: 'Param';
+			name: string;
+	  };
 /**
  * Visibility level. Carries the restriction path when the visibility is
  * `pub(crate)` / `pub(super)` / `pub(in path::to::module)`.
@@ -41,6 +216,23 @@ export type Visibility =
 	  }
 	| {
 			kind: 'Unknown';
+	  };
+export type WherePredicate =
+	| {
+			bounds: GenericBound[];
+			hrtb_params?: GenericParam[];
+			kind: 'Bound';
+			type: TypeRef;
+	  }
+	| {
+			kind: 'Lifetime';
+			lifetime: string;
+			outlives: string[];
+	  }
+	| {
+			kind: 'Eq';
+			lhs: TypeRef;
+			rhs: Term;
 	  };
 export type ImplCategory = 'Inherent' | 'Trait' | 'Blanket' | 'Negative' | 'Synthetic';
 export type ImplType = 'Trait' | 'Inherent';
@@ -135,13 +327,10 @@ export interface Edge {
 export interface Node {
 	attrs: string[];
 	/**
-	 * Resolved trait bound links from generics/where clauses:
-	 * maps display name (e.g., "Clone") to node ID (e.g., "core::clone::Clone")
+	 * Bounds on the item (trait bounds for trait/trait-alias/impl-trait
+	 * declarations, assoc-type bounds, etc.). Structured.
 	 */
-	bound_links?: {
-		[k: string]: string;
-	};
-	bounds?: string[] | null;
+	bounds?: GenericBound[];
 	const_value?: string | null;
 	default_trait_methods?: string[] | null;
 	deprecation?: Deprecation | null;
@@ -156,7 +345,7 @@ export interface Node {
 	extern_crate_name?: string | null;
 	extern_crate_rename?: string | null;
 	fields?: FieldInfo[] | null;
-	generics?: string[] | null;
+	generics?: Generics;
 	has_stripped_fields?: boolean;
 	has_stripped_variants?: boolean;
 	id: string;
@@ -190,11 +379,60 @@ export interface Node {
 	required_trait_methods?: string[] | null;
 	signature?: FunctionSignature | null;
 	span?: Span | null;
-	type_name?: string | null;
+	/**
+	 * The item's type (for Constant, Static, AssocConst, TypeAlias,
+	 * AssocType, StructField with named field). Structured so the
+	 * renderer can produce links + syntax-aware highlighting.
+	 */
+	type?: TypeRef | null;
 	variant_kind?: VariantKind | null;
 	variants?: VariantInfo[] | null;
 	visibility: Visibility;
-	where_clause?: string[] | null;
+}
+/**
+ * A single declaration in `<…>`: `T: Bound`, `'a`, `const N: usize`.
+ */
+export interface GenericParam {
+	kind: GenericParamKind;
+	name: string;
+}
+/**
+ * `IntoIterator<Item = u32, IntoIter: Clone>` — the constraints inside `<…>`.
+ */
+export interface AssocItemConstraint {
+	args?: GenericArgs | null;
+	binding: AssocItemConstraintKind;
+	name: string;
+}
+/**
+ * A trait reference with optional higher-rank lifetime quantifier, used
+ * inside `dyn Trait1 + Trait2` lists. The lifetime quantifier lets us
+ * preserve `dyn for<'a> Fn(&'a i32) -> &'a i32`.
+ */
+export interface PolyTrait {
+	hrtb_params?: GenericParam[];
+	trait: TypeRef;
+}
+/**
+ * Function pointer signature (the `fn(...) -> ...` part of a fn-pointer type).
+ */
+export interface FunctionPointerSig {
+	abi?: string | null;
+	hrtb_params?: GenericParam[];
+	inputs: NamedTypeRef[];
+	is_async: boolean;
+	is_c_variadic: boolean;
+	is_const: boolean;
+	is_unsafe: boolean;
+	output?: TypeRef | null;
+}
+/**
+ * `name: TypeRef` pair — used for function inputs (both fn signatures and
+ * fn-pointer types). For fn-pointer types the name may be empty.
+ */
+export interface NamedTypeRef {
+	name: string;
+	type: TypeRef;
 }
 export interface Deprecation {
 	note?: string | null;
@@ -202,21 +440,41 @@ export interface Deprecation {
 }
 export interface FieldInfo {
 	name: string;
-	type_name: string;
+	type: TypeRef;
 	visibility: Visibility;
+}
+/**
+ * Generic parameters + where-clause for this item. Structured; the
+ * flat-string `where_clause` / `bound_links` fields it replaced are
+ * gone. Type IDs live inside the contained `TypeRef`s already, so
+ * the worker can build cross-crate links without a side table.
+ */
+export interface Generics {
+	params?: GenericParam[];
+	where_predicates?: WherePredicate[];
 }
 export interface FunctionSignature {
 	abi?: string | null;
+	generics?: Generics1;
 	inputs: ArgumentInfo[];
 	is_async: boolean;
 	is_c_variadic?: boolean;
 	is_const: boolean;
 	is_unsafe: boolean;
-	output?: string | null;
+	output?: TypeRef | null;
+}
+/**
+ * Generic params + where-clause specific to this function. Trait-method
+ * signatures carry their own here (separate from the impl block's
+ * generics).
+ */
+export interface Generics1 {
+	params?: GenericParam[];
+	where_predicates?: WherePredicate[];
 }
 export interface ArgumentInfo {
 	name: string;
-	type_name: string;
+	type: TypeRef;
 }
 export interface Span {
 	column: number;

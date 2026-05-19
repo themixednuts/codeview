@@ -1,4 +1,9 @@
 import type { Node } from '$lib/graph';
+import {
+	renderGenericParams,
+	renderTypeText,
+	renderWhereClause,
+} from './type-render';
 
 /**
  * Two rendered forms of a Rust `fn` signature.
@@ -26,6 +31,11 @@ const INDENT = '    ';
  * strings are valid Rust source the way `cargo fmt` would emit them —
  * a `<CodeBlock>` can pass either form straight to Shiki.
  *
+ * Now consumes structured `TypeRef` argument/return types and structured
+ * generics (params + where-clause) via `lib/type-render.ts`, so the
+ * rendered output preserves lifetime names, mutability, generic args,
+ * higher-rank bounds, etc.
+ *
  * `node.signature` may be `null` (non-function nodes); in that case both
  * forms are the bare `fn <name>()` shape.
  */
@@ -38,18 +48,20 @@ export function formatSignature(
 	if (sig?.is_async) headerParts.push('async');
 	if (sig?.is_unsafe) headerParts.push('unsafe');
 	headerParts.push('fn');
-	headerParts.push(node.name);
+	headerParts.push(node.name + renderGenericParams(sig?.generics));
 	const header = headerParts.join(' ');
 
-	const args = (sig?.inputs ?? []).map((a) => `${a.name}: ${a.type_name}`);
-	const ret = sig?.output ? ` -> ${sig.output}` : '';
+	const args = (sig?.inputs ?? []).map((a) => `${a.name}: ${renderTypeText(a.type)}`);
+	const ret = sig?.output ? ` -> ${renderTypeText(sig.output)}` : '';
+	const where = renderWhereClause(sig?.generics);
+	const whereSuffix = where ? ` ${where}` : '';
 
-	const inline = `${header}(${args.join(', ')})${ret}`;
+	const inline = `${header}(${args.join(', ')})${ret}${whereSuffix}`;
 
 	const multiline =
 		args.length === 0
-			? `${header}()${ret}`
-			: `${header}(\n${args.map((a) => `${INDENT}${a}`).join(',\n')},\n)${ret}`;
+			? `${header}()${ret}${whereSuffix}`
+			: `${header}(\n${args.map((a) => `${INDENT}${a}`).join(',\n')},\n)${ret}${whereSuffix}`;
 
 	return { inline, multiline };
 }

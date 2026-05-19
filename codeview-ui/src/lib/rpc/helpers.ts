@@ -260,8 +260,6 @@ export function summarizeNode(n: Node): NodeSummary {
 					impl_trait: n.impl_trait,
 					impl_category: n.impl_category,
 					generics: n.generics,
-					where_clause: n.where_clause,
-					bound_links: n.bound_links,
 				}
 			: {}),
 	};
@@ -278,8 +276,6 @@ function nodeFromSummary(summary: NodeSummary): Node {
 		is_external: summary.is_external,
 		is_deprecated: summary.is_deprecated,
 		generics: summary.generics,
-		where_clause: summary.where_clause,
-		bound_links: summary.bound_links,
 		impl_category: summary.impl_category,
 		impl_trait: summary.impl_trait,
 	};

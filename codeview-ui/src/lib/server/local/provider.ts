@@ -22,7 +22,7 @@ import { decodeGzipStream } from '$lib/server/gzip';
 import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from '$lib/server/cross-edges';
 import { createCratesIoAdapter } from '../registry/cratesio';
 import { getRegistry } from '../registry/index';
-import { parseWithProgressiveStorage, type ParseProgress } from '../parser/streaming/adapter';
+import { parseWithRustBinary, type ParseProgress } from '../parsing/parse-rustdoc';
 import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
@@ -66,8 +66,6 @@ function nodeToSummary(n: Node): NodeSummary {
 					impl_trait: n.impl_trait,
 					impl_category: n.impl_category,
 					generics: n.generics,
-					where_clause: n.where_clause,
-					bound_links: n.bound_links,
 				}
 			: {}),
 	};
@@ -341,7 +339,7 @@ export function createLocalProvider(): DataProvider {
 					// Track node summaries for cross-edge detection
 					const nodeSummaries = new Map<string, CrossEdgeNodeSummary>();
 
-					const result = await parseWithProgressiveStorage(
+					const result = await parseWithRustBinary(
 						artifactResult.input,
 						name,
 						{
@@ -379,8 +377,6 @@ export function createLocalProvider(): DataProvider {
 							},
 						},
 						{
-							batchSize: 200,
-							skipExternalNodes: true,
 							onProgress: (progress) => {
 								broadcastProgress('rust', name, version, progress);
 							},
@@ -646,7 +642,7 @@ export function createLocalProvider(): DataProvider {
 				const tempIndex: CrateIndex = { name, version, crates: [] };
 				lc.initCrate(name, version, tempIndex);
 				const result = await perf.timeAsync('parser', `parse ${name}@${version}`, () =>
-					parseWithProgressiveStorage(
+					parseWithRustBinary(
 						artifactInfo.stream,
 						name,
 						{
@@ -680,8 +676,6 @@ export function createLocalProvider(): DataProvider {
 							},
 						},
 						{
-							batchSize: 200,
-							skipExternalNodes: true,
 							onProgress: (progress: ParseProgress) => {
 								broadcastProgress('rust', name, version, progress);
 							},

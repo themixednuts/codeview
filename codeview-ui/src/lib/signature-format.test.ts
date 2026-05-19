@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vite-plus/test';
-import type { Node } from '$lib/graph';
+import type { Node, TypeRef } from '$lib/schema';
 import { formatSignature } from './signature-format';
 
 type Sig = NonNullable<Node['signature']>;
+
+function prim(name: string): TypeRef {
+	return { kind: 'Primitive', name };
+}
 
 function fn(name: string, overrides: Partial<Sig> = {}): Pick<Node, 'name' | 'signature'> {
 	return {
@@ -23,10 +27,10 @@ describe('formatSignature', () => {
 		const { inline } = formatSignature(
 			fn('insert', {
 				inputs: [
-					{ name: 'index', type_name: 'usize' },
-					{ name: 'element', type_name: 'T' },
+					{ name: 'index', type: prim('usize') },
+					{ name: 'element', type: { kind: 'Generic', name: 'T' } },
 				],
-				output: '()',
+				output: prim('()'),
 			}),
 		);
 		expect(inline).toBe('fn insert(index: usize, element: T) -> ()');
@@ -36,12 +40,24 @@ describe('formatSignature', () => {
 		const { multiline } = formatSignature(
 			fn('from_parts_in', {
 				inputs: [
-					{ name: 'ptr', type_name: 'NonNull<T>' },
-					{ name: 'length', type_name: 'usize' },
-					{ name: 'capacity', type_name: 'usize' },
-					{ name: 'alloc', type_name: 'A' },
+					{
+						name: 'ptr',
+						type: {
+							kind: 'ResolvedPath',
+							id: '0',
+							path: 'NonNull',
+							args: {
+								kind: 'AngleBracketed',
+								args: [{ kind: 'Type', value: { kind: 'Generic', name: 'T' } }],
+								constraints: [],
+							},
+						},
+					},
+					{ name: 'length', type: prim('usize') },
+					{ name: 'capacity', type: prim('usize') },
+					{ name: 'alloc', type: { kind: 'Generic', name: 'A' } },
 				],
-				output: 'Self',
+				output: { kind: 'Generic', name: 'Self' },
 				is_const: true,
 				is_unsafe: true,
 			}),
@@ -73,7 +89,7 @@ describe('formatSignature', () => {
 
 	it('omits the `-> Return` clause when output is absent', () => {
 		const { inline } = formatSignature(
-			fn('do_it', { inputs: [{ name: 'self', type_name: 'Self' }] }),
+			fn('do_it', { inputs: [{ name: 'self', type: { kind: 'Generic', name: 'Self' } }] }),
 		);
 		expect(inline).toBe('fn do_it(self: Self)');
 	});
@@ -82,5 +98,34 @@ describe('formatSignature', () => {
 		const { inline, multiline } = formatSignature({ name: 'Foo', signature: null });
 		expect(inline).toBe('fn Foo()');
 		expect(multiline).toBe('fn Foo()');
+	});
+
+	it('renders borrowed-ref types structurally with lifetime + mut', () => {
+		const { inline } = formatSignature(
+			fn('push', {
+				inputs: [
+					{
+						name: 'self',
+						type: {
+							kind: 'BorrowedRef',
+							lifetime: null,
+							mutable: true,
+							inner: { kind: 'Generic', name: 'Self' },
+						},
+					},
+					{
+						name: 'value',
+						type: {
+							kind: 'BorrowedRef',
+							lifetime: "'a",
+							mutable: false,
+							inner: prim('str'),
+						},
+					},
+				],
+				output: prim('()'),
+			}),
+		);
+		expect(inline).toBe("fn push(self: &mut Self, value: &'a str) -> ()");
 	});
 });
