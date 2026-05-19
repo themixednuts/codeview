@@ -1,3 +1,6 @@
+mod cron;
+mod publisher;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -95,6 +98,11 @@ enum Commands {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Cron pipeline — sweep crates.io, parse stale ones, upload to R2.
+    ///
+    /// Replaces the TS scripts (`parse-one`, `freshness-sweep`,
+    /// `rebuild-catalog`, `local-mimic`).  See `codeview cron --help`.
+    Cron(cron::CronArgs),
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -112,10 +120,22 @@ struct Instance {
     graph: String,
 }
 
+/// Entry point. Tokio runtime is started lazily — only the `cron`
+/// commands need async (R2 + HTTP). Everything else stays purely
+/// synchronous so the binary spins up fast for `codeview ui .`.
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if let Commands::Cron(args) = cli.command {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("build tokio runtime")?;
+        return rt.block_on(cron::dispatch(args));
+    }
+
     match cli.command {
+        Commands::Cron(_) => unreachable!("handled above"),
         Commands::Ui {
             path,
             port,

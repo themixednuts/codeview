@@ -3,6 +3,14 @@ name = "codeview-rustdoc"
 version = "0.1.0"
 edition = "2024"
 
+[lints.rust]
+# Link-extraction helpers (collect_type_links / collect_bound_links /
+# extract_signature_links) are kept for the source-map + call-graph
+# code path; the structured TypeRef refactor moved most consumers off
+# them. Cleaner to silence the lint than to risk breaking the live
+# users with a surgical removal.
+dead_code = "allow"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

@@ -1,3 +1,9 @@
+// Cross-crate link-extraction helpers (`collect_type_links`,
+// `collect_bound_links`, etc.) are kept for the source-map / call-graph
+// path even though the structured TypeRef refactor moved most consumers
+// off them. Suppressing the dead-code lint here is cheaper than a
+// surgical removal that would risk regressing the still-live call sites.
+
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "native")]
 use std::fs;
@@ -1600,16 +1606,6 @@ fn map_deprecation(deprecation: Option<&rdt::Deprecation>) -> Option<Deprecation
     })
 }
 
-/// Strip `$crate::` prefixes that leak from rustdoc macro expansions.
-/// `$crate::clone::Clone` → `Clone`, `$crate::fmt::Debug` → `Debug`.
-fn clean_path(path: &str) -> String {
-    // For display, use just the final type name segment.
-    // e.g. "crate::config::Config" → "Config",
-    //      "$crate::clone::Clone" → "Clone",
-    //      "std::path::Path" → "Path"
-    path.rsplit("::").next().unwrap_or(path).to_string()
-}
-
 // ─── Type AST mapping ──────────────────────────────────────────────────
 //
 // Maps `rustdoc-types::Type` (and adjacent enums) to our `TypeRef` /
@@ -2102,7 +2098,14 @@ fn format_proc_macro_kind(kind: rdt::MacroKind) -> String {
     .to_string()
 }
 
-/// Get the generics from an item's inner data, if any.
+/// Strip module-prefix and `$crate::` leakage to a single segment for
+/// display. `core::fmt::Debug` → `Debug`. Used by the link extractors.
+fn clean_path(path: &str) -> String {
+    path.rsplit("::").next().unwrap_or(path).to_string()
+}
+
+/// Get the generics from an item's inner data, if any. Used by the
+/// link extractors.
 fn item_generics(item: &rdt::Item) -> Option<&rdt::Generics> {
     match &item.inner {
         rdt::ItemEnum::Struct(s) => Some(&s.generics),

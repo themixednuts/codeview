@@ -9,7 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
-clap = { version = "4.5.54", features = ["derive"] }
+clap = { version = "4.5.54", features = ["derive", "env"] }
 codeview-core = { path = "../codeview-core" }
 codeview-rustdoc = { path = "../codeview-rustdoc" }
 ctrlc = "3.4"
@@ -17,6 +17,57 @@ open = "5"
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+thiserror = "2.0.18"
+
+# ─── Cron pipeline deps ────────────────────────────────────────────────
+# The `codeview cron *` subcommand family (sweep, parse-one, catalog,
+# mimic) absorbs everything the TS scripts used to do.  Rust is now the
+# only language touching rustdoc JSON, R2, crates.io, or docs.rs.
+
+# R2 over S3-compatible API (production writes)
+aws-sdk-s3 = { version = "1.132.0", default-features = false, features = [
+    "behavior-version-latest",
+    "rt-tokio",
+    "rustls",
+    "http-1x",
+] }
+aws-config = { version = "1.8", default-features = false, features = ["behavior-version-latest", "rt-tokio", "rustls"] }
+aws-credential-types = "1.2"
+
+# HTTP for docs.rs (rustdoc JSON) + crates.io (newest-version lookup)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+# Async runtime (aws-sdk-s3 requires)
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+futures = "0.3"
+
+# Decompress docs.rs `.json.gz`
+flate2 = "1.0"
+
+# Local R2 emulation — miniflare SQLite schema mirrored 1:1 via drizzle
+drizzle = { version = "0.1.6", features = ["sqlite", "rusqlite", "serde"] }
+# Pinned to match drizzle's transitive requirement (rusqlite ^0.37 →
+# libsqlite3-sys ^0.35) — keeps a single native-link entry for sqlite3
+# so cargo's `links = "sqlite3"` invariant holds.
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# Hashing — graph dedup + miniflare blob etag + rustdoc-input hash
+sha2 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+
+# async traits without macro overhead
+async-trait = "0.1"
+
+# Timestamps for freshness entries + miniflare `uploaded` column
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+
+# UUIDs / random IDs for miniflare blob filenames
+rand = "0.9"
+
+# URL encoding for crate names with non-ascii or special chars
+urlencoding = "2.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
