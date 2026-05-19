@@ -68,10 +68,36 @@ pub struct PublishOptions<'a> {
     pub schema_version: u32,
     /// Skip the idempotency check.  Set when the user passes `--force`.
     pub force: bool,
-    /// Optional docs.rs target override (e.g. `x86_64-unknown-linux-gnu`).
-    pub docsrs_target: Option<&'a str>,
+    /// Where to obtain the rustdoc JSON.  Defaults to docs.rs.
+    pub source: CrateSource<'a>,
     /// Aliases to write alongside the version (`latest`, `stable`, …).
     pub aliases: &'a [&'a str],
+}
+
+/// Where `publish_one` should obtain the raw rustdoc JSON.
+///
+/// `DocsRs` — the production path: gzipped fetch from docs.rs, identified
+/// by `(name, version)`.  `LocalFile` — the std-seed path: read straight
+/// from `share/doc/rust/json/{crate}.json` in a rustup-installed
+/// `rust-docs-json` toolchain (docs.rs doesn't host std).
+pub enum CrateSource<'a> {
+    DocsRs {
+        /// Optional target triple override.
+        target: Option<&'a str>,
+    },
+    LocalFile {
+        path: &'a std::path::Path,
+        /// What gets recorded in the freshness entry — `Source::Sysroot`
+        /// for std crates, `Source::Cargo` for cargo-resolved local
+        /// dependencies.
+        freshness_source: Source,
+    },
+}
+
+impl Default for CrateSource<'_> {
+    fn default() -> Self {
+        CrateSource::DocsRs { target: None }
+    }
 }
 
 pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishError> {
@@ -84,7 +110,7 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         parser_revision,
         schema_version,
         force,
-        docsrs_target,
+        source,
         aliases,
     } = opts;
 
@@ -102,31 +128,55 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         eprintln!("[parse-one] force: skipping freshness check");
     }
 
-    // ─── 2. Fetch rustdoc JSON ───────────────────────────────────
-    let http = docs_rs::http_client().map_err(PublishError::Transient)?;
-    let download = match docs_rs::fetch_rustdoc_json(&http, name, version, docsrs_target).await {
-        Ok(d) => d,
-        Err(docs_rs::DocsRsError::Permanent { status, url }) => {
-            return Err(PublishError::Permanent(format!(
-                "docs.rs {url} returned {status}"
-            )));
+    // ─── 2. Load rustdoc JSON ────────────────────────────────────
+    let (json_bytes, recorded_source) = match source {
+        CrateSource::DocsRs {
+            target: docsrs_target,
+        } => {
+            let http = docs_rs::http_client().map_err(PublishError::Transient)?;
+            let download =
+                match docs_rs::fetch_rustdoc_json(&http, name, version, docsrs_target).await {
+                    Ok(d) => d,
+                    Err(docs_rs::DocsRsError::Permanent { status, url }) => {
+                        return Err(PublishError::Permanent(format!(
+                            "docs.rs {url} returned {status}"
+                        )));
+                    }
+                    Err(docs_rs::DocsRsError::MalformedGzip(e)) => {
+                        return Err(PublishError::Permanent(format!("docs.rs gzip: {e:#}")));
+                    }
+                    Err(docs_rs::DocsRsError::Transient(e)) => {
+                        return Err(PublishError::Transient(e));
+                    }
+                };
+            eprintln!(
+                "[parse-one] docs.rs JSON: {:.2} MB gz → {:.2} MB raw",
+                download.compressed_bytes as f64 / 1024.0 / 1024.0,
+                download.json.len() as f64 / 1024.0 / 1024.0,
+            );
+            (download.json, Source::DocsRs)
         }
-        Err(docs_rs::DocsRsError::MalformedGzip(e)) => {
-            return Err(PublishError::Permanent(format!("docs.rs gzip: {e:#}")));
+        CrateSource::LocalFile {
+            path,
+            freshness_source,
+        } => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("read rustdoc JSON from {}", path.display()))
+                .map_err(PublishError::Transient)?;
+            eprintln!(
+                "[parse-one] local JSON: {} ({:.2} MB)",
+                path.display(),
+                bytes.len() as f64 / 1024.0 / 1024.0,
+            );
+            (bytes, freshness_source)
         }
-        Err(docs_rs::DocsRsError::Transient(e)) => return Err(PublishError::Transient(e)),
     };
-    eprintln!(
-        "[parse-one] docs.rs JSON: {:.2} MB gz → {:.2} MB raw",
-        download.compressed_bytes as f64 / 1024.0 / 1024.0,
-        download.json.len() as f64 / 1024.0 / 1024.0,
-    );
 
     // ─── 3. Parse via codeview-rustdoc ───────────────────────────
-    let rustdoc_hash = hex::encode(Sha256::digest(&download.json));
+    let rustdoc_hash = hex::encode(Sha256::digest(&json_bytes));
     eprintln!("[parse-one] rustdoc input hash: {}", &rustdoc_hash[..12]);
 
-    let json_str = std::str::from_utf8(&download.json)
+    let json_str = std::str::from_utf8(&json_bytes)
         .context("rustdoc JSON not UTF-8")
         .map_err(PublishError::Transient)?;
     let graph = codeview_rustdoc::extract_graph(json_str, name).map_err(|err| {
@@ -197,17 +247,30 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     eprintln!("[parse-one] artifacts: {}", artifacts.len());
 
     // ─── 6. Upload to R2 ─────────────────────────────────────────
+    //
+    // Concurrency is per-backend: S3Backend = 8 (Cloudflare R2 fans out
+    // fine), LocalMiniflareBackend = 1 (wrangler subprocess contention
+    // on miniflare's SQLite locks).  Trait default is 8.
+    use futures::stream::StreamExt;
+    let concurrency = r2.concurrency_hint().max(1);
     let total = artifacts.len();
     let r2_for_upload = r2.clone();
-    for (i, art) in artifacts.into_iter().enumerate() {
-        if i % 25 == 0 || i == total - 1 {
+    let mut completed = 0usize;
+    let mut stream = futures::stream::iter(artifacts.into_iter().map(|art| {
+        let r2 = r2_for_upload.clone();
+        async move {
+            r2.put(&art.key, art.body, art.content_type)
+                .await
+                .with_context(|| format!("upload {}", art.key))
+        }
+    }))
+    .buffer_unordered(concurrency);
+    while let Some(result) = stream.next().await {
+        result.map_err(PublishError::Transient)?;
+        completed += 1;
+        if completed % 25 == 0 || completed == total {
             eprint!(".");
         }
-        r2_for_upload
-            .put(&art.key, art.body, art.content_type)
-            .await
-            .with_context(|| format!("upload {}", art.key))
-            .map_err(PublishError::Transient)?;
     }
     eprintln!();
 
@@ -221,7 +284,7 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         },
         version: version.to_string(),
         parsed_at: chrono::Utc::now().to_rfc3339(),
-        source: Source::DocsRs,
+        source: recorded_source,
         parser_revision: parser_revision.to_string(),
         schema_version,
         graph_hash,

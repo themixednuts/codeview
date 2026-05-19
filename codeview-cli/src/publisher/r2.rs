@@ -48,6 +48,19 @@ pub trait R2: Send + Sync {
     /// with thousands of crates) this could grow — fine for now,
     /// revisit when freshness sweeps start chewing minutes on listing.
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>>;
+
+    /// How many concurrent `put` calls this backend tolerates.
+    ///
+    /// `S3Backend` returns 8 — Cloudflare R2 happily fans out.
+    /// `LocalMiniflareBackend` returns 1 — every `put` spawns a
+    /// fresh `wrangler r2 object put` subprocess, which spins up its
+    /// own miniflare and contends for the same SQLite locks; concurrent
+    /// processes routinely lose those races and surface 500s from
+    /// workerd.  Serializing local writes adds latency but eliminates
+    /// the lockstep retry-storms.
+    fn concurrency_hint(&self) -> usize {
+        8
+    }
 }
 
 // ─── S3 / Cloudflare R2 backend ───────────────────────────────────────
@@ -161,6 +174,39 @@ fn s3_is_transient(err: &anyhow::Error) -> bool {
         || s.contains("502")
         || s.contains("503")
         || s.contains("504")
+}
+
+/// Wrangler-subprocess errors that are worth retrying.  Concurrent
+/// `wrangler r2 object put` invocations against the same `--persist-to`
+/// path race on miniflare's SQLite locks; the loser surfaces as a
+/// workerd 500 or a `database is locked` message in stderr.  Both are
+/// transient — back off and try again.
+///
+/// `wrangler not found` / `ENOENT` / `not a directory` shapes are
+/// permanent (config wrong, nothing retry can fix); everything else
+/// errs toward transient so transient SQLite WAL contention doesn't
+/// hard-fail the seed.
+fn wrangler_is_transient(err: &anyhow::Error) -> bool {
+    let s = format!("{err:#}");
+    if s.contains("spawn wrangler")
+        || s.contains("ENOENT")
+        || s.contains("not a directory")
+        || s.contains("No such file")
+    {
+        return false;
+    }
+    // 500/503 from workerd, SQLite WAL contention, timeouts, generic 5xx.
+    s.contains("statusCode = 500")
+        || s.contains("statusCode = 502")
+        || s.contains("statusCode = 503")
+        || s.contains("statusCode = 504")
+        || s.contains("database is locked")
+        || s.contains("disk I/O error")
+        || s.contains("timeout")
+        || s.contains("does not contain the CF-R2-Error header")
+        // Wrangler exits non-zero on workerd RPC failures — treat unknown
+        // shapes as transient so retries cover any new error formats too.
+        || s.contains("failed (exit 1)")
 }
 
 #[async_trait::async_trait]
@@ -382,95 +428,105 @@ fn namespace_id_from_name(unique_key: &str, name: &str) -> String {
 #[async_trait::async_trait]
 impl R2 for LocalMiniflareBackend {
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        let op = format!("wrangler get {key}");
         let object_path = self.object_path(key);
-        let persist_to = self.persist_to_arg()?;
-        let mut cmd = self.wrangler_cmd();
-        cmd.args([
-            "r2",
-            "object",
-            "get",
-            &object_path,
-            "--local",
-            "--persist-to",
-            persist_to,
-            "--pipe",
-        ]);
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        let persist_to = self.persist_to_arg()?.to_string();
+        with_retries(&op, wrangler_is_transient, || async {
+            let mut cmd = self.wrangler_cmd();
+            cmd.args([
+                "r2",
+                "object",
+                "get",
+                &object_path,
+                "--local",
+                "--persist-to",
+                &persist_to,
+                "--pipe",
+            ]);
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
 
-        let output = cmd
-            .output()
-            .await
-            .with_context(|| format!("spawn wrangler r2 object get {object_path}"))?;
+            let output = cmd
+                .output()
+                .await
+                .with_context(|| format!("spawn wrangler r2 object get {object_path}"))?;
 
-        if output.status.success() {
-            // wrangler r2 object get --pipe writes raw bytes to stdout
-            // and chatty UI lines to stderr; we want only stdout here.
-            return Ok(Some(output.stdout));
-        }
+            if output.status.success() {
+                // wrangler r2 object get --pipe writes raw bytes to stdout
+                // and chatty UI lines to stderr; we want only stdout here.
+                return Ok(Some(output.stdout));
+            }
 
-        // Miss vs. real error: wrangler 4 reports "key does not exist"
-        // on stderr and exits non-zero. Anything else is a hard failure.
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("does not exist")
-            || stderr.contains("not found")
-            || stderr.contains("404")
-        {
-            Ok(None)
-        } else {
-            anyhow::bail!(
-                "wrangler r2 object get {object_path} failed (exit {}): {stderr}",
-                output.status.code().unwrap_or(-1)
-            )
-        }
+            // Miss vs. real error: wrangler 4 reports "key does not exist"
+            // on stderr and exits non-zero. Anything else is a hard failure.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("does not exist")
+                || stderr.contains("not found")
+                || stderr.contains("404")
+            {
+                Ok(None)
+            } else {
+                anyhow::bail!(
+                    "wrangler r2 object get {object_path} failed (exit {}): {stderr}",
+                    output.status.code().unwrap_or(-1)
+                )
+            }
+        })
+        .await
     }
 
     async fn put(&self, key: &str, bytes: Vec<u8>, content_type: &str) -> Result<()> {
+        let op = format!("wrangler put {key}");
         let object_path = self.object_path(key);
-        let persist_to = self.persist_to_arg()?;
-        let mut cmd = self.wrangler_cmd();
-        cmd.args([
-            "r2",
-            "object",
-            "put",
-            &object_path,
-            "--local",
-            "--persist-to",
-            persist_to,
-            "--pipe",
-            "--content-type",
-            content_type,
-        ]);
-        cmd.stdin(Stdio::piped());
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
+        let persist_to = self.persist_to_arg()?.to_string();
+        let content_type = content_type.to_string();
+        with_retries(&op, wrangler_is_transient, || async {
+            let mut cmd = self.wrangler_cmd();
+            cmd.args([
+                "r2",
+                "object",
+                "put",
+                &object_path,
+                "--local",
+                "--persist-to",
+                &persist_to,
+                "--pipe",
+                "--content-type",
+                &content_type,
+            ]);
+            cmd.stdin(Stdio::piped());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawn wrangler r2 object put {object_path}"))?;
+            let mut child = cmd
+                .spawn()
+                .with_context(|| format!("spawn wrangler r2 object put {object_path}"))?;
 
-        // Pipe payload over stdin and close so wrangler sees EOF.
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(&bytes)
+            // Pipe payload over stdin and close so wrangler sees EOF.
+            // Clone per-attempt so we keep retry idempotency.
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(&bytes)
+                    .await
+                    .with_context(|| format!("write payload to wrangler stdin for {object_path}"))?;
+                stdin.shutdown().await.ok();
+            }
+
+            let output = child
+                .wait_with_output()
                 .await
-                .with_context(|| format!("write payload to wrangler stdin for {object_path}"))?;
-            stdin.shutdown().await.ok();
-        }
+                .with_context(|| format!("await wrangler r2 object put {object_path}"))?;
 
-        let output = child
-            .wait_with_output()
-            .await
-            .with_context(|| format!("await wrangler r2 object put {object_path}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "wrangler r2 object put {object_path} failed (exit {}): {stderr}",
-                output.status.code().unwrap_or(-1)
-            );
-        }
-        Ok(())
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!(
+                    "wrangler r2 object put {object_path} failed (exit {}): {stderr}",
+                    output.status.code().unwrap_or(-1)
+                );
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn list_prefix(&self, prefix: &str) -> Result<Vec<String>> {
@@ -481,6 +537,11 @@ impl R2 for LocalMiniflareBackend {
         let db_path = self.db_path.clone();
         let prefix = prefix.to_string();
         tokio::task::spawn_blocking(move || list_prefix_sync(&db_path, &prefix)).await?
+    }
+
+    fn concurrency_hint(&self) -> usize {
+        // One wrangler subprocess at a time. See trait doc.
+        1
     }
 }
 

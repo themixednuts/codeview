@@ -1,5 +1,6 @@
 mod cron;
 mod publisher;
+mod sysroot;
 
 use std::fs;
 use std::path::{Path, PathBuf};

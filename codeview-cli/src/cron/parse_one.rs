@@ -10,7 +10,7 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::publisher::artifacts::{
-    PublishOptions, hyphenate_crate_name, normalise_crate_name, publish_one,
+    CrateSource, PublishOptions, hyphenate_crate_name, normalise_crate_name, publish_one,
 };
 
 use super::CronContext;
@@ -73,7 +73,9 @@ pub async fn run(args: ParseOne) -> Result<()> {
         parser_revision: &ctx.parser_revision,
         schema_version: codeview_core::SCHEMA_VERSION,
         force: args.force,
-        docsrs_target: args.docsrs_target.as_deref(),
+        source: CrateSource::DocsRs {
+            target: args.docsrs_target.as_deref(),
+        },
         aliases: &aliases,
     })
     .await;
