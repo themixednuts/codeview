@@ -45,9 +45,9 @@
 	let scrollTop = $state(0);
 	let containerHeight = $state(400);
 
-	// Track which TreeNodes have been lazily sorted (children may arrive unsorted
-	// from query-mode rebuilds to avoid blocking the main thread with O(n log n) sort).
-	const lazySorted = new WeakSet<TreeNode>();
+	// Track the exact child array sorted for each TreeNode. Navigation can replace
+	// cached children for the same parent, so the array reference matters.
+	const lazySorted = new WeakMap<TreeNode, TreeNode[]>();
 
 	// Fast path: when nothing is expanded, the flat list is just roots at depth 0.
 	// We can skip the O(n) flatten entirely and compute visible items directly.
@@ -81,13 +81,14 @@
 
 							if (hasChildren && isExpanded) {
 								// Resolve children from cache (pure reader, no side effects)
-								const children = treeNode.children === CHILDREN_PLACEHOLDER
-									? resolve(treeNode.node.id)
-									: treeNode.children;
+								const children =
+									treeNode.children === CHILDREN_PLACEHOLDER
+										? resolve(treeNode.node.id)
+										: treeNode.children;
 								// Lazy sort: sort children on first access when expanding
-								if (children.length > 1 && !sorted.has(treeNode)) {
+								if (children.length > 1 && sorted.get(treeNode) !== children) {
 									children.sort(compareTreeNodes);
-									sorted.add(treeNode);
+									sorted.set(treeNode, children);
 								}
 								flatten(children, depth + 1, treeNode.node.id);
 							}
@@ -171,6 +172,8 @@
 		selectedId: string | null,
 		count: number,
 		height: number,
+		visibleStart: number,
+		visibleEnd: number,
 	): Attachment<HTMLDivElement> => {
 		return (node) => {
 			// Only scroll if selection changed
@@ -184,12 +187,11 @@
 			if (fastPath) {
 				selectedIndex = tree.findIndex((t: TreeNode) => t.node.id === selectedId);
 			} else {
-				selectedIndex = flatNodesFull.findIndex(
-					(item) => item.treeNode.node.id === selectedId,
-				);
+				selectedIndex = flatNodesFull.findIndex((item) => item.treeNode.node.id === selectedId);
 			}
 
 			if (selectedIndex === -1) return;
+			if (selectedIndex >= visibleStart && selectedIndex < visibleEnd) return;
 
 			const itemTop = selectedIndex * ITEM_HEIGHT;
 			const itemBottom = itemTop + ITEM_HEIGHT;
@@ -198,9 +200,9 @@
 
 			// Only scroll if item is not fully visible
 			if (itemTop < viewTop) {
-				node.scrollTo({ top: itemTop - ITEM_HEIGHT, behavior: 'smooth' });
+				node.scrollTo({ top: itemTop - ITEM_HEIGHT, behavior: 'instant' });
 			} else if (itemBottom > viewBottom) {
-				node.scrollTo({ top: itemBottom - height + ITEM_HEIGHT, behavior: 'smooth' });
+				node.scrollTo({ top: itemBottom - height + ITEM_HEIGHT, behavior: 'instant' });
 			}
 		};
 	};
@@ -209,7 +211,13 @@
 <svelte:boundary>
 	<div
 		{@attach attachScrollListener}
-		{@attach attachAutoScroll(selectedId, totalCount, containerHeight)}
+		{@attach attachAutoScroll(
+			selectedId,
+			totalCount,
+			containerHeight,
+			visibleRange.start,
+			visibleRange.end,
+		)}
 		class="flex-1 overflow-auto p-2"
 		style="scrollbar-gutter: stable;"
 		bind:clientHeight={containerHeight}

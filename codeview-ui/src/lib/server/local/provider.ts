@@ -13,6 +13,7 @@ import type {
 	Edge,
 } from '$lib/graph';
 import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from '$lib/schema';
+import { buildCrateMapData, type CrateMapData, type CrateMapOptions } from '$lib/graph/crate-map';
 import { parseWorkspace } from '$lib/schema';
 import { isStdCrate, STD_JSON_CRATES } from '$lib/std';
 import { getLogger } from '$lib/log';
@@ -33,13 +34,15 @@ import {
 	normalizeCrateName,
 	crateNameVariants,
 } from '../validation';
+import { emit, broadcastProgress, createHandlers, type LocalProviderInternals } from './ws';
 import {
-	emit,
-	broadcastProgress,
-	createHandlers,
-	type LocalProviderInternals,
-} from './ws';
-import { USER_AGENT, SOURCE_MAX_BYTES, statusAction, source, type SourceProviderMode } from '../provider-utils';
+	USER_AGENT,
+	SOURCE_MAX_BYTES,
+	statusAction,
+	source,
+	fetchStdSourceFile,
+	type SourceProviderMode,
+} from '../provider-utils';
 import { LocalCache } from './cache';
 import { WorkflowEntrypoint, runWorkflow } from './workflow';
 import type { WorkflowStep, WorkflowEvent } from './workflow';
@@ -57,9 +60,11 @@ function nodeToSummary(n: Node): NodeSummary {
 		kind: n.kind,
 		visibility: n.visibility,
 		is_external: n.is_external,
+		is_deprecated: n.is_deprecated,
 		...(n.kind === 'Impl'
 			? {
 					impl_trait: n.impl_trait,
+					impl_category: n.impl_category,
 					generics: n.generics,
 					where_clause: n.where_clause,
 					bound_links: n.bound_links,
@@ -379,8 +384,13 @@ export function createLocalProvider(): DataProvider {
 							onProgress: (progress) => {
 								broadcastProgress('rust', name, version, progress);
 							},
+							onFinalizingStart: () => {
+								emitStatus(name, version, { status: 'processing' }, 'finalizing');
+							},
 						},
 					);
+
+					emitStatus(name, version, { status: 'processing' }, 'storing');
 
 					// Finalize crate with tree (orphan-filtered by adapter)
 					log.info`Finalize tree ${name}@${version}: ${result.tree.nodes.length}n ${result.tree.edges.length}e`;
@@ -675,6 +685,9 @@ export function createLocalProvider(): DataProvider {
 							onProgress: (progress: ParseProgress) => {
 								broadcastProgress('rust', name, version, progress);
 							},
+							onFinalizingStart: () => {
+								emitStatus(name, version, { status: 'processing' }, 'finalizing');
+							},
 						},
 					),
 				);
@@ -832,7 +845,12 @@ export function createLocalProvider(): DataProvider {
 				const fullPath = join(workspaceRoot, file);
 				const resolved = resolve(fullPath);
 				if (!resolved.startsWith(resolve(workspaceRoot))) {
-					return { error: 'Path outside workspace', content: null, absolutePath: null, repoUrl: null };
+					return {
+						error: 'Path outside workspace',
+						content: null,
+						absolutePath: null,
+						repoUrl: null,
+					};
 				}
 				const localResult = await Result.tryPromise(() => readFile(resolved, 'utf-8'));
 				if (localResult.isOk()) {
@@ -855,9 +873,37 @@ export function createLocalProvider(): DataProvider {
 				return { error: null, content: cachedContent, absolutePath: null, repoUrl: null };
 			}
 
+			// ── Std fast-path ─────────────────────────────────────────
+			// std/core/alloc/proc_macro/test aren't on crates.io. rustdoc
+			// spans use `library/{crate}/...` paths — we stream those
+			// straight from rust-lang/rust on GitHub.
+			if (isStdCrate(normalizeCrateName(crateName))) {
+				const result = await fetchStdSourceFile(
+					file,
+					crateVersion,
+					SOURCE_MAX_BYTES,
+					USER_AGENT,
+				);
+				if ('content' in result) {
+					setCachedSourceFile(cacheKey, result.content);
+					return {
+						error: null,
+						content: result.content,
+						absolutePath: null,
+						repoUrl: result.blobUrl,
+					};
+				}
+				return { error: result.error, content: null, absolutePath: null, repoUrl: result.blobUrl };
+			}
+
 			const sourceAdapterResult = getSourceAdapter('rust');
 			if (sourceAdapterResult.isErr()) {
-				return { error: sourceAdapterResult.error.message, content: null, absolutePath: null, repoUrl: null };
+				return {
+					error: sourceAdapterResult.error.message,
+					content: null,
+					absolutePath: null,
+					repoUrl: null,
+				};
 			}
 
 			let metadata: Awaited<ReturnType<typeof registry.resolve>> | null = null;
@@ -869,7 +915,12 @@ export function createLocalProvider(): DataProvider {
 				}
 			}
 			if (!metadata) {
-				return { error: 'Source metadata unavailable', content: null, absolutePath: null, repoUrl: null };
+				return {
+					error: 'Source metadata unavailable',
+					content: null,
+					absolutePath: null,
+					repoUrl: null,
+				};
 			}
 
 			const repoUrl = buildGitHubFileUrl(metadata.repositoryUrl, metadata.version, file);
@@ -909,7 +960,12 @@ export function createLocalProvider(): DataProvider {
 				{ maxBytes: SOURCE_MAX_BYTES, userAgent: USER_AGENT },
 			);
 			if (!files) {
-				return { error: 'Source file not available', content: null, absolutePath: null, repoUrl: null };
+				return {
+					error: 'Source file not available',
+					content: null,
+					absolutePath: null,
+					repoUrl: null,
+				};
 			}
 
 			const content = source.resolveFromMap(files, file);
@@ -925,13 +981,26 @@ export function createLocalProvider(): DataProvider {
 			const ws = await this.loadWorkspace();
 			if (ws) {
 				const normalized = normalizeCrateName(name);
-				const found = ws.crates.find((c) => normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized);
+				const found = ws.crates.find(
+					(c) =>
+						normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized,
+				);
 				if (found) return found;
 			}
 
 			// Check local cache for external crates
 			const lc = getCache();
 			return lc.getGraph(name, _version);
+		},
+
+		async loadCrateMap(
+			name: string,
+			version: string,
+			options?: CrateMapOptions,
+		): Promise<CrateMapData | null> {
+			const graph = await this.loadCrateGraph(name, version);
+			if (!graph) return null;
+			return buildCrateMapData({ nodes: graph.nodes, edges: graph.edges }, name, options ?? {});
 		},
 
 		async loadCrateTree(name: string, _version: string) {
@@ -946,7 +1015,11 @@ export function createLocalProvider(): DataProvider {
 			if (ws) {
 				// Check if crate is in workspace
 				const normalizedName = normalizeCrateName(name);
-				const inWorkspace = ws.crates.some((c) => normalizeCrateName(c.id) === normalizedName || normalizeCrateName(c.name) === normalizedName);
+				const inWorkspace = ws.crates.some(
+					(c) =>
+						normalizeCrateName(c.id) === normalizedName ||
+						normalizeCrateName(c.name) === normalizedName,
+				);
 				if (inWorkspace) {
 					const crates: Array<{
 						id: string;
@@ -1060,7 +1133,11 @@ export function createLocalProvider(): DataProvider {
 			}));
 		},
 
-		async loadTreeChildrenDirect(name: string, version: string, parentId: string): Promise<TreeNodeDTO[] | null> {
+		async loadTreeChildrenDirect(
+			name: string,
+			version: string,
+			parentId: string,
+		): Promise<TreeNodeDTO[] | null> {
 			const lc = getCache();
 			const results = lc.getTreeChildrenDirect(name, version, parentId);
 			return results.map(({ node, hasChildren }) => ({
@@ -1069,7 +1146,11 @@ export function createLocalProvider(): DataProvider {
 			}));
 		},
 
-		async loadTreeAncestorsDirect(name: string, version: string, nodeId: string): Promise<NodeSummary[] | null> {
+		async loadTreeAncestorsDirect(
+			name: string,
+			version: string,
+			nodeId: string,
+		): Promise<NodeSummary[] | null> {
 			const lc = getCache();
 			const nodes = lc.getTreeAncestorsDirect(name, version, nodeId);
 			return nodes.map(nodeToSummary);
@@ -1087,7 +1168,9 @@ export function createLocalProvider(): DataProvider {
 				nodes: result.nodes.map((node) => ({
 					...node,
 					kind: node.kind as NodeKind,
-					visibility: node.visibility as Visibility,
+					// node.visibility is already a typed Visibility (cache
+					// parses the canonical key form back on read), so no
+					// cast needed.
 				})),
 			};
 		},
@@ -1143,7 +1226,10 @@ export function createLocalProvider(): DataProvider {
 			const ws = await this.loadWorkspace();
 			if (ws) {
 				const normalized = normalizeCrateName(name);
-				const found = ws.crates.some((c) => normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized);
+				const found = ws.crates.some(
+					(c) =>
+						normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized,
+				);
 				if (found) return { status: 'ready' };
 			}
 
@@ -1269,7 +1355,11 @@ export function createLocalProvider(): DataProvider {
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
 			const ws = await this.loadWorkspace();
 			const normalizedName = normalizeCrateName(name);
-			const localVersion = ws?.crates.find((c) => normalizeCrateName(c.id) === normalizedName || normalizeCrateName(c.name) === normalizedName)?.version;
+			const localVersion = ws?.crates.find(
+				(c) =>
+					normalizeCrateName(c.id) === normalizedName ||
+					normalizeCrateName(c.name) === normalizedName,
+			)?.version;
 			// Try both hyphen and underscore variants for registry lookup
 			let registryVersions: string[] = [];
 			for (const variant of crateNameVariants(name)) {

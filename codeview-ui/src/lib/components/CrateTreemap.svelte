@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import type { CrateMapData, CrateMapModuleNode } from '$lib/graph/crate-map';
+	import { resolveAppPath } from '$lib/app-paths';
 	import {
 		computeSquarifiedLayout,
 		findContainingModule,
@@ -9,7 +9,13 @@
 		type LayoutRect,
 	} from '$lib/graph/crate-map';
 
-	let { data, selectedNodeId = null, getNodeUrl, drillId = null, onDrillChange } = $props<{
+	let {
+		data,
+		selectedNodeId = null,
+		getNodeUrl,
+		drillId = null,
+		onDrillChange,
+	} = $props<{
 		data: CrateMapData;
 		selectedNodeId?: string | null;
 		getNodeUrl: (id: string) => string;
@@ -64,7 +70,7 @@
 	});
 
 	const drillRoot = $derived<CrateMapModuleNode | null>(
-		drillId ? moduleById.get(drillId) ?? null : null,
+		drillId ? (moduleById.get(drillId) ?? null) : null,
 	);
 
 	const visibleModules = $derived.by(() => {
@@ -81,9 +87,7 @@
 		};
 		collect(drillRoot.id);
 		// Reparent root to null for layout
-		return result.map((m) =>
-			m.id === drillRoot.id ? { ...m, parentId: null } : m,
-		);
+		return result.map((m) => (m.id === drillRoot.id ? { ...m, parentId: null } : m));
 	});
 
 	const rects = $derived.by<TreemapRect[]>(() => {
@@ -94,9 +98,7 @@
 	function moduleLabel(m: CrateMapModuleNode): string {
 		if (m.depth <= 1) return m.name;
 		const parts = m.id.split('::');
-		return parts.length >= 2
-			? `${parts[parts.length - 2]}::${parts[parts.length - 1]}`
-			: m.name;
+		return parts.length >= 2 ? `${parts[parts.length - 2]}::${parts[parts.length - 1]}` : m.name;
 	}
 
 	const depthColor = moduleDepthColor;
@@ -137,7 +139,7 @@
 	}
 
 	const hoveredModule = $derived(
-		hoveredModuleId ? moduleById.get(hoveredModuleId) ?? null : null,
+		hoveredModuleId ? (moduleById.get(hoveredModuleId) ?? null) : null,
 	);
 </script>
 
@@ -159,11 +161,7 @@
 
 		{#if drillPath.length > 0}
 			<nav class="flex items-center gap-1 text-xs" aria-label="Treemap breadcrumb">
-				<button
-					type="button"
-					class="text-(--accent) hover:underline"
-					onclick={() => drillTo(0)}
-				>
+				<button type="button" class="text-(--accent) hover:underline" onclick={() => drillTo(0)}>
 					Root
 				</button>
 				{#each drillPath as crumb, i (crumb.id)}
@@ -187,7 +185,7 @@
 	<div class="overflow-x-auto p-3">
 		<svg
 			viewBox="0 0 {VIEW_WIDTH} {VIEW_HEIGHT}"
-			class="h-auto w-full min-h-[300px]"
+			class="h-auto min-h-[300px] w-full"
 			preserveAspectRatio="xMidYMid meet"
 			aria-label="Module treemap"
 		>
@@ -196,12 +194,17 @@
 				{@const label = moduleLabel(rect.module)}
 				{@const maxChars = Math.max(3, Math.floor(rect.width / 8))}
 				{@const displayLabel = label.length > maxChars ? label.slice(0, maxChars - 2) + '…' : label}
+				{@const hasChildren = (childrenByParent.get(rect.module.id)?.length ?? 0) > 0}
 				<a
-					href={resolve(getNodeUrl(rect.module.id) as `/${string}`)}
+					href={resolveAppPath(getNodeUrl(rect.module.id))}
 					data-sveltekit-noscroll
 					onclick={(e) => handleClick(e, rect)}
-					onmouseenter={() => { hoveredModuleId = rect.module.id; }}
-					onmouseleave={() => { hoveredModuleId = null; }}
+					onmouseenter={() => {
+						hoveredModuleId = rect.module.id;
+					}}
+					onmouseleave={() => {
+						hoveredModuleId = null;
+					}}
 				>
 					<rect
 						x={rect.x + 0.5}
@@ -217,7 +220,7 @@
 					{#if showLabel}
 						<text
 							x={rect.x + 6}
-							y={rect.y + 14}
+							y={rect.y + 12}
 							text-anchor="start"
 							dominant-baseline="auto"
 							class="pointer-events-none fill-(--ink) text-[10px] font-medium"
@@ -225,10 +228,12 @@
 						>
 							{displayLabel}
 						</text>
-						{#if rect.height > 30 && rect.width > 40}
+						{#if !hasChildren && rect.height > 30 && rect.width > 40}
+							<!-- Leaf-only count subtext — parents reserve their header strip for the
+							     name and let children render their own subtext below. -->
 							<text
 								x={rect.x + 6}
-								y={rect.y + 26}
+								y={rect.y + 24}
 								text-anchor="start"
 								dominant-baseline="auto"
 								class="pointer-events-none fill-(--muted) text-[9px]"
@@ -247,8 +252,7 @@
 		{#if hoveredModule}
 			<span class="font-medium text-(--ink)">{hoveredModule.id}</span>
 			<span class="text-(--muted)">
-				· {hoveredModule.totalNodeCount.toLocaleString()} items
-				· {hoveredModule.childModuleCount} submodules
+				· {hoveredModule.totalNodeCount.toLocaleString()} items · {hoveredModule.childModuleCount} submodules
 				· depth {hoveredModule.depth}
 			</span>
 		{:else}

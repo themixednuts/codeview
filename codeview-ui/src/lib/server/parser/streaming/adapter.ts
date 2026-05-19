@@ -72,6 +72,8 @@ export async function parseWithProgressiveStorage(
 		yieldInterval?: number;
 		/** Called periodically with progress updates */
 		onProgress?: (progress: ParseProgress) => void;
+		/** Called when the parser transitions from parse→finalize phase */
+		onFinalizingStart?: () => void;
 	} = {},
 ): Promise<ProgressiveParseResult> {
 	const {
@@ -82,6 +84,7 @@ export async function parseWithProgressiveStorage(
 		pruneOrphanTreeNodes = true,
 		yieldInterval = batchSize,
 		onProgress,
+		onFinalizingStart,
 	} = options;
 
 	const normalizedName = normalizeCrateName(crateName);
@@ -195,6 +198,7 @@ export async function parseWithProgressiveStorage(
 	log.info`parse phase: ${parseElapsed.toFixed(0)}ms`;
 
 	// Finalize (resolves deferred edges, stores remaining batches)
+	onFinalizingStart?.();
 	const tFinalize = performance.now();
 	const result = await builder.finalize();
 	const finalizeElapsed = performance.now() - tFinalize;

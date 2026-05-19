@@ -3,6 +3,123 @@ import { normalizeLanguage, highlightCode } from './shiki';
 import { renderMarkdown, type DocLinks } from './markdown';
 
 /**
+ * Rustdoc code-fence attributes that imply Rust code.
+ *
+ * Rustdoc allows fences like ` ```edition2021 `, ` ```no_run `,
+ * ` ```rust,ignore,edition2021 `, ` ```compile_fail,E0308 `, etc.
+ * These are NOT language names — they're compilation/display directives.
+ * We need to recognize them so `processRustDocCode()` strips hidden `# ` lines.
+ */
+const RUSTDOC_ATTRS = new Set(['no_run', 'ignore', 'compile_fail', 'should_panic', 'test_harness']);
+
+/** Token is a rustdoc edition flag like `edition2021`. */
+const EDITION_RE = /^edition\d{4}$/;
+/** Token is a rustdoc error code like `E0308`. */
+const ERROR_CODE_RE = /^e\d+$/;
+
+/**
+ * Known non-Rust languages we can highlight.
+ * Tokens not in this set and not a rustdoc attr are ignored
+ * (unknown rustdoc attrs, error codes, etc.) rather than
+ * incorrectly treated as a language name.
+ */
+const KNOWN_NON_RUST_LANGS = new Set([
+	'typescript',
+	'ts',
+	'javascript',
+	'js',
+	'json',
+	'toml',
+	'bash',
+	'sh',
+	'shell',
+	'zsh',
+	'sql',
+	'text',
+	'plaintext',
+	'txt',
+	'c',
+	'cpp',
+	'python',
+	'py',
+	'html',
+	'css',
+	'xml',
+	'yaml',
+	'yml',
+	'markdown',
+	'md',
+]);
+
+function isRustdocAttr(part: string): boolean {
+	return RUSTDOC_ATTRS.has(part) || EDITION_RE.test(part) || ERROR_CODE_RE.test(part);
+}
+
+/**
+ * Parse a rustdoc code-fence info string into a language for highlighting
+ * and whether `processRustDocCode` should be applied.
+ *
+ * Examples:
+ *   ""                        → { lang: defaultLang, isRust: true }
+ *   "rust"                    → { lang: 'rust',      isRust: true }
+ *   "edition2021"             → { lang: 'rust',      isRust: true }
+ *   "rust,no_run,edition2021" → { lang: 'rust',      isRust: true }
+ *   "compile_fail,E0308"      → { lang: 'rust',      isRust: true }
+ *   "json"                    → { lang: 'json',      isRust: false }
+ *   "text"                    → { lang: 'text',      isRust: false }
+ *   "ignore"                  → { lang: 'rust',      isRust: true }
+ */
+function parseRustdocFenceInfo(
+	infoStr: string,
+	defaultLang: SupportedLanguage,
+): { lang: SupportedLanguage; isRust: boolean } {
+	const raw = infoStr.trim();
+	if (!raw) return { lang: defaultLang, isRust: defaultLang === 'rust' };
+
+	// Split on commas — rustdoc uses `rust,no_run,edition2021` style
+	const parts = raw.split(',').map((p) => p.trim().toLowerCase());
+
+	let explicitLang: SupportedLanguage | null = null;
+	let hasRustdocAttr = false;
+	let hasExplicitRust = false;
+
+	for (const part of parts) {
+		if (!part) continue;
+		if (part === 'rust' || part === 'rs') {
+			hasExplicitRust = true;
+		} else if (isRustdocAttr(part)) {
+			hasRustdocAttr = true;
+		} else if (KNOWN_NON_RUST_LANGS.has(part)) {
+			explicitLang = normalizeLanguage(part);
+		}
+		// else: unknown token — silently ignored (not treated as a language)
+	}
+
+	// Explicitly "rust" or has rustdoc attrs with no other language → Rust
+	if (hasExplicitRust || (hasRustdocAttr && !explicitLang)) {
+		return { lang: 'rust', isRust: true };
+	}
+
+	// Rustdoc attrs + explicit non-Rust language (unusual, e.g. `json,ignore`)
+	if (hasRustdocAttr && explicitLang) {
+		return { lang: explicitLang, isRust: false };
+	}
+
+	// Recognized non-Rust language
+	if (explicitLang) {
+		return { lang: explicitLang, isRust: false };
+	}
+
+	// Unrecognized single token — in a Rust project, default to Rust
+	if (defaultLang === 'rust') {
+		return { lang: 'rust', isRust: true };
+	}
+
+	const lang = normalizeLanguage(raw);
+	return { lang, isRust: lang === 'rust' };
+}
+
+/**
  * Process Rust doc code to handle hidden lines according to rustdoc conventions.
  *
  * Rules (matching docs.rs/rustdoc behavior):
@@ -69,17 +186,18 @@ export function parseDocumentation(
 	defaultLang: SupportedLanguage = 'rust',
 	docLinks?: DocLinks,
 ): DocSegment[] {
-	const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+	// Capture the full info string after ``` (handles commas: `rust,no_run,edition2021`)
+	const codeBlockRegex = /```([^\n]*)\n([\s\S]*?)```/g;
 	const codeBlocks: { lang: SupportedLanguage; code: string }[] = [];
 
 	// Replace code blocks with placeholders, keeping the rest of the markdown
 	// intact so reference link definitions resolve globally.
 	const withPlaceholders = docs.replace(
 		codeBlockRegex,
-		(_match, langStr: string, rawCode: string) => {
-			const lang = langStr ? normalizeLanguage(langStr) : defaultLang;
+		(_match, infoStr: string, rawCode: string) => {
+			const { lang, isRust } = parseRustdocFenceInfo(infoStr, defaultLang);
 			let code = rawCode.trim();
-			if (lang === 'rust') code = processRustDocCode(code);
+			if (isRust) code = processRustDocCode(code);
 			const idx = codeBlocks.length;
 			codeBlocks.push({ lang, code });
 			return `${CODE_PLACEHOLDER_PREFIX}${idx}${CODE_PLACEHOLDER_SUFFIX}`;

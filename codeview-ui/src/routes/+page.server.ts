@@ -4,6 +4,7 @@ import { initProvider } from '$lib/server/provider';
 const TOP_CRATES_TTL_MS = 5 * 60 * 1000;
 
 type TopCrate = {
+	id?: string;
 	name: string;
 	version: string;
 	description?: string;
@@ -11,7 +12,9 @@ type TopCrate = {
 
 let topCratesCache: { fetchedAt: number; data: TopCrate[] } | null = null;
 
-async function getTopCratesCached(provider: Awaited<ReturnType<typeof initProvider>>): Promise<TopCrate[]> {
+async function getTopCratesCached(
+	provider: Awaited<ReturnType<typeof initProvider>>,
+): Promise<TopCrate[]> {
 	const now = Date.now();
 	if (topCratesCache && now - topCratesCache.fetchedAt < TOP_CRATES_TTL_MS) {
 		return topCratesCache.data;
@@ -38,7 +41,7 @@ export const load: PageServerLoad = async (event) => {
 		})),
 		topCrates: top.then((items) =>
 			items.map((crate) => ({
-				id: crate.name,
+				id: crate.id ?? crate.name,
 				name: crate.name,
 				version: crate.version,
 				description: crate.description,

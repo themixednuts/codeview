@@ -14,15 +14,34 @@
 		GitBranchIcon,
 		GitForkIcon,
 	} from '@lucide/svelte';
-	import type { Theme, ExternalLinkMode, SourceProviderMode, VcsMode } from '$lib/context';
+	import type {
+		Theme,
+		AccentMode,
+		DensityMode,
+		VoiceMode,
+		CodeTheme,
+		ExternalLinkMode,
+		SourceProviderMode,
+		VcsMode,
+	} from '$lib/context';
 
 	interface Props {
 		open: boolean;
 		theme: Theme;
+		accentMode: AccentMode;
+		densityMode: DensityMode;
+		voiceMode: VoiceMode;
+		codeThemeLight: CodeTheme;
+		codeThemeDark: CodeTheme;
 		extLinkMode: ExternalLinkMode;
 		sourceProviderMode: SourceProviderMode;
 		vcsMode: VcsMode;
 		onThemeChange: (theme: Theme) => void;
+		onAccentChange: (mode: AccentMode) => void;
+		onDensityChange: (mode: DensityMode) => void;
+		onVoiceChange: (mode: VoiceMode) => void;
+		onCodeThemeLightChange: (theme: CodeTheme) => void;
+		onCodeThemeDarkChange: (theme: CodeTheme) => void;
 		onExtLinkModeChange: (mode: ExternalLinkMode) => void;
 		onSourceProviderModeChange: (mode: SourceProviderMode) => void;
 		onVcsModeChange: (mode: VcsMode) => void;
@@ -33,10 +52,20 @@
 	let {
 		open = $bindable(false),
 		theme,
+		accentMode,
+		densityMode,
+		voiceMode,
+		codeThemeLight,
+		codeThemeDark,
 		extLinkMode,
 		sourceProviderMode,
 		vcsMode,
 		onThemeChange,
+		onAccentChange,
+		onDensityChange,
+		onVoiceChange,
+		onCodeThemeLightChange,
+		onCodeThemeDarkChange,
 		onExtLinkModeChange,
 		onSourceProviderModeChange,
 		onVcsModeChange,
@@ -44,17 +73,12 @@
 		onOpenChange,
 	}: Props = $props();
 
-	// ── Editor preference ──
+	// ── Editor + ligatures (kept from previous drawer) ──
 	const EDITOR_KEY = 'codeview-editor';
 	const CUSTOM_EDITOR_KEY = 'codeview-editor-custom';
-	const UI_FONT_KEY = 'codeview-ui-font';
-	const CODE_FONT_KEY = 'codeview-code-font';
 	const LIGATURES_KEY = 'codeview-ligatures';
-	const FONT_SIZE_KEY = 'codeview-font-size';
 
 	type EditorId = 'vscode' | 'cursor' | 'zed' | 'neovim' | 'custom';
-	type UIFontId = 'space-grotesk' | 'geist' | 'system';
-	type CodeFontId = 'inherit' | 'jetbrains-mono' | 'geist-mono' | 'system-mono';
 
 	const editors: { id: EditorId; label: string; scheme: string }[] = [
 		{ id: 'vscode', label: 'VS Code', scheme: 'vscode://file/{path}:{line}' },
@@ -62,19 +86,6 @@
 		{ id: 'zed', label: 'Zed', scheme: 'zed://file/{path}:{line}' },
 		{ id: 'neovim', label: 'Neovim', scheme: 'nvim://open?file={path}&line={line}' },
 		{ id: 'custom', label: 'Custom', scheme: '' },
-	];
-
-	const uiFonts: { id: UIFontId; label: string; family: string }[] = [
-		{ id: 'space-grotesk', label: 'Space Grotesk', family: "'Space Grotesk', sans-serif" },
-		{ id: 'geist', label: 'Geist', family: "'Geist', sans-serif" },
-		{ id: 'system', label: 'System', family: 'system-ui, sans-serif' },
-	];
-
-	const codeFonts: { id: CodeFontId; label: string; family: string }[] = [
-		{ id: 'inherit', label: 'Inherit', family: '' },
-		{ id: 'jetbrains-mono', label: 'JetBrains Mono', family: "'JetBrains Mono', monospace" },
-		{ id: 'geist-mono', label: 'Geist Mono', family: "'Geist Mono', monospace" },
-		{ id: 'system-mono', label: 'System Mono', family: "'SF Mono', 'Cascadia Code', 'Consolas', monospace" },
 	];
 
 	const sourceProviders: { id: SourceProviderMode; label: string }[] = [
@@ -88,12 +99,49 @@
 		{ id: 'jj', label: 'jj', Icon: GitForkIcon },
 	];
 
+	// Each accent option is a 3-color strip so the user previews the family
+	// (accent / paper / ink) — same swatch model as the design canvas.
+	const accentOptions: {
+		id: AccentMode;
+		label: string;
+		swatch: [string, string, string];
+	}[] = [
+		{ id: 'orange', label: 'Orange', swatch: ['#cb4b16', '#fdf6e3', '#586e75'] },
+		{ id: 'cobalt', label: 'Cobalt', swatch: ['#1f6fa5', '#fdf6e3', '#586e75'] },
+		{ id: 'forest', label: 'Forest', swatch: ['#4f7d2f', '#fdf6e3', '#586e75'] },
+		{ id: 'plum', label: 'Plum', swatch: ['#8c3a76', '#fdf6e3', '#586e75'] },
+		{ id: 'char', label: 'Charcoal', swatch: ['#2b323a', '#fdf6e3', '#586e75'] },
+	];
+
+	const densityOptions: { id: DensityMode; label: string; hint: string }[] = [
+		{ id: 'compact', label: 'Compact', hint: '13px' },
+		{ id: 'comfortable', label: 'Comfort', hint: '14px' },
+		{ id: 'spacious', label: 'Spacious', hint: '15px' },
+	];
+
+	const voiceOptions: { id: VoiceMode; label: string; hint: string }[] = [
+		{ id: 'editorial', label: 'Editorial', hint: 'Fraunces · Inter' },
+		{ id: 'technical', label: 'Technical', hint: 'IBM Plex Sans' },
+		{ id: 'geometric', label: 'Geometric', hint: 'Space Grotesk' },
+	];
+
+	const lightCodeOptions: { id: CodeTheme; label: string }[] = [
+		{ id: 'solarized-light', label: 'Solarized Light' },
+		{ id: 'catppuccin-latte', label: 'Catppuccin Latte' },
+		{ id: 'one-light', label: 'One Light' },
+		{ id: 'github-light', label: 'GitHub Light' },
+	];
+
+	const darkCodeOptions: { id: CodeTheme; label: string }[] = [
+		{ id: 'solarized-dark', label: 'Solarized Dark' },
+		{ id: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
+		{ id: 'one-dark', label: 'One Dark' },
+		{ id: 'github-dark', label: 'GitHub Dark' },
+	];
+
 	let editor = $state<EditorId>('vscode');
 	let customScheme = $state('');
-	let uiFont = $state<UIFontId>('space-grotesk');
-	let codeFont = $state<CodeFontId>('inherit');
 	let ligatures = $state(false);
-	let fontSize = $state(14);
 
 	const activeEditorScheme = $derived(
 		editor === 'custom'
@@ -101,25 +149,28 @@
 			: (editors.find((e) => e.id === editor)?.scheme ?? ''),
 	);
 
-	const codeFontPreview = $derived(
-		codeFont === 'inherit'
-			? uiFonts.find((f) => f.id === uiFont)?.label ?? 'Space Grotesk'
-			: codeFonts.find((f) => f.id === codeFont)?.label ?? '',
-	);
-
 	// ── Sliding indicator refs ──
-	let themeRefs: Record<Theme, HTMLButtonElement | null> = $state({ light: null, dark: null, system: null });
+	let themeRefs: Record<Theme, HTMLButtonElement | null> = $state({
+		light: null,
+		dark: null,
+		system: null,
+	});
+	let densityRefs: Record<DensityMode, HTMLButtonElement | null> = $state({
+		compact: null,
+		comfortable: null,
+		spacious: null,
+	});
+	let voiceRefs: Record<VoiceMode, HTMLButtonElement | null> = $state({
+		editorial: null,
+		technical: null,
+		geometric: null,
+	});
 	let editorRefs: Record<EditorId, HTMLButtonElement | null> = $state({
 		vscode: null,
 		cursor: null,
 		zed: null,
 		neovim: null,
 		custom: null,
-	});
-	let uiFontRefs: Record<UIFontId, HTMLButtonElement | null> = $state({
-		'space-grotesk': null,
-		geist: null,
-		system: null,
 	});
 	let linkRefs: Record<ExternalLinkMode, HTMLButtonElement | null> = $state({
 		codeview: null,
@@ -141,13 +192,14 @@
 	}
 
 	const themeIndicator = $derived(indicator(themeRefs[theme]));
+	const densityIndicator = $derived(indicator(densityRefs[densityMode]));
+	const voiceIndicator = $derived(indicator(voiceRefs[voiceMode]));
 	const editorIndicator = $derived(indicator(editorRefs[editor]));
-	const uiFontIndicator = $derived(indicator(uiFontRefs[uiFont]));
 	const linkIndicator = $derived(indicator(linkRefs[extLinkMode]));
 	const sourceIndicator = $derived(indicator(sourceRefs[sourceProviderMode]));
 	const vcsIndicator = $derived(indicator(vcsRefs[vcsMode]));
 
-	// ── Persistence ──
+	// ── Persistence (editor + ligatures only — tweak axes persisted in +layout) ──
 	function loadSettings() {
 		if (!browser) return;
 		const storedEditor = localStorage.getItem(EDITOR_KEY);
@@ -156,40 +208,11 @@
 		}
 		customScheme = localStorage.getItem(CUSTOM_EDITOR_KEY) ?? '';
 
-		// Migrate legacy font key
-		const legacy = localStorage.getItem('codeview-font-family');
-		if (legacy) {
-			localStorage.removeItem('codeview-font-family');
-			if (legacy === 'system') {
-				localStorage.setItem(UI_FONT_KEY, 'system');
-			} else if (legacy === 'mono') {
-				localStorage.setItem(CODE_FONT_KEY, 'system-mono');
-			}
-		}
-
-		const storedUIFont = localStorage.getItem(UI_FONT_KEY);
-		if (storedUIFont && uiFonts.some((f) => f.id === storedUIFont)) {
-			uiFont = storedUIFont as UIFontId;
-		}
-		applyUIFont(uiFont);
-
-		const storedCodeFont = localStorage.getItem(CODE_FONT_KEY);
-		if (storedCodeFont && codeFonts.some((f) => f.id === storedCodeFont)) {
-			codeFont = storedCodeFont as CodeFontId;
-		}
-		applyCodeFont(codeFont);
-
 		const storedLigatures = localStorage.getItem(LIGATURES_KEY);
 		if (storedLigatures !== null) {
 			ligatures = storedLigatures === 'true';
 		}
 		applyLigatures(ligatures);
-
-		const storedSize = localStorage.getItem(FONT_SIZE_KEY);
-		if (storedSize) {
-			fontSize = parseInt(storedSize, 10) || 14;
-			applyFontSize(fontSize);
-		}
 	}
 
 	function setEditor(id: EditorId) {
@@ -202,60 +225,15 @@
 		if (browser) localStorage.setItem(CUSTOM_EDITOR_KEY, value);
 	}
 
-	function setUIFont(id: UIFontId) {
-		uiFont = id;
-		if (browser) localStorage.setItem(UI_FONT_KEY, id);
-		applyUIFont(id);
-	}
-
-	function setCodeFont(id: CodeFontId) {
-		codeFont = id;
-		if (browser) localStorage.setItem(CODE_FONT_KEY, id);
-		applyCodeFont(id);
-	}
-
 	function setLigatures(value: boolean) {
 		ligatures = value;
 		if (browser) localStorage.setItem(LIGATURES_KEY, String(value));
 		applyLigatures(value);
 	}
 
-	function applyUIFont(id: UIFontId) {
-		if (!browser) return;
-		const root = document.documentElement;
-		const font = uiFonts.find((f) => f.id === id);
-		if (id === 'space-grotesk') {
-			root.style.removeProperty('--font-body');
-		} else if (font) {
-			root.style.setProperty('--font-body', font.family);
-		}
-	}
-
-	function applyCodeFont(id: CodeFontId) {
-		if (!browser) return;
-		const root = document.documentElement;
-		const font = codeFonts.find((f) => f.id === id);
-		if (id === 'inherit') {
-			root.style.removeProperty('--font-code');
-		} else if (font) {
-			root.style.setProperty('--font-code', font.family);
-		}
-	}
-
 	function applyLigatures(value: boolean) {
 		if (!browser) return;
 		document.documentElement.style.setProperty('--font-ligatures', value ? 'normal' : 'none');
-	}
-
-	function setFontSize(value: number) {
-		fontSize = value;
-		if (browser) localStorage.setItem(FONT_SIZE_KEY, String(value));
-		applyFontSize(value);
-	}
-
-	function applyFontSize(value: number) {
-		if (!browser) return;
-		document.documentElement.style.setProperty('--font-size-base', `${value}px`);
 	}
 
 	// Notify parent whenever editor scheme changes
@@ -271,44 +249,45 @@
 <Sheet.Root bind:open onOpenChange={(v) => onOpenChange?.(v)}>
 	<Sheet.Content
 		side="right"
-		class="overflow-y-auto border-l border-(--panel-border) bg-(--bg) !p-0 !gap-0 sm:!max-w-[26rem]"
+		class="settings-sheet !gap-0 overflow-y-auto border-l border-(--panel-border) bg-(--bg) !p-0 sm:!max-w-[26rem]"
 	>
-		<!-- ── Header ── -->
-		<div class="relative overflow-hidden px-6 pt-8 pb-5">
-			<!-- Subtle glow behind header -->
-			<div
-				class="pointer-events-none absolute -top-12 -right-12 h-40 w-40 rounded-full opacity-30"
-				style="background: radial-gradient(circle, var(--accent) 0%, transparent 70%)"
-			></div>
-			<Sheet.Header class="relative !p-0">
+		<!-- ── Header ─────────────────────────────────────────────
+			 px-5 pr-12 reserves room for the shadcn-rendered X close
+			 button which sits absolute at top-4 right-4. Sheet.Header
+			 is wrapped in a div with consistent vertical rhythm. -->
+		<div class="border-b border-(--panel-border-soft) px-5 pt-5 pr-12 pb-4">
+			<Sheet.Header class="!gap-1 !p-0">
 				<div class="flex items-center gap-2.5">
 					<div
-						class="corner-squircle flex h-8 w-8 items-center justify-center rounded-(--radius-chip) bg-(--accent)"
+						class="corner-squircle flex h-7 w-7 items-center justify-center rounded-(--radius-chip) bg-(--accent)"
 					>
-						<SettingsIcon size={15} class="text-(--on-accent)" />
+						<SettingsIcon size={14} class="text-(--on-accent)" />
 					</div>
-					<Sheet.Title class="font-display text-xl font-bold tracking-tight text-(--ink)"
-						>Settings</Sheet.Title
+					<Sheet.Title
+						class="font-display text-[17px] leading-none font-semibold tracking-tight text-(--ink)"
 					>
+						Settings
+					</Sheet.Title>
 				</div>
-				<Sheet.Description class="mt-1.5 text-xs text-(--muted)"
-					>Customize your Codeview experience</Sheet.Description
-				>
+				<Sheet.Description class="text-[11px] text-(--muted)">
+					Theme, type, density &amp; integration preferences.
+				</Sheet.Description>
 			</Sheet.Header>
 		</div>
 
 		<!-- ── Scrollable sections ── -->
 		<div class="flex flex-col gap-1.5 px-4 pb-8">
 			<!-- ════════════════════════════════════════════
-			     APPEARANCE
+			     UI MODE
 			     ════════════════════════════════════════════ -->
 			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
-				<h3 class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase">
-					Appearance
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
+					UI mode
 				</h3>
 
 				<div class="flex flex-col gap-1">
-					<span class="text-xs font-medium text-(--ink)">Theme</span>
 					<div
 						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 					>
@@ -319,11 +298,22 @@
 						{#each [{ id: 'light' as Theme, label: 'Light', Icon: SunIcon }, { id: 'dark' as Theme, label: 'Dark', Icon: MoonIcon }, { id: 'system' as Theme, label: 'System', Icon: MonitorIcon }] as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {theme === opt.id ? 'text-(--on-accent)' : 'text-(--muted) hover:text-(--ink)'}"
+								class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {theme ===
+								opt.id
+									? 'text-(--on-accent)'
+									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onThemeChange(opt.id)}
-								{@attach (el) => { themeRefs[opt.id] = el as HTMLButtonElement; return () => { themeRefs[opt.id] = null; }; }}
+								{@attach (el) => {
+									themeRefs[opt.id] = el as HTMLButtonElement;
+									return () => {
+										themeRefs[opt.id] = null;
+									};
+								}}
 							>
-								<opt.Icon size={13} class="transition-transform duration-200 {theme === opt.id ? 'scale-110' : ''}" />
+								<opt.Icon
+									size={13}
+									class="transition-transform duration-200 {theme === opt.id ? 'scale-110' : ''}"
+								/>
 								{opt.label}
 							</button>
 						{/each}
@@ -332,59 +322,195 @@
 			</section>
 
 			<!-- ════════════════════════════════════════════
-			     TYPOGRAPHY
+			     ACCENT
 			     ════════════════════════════════════════════ -->
 			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
-				<h3 class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase">
-					Typography
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
+					Accent
 				</h3>
 
-				<div class="flex flex-col gap-4">
-					<!-- Interface font -->
-					<div class="flex flex-col gap-1">
-						<span class="text-xs font-medium text-(--ink)">Interface font</span>
+				<div class="flex flex-col gap-2">
+					<div class="grid grid-cols-5 gap-1.5">
+						{#each accentOptions as opt (opt.id)}
+							<button
+								type="button"
+								title={opt.label}
+								aria-label={opt.label}
+								aria-pressed={accentMode === opt.id}
+								class="accent-chip corner-squircle relative h-10 overflow-hidden rounded-(--radius-chip) border-2 transition-all {accentMode ===
+								opt.id
+									? 'border-(--ink) shadow-(--shadow-toggle)'
+									: 'border-transparent hover:scale-105'}"
+								style="background: linear-gradient(90deg, {opt.swatch[0]} 0%, {opt.swatch[0]} 60%, {opt
+									.swatch[1]} 60%, {opt.swatch[1]} 80%, {opt.swatch[2]} 80%, {opt.swatch[2]} 100%)"
+								onclick={() => onAccentChange(opt.id)}
+							></button>
+						{/each}
+					</div>
+					<span class="text-[10.5px] text-(--muted)">
+						{accentOptions.find((a) => a.id === accentMode)?.label} — accent, paper, ink
+					</span>
+				</div>
+			</section>
+
+			<!-- ════════════════════════════════════════════
+			     DENSITY
+			     ════════════════════════════════════════════ -->
+			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
+					Density
+				</h3>
+
+				<div class="flex flex-col gap-1">
+					<div
+						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+					>
 						<div
-							class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
-						>
-							<div
-								class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-								style="left: {uiFontIndicator.left}px; width: {uiFontIndicator.width}px"
-							></div>
-							{#each uiFonts as fam (fam.id)}
-								<button
-									type="button"
-									class="relative z-10 flex-1 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {uiFont === fam.id ? 'text-(--on-accent)' : 'text-(--muted) hover:text-(--ink)'}"
-									onclick={() => setUIFont(fam.id)}
-									{@attach (el) => { uiFontRefs[fam.id] = el as HTMLButtonElement; return () => { uiFontRefs[fam.id] = null; }; }}
-								>
-									{fam.label}
-								</button>
-							{/each}
+							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
+							style="left: {densityIndicator.left}px; width: {densityIndicator.width}px"
+						></div>
+						{#each densityOptions as opt (opt.id)}
+							<button
+								type="button"
+								class="relative z-10 inline-flex flex-1 flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {densityMode ===
+								opt.id
+									? 'text-(--on-accent)'
+									: 'text-(--muted) hover:text-(--ink)'}"
+								onclick={() => onDensityChange(opt.id)}
+								{@attach (el) => {
+									densityRefs[opt.id] = el as HTMLButtonElement;
+									return () => {
+										densityRefs[opt.id] = null;
+									};
+								}}
+							>
+								<span>{opt.label}</span>
+								<span class="font-mono text-[9px] opacity-70">{opt.hint}</span>
+							</button>
+						{/each}
+					</div>
+				</div>
+			</section>
+
+			<!-- ════════════════════════════════════════════
+			     VOICE
+			     ════════════════════════════════════════════ -->
+			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
+					Voice
+				</h3>
+
+				<div class="flex flex-col gap-2">
+					<div
+						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+					>
+						<div
+							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
+							style="left: {voiceIndicator.left}px; width: {voiceIndicator.width}px"
+						></div>
+						{#each voiceOptions as opt (opt.id)}
+							<button
+								type="button"
+								class="relative z-10 inline-flex flex-1 flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {voiceMode ===
+								opt.id
+									? 'text-(--on-accent)'
+									: 'text-(--muted) hover:text-(--ink)'}"
+								onclick={() => onVoiceChange(opt.id)}
+								{@attach (el) => {
+									voiceRefs[opt.id] = el as HTMLButtonElement;
+									return () => {
+										voiceRefs[opt.id] = null;
+									};
+								}}
+							>
+								<span>{opt.label}</span>
+								<span class="font-mono text-[9px] opacity-70">{opt.hint}</span>
+							</button>
+						{/each}
+					</div>
+					<!-- Live voice preview -->
+					<div
+						class="corner-squircle rounded-(--radius-chip) border border-(--panel-border-soft) bg-(--panel) px-3 py-2"
+					>
+						<div class="font-display text-[15px] font-semibold text-(--ink)">
+							Type that fits the page
 						</div>
-						<span class="mt-0.5 text-[10px] text-(--muted)">
-							<span style="font-family: {uiFonts.find(f => f.id === uiFont)?.family}">The quick brown fox jumps over the lazy dog</span>
-						</span>
+						<div class="text-[11px] text-(--muted)">A quick brown fox jumps over the lazy dog.</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- ════════════════════════════════════════════
+			     CODE THEME
+			     ════════════════════════════════════════════ -->
+			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
+					Code theme
+				</h3>
+
+				<div class="flex flex-col gap-3">
+					<!-- ── Light mode picker + live preview ── -->
+					<div class="flex flex-col gap-1.5">
+						<label class="flex flex-col gap-1">
+							<span class="text-xs font-medium text-(--ink)">Light mode</span>
+							<select
+								value={codeThemeLight}
+								onchange={(e) => onCodeThemeLightChange(e.currentTarget.value as CodeTheme)}
+								class="corner-squircle rounded-(--radius-chip) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) focus:border-(--accent) focus:ring-1 focus:ring-(--accent) focus:outline-none"
+							>
+								{#each lightCodeOptions as opt (opt.id)}
+									<option value={opt.id}>{opt.label}</option>
+								{/each}
+							</select>
+						</label>
+						<!-- The wrapper carries data-code-theme so syntax vars
+							 cascade locally regardless of the ambient UI theme. -->
+						<div
+							data-code-theme={codeThemeLight}
+							class="codeblock corner-squircle overflow-hidden rounded-(--radius-chip) font-mono text-[11px] leading-[1.65]"
+						>
+							<pre class="m-0 px-3 py-2"><span class="tok-kw">pub fn</span> <span
+									class="tok-fn">greet</span>(<span class="tok-id">name</span>: <span
+									class="tok-ty">&str</span
+								>) -&gt; <span class="tok-ty">String</span> <span class="tok-mu">&#123;</span>
+    <span class="tok-fn">format!</span>(<span class="tok-str">"hi, &#123;name&#125;"</span>)
+<span class="tok-mu">&#125;</span></pre>
+						</div>
 					</div>
 
-					<!-- Code font -->
-					<div class="flex flex-col gap-1">
-						<span class="text-xs font-medium text-(--ink)">Code font</span>
+					<!-- ── Dark mode picker + live preview ── -->
+					<div class="flex flex-col gap-1.5">
+						<label class="flex flex-col gap-1">
+							<span class="text-xs font-medium text-(--ink)">Dark mode</span>
+							<select
+								value={codeThemeDark}
+								onchange={(e) => onCodeThemeDarkChange(e.currentTarget.value as CodeTheme)}
+								class="corner-squircle rounded-(--radius-chip) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) focus:border-(--accent) focus:ring-1 focus:ring-(--accent) focus:outline-none"
+							>
+								{#each darkCodeOptions as opt (opt.id)}
+									<option value={opt.id}>{opt.label}</option>
+								{/each}
+							</select>
+						</label>
 						<div
-							class="corner-squircle grid grid-cols-2 gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+							data-code-theme={codeThemeDark}
+							class="codeblock corner-squircle overflow-hidden rounded-(--radius-chip) font-mono text-[11px] leading-[1.65]"
 						>
-							{#each codeFonts as fam (fam.id)}
-								<button
-									type="button"
-									class="corner-squircle rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {codeFont === fam.id ? 'bg-(--accent) text-(--on-accent)' : 'text-(--muted) hover:text-(--ink) hover:bg-(--panel-strong)'}"
-									onclick={() => setCodeFont(fam.id)}
-								>
-									{fam.label}
-								</button>
-							{/each}
+							<pre class="m-0 px-3 py-2"><span class="tok-kw">pub fn</span> <span
+									class="tok-fn">greet</span>(<span class="tok-id">name</span>: <span
+									class="tok-ty">&str</span
+								>) -&gt; <span class="tok-ty">String</span> <span class="tok-mu">&#123;</span>
+    <span class="tok-fn">format!</span>(<span class="tok-str">"hi, &#123;name&#125;"</span>)
+<span class="tok-mu">&#125;</span></pre>
 						</div>
-						<span class="mt-0.5 text-[10px] text-(--muted)">
-							<code style="font-family: {codeFont === 'inherit' ? uiFonts.find(f => f.id === uiFont)?.family : codeFonts.find(f => f.id === codeFont)?.family}; font-variant-ligatures: {ligatures ? 'normal' : 'none'}">fn main() {'{'} => -> != == {codeFontPreview} {'}'}</code>
-						</span>
 					</div>
 
 					<!-- Ligatures toggle -->
@@ -395,41 +521,20 @@
 						</div>
 						<button
 							type="button"
-							class="relative h-6 w-11 rounded-full transition-colors duration-200 {ligatures ? 'bg-(--accent)' : 'bg-(--panel-border)'}"
+							class="relative h-6 w-11 rounded-full transition-colors duration-200 {ligatures
+								? 'bg-(--accent)'
+								: 'bg-(--panel-border)'}"
 							onclick={() => setLigatures(!ligatures)}
 							role="switch"
 							aria-checked={ligatures}
 							aria-label="Toggle ligatures"
 						>
 							<span
-								class="absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 {ligatures ? 'translate-x-5' : ''}"
+								class="absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 {ligatures
+									? 'translate-x-5'
+									: ''}"
 							></span>
 						</button>
-					</div>
-
-					<!-- Font size -->
-					<div class="flex flex-col gap-1.5">
-						<div class="flex items-center justify-between">
-							<span class="text-xs font-medium text-(--ink)">Font size</span>
-							<span
-								class="corner-squircle rounded-(--radius-chip) border border-(--panel-border) bg-(--panel) px-2 py-0.5 text-[11px] font-medium tabular-nums text-(--ink)"
-							>
-								{fontSize}px
-							</span>
-						</div>
-						<div class="relative flex items-center gap-3">
-							<span class="text-[10px] text-(--muted)">12</span>
-							<input
-								type="range"
-								min="12"
-								max="20"
-								step="1"
-								value={fontSize}
-								oninput={(e) => setFontSize(parseInt(e.currentTarget.value, 10))}
-								class="settings-range flex-1"
-							/>
-							<span class="text-[10px] text-(--muted)">20</span>
-						</div>
 					</div>
 				</div>
 			</section>
@@ -438,7 +543,9 @@
 			     EXTERNAL LINKS
 			     ════════════════════════════════════════════ -->
 			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
-				<h3 class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
 					External Links
 				</h3>
 
@@ -456,9 +563,17 @@
 							{#each [{ id: 'codeview' as ExternalLinkMode, label: 'Codeview', Icon: LinkIcon }, { id: 'docs' as ExternalLinkMode, label: 'docs.rs', Icon: ExternalLinkIcon }] as opt (opt.id)}
 								<button
 									type="button"
-									class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {extLinkMode === opt.id ? 'text-(--on-accent)' : 'text-(--muted) hover:text-(--ink)'}"
+									class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {extLinkMode ===
+									opt.id
+										? 'text-(--on-accent)'
+										: 'text-(--muted) hover:text-(--ink)'}"
 									onclick={() => onExtLinkModeChange(opt.id)}
-									{@attach (el) => { linkRefs[opt.id] = el as HTMLButtonElement; return () => { linkRefs[opt.id] = null; }; }}
+									{@attach (el) => {
+										linkRefs[opt.id] = el as HTMLButtonElement;
+										return () => {
+											linkRefs[opt.id] = null;
+										};
+									}}
 								>
 									<opt.Icon size={13} />
 									{opt.label}
@@ -485,9 +600,17 @@
 							{#each sourceProviders as prov (prov.id)}
 								<button
 									type="button"
-									class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {sourceProviderMode === prov.id ? 'text-(--on-accent)' : 'text-(--muted) hover:text-(--ink)'}"
+									class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {sourceProviderMode ===
+									prov.id
+										? 'text-(--on-accent)'
+										: 'text-(--muted) hover:text-(--ink)'}"
 									onclick={() => onSourceProviderModeChange(prov.id)}
-									{@attach (el) => { sourceRefs[prov.id] = el as HTMLButtonElement; return () => { sourceRefs[prov.id] = null; }; }}
+									{@attach (el) => {
+										sourceRefs[prov.id] = el as HTMLButtonElement;
+										return () => {
+											sourceRefs[prov.id] = null;
+										};
+									}}
 								>
 									{#if prov.id === 'github'}
 										<GlobeIcon size={12} />
@@ -508,7 +631,9 @@
 			     EDITOR
 			     ════════════════════════════════════════════ -->
 			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
-				<h3 class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
 					Editor
 				</h3>
 
@@ -526,9 +651,17 @@
 							{#each editors as ed (ed.id)}
 								<button
 									type="button"
-									class="relative z-10 rounded-(--radius-chip) px-2.5 py-1.5 text-xs font-medium transition-colors {editor === ed.id ? 'text-(--on-accent)' : 'text-(--muted) hover:text-(--ink)'}"
+									class="relative z-10 rounded-(--radius-chip) px-2.5 py-1.5 text-xs font-medium transition-colors {editor ===
+									ed.id
+										? 'text-(--on-accent)'
+										: 'text-(--muted) hover:text-(--ink)'}"
 									onclick={() => setEditor(ed.id)}
-									{@attach (el) => { editorRefs[ed.id] = el as HTMLButtonElement; return () => { editorRefs[ed.id] = null; }; }}
+									{@attach (el) => {
+										editorRefs[ed.id] = el as HTMLButtonElement;
+										return () => {
+											editorRefs[ed.id] = null;
+										};
+									}}
 								>
 									{ed.label}
 								</button>
@@ -538,14 +671,16 @@
 
 					<!-- URI scheme preview / custom input -->
 					<div class="flex flex-col gap-1">
-						<span class="text-[10px] font-medium tracking-wider text-(--muted) uppercase">URI Scheme</span>
+						<span class="text-[10px] font-medium tracking-wider text-(--muted) uppercase">
+							URI Scheme
+						</span>
 						{#if editor === 'custom'}
 							<input
 								type="text"
 								value={customScheme}
 								oninput={(e) => setCustomScheme(e.currentTarget.value)}
 								placeholder="myeditor://open?file={'{path}'}&line={'{line}'}"
-								class="corner-squircle w-full rounded-(--radius-chip) border border-(--panel-border) bg-(--panel) px-3 py-2 font-mono text-[11px] text-(--ink) placeholder:text-(--muted) focus:border-(--accent) focus:outline-none focus:ring-1 focus:ring-(--accent)"
+								class="corner-squircle w-full rounded-(--radius-chip) border border-(--panel-border) bg-(--panel) px-3 py-2 font-mono text-[11px] text-(--ink) placeholder:text-(--muted) focus:border-(--accent) focus:ring-1 focus:ring-(--accent) focus:outline-none"
 							/>
 						{:else}
 							<div
@@ -555,7 +690,10 @@
 							</div>
 						{/if}
 						<span class="text-[10px] text-(--muted)">
-							<code class="text-(--accent)">{'{path}'}</code> and <code class="text-(--accent)">{'{line}'}</code> are replaced with the file path and line number
+							<code class="text-(--accent)">{'{path}'}</code>
+							and
+							<code class="text-(--accent)">{'{line}'}</code>
+							are replaced with the file path and line number
 						</span>
 					</div>
 				</div>
@@ -565,7 +703,9 @@
 			     VERSION CONTROL
 			     ════════════════════════════════════════════ -->
 			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
-				<h3 class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
 					Version Control
 				</h3>
 
@@ -581,18 +721,27 @@
 						{#each vcsOptions as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {vcsMode === opt.id ? 'text-(--on-accent)' : 'text-(--muted) hover:text-(--ink)'}"
+								class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {vcsMode ===
+								opt.id
+									? 'text-(--on-accent)'
+									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onVcsModeChange(opt.id)}
-								{@attach (el) => { vcsRefs[opt.id] = el as HTMLButtonElement; return () => { vcsRefs[opt.id] = null; }; }}
+								{@attach (el) => {
+									vcsRefs[opt.id] = el as HTMLButtonElement;
+									return () => {
+										vcsRefs[opt.id] = null;
+									};
+								}}
 							>
-								<opt.Icon size={13} class="transition-transform duration-200 {vcsMode === opt.id ? 'scale-110' : ''}" />
+								<opt.Icon
+									size={13}
+									class="transition-transform duration-200 {vcsMode === opt.id ? 'scale-110' : ''}"
+								/>
 								{opt.label}
 							</button>
 						{/each}
 					</div>
-					<span class="mt-0.5 text-[10px] text-(--muted)">
-						Used when cloning repositories
-					</span>
+					<span class="mt-0.5 text-[10px] text-(--muted)">Used when cloning repositories</span>
 				</div>
 			</section>
 		</div>
@@ -600,51 +749,28 @@
 </Sheet.Root>
 
 <style>
-	/* Custom range input matching the codeview aesthetic */
-	.settings-range {
-		-webkit-appearance: none;
-		appearance: none;
-		height: 6px;
-		border-radius: 3px;
-		background: var(--panel-border);
-		outline: none;
-		cursor: pointer;
+	.accent-chip:focus-visible {
+		outline: 2px solid var(--accent-ring);
+		outline-offset: 2px;
 	}
 
-	.settings-range::-webkit-slider-thumb {
-		-webkit-appearance: none;
-		appearance: none;
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		background: var(--accent);
-		border: 3px solid var(--panel-solid);
-		box-shadow: var(--shadow-toggle);
-		cursor: pointer;
-		transition: transform 0.15s ease;
+	/* Make the shadcn-rendered close button more visible against the
+	   drawer background, and align it with our compact header padding. */
+	:global(.settings-sheet button[data-bits-dialog-close]) {
+		top: 14px;
+		right: 14px;
+		padding: 6px;
+		border-radius: 6px;
+		background: var(--panel-strong);
+		color: var(--muted);
+		border: 1px solid var(--panel-border);
+		transition:
+			background 0.12s,
+			color 0.12s;
 	}
-
-	.settings-range::-webkit-slider-thumb:hover {
-		transform: scale(1.15);
-	}
-
-	.settings-range::-webkit-slider-thumb:active {
-		transform: scale(0.95);
-	}
-
-	.settings-range::-moz-range-thumb {
-		width: 18px;
-		height: 18px;
-		border-radius: 50%;
-		background: var(--accent);
-		border: 3px solid var(--panel-solid);
-		box-shadow: var(--shadow-toggle);
-		cursor: pointer;
-	}
-
-	.settings-range::-moz-range-track {
-		height: 6px;
-		border-radius: 3px;
-		background: var(--panel-border);
+	:global(.settings-sheet button[data-bits-dialog-close]:hover) {
+		background: var(--accent-soft);
+		color: var(--accent);
+		border-color: var(--accent-ring);
 	}
 </style>

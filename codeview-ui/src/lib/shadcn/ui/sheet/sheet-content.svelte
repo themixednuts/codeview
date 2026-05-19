@@ -48,11 +48,7 @@
 	<SheetPrimitive.Content
 		bind:ref
 		data-slot="sheet-content"
-		class={cn(
-			sheetVariants({ side }),
-			'border-(--panel-border) bg-(--panel-solid)',
-			className,
-		)}
+		class={cn(sheetVariants({ side }), 'border-(--panel-border) bg-(--panel-solid)', className)}
 		{...restProps}
 	>
 		{@render children?.()}

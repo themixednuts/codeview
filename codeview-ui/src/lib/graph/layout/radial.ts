@@ -111,6 +111,8 @@ export function computeRadialLayout(
 				from,
 				to,
 				kind: edge.kind,
+				confidence: edge.confidence,
+				is_glob: edge.is_glob,
 				direction: edge.from === selected.id ? 'out' : 'in',
 			});
 		}

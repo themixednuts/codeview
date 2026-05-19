@@ -7,7 +7,13 @@ export const GRAPH_PROJECTION_EDGE_CAP = 360;
 export const GRAPH_PROJECTION_MAX_HOPS = 1;
 
 const TRAIT_LIKE_KINDS = new Set<NodeKind>(['Trait', 'TraitAlias']);
-const INTERNAL_ONLY_KINDS = new Set<NodeKind>(['Impl', 'StructField', 'Variant', 'AssocType', 'AssocConst']);
+const INTERNAL_ONLY_KINDS = new Set<NodeKind>([
+	'Impl',
+	'StructField',
+	'Variant',
+	'AssocType',
+	'AssocConst',
+]);
 const SUMMARY_NODE_PREFIX = '__cv_graph_summary__';
 
 type NodeTraitAccumulator = {
@@ -81,7 +87,10 @@ function buildNodeMap(nodes: Node[]): Map<string, Node> {
 	return map;
 }
 
-function collectTraitMetadata(nodeMap: Map<string, Node>, edges: Edge[]): Map<string, GraphTraitMetadata> {
+function collectTraitMetadata(
+	nodeMap: Map<string, Node>,
+	edges: Edge[],
+): Map<string, GraphTraitMetadata> {
 	const accumulators = new Map<string, NodeTraitAccumulator>();
 
 	for (const edge of edges) {
@@ -200,7 +209,9 @@ function capNodesAroundSelection(
 
 	const reserveSummarySlot = maxNodes > 1 ? 1 : 0;
 	const keepBudget = Math.max(0, maxNodes - 1 - reserveSummarySlot);
-	const keepNeighborIds = new Set<string>(rankedNeighbors.slice(0, keepBudget).map((entry) => entry.id));
+	const keepNeighborIds = new Set<string>(
+		rankedNeighbors.slice(0, keepBudget).map((entry) => entry.id),
+	);
 
 	const keptNodeIds = new Set<string>([selectedId]);
 	for (const nodeId of keepNeighborIds) {
@@ -235,7 +246,8 @@ function createSummaryNode(selectedId: string, suffix: string, label: string): N
 		id: `${SUMMARY_NODE_PREFIX}${selectedId}::${suffix}`,
 		name: label,
 		kind: 'Module',
-		visibility: 'Unknown',
+		visibility: { kind: 'Unknown' },
+		attrs: [],
 		is_external: false,
 	};
 }
@@ -295,7 +307,9 @@ export function projectGraphForRendering(
 		maxNodes,
 	);
 
-	candidateEdges = candidateEdges.filter((edge) => keptNodeIds.has(edge.from) && keptNodeIds.has(edge.to));
+	candidateEdges = candidateEdges.filter(
+		(edge) => keptNodeIds.has(edge.from) && keptNodeIds.has(edge.to),
+	);
 
 	const syntheticNodes: Node[] = [];
 	const syntheticEdges: Edge[] = [];
@@ -348,7 +362,11 @@ export function projectGraphForRendering(
 	let edgeOverflowNode: Node | null = null;
 	let edgeOverflowEdge: Edge | null = null;
 	if (edgeOverflow > 0 && keptNodeIds.size + syntheticNodes.length < maxNodes && maxEdges > 0) {
-		edgeOverflowNode = createSummaryNode(selectedId, 'overflow-edges', `+${edgeOverflow} more links`);
+		edgeOverflowNode = createSummaryNode(
+			selectedId,
+			'overflow-edges',
+			`+${edgeOverflow} more links`,
+		);
 		syntheticNodeIds.add(edgeOverflowNode.id);
 		edgeOverflowEdge = {
 			from: selectedId,

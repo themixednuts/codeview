@@ -1,9 +1,7 @@
 <script lang="ts">
-	import type { Node, NodeKind } from '$lib/graph';
+	import type { Node } from '$lib/graph';
 	import type { NodeSummary } from '$lib/schema';
-	import { kindColors } from '$lib/tree';
 	import { resolve } from '$app/paths';
-	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
 	let { ancestors, selected, getNodeUrl } = $props<{
 		/** Pre-computed ancestor chain: root → ... → parent (excludes selected). */
@@ -29,53 +27,45 @@
 </script>
 
 {#if path.length > 0}
-	<nav class="flex items-center gap-1 overflow-x-auto pb-1 text-sm" aria-label="Breadcrumb">
+	<nav
+		class="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 font-mono text-[13px]"
+		aria-label="Breadcrumb"
+	>
 		{#each displayPath.items as node, index (node.id)}
 			{#if index > 0}
 				{#if displayPath.truncated && index === 1}
-					<span class="px-1 text-(--muted)">...</span>
-					<ChevronRight size={16} class="shrink-0 text-(--muted)" />
+					<span class="text-(--muted-soft)">…</span>
+					<span class="text-(--muted-soft)">::</span>
 				{:else}
-					<ChevronRight size={16} class="shrink-0 text-(--muted)" />
+					<span class="text-(--muted-soft)">::</span>
 				{/if}
 			{/if}
 
 			{#if node.id === selected?.id}
-				<!-- Current node (not clickable) -->
-				<span class="badge badge-strong badge-lg gap-1.5">
-					<span
-						class="size-2 shrink-0 rounded-full"
-						style="background-color: {kindColors[node.kind as NodeKind]}"
-					>
-					</span>
-					<span class="max-w-37.5 truncate font-medium text-(--ink)">{node.name}</span>
+				<span
+					class="font-semibold text-(--ink) {node.is_deprecated ? 'line-through opacity-75' : ''}"
+				>
+					{node.name}
 				</span>
 			{:else}
-				<!-- Ancestor node (clickable) -->
 				<a
 					href={resolve(getNodeUrl(node.id))}
 					data-sveltekit-noscroll
-					class="badge badge-lg gap-1.5 text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+					class="text-(--muted) underline decoration-(--muted-soft)/40 underline-offset-2 transition-colors hover:text-(--accent) hover:decoration-(--accent)/60 {node.is_deprecated
+						? 'line-through opacity-75'
+						: ''}"
 				>
-					<span
-						class="size-2 shrink-0 rounded-full"
-						style="background-color: {kindColors[node.kind as NodeKind]}"
-					>
-					</span>
-					<span class="max-w-37.5 truncate">{node.name}</span>
+					{node.name}
 				</a>
 			{/if}
 		{/each}
 	</nav>
 {:else if selected}
-	<!-- Fallback when path is empty but selected exists -->
-	<nav class="flex items-center gap-1 overflow-x-auto pb-1 text-sm" aria-label="Breadcrumb">
-		<span class="badge badge-strong badge-lg gap-1.5">
-			<span
-				class="size-2 shrink-0 rounded-full"
-				style="background-color: {kindColors[selected.kind as NodeKind]}"
-			></span>
-			<span class="max-w-37.5 truncate font-medium text-(--ink)">{selected.name}</span>
+	<nav class="flex flex-wrap items-baseline gap-x-1 font-mono text-[13px]" aria-label="Breadcrumb">
+		<span
+			class="font-semibold text-(--ink) {selected.is_deprecated ? 'line-through opacity-75' : ''}"
+		>
+			{selected.name}
 		</span>
 	</nav>
 {/if}

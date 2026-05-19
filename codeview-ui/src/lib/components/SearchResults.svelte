@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { NodeSummary } from '$lib/schema';
 	import type { NodeKind } from '$lib/graph';
-	import { resolve } from '$app/paths';
+	import { resolveAppPath } from '$lib/app-paths';
 	import { kindColors, kindIcons } from '$lib/tree';
 	import Skeleton from '$lib/components/Skeleton.svelte';
 
@@ -29,7 +29,7 @@
 				{@const isSelected = selectedNodeId === node.id}
 				{@const KindIcon = kindIcons[node.kind] ?? kindIcons.Crate}
 				<a
-					href={resolve(getNodeUrl(node.id) as `/${string}`)}
+					href={resolveAppPath(getNodeUrl(node.id))}
 					data-sveltekit-noscroll
 					class="corner-squircle flex items-center gap-2 rounded-(--radius-chip) px-2 py-1.5 text-sm hover:bg-(--panel-strong) {isSelected
 						? 'bg-(--accent)/10 ring-1 ring-(--accent) ring-inset'
@@ -42,7 +42,13 @@
 						<KindIcon size={12} strokeWidth={2.5} />
 					</span>
 					<span class="min-w-0 flex-1">
-						<span class="block truncate font-medium text-(--ink)">{node.name}</span>
+						<span
+							class="block truncate font-medium text-(--ink) {node.is_deprecated
+								? 'line-through opacity-75'
+								: ''}"
+						>
+							{node.name}
+						</span>
 						<span class="block truncate text-xs text-(--muted)">{node.id}</span>
 					</span>
 				</a>

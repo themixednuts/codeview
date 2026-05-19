@@ -40,11 +40,14 @@ export class CrateStatusConnection implements Disposable {
 
 		this.#log.debug`connect ${this.tag}`;
 
-		this.status = 'unknown';
-		this.error = null;
-		this.step = null;
-		this.action = undefined;
-		this.installedVersion = undefined;
+		// Don't reset to 'unknown' if already seeded to 'ready' from SSR
+		if (this.status !== 'ready') {
+			this.status = 'unknown';
+			this.error = null;
+			this.step = null;
+			this.action = undefined;
+			this.installedVersion = undefined;
+		}
 
 		this.#client.subscribe(tag, this.#callback);
 	}

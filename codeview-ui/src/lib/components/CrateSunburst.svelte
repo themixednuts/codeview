@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import type { CrateMapData, CrateMapModuleNode } from '$lib/graph/crate-map';
+	import { resolveAppPath } from '$lib/app-paths';
 	import {
 		computeSunburstArcs,
 		arcPath,
@@ -9,7 +9,13 @@
 		type SunburstArc,
 	} from '$lib/graph/crate-map';
 
-	let { data, selectedNodeId = null, getNodeUrl, drillId = null, onDrillChange } = $props<{
+	let {
+		data,
+		selectedNodeId = null,
+		getNodeUrl,
+		drillId = null,
+		onDrillChange,
+	} = $props<{
 		data: CrateMapData;
 		selectedNodeId?: string | null;
 		getNodeUrl: (id: string) => string;
@@ -44,9 +50,7 @@
 		return new Map(data.moduleNodes.map((m: CrateMapModuleNode) => [m.id, m]));
 	});
 
-	const drillModule = $derived(
-		drillId ? moduleById.get(drillId) ?? null : null,
-	);
+	const drillModule = $derived(drillId ? (moduleById.get(drillId) ?? null) : null);
 
 	const visibleModules = $derived.by(() => {
 		if (!drillModule) return data.moduleNodes;
@@ -61,7 +65,9 @@
 		};
 		collect(drillModule.id);
 		return result.map((m) =>
-			m.id === drillModule.id ? { ...m, parentId: null, depth: 0 } : { ...m, depth: m.depth - drillModule.depth },
+			m.id === drillModule.id
+				? { ...m, parentId: null, depth: 0 }
+				: { ...m, depth: m.depth - drillModule.depth },
 		);
 	});
 
@@ -69,9 +75,7 @@
 		return computeSunburstArcs(visibleModules, RING_WIDTH);
 	});
 
-	const maxDepth = $derived(
-		arcs.reduce((max, a) => Math.max(max, a.depth), 0),
-	);
+	const maxDepth = $derived(arcs.reduce((max, a) => Math.max(max, a.depth), 0));
 
 	const outerRadius = $derived((maxDepth + 1) * RING_WIDTH + 10);
 	const viewSize = $derived(outerRadius * 2 + 40);
@@ -85,13 +89,9 @@
 		return data.moduleNodes[0] ?? null;
 	});
 
-	const centerLabel = $derived(
-		drillModule?.name ?? rootModule?.name ?? data.crateId,
-	);
+	const centerLabel = $derived(drillModule?.name ?? rootModule?.name ?? data.crateId);
 
-	const centerCount = $derived(
-		(drillModule ?? rootModule)?.totalNodeCount ?? data.totalNodeCount,
-	);
+	const centerCount = $derived((drillModule ?? rootModule)?.totalNodeCount ?? data.totalNodeCount);
 
 	const depthColor = moduleDepthColor;
 
@@ -119,7 +119,7 @@
 	}
 
 	const hoveredArcModule = $derived(
-		hoveredModuleId ? moduleById.get(hoveredModuleId) ?? null : null,
+		hoveredModuleId ? (moduleById.get(hoveredModuleId) ?? null) : null,
 	);
 </script>
 
@@ -136,11 +136,7 @@
 			</p>
 		</div>
 		{#if drillId}
-			<button
-				type="button"
-				class="text-xs text-(--accent) hover:underline"
-				onclick={drillBack}
-			>
+			<button type="button" class="text-xs text-(--accent) hover:underline" onclick={drillBack}>
 				← Back
 			</button>
 		{/if}
@@ -157,11 +153,15 @@
 				{@const span = arc.endAngle - arc.startAngle}
 				{#if span > MIN_ARC_ANGLE}
 					<a
-						href={resolve(getNodeUrl(arc.module.id) as `/${string}`)}
+						href={resolveAppPath(getNodeUrl(arc.module.id))}
 						data-sveltekit-noscroll
 						onclick={(e) => handleClick(e, arc)}
-						onmouseenter={() => { hoveredModuleId = arc.module.id; }}
-						onmouseleave={() => { hoveredModuleId = null; }}
+						onmouseenter={() => {
+							hoveredModuleId = arc.module.id;
+						}}
+						onmouseleave={() => {
+							hoveredModuleId = null;
+						}}
 					>
 						<path
 							d={arcPath(cx, cy, arc.innerRadius, arc.outerRadius, arc.startAngle, arc.endAngle)}
@@ -183,9 +183,7 @@
 								class="pointer-events-none fill-(--ink) text-[9px] font-medium"
 								style="text-shadow: 0 1px 2px rgba(0,0,0,0.4)"
 							>
-								{arc.module.name.length > 12
-									? arc.module.name.slice(0, 10) + '…'
-									: arc.module.name}
+								{arc.module.name.length > 12 ? arc.module.name.slice(0, 10) + '…' : arc.module.name}
 							</text>
 						{/if}
 					</a>
@@ -219,8 +217,8 @@
 		{#if hoveredArcModule}
 			<span class="font-medium text-(--ink)">{hoveredArcModule.id}</span>
 			<span class="text-(--muted)">
-				· {hoveredArcModule.totalNodeCount.toLocaleString()} items
-				· {hoveredArcModule.childModuleCount} submodules
+				· {hoveredArcModule.totalNodeCount.toLocaleString()} items · {hoveredArcModule.childModuleCount}
+				submodules
 			</span>
 		{:else}
 			<span class="text-(--muted)">Hover a segment to see details</span>

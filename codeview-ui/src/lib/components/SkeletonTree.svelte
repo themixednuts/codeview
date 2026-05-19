@@ -5,10 +5,7 @@
 	 * Skeleton tree for loading states.
 	 * Shows animated placeholders with varying indentation.
 	 */
-	let {
-		count = 10,
-		showKindBadges = true,
-	} = $props<{
+	let { count = 10, showKindBadges = true } = $props<{
 		/** Total number of items (used for count display, visual items capped) */
 		count?: number;
 		/** Whether to show skeleton kind filter badges */

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import {
 	nodeToExcalidraw,
 	edgeToExcalidraw,
@@ -24,7 +24,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 function makeRawNode(id: string, name: string, kind: Node['kind'] = 'Function'): Node {
-	return { id, name, kind, visibility: 'Public' } as Node;
+	return { id, name, kind, visibility: { kind: 'Public' } } as Node;
 }
 
 function makeVisNode(
@@ -57,7 +57,7 @@ function makeVisEdge(
 	kind: string = 'UsesType',
 	direction: 'in' | 'out' = 'out',
 ): VisEdge {
-	return { from, to, kind, direction };
+	return { from, to, kind, confidence: 'Static', direction };
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ describe('nodeToExcalidraw', () => {
 		expect(cd).toMatchObject({
 			nodeId: 'crate::MyStruct',
 			kind: 'Struct',
-			visibility: 'Public',
+			visibility: { kind: 'Public' },
 		});
 	});
 

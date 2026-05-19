@@ -54,6 +54,7 @@ export const semanticEdgeKinds: readonly EdgeKind[] = [
 	'CallsStatic',
 	'CallsRuntime',
 	'Derives',
+	'ReExports',
 ];
 
 // ---------------------------------------------------------------------------
@@ -170,7 +171,7 @@ export function buildBaseScene(
 	for (let i = 0; i < visData.edges.length; i++) {
 		const edge = visData.edges[i];
 		groups.push({
-			id: `edge:${edge.from.node.id}:${edge.to.node.id}:${edge.kind}`,
+			id: `edge:${edge.from.node.id}:${edge.to.node.id}:${edge.kind}:${edge.confidence}${edge.is_glob ? ':glob' : ''}`,
 			type: 'edge',
 			edgeIndex: i,
 			// labelIndex will be filled in by buildScene; for BaseScene it's provisional

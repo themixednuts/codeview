@@ -6,9 +6,8 @@ const sqlModules = import.meta.glob("./**/migration.sql", {
 
 export default {
 	migrations: Object.fromEntries(
-		Object.entries(sqlModules).map(([path, sql]) => [
-			path.split("/").at(-2)!,
-			sql,
-		]),
+		Object.entries(sqlModules)
+			.sort(([pathA], [pathB]) => pathA.localeCompare(pathB))
+			.map(([path, sql]) => [path.split('/').at(-2)!, sql]),
 	),
 };

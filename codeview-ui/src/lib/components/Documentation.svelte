@@ -106,7 +106,6 @@
 			goto(resolve(getNodeUrl(nodeId)), { noScroll: true });
 		}
 	}
-
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -145,6 +144,45 @@
 
 	.documentation-text :global(p:last-child) {
 		margin-bottom: 0;
+	}
+
+	/* doc-classic styling for in-prose headings (Examples / Safety / etc.).
+	   Markdown `## Heading` / `### Heading` lands here. Use Fraunces with a
+	   modest size step per level so they read as part of the same family
+	   as the page-level Documentation/Methods section headers. */
+	.documentation-text :global(h1),
+	.documentation-text :global(h2),
+	.documentation-text :global(h3),
+	.documentation-text :global(h4),
+	.documentation-text :global(h5),
+	.documentation-text :global(h6) {
+		font-family: var(--font-display);
+		font-weight: 600;
+		letter-spacing: -0.01em;
+		color: var(--ink);
+		line-height: 1.25;
+	}
+	.documentation-text :global(h1) {
+		font-size: 20px;
+		margin-top: 1.5rem;
+		margin-bottom: 0.5rem;
+	}
+	.documentation-text :global(h2) {
+		font-size: 17px;
+		margin-top: 1.25rem;
+		margin-bottom: 0.5rem;
+	}
+	.documentation-text :global(h3) {
+		font-size: 15px;
+		margin-top: 1rem;
+		margin-bottom: 0.4rem;
+	}
+	.documentation-text :global(h4),
+	.documentation-text :global(h5),
+	.documentation-text :global(h6) {
+		font-size: 13.5px;
+		margin-top: 0.75rem;
+		margin-bottom: 0.3rem;
 	}
 
 	.documentation-text :global(a) {
@@ -192,5 +230,4 @@
 	.documentation-text :global(li) {
 		margin: 0.25rem 0;
 	}
-
 </style>

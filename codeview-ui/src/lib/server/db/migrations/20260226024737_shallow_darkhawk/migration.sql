@@ -4,6 +4,8 @@ CREATE TABLE `crate_graphs` (
 	`version` text NOT NULL,
 	`index_json` text NOT NULL,
 	`tree_json` text,
+	`parse_session` text DEFAULT '' NOT NULL,
+	`committed` integer DEFAULT false NOT NULL,
 	`node_count` integer DEFAULT 0 NOT NULL,
 	`edge_count` integer DEFAULT 0 NOT NULL,
 	`parsed_at` integer NOT NULL,
@@ -29,6 +31,7 @@ CREATE TABLE `cross_edges` (
 	`to_id` text NOT NULL,
 	`kind` text NOT NULL,
 	`confidence` text NOT NULL,
+	`is_glob` integer DEFAULT false NOT NULL,
 	CONSTRAINT `cross_edges_pk` PRIMARY KEY(`ecosystem`, `source_name`, `source_version`, `from_id`, `to_id`, `kind`, `confidence`)
 );
 --> statement-breakpoint
@@ -40,6 +43,7 @@ CREATE TABLE `edges` (
 	`to_id` text NOT NULL,
 	`kind` text NOT NULL,
 	`confidence` text NOT NULL,
+	`is_glob` integer DEFAULT false NOT NULL,
 	CONSTRAINT `edges_pk` PRIMARY KEY(`ecosystem`, `crate_name`, `crate_version`, `from_id`, `to_id`, `kind`)
 );
 --> statement-breakpoint

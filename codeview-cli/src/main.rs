@@ -5,7 +5,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use codeview_rustdoc::{CallMode, generate_workspace_rustdoc_json, load_workspace_graph};
+use codeview_core::CrateGraph;
+use codeview_rustdoc::{
+    CallMode, generate_workspace_rustdoc_json, load_graph_from_path,
+    load_graph_from_path_with_sources, load_workspace_graph,
+};
 use serde::{Deserialize, Serialize};
 
 const SIDECAR: &[u8] = include_bytes!(env!("SIDECAR_PATH"));
@@ -58,6 +62,38 @@ enum Commands {
         /// Extra arguments to pass to cargo rustdoc (e.g. --all-features, --features "uuid")
         #[arg(last = true)]
         cargo_args: Vec<String>,
+    },
+    /// Parse an existing rustdoc JSON file into a single-crate graph
+    ParseJson {
+        /// Path to rustdoc JSON
+        #[arg(long)]
+        json: PathBuf,
+        /// Package/crate name to use in graph IDs
+        #[arg(long)]
+        crate_name: String,
+        /// Version string to write into the graph
+        #[arg(long)]
+        version: String,
+        /// Output graph.json path
+        #[arg(long)]
+        out: PathBuf,
+        /// Cargo.toml for source-backed parsing. Enables call-edge extraction.
+        #[arg(long)]
+        manifest_path: Option<PathBuf>,
+        /// Crate root source file for source-backed parsing.
+        #[arg(long)]
+        root_file: Option<PathBuf>,
+        /// Target name rustdoc used internally when it differs from package name.
+        #[arg(long)]
+        rustdoc_name: Option<String>,
+        #[arg(long, value_enum, default_value = "strict")]
+        call_mode: CallModeArg,
+    },
+    /// Emit the canonical JSON Schema for Codeview graph data
+    Schema {
+        /// Output schema path. Writes to stdout when omitted.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -118,7 +154,45 @@ fn main() -> Result<()> {
             call_mode,
             cargo_args,
         } => analyze(manifest_path, out, verbose, call_mode, cargo_args),
+        Commands::ParseJson {
+            json,
+            crate_name,
+            version,
+            out,
+            manifest_path,
+            root_file,
+            rustdoc_name,
+            call_mode,
+        } => parse_json(
+            json,
+            crate_name,
+            version,
+            out,
+            manifest_path,
+            root_file,
+            rustdoc_name,
+            call_mode,
+        ),
+        Commands::Schema { out } => export_schema(out),
     }
+}
+
+fn export_schema(out: Option<PathBuf>) -> Result<()> {
+    let schema = schemars::schema_for!(codeview_core::Workspace);
+    let json = serde_json::to_string_pretty(&schema)?;
+    if let Some(path) = out {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create schema dir {}", parent.display()))?;
+        }
+        fs::write(&path, json)
+            .with_context(|| format!("failed to write schema to {}", path.display()))?;
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 /// Analyze workspace and return the path to the generated graph.json
@@ -238,6 +312,55 @@ fn analyze(
         .with_context(|| format!("failed to write graph to {}", out_path.display()))?;
 
     eprintln!("Wrote graph to {}", out_path.display());
+    Ok(())
+}
+
+fn parse_json(
+    json: PathBuf,
+    crate_name: String,
+    version: String,
+    out: PathBuf,
+    manifest_path: Option<PathBuf>,
+    root_file: Option<PathBuf>,
+    rustdoc_name: Option<String>,
+    call_mode: CallModeArg,
+) -> Result<()> {
+    let normalized = crate_name.replace('-', "_");
+    let graph = match (manifest_path, root_file) {
+        (Some(manifest_path), Some(root_file)) => load_graph_from_path_with_sources(
+            &json,
+            &normalized,
+            &manifest_path,
+            &root_file,
+            call_mode.into(),
+            rustdoc_name.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "failed to parse rustdoc JSON {} with sources from {}",
+                json.display(),
+                root_file.display()
+            )
+        })?,
+        (None, None) => load_graph_from_path(&json, &normalized)
+            .with_context(|| format!("failed to parse rustdoc JSON {}", json.display()))?,
+        _ => anyhow::bail!("--manifest-path and --root-file must be provided together"),
+    };
+    let crate_graph = CrateGraph {
+        id: normalized.clone(),
+        name: normalized,
+        version,
+        nodes: graph.nodes,
+        edges: graph.edges,
+        aliases: graph.aliases,
+    };
+    if let Some(parent) = out.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output dir {}", parent.display()))?;
+    }
+    let data = serde_json::to_string_pretty(&crate_graph)?;
+    fs::write(&out, data).with_context(|| format!("failed to write graph to {}", out.display()))?;
+    eprintln!("Wrote graph to {}", out.display());
     Ok(())
 }
 

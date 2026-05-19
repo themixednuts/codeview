@@ -1,10 +1,16 @@
-import type { Graph, Node } from '$lib/graph';
+import type { Confidence, Graph, Node } from '$lib/graph';
 import type { VisNode, VisEdge } from './types';
 import { CENTER_X, CENTER_Y, FLOW_COLUMN_GAP, FLOW_ROW_GAP, MAX_NODES_PER_COLUMN } from './types';
 import { getNodeVisual } from '$lib/graph/visual/node-visual';
 
 function formatEdgeKinds(kinds: string[]): string {
 	return Array.from(new Set(kinds)).join(', ');
+}
+
+function aggregateConfidence(confidences: Confidence[]): Confidence {
+	if (confidences.includes('Inferred')) return 'Inferred';
+	if (confidences.includes('Runtime')) return 'Runtime';
+	return 'Static';
 }
 
 export function computeEgoLayout(
@@ -19,16 +25,29 @@ export function computeEgoLayout(
 	const incoming = graph.edges.filter((e) => e.to === selected.id);
 	const outgoing = graph.edges.filter((e) => e.from === selected.id);
 
-	const incomingNodes = new Map<string, { node: Node; kinds: string[] }>();
-	const outgoingNodes = new Map<string, { node: Node; kinds: string[] }>();
+	const incomingNodes = new Map<
+		string,
+		{ node: Node; kinds: string[]; confidences: Confidence[]; hasGlobReExport: boolean }
+	>();
+	const outgoingNodes = new Map<
+		string,
+		{ node: Node; kinds: string[]; confidences: Confidence[]; hasGlobReExport: boolean }
+	>();
 
 	for (const edge of incoming) {
 		const node = nodeMap.get(edge.from);
 		if (node && node.id !== selected.id) {
 			if (!incomingNodes.has(node.id)) {
-				incomingNodes.set(node.id, { node, kinds: [] });
+				incomingNodes.set(node.id, {
+					node,
+					kinds: [],
+					confidences: [],
+					hasGlobReExport: false,
+				});
 			}
 			incomingNodes.get(node.id)!.kinds.push(edge.kind);
+			incomingNodes.get(node.id)!.confidences.push(edge.confidence);
+			incomingNodes.get(node.id)!.hasGlobReExport ||= edge.is_glob === true;
 		}
 	}
 
@@ -36,9 +55,16 @@ export function computeEgoLayout(
 		const node = nodeMap.get(edge.to);
 		if (node && node.id !== selected.id) {
 			if (!outgoingNodes.has(node.id)) {
-				outgoingNodes.set(node.id, { node, kinds: [] });
+				outgoingNodes.set(node.id, {
+					node,
+					kinds: [],
+					confidences: [],
+					hasGlobReExport: false,
+				});
 			}
 			outgoingNodes.get(node.id)!.kinds.push(edge.kind);
+			outgoingNodes.get(node.id)!.confidences.push(edge.confidence);
+			outgoingNodes.get(node.id)!.hasGlobReExport ||= edge.is_glob === true;
 		}
 	}
 
@@ -67,6 +93,8 @@ export function computeEgoLayout(
 			const outEntry = outgoingNodes.get(id)!;
 			const inEntry = incomingNodes.get(id)!;
 			outEntry.kinds.push(...inEntry.kinds);
+			outEntry.confidences.push(...inEntry.confidences);
+			outEntry.hasGlobReExport ||= inEntry.hasGlobReExport;
 			incomingNodes.delete(id);
 		}
 	}
@@ -83,7 +111,12 @@ export function computeEgoLayout(
 	const rightX = CENTER_X + (centerDims.width / 2 + FLOW_COLUMN_GAP + maxOutgoingWidth / 2);
 
 	function layoutColumn(
-		entries: { node: Node; kinds: string[] }[],
+		entries: {
+			node: Node;
+			kinds: string[];
+			confidences: Confidence[];
+			hasGlobReExport: boolean;
+		}[],
 		direction: 'in' | 'out',
 		x: number,
 	): VisNode[] {
@@ -128,6 +161,8 @@ export function computeEgoLayout(
 			from: visNode,
 			to: centerNode,
 			kind: formatEdgeKinds(entry.kinds),
+			confidence: aggregateConfidence(entry.confidences),
+			is_glob: entry.hasGlobReExport || undefined,
 			direction: 'in',
 		});
 	}
@@ -138,6 +173,8 @@ export function computeEgoLayout(
 			from: centerNode,
 			to: visNode,
 			kind: formatEdgeKinds(entry.kinds),
+			confidence: aggregateConfidence(entry.confidences),
+			is_glob: entry.hasGlobReExport || undefined,
 			direction: 'out',
 		});
 	}

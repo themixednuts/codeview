@@ -1,144 +1,516 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600&display=swap');
 @import 'tailwindcss';
 @import '$lib/shadcn/theme.css';
+
+/* ═══════════════════════════════════════════════════════════════
+   Codeview design tokens — SOLARIZED-based palette
+   ─────────────────────────────────────────────────
+   Why Solarized:
+   - Ethan Schoonover, 2011. Designed in CIELAB color space.
+   - Light/dark mode accents are IDENTICAL hex values — only the
+     base scale flips. So a single accent reads "correctly" in both.
+   - Foreground & accent colors equal-luminance → no color jumps out.
+   - The most-cited "reading-optimized" code theme in the wild.
+
+   Architecture:
+     UI mode    — `[data-theme="dark"]` on :root or `.theme-dark` on a plate
+     Code theme — `[data-code-theme="..."]` on :root or per .plate
+     Accent     — `[data-accent="..."]` on :root
+     Density    — `[data-density="..."]` on :root
+     Voice      — `[data-voice="..."]` on :root
+   ═══════════════════════════════════════════════════════════════ */
 
 @layer base {
 	:root {
 		color-scheme: light;
-		--font-display: 'Fraunces', serif;
-		--font-body: 'Space Grotesk', sans-serif;
-		--font-code: var(--font-body);
-		--radius-panel: 1.5rem;
-		--radius-card: 1rem;
-		--radius-control: 0.75rem;
-		--radius-chip: 0.625rem;
-		--radius-popover: 0.875rem;
-		--bg: #f4efe6;
-		--bg-strong: #fdf8f0;
-		--bg-top: rgba(247, 226, 197, 0.85);
-		--bg-bottom: rgba(235, 199, 173, 0.6);
-		--bg-glow: #f7e2c5;
-		--panel: #fffaf1;
-		--panel-strong: #fff4e3;
-		--panel-solid: #ffffff;
-		--panel-muted: #f6efe4;
-		--panel-border: rgba(38, 28, 20, 0.12);
-		--ink: #261c14;
-		--muted: #6f5f54;
-		--accent: #d76a2f;
-		--accent-strong: #c45123;
-		--shadow-soft: 0 12px 24px rgba(38, 28, 20, 0.08);
-		--shadow-strong: 0 18px 32px rgba(38, 28, 20, 0.12);
-		--shadow-glow: 0 24px 50px rgba(38, 28, 20, 0.12);
-		--code-bg: #f6f1e8;
-		--code-border: rgba(38, 28, 20, 0.12);
-		--code-ink: #2b241e;
-		--danger: #b42318;
-		--danger-bg: #fff1f0;
-		--danger-border: rgba(180, 35, 24, 0.2);
-		--success: #2f855a;
-		--grid-line: rgba(38, 28, 20, 0.08);
-		--bracket-depth-0: #c45123;
-		--bracket-depth-1: #4a7aa8;
-		--bracket-depth-2: #6d4f80;
-		--edge-out: #5b8abf;
-		--edge-out-strong: #3a6fa3;
-		--edge-in: #94a3b8;
-		--edge-in-strong: #475569;
-		--edge-default: #5c6f7c;
-		--edge-contains: #c45d4f;
-		--edge-defines: #b85c3f;
-		--edge-implements: #4d6d7a;
-		--edge-uses: #6d7a5b;
-		--edge-calls: #785a8e;
-		--edge-calls-runtime: #8c6f5a;
-		--edge-derives: #5d7c74;
-		--kind-crate: #e8720c;
-		--kind-module: #2d8a5e;
-		--kind-struct: #9d4edd;
-		--kind-union: #7c5cbf;
-		--kind-enum: #4a90ff;
-		--kind-trait: #10b981;
-		--kind-trait-alias: #0db39e;
-		--kind-impl: #8d99ae;
-		--kind-function: #f43f7a;
-		--highlight-bg: rgba(215, 106, 47, 0.10);
-		--on-accent: #ffffff;
-		--overlay-backdrop: rgba(0, 0, 0, 0.6);
-		--shadow-accent: 0 12px 24px rgba(215, 106, 47, 0.35);
-		--shadow-modal: 0 25px 50px -12px rgba(0, 0, 0, 0.4);
-		--shadow-toggle: 0 2px 6px rgba(0, 0, 0, 0.15);
-		--node-circle-stroke: rgba(255, 255, 255, 0.7);
-		--node-label-divider: rgba(255, 255, 255, 0.25);
+
+		--font-display: 'Fraunces', 'Source Serif 4', Georgia, serif;
+		--font-body: 'Inter', system-ui, sans-serif;
+		--font-code: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+		--radius-panel: 10px;
+		--radius-card: 6px;
+		--radius-control: 5px;
+		--radius-chip: 4px;
+		--radius-popover: 8px;
+
+		/* ── Solarized base, LIGHT ── */
+		--bg: #fdf6e3; /* base3 */
+		--bg-strong: #eee8d5; /* base2 */
+		--bg-top: rgba(238, 232, 213, 0.5);
+		--bg-bottom: rgba(238, 232, 213, 0.3);
+		--bg-glow: #eee8d5;
+
+		--panel: #fdf6e3;
+		--panel-strong: #eee8d5;
+		--panel-solid: #fffbf0; /* slightly lifted */
+		--panel-muted: #e8e2c8;
+		--panel-border: rgba(88, 110, 117, 0.2); /* base01 alpha */
+		--panel-border-soft: rgba(88, 110, 117, 0.1);
+		--panel-border-strong: rgba(88, 110, 117, 0.32);
+
+		--ink: #073642; /* base02 — strong headings */
+		--ink-soft: #586e75; /* base01 — emphasis */
+		--muted: #657b83; /* base00 — body */
+		--muted-soft: #93a1a1; /* base1 — meta */
+
+		/* Solarized orange — works identically in both modes */
+		--accent: #cb4b16;
+		--accent-strong: #b8400e;
+		--accent-soft: rgba(203, 75, 22, 0.1);
+		--accent-ring: rgba(203, 75, 22, 0.25);
+
+		--link: #268bd2; /* solarized blue */
+		--link-strong: #1f6fa5;
+
+		--shadow-soft:
+			0 1px 0 rgba(88, 110, 117, 0.06), 0 1px 3px rgba(88, 110, 117, 0.06);
+		--shadow-strong:
+			0 1px 0 rgba(88, 110, 117, 0.08), 0 6px 16px rgba(88, 110, 117, 0.1);
+		--shadow-glow:
+			0 1px 0 rgba(88, 110, 117, 0.1), 0 12px 28px rgba(88, 110, 117, 0.12);
+		--shadow-accent: 0 6px 18px rgba(203, 75, 22, 0.25);
+		--shadow-modal: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+		--shadow-toggle: 0 1px 3px rgba(0, 0, 0, 0.12);
+
+		--grid-line: rgba(88, 110, 117, 0.06);
+
+		/* Kind colors — Solarized accent palette mapped to kinds */
+		--kind-crate: #cb4b16; /* orange   */
+		--kind-module: #859900; /* green    */
+		--kind-struct: #6c71c4; /* violet   */
+		--kind-union: #6c71c4;
+		--kind-enum: #268bd2; /* blue     */
+		--kind-trait: #2aa198; /* cyan     */
+		--kind-trait-alias: #2aa198;
+		--kind-impl: #93a1a1; /* base1    */
+		--kind-function: #d33682; /* magenta  */
+		--kind-method: #d33682;
+		--kind-typealias: #b58900; /* yellow   */
+		--kind-macro: #dc322f; /* red      */
+		--kind-const: #586e75; /* base01   */
+		--kind-constant: #586e75;
+		--kind-variant: #6c71c4;
+
+		/* Edge colors — same palette, lower saturation */
+		--edge-contains: #cb4b16;
+		--edge-defines: #cb4b16;
+		--edge-implements: #2aa198;
+		--edge-uses: #859900;
+		--edge-calls: #6c71c4;
+		--edge-calls-runtime: #b58900;
+		--edge-reexports: #268bd2;
+		--edge-derives: #2aa198;
+		--edge-default: #93a1a1;
+		--edge-out: #268bd2;
+		--edge-out-strong: #1f6fa5;
+		--edge-in: #93a1a1;
+		--edge-in-strong: #586e75;
+
+		/* Generic-bracket depth tinting (kept for legacy components) */
+		--bracket-depth-0: #cb4b16;
+		--bracket-depth-1: #268bd2;
+		--bracket-depth-2: #6c71c4;
+
+		--on-accent: #fdf6e3;
+		--highlight-bg: rgba(203, 75, 22, 0.1);
+		--overlay-backdrop: rgba(7, 54, 66, 0.55);
+
+		--danger: #dc322f;
+		--danger-bg: rgba(220, 50, 47, 0.08);
+		--danger-border: rgba(220, 50, 47, 0.25);
+		--success: #859900;
+
+		--node-circle-stroke: rgba(253, 246, 227, 0.7);
+		--node-label-divider: rgba(88, 110, 117, 0.25);
+
 		--font-ligatures: none;
+
+		/* Density scale — overridden by [data-density="…"] below */
+		--density: 1;
+		--base-fs: 14px;
 	}
 
-	:root[data-theme='dark'] {
+	:root[data-theme='dark'],
+	.theme-dark {
 		color-scheme: dark;
-		--bg: #0e1117;
-		--bg-strong: #101722;
-		--bg-top: rgba(46, 62, 86, 0.35);
-		--bg-bottom: rgba(11, 14, 20, 0.85);
-		--bg-glow: #1f2a3a;
-		--panel: #151b23;
-		--panel-strong: #1d2430;
-		--panel-solid: #171d27;
-		--panel-muted: #11161d;
-		--panel-border: rgba(148, 163, 184, 0.18);
-		--ink: #e6edf3;
-		--muted: #9aa4b2;
-		--accent: #f08a5d;
-		--accent-strong: #f6a879;
-		--shadow-soft: 0 12px 24px rgba(0, 0, 0, 0.35);
-		--shadow-strong: 0 18px 32px rgba(0, 0, 0, 0.45);
-		--shadow-glow: 0 24px 50px rgba(0, 0, 0, 0.55);
-		--code-bg: #0d1117;
-		--code-border: rgba(148, 163, 184, 0.2);
-		--code-ink: #c9d1d9;
+
+		--bg: #002b36; /* base03 */
+		--bg-strong: #073642; /* base02 */
+		--bg-top: rgba(7, 54, 66, 0.6);
+		--bg-bottom: rgba(7, 54, 66, 0.3);
+		--bg-glow: #073642;
+
+		--panel: #073642;
+		--panel-strong: #0e4250;
+		--panel-solid: #003545;
+		--panel-muted: #052f3a;
+		--panel-border: rgba(147, 161, 161, 0.18); /* base1 alpha */
+		--panel-border-soft: rgba(147, 161, 161, 0.09);
+		--panel-border-strong: rgba(147, 161, 161, 0.3);
+
+		--ink: #eee8d5; /* base2 — strong */
+		--ink-soft: #93a1a1; /* base1 — emphasis */
+		--muted: #839496; /* base0 — body */
+		--muted-soft: #586e75; /* base01 — meta */
+
+		--accent: #cb4b16; /* same orange — equal luminance */
+		--accent-strong: #e85d28;
+		--accent-soft: rgba(203, 75, 22, 0.14);
+		--accent-ring: rgba(203, 75, 22, 0.3);
+
+		--link: #268bd2;
+		--link-strong: #5fb3eb;
+
+		--shadow-soft: 0 1px 0 rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.3);
+		--shadow-strong: 0 1px 0 rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.4);
+		--shadow-glow: 0 1px 0 rgba(0, 0, 0, 0.5), 0 12px 28px rgba(0, 0, 0, 0.5);
+		--shadow-accent: 0 6px 18px rgba(203, 75, 22, 0.4);
+		--shadow-modal: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+		--shadow-toggle: 0 1px 3px rgba(0, 0, 0, 0.4);
+
+		--grid-line: rgba(147, 161, 161, 0.05);
+
+		/* Dark kind colors — same hex values (Solarized property) */
+		--kind-crate: #cb4b16;
+		--kind-module: #859900;
+		--kind-struct: #6c71c4;
+		--kind-union: #6c71c4;
+		--kind-enum: #268bd2;
+		--kind-trait: #2aa198;
+		--kind-trait-alias: #2aa198;
+		--kind-impl: #93a1a1;
+		--kind-function: #d33682;
+		--kind-method: #d33682;
+		--kind-typealias: #b58900;
+		--kind-macro: #dc322f;
+		--kind-const: #93a1a1;
+		--kind-constant: #93a1a1;
+		--kind-variant: #6c71c4;
+
+		--edge-contains: #cb4b16;
+		--edge-defines: #cb4b16;
+		--edge-implements: #2aa198;
+		--edge-uses: #859900;
+		--edge-calls: #6c71c4;
+		--edge-calls-runtime: #b58900;
+		--edge-reexports: #268bd2;
+		--edge-derives: #2aa198;
+		--edge-default: #93a1a1;
+		--edge-out: #5fb3eb;
+		--edge-out-strong: #82c5f0;
+		--edge-in: #93a1a1;
+		--edge-in-strong: #cbd5e1;
+
+		--bracket-depth-0: #cb4b16;
+		--bracket-depth-1: #5fb3eb;
+		--bracket-depth-2: #a294de;
+
+		--on-accent: #fdf6e3;
+		--highlight-bg: rgba(203, 75, 22, 0.14);
+		--overlay-backdrop: rgba(0, 0, 0, 0.7);
+
 		--danger: #ffb4ad;
-		--danger-bg: rgba(180, 35, 24, 0.2);
+		--danger-bg: rgba(220, 50, 47, 0.2);
 		--danger-border: rgba(255, 180, 173, 0.25);
 		--success: #7ce7ac;
-		--grid-line: rgba(148, 163, 184, 0.2);
-		--bracket-depth-0: #f08a5d;
-		--bracket-depth-1: #6fa4d6;
-		--bracket-depth-2: #9b7cb5;
-		--edge-out: #6fa4d6;
-		--edge-out-strong: #8fbde6;
-		--edge-in: #94a3b8;
-		--edge-in-strong: #cbd5e1;
-		--edge-contains: #e07a6e;
-		--edge-defines: #d9855f;
-		--edge-implements: #6f9aab;
-		--edge-uses: #8fa07a;
-		--edge-calls: #a07db5;
-		--edge-calls-runtime: #b08e7a;
-		--edge-derives: #7faa9d;
-		--highlight-bg: rgba(240, 138, 93, 0.12);
-		--on-accent: #ffffff;
-		--overlay-backdrop: rgba(0, 0, 0, 0.75);
-		--shadow-accent: 0 12px 24px rgba(240, 138, 93, 0.25);
-		--shadow-modal: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
-		--shadow-toggle: 0 2px 6px rgba(0, 0, 0, 0.35);
-		--node-circle-stroke: rgba(255, 255, 255, 0.5);
-		--node-label-divider: rgba(255, 255, 255, 0.15);
+
+		--node-circle-stroke: rgba(7, 54, 66, 0.7);
+		--node-label-divider: rgba(147, 161, 161, 0.18);
 	}
 
+	/* ═══════════════════════════════════════════════════════════════
+	   CODE THEMES — drive .codeblock + token classes via CSS vars only.
+	   Default (no data-code-theme) inherits solarized-light values
+	   declared here on :root so every code surface gets a sane palette
+	   even before TweaksPanel mounts.
+	   ═══════════════════════════════════════════════════════════════ */
+
+	:root {
+		--code-bg: #fdf6e3;
+		--code-bg-soft: #eee8d5;
+		--code-ink: #586e75;
+		--code-border: rgba(88, 110, 117, 0.18);
+		--code-ln: rgba(88, 110, 117, 0.45);
+
+		--syntax-key: #859900;
+		--syntax-fn: #268bd2;
+		--syntax-ty: #b58900;
+		--syntax-str: #2aa198;
+		--syntax-num: #d33682;
+		--syntax-comment: #93a1a1;
+		--syntax-attr: #b58900;
+		--syntax-mut: #cb4b16;
+		--syntax-punct: #657b83;
+	}
+
+	:root[data-theme='dark'],
+	.theme-dark {
+		--code-bg: #002b36;
+		--code-bg-soft: #073642;
+		--code-ink: #93a1a1;
+		--code-border: rgba(147, 161, 161, 0.1);
+		--code-ln: rgba(147, 161, 161, 0.45);
+
+		--syntax-key: #859900;
+		--syntax-fn: #268bd2;
+		--syntax-ty: #b58900;
+		--syntax-str: #2aa198;
+		--syntax-num: #d33682;
+		--syntax-comment: #586e75;
+		--syntax-attr: #b58900;
+		--syntax-mut: #cb4b16;
+		--syntax-punct: #839496;
+	}
+
+	[data-code-theme='solarized-light'] {
+		--code-bg: #fdf6e3;
+		--code-bg-soft: #eee8d5;
+		--code-ink: #586e75;
+		--code-border: rgba(88, 110, 117, 0.18);
+		--code-ln: rgba(88, 110, 117, 0.45);
+		--syntax-key: #859900;
+		--syntax-fn: #268bd2;
+		--syntax-ty: #b58900;
+		--syntax-str: #2aa198;
+		--syntax-num: #d33682;
+		--syntax-comment: #93a1a1;
+		--syntax-attr: #b58900;
+		--syntax-mut: #cb4b16;
+		--syntax-punct: #657b83;
+	}
+
+	[data-code-theme='solarized-dark'] {
+		--code-bg: #002b36;
+		--code-bg-soft: #073642;
+		--code-ink: #93a1a1;
+		--code-border: rgba(147, 161, 161, 0.1);
+		--code-ln: rgba(147, 161, 161, 0.45);
+		--syntax-key: #859900;
+		--syntax-fn: #268bd2;
+		--syntax-ty: #b58900;
+		--syntax-str: #2aa198;
+		--syntax-num: #d33682;
+		--syntax-comment: #586e75;
+		--syntax-attr: #b58900;
+		--syntax-mut: #cb4b16;
+		--syntax-punct: #839496;
+	}
+
+	[data-code-theme='catppuccin-latte'] {
+		--code-bg: #eff1f5;
+		--code-bg-soft: #e6e9ef;
+		--code-ink: #4c4f69;
+		--code-border: rgba(76, 79, 105, 0.16);
+		--code-ln: rgba(76, 79, 105, 0.45);
+		--syntax-key: #8839ef;
+		--syntax-fn: #1e66f5;
+		--syntax-ty: #df8e1d;
+		--syntax-str: #40a02b;
+		--syntax-num: #fe640b;
+		--syntax-comment: #9ca0b0;
+		--syntax-attr: #df8e1d;
+		--syntax-mut: #d20f39;
+		--syntax-punct: #6c6f85;
+	}
+
+	[data-code-theme='catppuccin-mocha'] {
+		--code-bg: #1e1e2e;
+		--code-bg-soft: #181825;
+		--code-ink: #cdd6f4;
+		--code-border: rgba(205, 214, 244, 0.08);
+		--code-ln: rgba(205, 214, 244, 0.3);
+		--syntax-key: #cba6f7;
+		--syntax-fn: #89b4fa;
+		--syntax-ty: #f9e2af;
+		--syntax-str: #a6e3a1;
+		--syntax-num: #fab387;
+		--syntax-comment: #6c7086;
+		--syntax-attr: #f9e2af;
+		--syntax-mut: #f38ba8;
+		--syntax-punct: #9399b2;
+	}
+
+	[data-code-theme='one-light'] {
+		--code-bg: #fafafa;
+		--code-bg-soft: #f0f0f0;
+		--code-ink: #383a42;
+		--code-border: rgba(56, 58, 66, 0.1);
+		--code-ln: rgba(56, 58, 66, 0.35);
+		--syntax-key: #a626a4;
+		--syntax-fn: #4078f2;
+		--syntax-ty: #c18401;
+		--syntax-str: #50a14f;
+		--syntax-num: #986801;
+		--syntax-comment: #a0a1a7;
+		--syntax-attr: #c18401;
+		--syntax-mut: #e45649;
+		--syntax-punct: #696c77;
+	}
+
+	[data-code-theme='one-dark'] {
+		--code-bg: #282c34;
+		--code-bg-soft: #21252b;
+		--code-ink: #abb2bf;
+		--code-border: rgba(255, 255, 255, 0.06);
+		--code-ln: rgba(255, 255, 255, 0.22);
+		--syntax-key: #c678dd;
+		--syntax-fn: #61afef;
+		--syntax-ty: #e5c07b;
+		--syntax-str: #98c379;
+		--syntax-num: #d19a66;
+		--syntax-comment: #5c6370;
+		--syntax-attr: #e5c07b;
+		--syntax-mut: #e06c75;
+		--syntax-punct: #abb2bf;
+	}
+
+	[data-code-theme='github-light'] {
+		--code-bg: #ffffff;
+		--code-bg-soft: #f6f8fa;
+		--code-ink: #1f2328;
+		--code-border: rgba(31, 35, 40, 0.15);
+		--code-ln: rgba(31, 35, 40, 0.4);
+		--syntax-key: #cf222e;
+		--syntax-fn: #8250df;
+		--syntax-ty: #953800;
+		--syntax-str: #0a3069;
+		--syntax-num: #0550ae;
+		--syntax-comment: #6e7781;
+		--syntax-attr: #116329;
+		--syntax-mut: #82071e;
+		--syntax-punct: #57606a;
+	}
+
+	[data-code-theme='github-dark'] {
+		--code-bg: #0d1117;
+		--code-bg-soft: #161b22;
+		--code-ink: #e6edf3;
+		--code-border: rgba(255, 255, 255, 0.1);
+		--code-ln: rgba(255, 255, 255, 0.25);
+		--syntax-key: #ff7b72;
+		--syntax-fn: #d2a8ff;
+		--syntax-ty: #ffa657;
+		--syntax-str: #a5d6ff;
+		--syntax-num: #79c0ff;
+		--syntax-comment: #8b949e;
+		--syntax-attr: #7ee787;
+		--syntax-mut: #ffa657;
+		--syntax-punct: #c9d1d9;
+	}
+
+	/* ═══════════════════════════════════════════════════════════════
+	   ACCENT VARIANTS — swap the whole accent family.
+	   ═══════════════════════════════════════════════════════════════ */
+
+	:root[data-accent='orange'] {
+		--accent: #cb4b16;
+		--accent-strong: #b8400e;
+		--accent-soft: rgba(203, 75, 22, 0.1);
+		--accent-ring: rgba(203, 75, 22, 0.25);
+	}
+	:root[data-accent='cobalt'] {
+		--accent: #1f6fa5;
+		--accent-strong: #14507a;
+		--accent-soft: rgba(31, 111, 165, 0.1);
+		--accent-ring: rgba(31, 111, 165, 0.25);
+	}
+	:root[data-accent='forest'] {
+		--accent: #4f7d2f;
+		--accent-strong: #3a5e22;
+		--accent-soft: rgba(79, 125, 47, 0.1);
+		--accent-ring: rgba(79, 125, 47, 0.25);
+	}
+	:root[data-accent='plum'] {
+		--accent: #8c3a76;
+		--accent-strong: #6a2858;
+		--accent-soft: rgba(140, 58, 118, 0.1);
+		--accent-ring: rgba(140, 58, 118, 0.25);
+	}
+	:root[data-accent='char'] {
+		--accent: #2b323a;
+		--accent-strong: #14181d;
+		--accent-soft: rgba(43, 50, 58, 0.1);
+		--accent-ring: rgba(43, 50, 58, 0.25);
+	}
+	:root[data-theme='dark'][data-accent='orange'] {
+		--accent: #cb4b16;
+		--accent-strong: #e85d28;
+	}
+	:root[data-theme='dark'][data-accent='cobalt'] {
+		--accent: #5fb3eb;
+		--accent-strong: #82c5f0;
+	}
+	:root[data-theme='dark'][data-accent='forest'] {
+		--accent: #8aba5f;
+		--accent-strong: #a3c97e;
+	}
+	:root[data-theme='dark'][data-accent='plum'] {
+		--accent: #c485b1;
+		--accent-strong: #d9a0c8;
+	}
+	:root[data-theme='dark'][data-accent='char'] {
+		--accent: #c0c5cc;
+		--accent-strong: #dde1e6;
+	}
+
+	/* ═══════════════════════════════════════════════════════════════
+	   DENSITY — Compact / Comfortable / Spacious.
+	   Scales font size and a unit of spacing across the page.
+	   ═══════════════════════════════════════════════════════════════ */
+	:root[data-density='compact'] {
+		--density: 0.9;
+		--base-fs: 13px;
+	}
+	:root[data-density='comfortable'] {
+		--density: 1;
+		--base-fs: 14px;
+	}
+	:root[data-density='spacious'] {
+		--density: 1.15;
+		--base-fs: 15px;
+	}
+
+	/* ═══════════════════════════════════════════════════════════════
+	   VOICE — typographic register.
+	   Editorial: serif display + sans body (default).
+	   Technical: sans display + tighter weights, no serif.
+	   Geometric: geometric sans everywhere.
+	   ═══════════════════════════════════════════════════════════════ */
+	:root[data-voice='editorial'] {
+		--font-display: 'Fraunces', 'Source Serif 4', Georgia, serif;
+		--font-body: 'Inter', system-ui, sans-serif;
+	}
+	:root[data-voice='technical'] {
+		--font-display: 'IBM Plex Sans', 'Inter', system-ui, sans-serif;
+		--font-body: 'Inter', system-ui, sans-serif;
+	}
+	:root[data-voice='geometric'] {
+		--font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+		--font-body: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+	}
+
+	/* ═══════════════════════════════════════════════════════════════
+	   BASE — body, headings, fonts.
+	   ═══════════════════════════════════════════════════════════════ */
 	body {
 		min-height: 100vh;
 		font-family: var(--font-body);
+		font-size: var(--base-fs, 14px);
 		color: var(--ink);
-		background:
+		background: var(--bg);
+		background-image:
 			radial-gradient(circle at top left, var(--bg-top), transparent 48%),
-			radial-gradient(circle at bottom right, var(--bg-bottom), transparent 50%),
-			linear-gradient(120deg, var(--bg), var(--bg-strong) 60%);
-		background-color: var(--bg);
+			radial-gradient(circle at bottom right, var(--bg-bottom), transparent 50%);
+		-webkit-font-smoothing: antialiased;
+		text-rendering: optimizeLegibility;
 	}
 
 	code,
 	pre,
 	kbd,
-	samp {
+	samp,
+	.mono,
+	.font-mono {
 		font-family: var(--font-code);
 		font-variant-ligatures: var(--font-ligatures);
 	}
@@ -148,8 +520,21 @@
 	h3,
 	.font-display {
 		font-family: var(--font-display);
+		font-weight: 500;
+		letter-spacing: -0.01em;
+	}
+	:root[data-voice='technical'] h1,
+	:root[data-voice='technical'] h2,
+	:root[data-voice='technical'] h3,
+	:root[data-voice='technical'] .font-display {
+		font-weight: 700;
+		letter-spacing: -0.02em;
 	}
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   COMPONENTS — badges, code blocks, kbd, etc.
+   ═══════════════════════════════════════════════════════════════ */
 
 @layer components {
 	.graph-node text {
@@ -189,6 +574,7 @@
 		stroke-dasharray: 8 4;
 	}
 
+	/* Badge — chip with optional kind tint */
 	.badge {
 		display: inline-flex;
 		align-items: center;
@@ -196,8 +582,8 @@
 		border-radius: var(--radius-chip);
 		border: 1px solid var(--panel-border);
 		background: var(--panel);
-		padding: 0.125rem 0.5rem;
-		font-size: 0.75rem;
+		padding: 0.1rem 0.4rem;
+		font-size: 10.5px;
 		font-weight: 600;
 		color: var(--muted);
 	}
@@ -224,19 +610,56 @@
 	}
 
 	.badge-sm {
-		padding: 0.1rem 0.4rem;
+		padding: 0.02rem 0.32rem;
+		font-size: 10px;
 	}
 
 	.badge-lg {
 		padding: 0.25rem 0.75rem;
+		font-size: 11.5px;
 	}
 
 	.badge-code {
 		font-family: var(--font-code);
+		font-weight: 500;
 	}
 
-	/* ── Generic type badges ──
-     Badges with Lucide chevron icons as < and > brackets. */
+	/* Kind glyph — small colored square with single-letter glyph */
+	.kind-glyph {
+		display: inline-grid;
+		place-items: center;
+		color: #fff;
+		font-family: var(--font-code);
+		font-weight: 600;
+		border-radius: 4px;
+		text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+		flex-shrink: 0;
+		line-height: 1;
+	}
+
+	@supports (corner-shape: squircle) {
+		.kind-glyph {
+			corner-shape: squircle;
+		}
+	}
+
+	/* Kbd — small key cap */
+	.kbd {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1.15rem;
+		padding: 0 0.3rem;
+		height: 1.15rem;
+		border-radius: 4px;
+		border: 1px solid var(--panel-border);
+		background: var(--panel-solid);
+		font-family: var(--font-code);
+		font-size: 10px;
+		color: var(--muted);
+	}
+
+	/* Generic type badges — kept for the existing token renderer */
 	.generic-group {
 		display: inline-flex;
 		align-items: center;
@@ -247,7 +670,6 @@
 		flex-shrink: 0;
 	}
 
-	/* Hide comma separators — gaps replace them */
 	.generic-sep {
 		display: none;
 	}
@@ -269,26 +691,171 @@
 		color: var(--muted);
 	}
 
+	/* Shiki — colors now flow from --code-* vars, not shiki's theme */
 	.shiki,
 	.shiki code {
 		font-family: var(--font-code);
+		background-color: transparent !important;
+		color: var(--code-ink) !important;
 	}
 
 	.code-block :global(pre),
-	.code-block pre {
+	.code-block pre,
+	.codeblock pre {
 		margin: 0;
 		padding: 0.75rem;
-		border-radius: var(--radius-control);
+		border-radius: var(--radius-card);
 		overflow-x: auto;
 		background: var(--code-bg) !important;
 		border: 1px solid var(--code-border);
+		color: var(--code-ink);
 	}
 
 	.code-block :global(code),
-	.code-block code {
+	.code-block code,
+	.codeblock code {
 		font-family: var(--font-code);
 		font-size: 0.8125rem;
 		line-height: 1.6;
+		color: var(--code-ink);
+	}
+
+	/* Unified codeblock surface — used by Documentation, NodeDetails sigs, etc. */
+	.codeblock {
+		background: var(--code-bg);
+		color: var(--code-ink);
+		border: 1px solid var(--code-border);
+		border-radius: var(--radius-card);
+	}
+
+	.code-surface {
+		font-family: var(--font-code);
+		font-size: 12.5px;
+		line-height: 1.75;
+		color: var(--code-ink);
+	}
+
+	/* Token color classes — drive .codeblock contents from --syntax-* vars.
+	   Both `tok-*` and `tk-*` are accepted because some pre-existing source
+	   uses one or the other. */
+	.tok-kw,
+	.tk-kw {
+		color: var(--syntax-key);
+	}
+	.tok-fn,
+	.tk-fn {
+		color: var(--syntax-fn);
+	}
+	.tok-ty,
+	.tk-ty {
+		color: var(--syntax-ty);
+	}
+	.tok-str,
+	.tk-str {
+		color: var(--syntax-str);
+	}
+	.tok-num,
+	.tk-num {
+		color: var(--syntax-num);
+	}
+	.tok-cm,
+	.tk-cm {
+		color: var(--syntax-comment);
+		font-style: italic;
+	}
+	.tok-mut {
+		color: var(--syntax-mut);
+	}
+	.tok-attr {
+		color: var(--syntax-attr);
+	}
+	.tok-mu,
+	.tok-punct,
+	.tk-mu {
+		color: var(--syntax-punct);
+	}
+	.tok-ln {
+		color: var(--code-ln);
+		user-select: none;
+	}
+	.tok-id,
+	.tk-id {
+		color: var(--code-ink);
+	}
+	.tok-link,
+	.tk-link {
+		color: var(--link);
+		text-decoration: underline;
+		text-decoration-color: rgba(38, 139, 210, 0.3);
+		text-underline-offset: 2px;
+	}
+
+	/* Shiki multi-theme output:
+	   shiki.ts emits each token with `--shiki-{theme}: #color` for all 8
+	   themes. The selectors below pick the active theme via the
+	   [data-code-theme] attribute set by the Tweaks panel — switching
+	   the dataset value re-themes every code block instantly without
+	   re-running shiki. */
+	:root[data-code-theme='solarized-light'] .shiki,
+	:root[data-code-theme='solarized-light'] .shiki span {
+		color: var(--shiki-solarized-light);
+	}
+	:root[data-code-theme='solarized-light'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='solarized-dark'] .shiki,
+	:root[data-code-theme='solarized-dark'] .shiki span {
+		color: var(--shiki-solarized-dark);
+	}
+	:root[data-code-theme='solarized-dark'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='catppuccin-latte'] .shiki,
+	:root[data-code-theme='catppuccin-latte'] .shiki span {
+		color: var(--shiki-catppuccin-latte);
+	}
+	:root[data-code-theme='catppuccin-latte'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='catppuccin-mocha'] .shiki,
+	:root[data-code-theme='catppuccin-mocha'] .shiki span {
+		color: var(--shiki-catppuccin-mocha);
+	}
+	:root[data-code-theme='catppuccin-mocha'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='one-light'] .shiki,
+	:root[data-code-theme='one-light'] .shiki span {
+		color: var(--shiki-one-light);
+	}
+	:root[data-code-theme='one-light'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='one-dark'] .shiki,
+	:root[data-code-theme='one-dark'] .shiki span {
+		color: var(--shiki-one-dark);
+	}
+	:root[data-code-theme='one-dark'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='github-light'] .shiki,
+	:root[data-code-theme='github-light'] .shiki span {
+		color: var(--shiki-github-light);
+	}
+	:root[data-code-theme='github-light'] .shiki {
+		background: var(--code-bg) !important;
+	}
+	:root[data-code-theme='github-dark'] .shiki,
+	:root[data-code-theme='github-dark'] .shiki span {
+		color: var(--shiki-github-dark);
+	}
+	:root[data-code-theme='github-dark'] .shiki {
+		background: var(--code-bg) !important;
+	}
+
+	/* Legacy fallback: any non-themed shiki output uses --code-* vars */
+	.shiki {
+		background: var(--code-bg) !important;
 		color: var(--code-ink);
 	}
 
@@ -301,9 +868,40 @@
 			corner-shape: squircle;
 		}
 
-		.code-block pre {
+		.code-block pre,
+		.codeblock {
 			corner-shape: squircle;
 		}
+	}
+
+	/* Underlined link variant */
+	.ulink {
+		color: var(--link);
+		text-decoration: underline;
+		text-decoration-color: rgba(38, 139, 210, 0.3);
+		text-underline-offset: 2px;
+		text-decoration-thickness: 1px;
+	}
+	.ulink:hover {
+		text-decoration-color: var(--link);
+	}
+
+	/* Dot-separator inline `· ` */
+	.dotsep::before {
+		content: '·';
+		margin: 0 0.5em;
+		color: var(--muted-soft);
+	}
+
+	.tabnum {
+		font-variant-numeric: tabular-nums;
+	}
+
+	.row-hover {
+		transition: background-color 0.12s;
+	}
+	.row-hover:hover {
+		background-color: var(--panel-muted);
 	}
 }
 

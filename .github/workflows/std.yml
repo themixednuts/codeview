@@ -1,0 +1,78 @@
+name: std
+
+# Builds and uploads rustdoc JSON graphs for the standard-library crates
+# (std, core, alloc, proc_macro, test). Separate from parse.yml because
+# std crates only ship rustdoc JSON via the `rust-docs-json` rustup
+# component, which is nightly-only — not docs.rs.
+#
+# Runs after the typical Rust release window (Thursday/Friday) to pick
+# up the latest stable version. Manual triggers also supported.
+
+on:
+  schedule:
+    - cron: '0 18 * * 4'
+    - cron: '0 18 * * 5'
+  workflow_dispatch:
+
+env:
+  R2_BUCKET: crate-graphs
+  AWS_DEFAULT_REGION: auto
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve latest stable Rust version
+        id: version
+        run: |
+          VERSION=$(curl -s https://static.rust-lang.org/dist/channel-rust-stable.toml \
+            | grep -m1 '^version = ' | sed 's/version = "\([^ ]*\).*/\1/')
+          echo "rust_version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether std graphs for this version already exist in R2
+        id: check
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          if aws s3api head-object --bucket "$R2_BUCKET" \
+              --key "rust/std/${{ steps.version.outputs.rust_version }}/manifest.json" \
+              --endpoint-url "$R2_ENDPOINT" 2>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install nightly + rust-docs-json
+        if: steps.check.outputs.exists == 'false'
+        # Pinned commit SHA (see parse.yml for the rationale).
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
+          components: rust-docs-json
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.check.outputs.exists == 'false'
+        with:
+          shared-key: std-build
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.check.outputs.exists == 'false'
+
+      - name: Install JS deps
+        if: steps.check.outputs.exists == 'false'
+        working-directory: codeview-ui
+        run: bun install --frozen-lockfile
+
+      - name: Parse std + upload to R2
+        if: steps.check.outputs.exists == 'false'
+        working-directory: codeview-ui
+        env:
+          RUST_VERSION: ${{ steps.version.outputs.rust_version }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: bun scripts/build-std-docs.ts

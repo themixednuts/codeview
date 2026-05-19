@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { triggerCrateParseForm } from '$lib/rpc/crate.remote';
+	import { isHosted } from '$lib/platform';
 
 	let {
 		crateName,
@@ -40,24 +41,26 @@
 				{error}
 			</div>
 		{/if}
-		<form
-			{...retryForm.enhance(async ({ submit }) => {
-				if (!canRetry) return;
-				onRetryStart?.();
-				try {
-					await submit();
-				} catch (err) {
-					onRetryError?.(err instanceof Error ? err.message : String(err));
-				}
-			})}
-		>
-			<button
-				type="submit"
-				disabled={!canRetry}
-				class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+		{#if !isHosted}
+			<form
+				{...retryForm.enhance(async ({ submit }) => {
+					if (!canRetry) return;
+					onRetryStart?.();
+					try {
+						await submit();
+					} catch (err) {
+						onRetryError?.(err instanceof Error ? err.message : String(err));
+					}
+				})}
 			>
-				Retry
-			</button>
-		</form>
+				<button
+					type="submit"
+					disabled={!canRetry}
+					class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+				>
+					Retry
+				</button>
+			</form>
+		{/if}
 	</div>
 </div>

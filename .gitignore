@@ -23,6 +23,13 @@ opencode.json
 
 # Generated data
 /codeview-ui/graph.json
+/codeview-ui/.codeview-static/
+
+# Local design notes / agent working scratch
+/design-input/
+/design-input-v2/
+/.codemogger/
+AGENTS.md
 
 # Playwright
 /codeview-ui/test-results/

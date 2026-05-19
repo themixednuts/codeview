@@ -1,6 +1,7 @@
 import type { Result } from 'better-result';
 import type { Edge, Node, Workspace, CrateGraph } from '$lib/graph';
 import type { CrateIndex, CrateTree, NodeSummary, NodeDetail, TreeNodeDTO } from '$lib/schema';
+import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
 import type { SourceProviderMode } from './provider-utils';
 
@@ -15,6 +16,7 @@ export interface CrateStatus {
 }
 
 export interface CrateSummaryResult {
+	id?: string;
 	name: string;
 	version: string;
 	description?: string;
@@ -46,10 +48,33 @@ export interface DataProvider {
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
 	/** Load a single node with its edges and related nodes (progressive loading) */
 	loadNodeDetail?(name: string, version: string, nodeId: string): Promise<NodeDetail | null>;
+	loadNodeViewDirect?(
+		name: string,
+		version: string,
+		nodeId: string,
+	): Promise<import('$lib/schema').NodeView | null>;
+	loadTreeMeta?(
+		name: string,
+		version: string,
+	): Promise<{ kindCounts: Record<string, number>; roots: TreeNodeDTO[] } | null>;
 	/** Direct tree queries — work mid-parse before treeJson is finalized. */
 	loadTreeRootsDirect?(name: string, version: string): Promise<TreeNodeDTO[] | null>;
-	loadTreeChildrenDirect?(name: string, version: string, parentId: string): Promise<TreeNodeDTO[] | null>;
-	loadTreeAncestorsDirect?(name: string, version: string, nodeId: string): Promise<NodeSummary[] | null>;
+	loadTreeChildrenDirect?(
+		name: string,
+		version: string,
+		parentId: string,
+	): Promise<TreeNodeDTO[] | null>;
+	loadTreeAncestorsDirect?(
+		name: string,
+		version: string,
+		nodeId: string,
+	): Promise<NodeSummary[] | null>;
+	/** Build aggregated module map for crate overview visualizations. */
+	loadCrateMap(
+		name: string,
+		version: string,
+		options?: CrateMapOptions,
+	): Promise<CrateMapData | null>;
 	/** Hosted node search without loading full crate graph payloads. */
 	searchNodesDirect?(
 		name: string,

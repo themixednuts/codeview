@@ -1,13 +1,24 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
 	import type { CrateMapData, CrateMapModuleNode, CrateMapModuleEdge } from '$lib/graph/crate-map';
-	import { findContainingModule, computeForceDirectedLayout, moduleDepthColor, type CrateGraphNodePos } from '$lib/graph/crate-map';
+	import { resolveAppPath } from '$lib/app-paths';
+	import {
+		findContainingModule,
+		computeForceDirectedLayout,
+		moduleDepthColor,
+		type CrateGraphNodePos,
+	} from '$lib/graph/crate-map';
 	import { PanZoom } from '$lib/graph/pan-zoom.svelte';
 	import { KeyedMemo, keyOf, keyEqual } from '$lib/reactivity.svelte';
 
 	export type GraphRenderMode = 'normal' | 'dots';
 
-	let { data, selectedNodeId = null, getNodeUrl, renderMode = 'normal', onRenderModeChange } = $props<{
+	let {
+		data,
+		selectedNodeId = null,
+		getNodeUrl,
+		renderMode = 'normal',
+		onRenderModeChange,
+	} = $props<{
 		data: CrateMapData;
 		selectedNodeId?: string | null;
 		getNodeUrl: (id: string) => string;
@@ -66,7 +77,10 @@
 	const edgeLines = $derived.by<EdgeLine[]>(() => {
 		const lines: EdgeLine[] = [];
 		const posMap = nodePositions;
-		const maxTotal = data.moduleEdges.reduce((max: number, e: CrateMapModuleEdge) => Math.max(max, e.total), 1);
+		const maxTotal = data.moduleEdges.reduce(
+			(max: number, e: CrateMapModuleEdge) => Math.max(max, e.total),
+			1,
+		);
 
 		for (const edge of data.moduleEdges) {
 			const from = posMap.get(edge.from);
@@ -127,7 +141,7 @@
 	}
 
 	const hoveredModule = $derived(
-		hoveredModuleId ? moduleById.get(hoveredModuleId) ?? null : null,
+		hoveredModuleId ? (moduleById.get(hoveredModuleId) ?? null) : null,
 	);
 </script>
 
@@ -158,13 +172,7 @@
 			>
 				Dots
 			</button>
-			<button
-				type="button"
-				class="badge badge-sm"
-				onclick={() => pz.reset()}
-			>
-				Reset
-			</button>
+			<button type="button" class="badge badge-sm" onclick={() => pz.reset()}>Reset</button>
 		</div>
 	</div>
 
@@ -206,10 +214,14 @@
 					{@const pos = nodePositions.get(m.id)}
 					{#if pos}
 						<a
-							href={resolve(getNodeUrl(m.id) as `/${string}`)}
+							href={resolveAppPath(getNodeUrl(m.id))}
 							data-sveltekit-noscroll
-							onmouseenter={() => { hoveredModuleId = m.id; }}
-							onmouseleave={() => { hoveredModuleId = null; }}
+							onmouseenter={() => {
+								hoveredModuleId = m.id;
+							}}
+							onmouseleave={() => {
+								hoveredModuleId = null;
+							}}
 						>
 							{#if renderMode === 'dots'}
 								<circle
@@ -245,12 +257,7 @@
 									stroke-width={isNodeHighlighted(m) ? 2.5 : 1.5}
 								/>
 								<!-- Color dot -->
-								<circle
-									cx={pos.x - 42}
-									cy={pos.y}
-									r="4"
-									fill={depthColor(m.depth)}
-								/>
+								<circle cx={pos.x - 42} cy={pos.y} r="4" fill={depthColor(m.depth)} />
 								<text
 									x={pos.x - 34}
 									y={pos.y}
@@ -282,8 +289,7 @@
 		{#if hoveredModule}
 			<span class="font-medium text-(--ink)">{hoveredModule.id}</span>
 			<span class="text-(--muted)">
-				· {hoveredModule.totalNodeCount.toLocaleString()} items
-				· {hoveredModule.childModuleCount} submodules
+				· {hoveredModule.totalNodeCount.toLocaleString()} items · {hoveredModule.childModuleCount} submodules
 			</span>
 		{:else}
 			<span class="text-(--muted)">Hover a module to see details</span>

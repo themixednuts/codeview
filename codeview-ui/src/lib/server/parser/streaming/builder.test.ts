@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import type { Generics, Item, ItemSummary } from '../rustdoc.types';
 import { createStreamingGraphBuilder } from './builder';
 
@@ -78,13 +78,13 @@ describe('StreamingGraphBuilder deferred metadata', () => {
 		const node = graph.nodes.find((candidate) => candidate.id === 'crate::TryReserveError');
 
 		expect(node).toBeDefined();
-		expect(node?.visibility).toBe('Public');
+		expect(node?.visibility).toEqual({ kind: 'Public' });
 		expect(node?.variants).toEqual([
 			{
 				name: 'AllocError',
 				fields: [
-					{ name: '0', type_name: 'usize', visibility: 'Public' },
-					{ name: '1', type_name: 'u8', visibility: 'Public' },
+					{ name: '0', type_name: 'usize', visibility: { kind: 'Public' } },
+					{ name: '1', type_name: 'u8', visibility: { kind: 'Public' } },
 				],
 			},
 		]);
@@ -99,11 +99,11 @@ describe('StreamingGraphBuilder deferred metadata', () => {
 
 		const source = makeItem(10, 'source', {
 			function: {
-					sig: {
-						inputs: [],
-						output: { resolved_path: { id: 11, args: null, path: 'crate::Target' } },
-						is_c_variadic: false,
-					},
+				sig: {
+					inputs: [],
+					output: { resolved_path: { id: 11, args: null, path: 'crate::Target' } },
+					is_c_variadic: false,
+				},
 				generics: EMPTY_GENERICS,
 				header: {
 					is_const: false,

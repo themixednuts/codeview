@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Node, NodeKind } from '$lib/graph';
 	import { kindColors, kindIcons } from '$lib/tree';
+	import { isPublic } from '$lib/display-names';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import { resolve } from '$app/paths';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -62,15 +63,11 @@
 </script>
 
 {#if selectable}
-	<a
-		href={resolve(href)}
-		data-sveltekit-noscroll
-		data-sveltekit-preload-data="off"
+	<div
 		class="corner-squircle box-border flex w-full items-center gap-2 rounded-(--radius-chip) px-2 py-1 text-sm leading-none hover:bg-(--panel-strong) {isSelected
 			? 'bg-(--accent)/10 ring-1 ring-(--accent) ring-inset'
 			: ''} {dimmed ? 'opacity-50' : ''}"
 		{style}
-		onclick={handleRowClick}
 	>
 		{#if hasChildren}
 			<button
@@ -88,19 +85,32 @@
 		{:else}
 			<span class="flex size-4 shrink-0"></span>
 		{/if}
-		<span
-			class="corner-squircle flex size-5 shrink-0 items-center justify-center rounded-(--radius-chip) text-(--on-accent)"
-			style="background-color: {kindColors[kind] ?? kindColors.Crate}"
+		<a
+			href={resolve(href)}
+			data-sveltekit-noscroll
+			data-sveltekit-keepfocus
+			aria-current={isSelected ? 'page' : undefined}
+			class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-(--ink) no-underline"
+			onclick={handleRowClick}
 		>
-			<KindIcon size={12} strokeWidth={2.5} />
-		</span>
-		<span class="min-w-0 flex-1 truncate font-medium text-(--ink)">
-			{node.name}
-		</span>
-		{#if node.visibility === 'Public'}
-			<span class="ml-auto text-[10px] leading-none font-medium text-(--accent)">pub</span>
-		{/if}
-	</a>
+			<span
+				class="corner-squircle flex size-5 shrink-0 items-center justify-center rounded-(--radius-chip) text-(--on-accent)"
+				style="background-color: {kindColors[kind] ?? kindColors.Crate}"
+			>
+				<KindIcon size={12} strokeWidth={2.5} />
+			</span>
+			<span
+				class="min-w-0 flex-1 truncate font-medium {node.is_deprecated
+					? 'line-through opacity-75'
+					: ''}"
+			>
+				{node.name}
+			</span>
+			{#if isPublic(node.visibility)}
+				<span class="ml-auto text-[10px] leading-none font-medium text-(--accent)">pub</span>
+			{/if}
+		</a>
+	</div>
 {:else}
 	<div
 		class="corner-squircle box-border flex w-full items-center gap-2 rounded-(--radius-chip) px-2 py-1 text-sm leading-none hover:bg-(--panel-strong) {dimmed
@@ -134,10 +144,14 @@
 		>
 			<KindIcon size={12} strokeWidth={2.5} />
 		</span>
-		<span class="min-w-0 flex-1 truncate font-medium text-(--ink)">
+		<span
+			class="min-w-0 flex-1 truncate font-medium text-(--ink) {node.is_deprecated
+				? 'line-through opacity-75'
+				: ''}"
+		>
 			{node.name}
 		</span>
-		{#if node.visibility === 'Public'}
+		{#if isPublic(node.visibility)}
 			<span class="ml-auto text-[10px] leading-none font-medium text-(--accent)">pub</span>
 		{/if}
 	</div>

@@ -1,4 +1,15 @@
-import type { Graph, Node } from '$lib/graph';
+import {
+	forceCenter,
+	forceCollide,
+	forceLink,
+	forceManyBody,
+	forceSimulation,
+	forceX,
+	forceY,
+	type SimulationLinkDatum,
+	type SimulationNodeDatum,
+} from 'd3-force';
+import type { Edge, Graph, Node } from '$lib/graph';
 import type { VisNode, VisEdge } from './types';
 import {
 	CENTER_X,
@@ -9,6 +20,19 @@ import {
 	MIN_NODE_SPACING,
 } from './types';
 import { getNodeBoundingBox, resolveCollisions } from './collision';
+
+type ForceDatum = SimulationNodeDatum & {
+	id: string;
+	node: Node;
+	radius: number;
+};
+
+type ForceLink = SimulationLinkDatum<ForceDatum> & {
+	edge: Edge;
+};
+
+const FORCE_TICKS = 90;
+const VIEWPORT_MARGIN = 50;
 
 export function computeForceLayout(
 	graph: Graph,
@@ -35,106 +59,86 @@ export function computeForceLayout(
 		return { nodes: [], edges: [] };
 	}
 
-	const positions = new Map<string, { x: number; y: number }>();
-	nodesToLayout.forEach((node, i) => {
+	const orbitCount = Math.max(1, nodesToLayout.length - 1);
+	let orbitIndex = 0;
+	const layoutNodes: ForceDatum[] = nodesToLayout.map((node) => {
+		const box = getNodeBoundingBox(node, node.id === selected.id);
+		const radius = Math.max(box.width, box.height) / 2;
 		if (node.id === selected.id) {
-			positions.set(node.id, { x: CENTER_X, y: CENTER_Y });
-		} else {
-			const angle = (2 * Math.PI * i) / nodesToLayout.length;
-			positions.set(node.id, {
-				x: CENTER_X + FORCE_RADIUS * Math.cos(angle),
-				y: CENTER_Y + FORCE_RADIUS * Math.sin(angle),
-			});
+			return {
+				id: node.id,
+				node,
+				radius,
+				x: CENTER_X,
+				y: CENTER_Y,
+				fx: CENTER_X,
+				fy: CENTER_Y,
+			};
 		}
+
+		const angle = (2 * Math.PI * orbitIndex) / orbitCount - Math.PI / 2;
+		orbitIndex += 1;
+		return {
+			id: node.id,
+			node,
+			radius,
+			x: CENTER_X + FORCE_RADIUS * Math.cos(angle),
+			y: CENTER_Y + FORCE_RADIUS * Math.sin(angle),
+		};
 	});
 
-	const iterations = 50;
-	const baseRepulsion = 5000;
-	const attraction = 0.05;
-	const damping = 0.9;
+	const layoutNodeMap = new Map(layoutNodes.map((node) => [node.id, node]));
+	const layoutLinks: ForceLink[] = graph.edges
+		.filter((edge) => connectedIds.has(edge.from) && connectedIds.has(edge.to))
+		.map((edge) => ({ source: edge.from, target: edge.to, edge }));
+	const resolveLinkDatum = (endpoint: ForceLink['source']): ForceDatum | undefined =>
+		typeof endpoint === 'object' ? endpoint : layoutNodeMap.get(String(endpoint));
 
-	const nodeRadii = new Map<string, number>();
-	for (const node of nodesToLayout) {
-		const box = getNodeBoundingBox(node, node.id === selected.id);
-		nodeRadii.set(node.id, Math.max(box.width, box.height) / 2);
-	}
+	const simulation = forceSimulation(layoutNodes)
+		.force(
+			'link',
+			forceLink<ForceDatum, ForceLink>(layoutLinks)
+				.id((datum) => datum.id)
+				.distance((link) => {
+					const source = resolveLinkDatum(link.source);
+					const target = resolveLinkDatum(link.target);
+					return (source?.radius ?? 24) + (target?.radius ?? 24) + MIN_NODE_SPACING + 72;
+				})
+				.strength(0.24),
+		)
+		.force('charge', forceManyBody<ForceDatum>().strength(-650).distanceMax(FORCE_RADIUS * 2.4))
+		.force(
+			'collide',
+			forceCollide<ForceDatum>()
+				.radius((datum) => datum.radius + MIN_NODE_SPACING / 2)
+				.iterations(2),
+		)
+		.force('center', forceCenter(CENTER_X, CENTER_Y))
+		.force('x', forceX<ForceDatum>(CENTER_X).strength(0.025))
+		.force('y', forceY<ForceDatum>(CENTER_Y).strength(0.025))
+		.stop();
 
-	const velocities = new Map<string, { vx: number; vy: number }>();
-	nodesToLayout.forEach((n) => velocities.set(n.id, { vx: 0, vy: 0 }));
-
-	for (let iter = 0; iter < iterations; iter++) {
-		const forces = new Map<string, { fx: number; fy: number }>();
-		nodesToLayout.forEach((n) => forces.set(n.id, { fx: 0, fy: 0 }));
-
-		for (let i = 0; i < nodesToLayout.length; i++) {
-			for (let j = i + 1; j < nodesToLayout.length; j++) {
-				const a = nodesToLayout[i];
-				const b = nodesToLayout[j];
-				const posA = positions.get(a.id)!;
-				const posB = positions.get(b.id)!;
-				const dx = posB.x - posA.x;
-				const dy = posB.y - posA.y;
-				const dist = Math.max(1, Math.hypot(dx, dy));
-
-				const radiusA = nodeRadii.get(a.id) || 24;
-				const radiusB = nodeRadii.get(b.id) || 24;
-				const minDist = radiusA + radiusB + MIN_NODE_SPACING;
-				const repulsionScale = Math.max(1, minDist / 40);
-				const repulsion = baseRepulsion * repulsionScale;
-
-				const force = repulsion / (dist * dist);
-				const fx = (dx / dist) * force;
-				const fy = (dy / dist) * force;
-				forces.get(a.id)!.fx -= fx;
-				forces.get(a.id)!.fy -= fy;
-				forces.get(b.id)!.fx += fx;
-				forces.get(b.id)!.fy += fy;
-			}
-		}
-
-		for (const edge of graph.edges) {
-			if (!connectedIds.has(edge.from) || !connectedIds.has(edge.to)) continue;
-			const posA = positions.get(edge.from);
-			const posB = positions.get(edge.to);
-			if (!posA || !posB) continue;
-			const dx = posB.x - posA.x;
-			const dy = posB.y - posA.y;
-			const fx = dx * attraction;
-			const fy = dy * attraction;
-			if (forces.has(edge.from)) {
-				forces.get(edge.from)!.fx += fx;
-				forces.get(edge.from)!.fy += fy;
-			}
-			if (forces.has(edge.to)) {
-				forces.get(edge.to)!.fx -= fx;
-				forces.get(edge.to)!.fy -= fy;
-			}
-		}
-
-		for (const node of nodesToLayout) {
-			if (node.id === selected.id) continue;
-			const vel = velocities.get(node.id)!;
-			const force = forces.get(node.id)!;
-			vel.vx = (vel.vx + force.fx) * damping;
-			vel.vy = (vel.vy + force.fy) * damping;
-			const pos = positions.get(node.id)!;
-			pos.x = Math.max(50, Math.min(LAYOUT_WIDTH - 50, pos.x + vel.vx));
-			pos.y = Math.max(50, Math.min(LAYOUT_HEIGHT - 50, pos.y + vel.vy));
-		}
-	}
+	for (let i = 0; i < FORCE_TICKS; i += 1) simulation.tick();
+	simulation.stop();
 
 	const visNodes: VisNode[] = [];
 	const visNodeMap = new Map<string, VisNode>();
 
-	for (const node of nodesToLayout) {
-		const pos = positions.get(node.id)!;
+	for (const datum of layoutNodes) {
+		const node = datum.node;
 		const isCenter = node.id === selected.id;
+		const x = isCenter
+			? CENTER_X
+			: Math.max(VIEWPORT_MARGIN, Math.min(LAYOUT_WIDTH - VIEWPORT_MARGIN, datum.x ?? CENTER_X));
+		const y = isCenter
+			? CENTER_Y
+			: Math.max(VIEWPORT_MARGIN, Math.min(LAYOUT_HEIGHT - VIEWPORT_MARGIN, datum.y ?? CENTER_Y));
 		const visNode: VisNode = {
 			node,
-			x: pos.x,
-			y: pos.y,
-			baseX: pos.x,
-			baseY: pos.y,
+			x,
+			y,
+			baseX: x,
+			baseY: y,
 			angle: 0,
 			isCenter,
 			edgeKind: '',
@@ -149,6 +153,20 @@ export function computeForceLayout(
 	}
 
 	resolveCollisions(visNodes, selected.id);
+	for (const visNode of visNodes) {
+		if (visNode.node.id === selected.id) {
+			visNode.x = CENTER_X;
+			visNode.y = CENTER_Y;
+		} else {
+			visNode.x = Math.max(VIEWPORT_MARGIN, Math.min(LAYOUT_WIDTH - VIEWPORT_MARGIN, visNode.x));
+			visNode.y = Math.max(
+				VIEWPORT_MARGIN,
+				Math.min(LAYOUT_HEIGHT - VIEWPORT_MARGIN, visNode.y),
+			);
+		}
+		visNode.baseX = visNode.x;
+		visNode.baseY = visNode.y;
+	}
 
 	const visEdges: VisEdge[] = [];
 	for (const edge of graph.edges) {
@@ -159,6 +177,8 @@ export function computeForceLayout(
 				from,
 				to,
 				kind: edge.kind,
+				confidence: edge.confidence,
+				is_glob: edge.is_glob,
 				direction: edge.from === selected.id ? 'out' : 'in',
 			});
 		}

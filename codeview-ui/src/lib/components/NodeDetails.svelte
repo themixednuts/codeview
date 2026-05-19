@@ -1,5 +1,6 @@
 <script lang="ts">
-	import type { Edge, EdgeKind, Node, NodeKind, Visibility } from '$lib/graph';
+	import type { Edge, EdgeKind, Node, NodeKind } from '$lib/graph';
+	import { isPublic, visibilityLabel } from '$lib/display-names';
 
 	type SelectedEdges = {
 		incoming: Edge[];
@@ -11,8 +12,11 @@
 	import Documentation from './Documentation.svelte';
 	import CodeBlock from './CodeBlock.svelte';
 	import CollapsibleSection from './CollapsibleSection.svelte';
+	import DocSection from './DocSection.svelte';
+	import SignatureBlock from './SignatureBlock.svelte';
 	import SourceViewer from './SourceViewer.svelte';
 	import { tooltip } from '$lib/tooltip';
+	import { hyphenateCrateName, normalizeCrateName } from '$lib/crate-names';
 	import ChevronsDownUp from '@lucide/svelte/icons/chevrons-down-up';
 	import ChevronsUpDown from '@lucide/svelte/icons/chevrons-up-down';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
@@ -33,7 +37,6 @@
 		blanketImpls,
 		methodGroups,
 		kindLabels,
-		visibilityLabels,
 		edgeLabels,
 		displayNode,
 		theme = 'light',
@@ -43,6 +46,7 @@
 		crateName,
 		crateVersion,
 		crateVersions,
+		belowTitle,
 	} = $props<{
 		selected: Node | null;
 		selectedEdges: SelectedEdges;
@@ -50,7 +54,6 @@
 		blanketImpls: Node[];
 		methodGroups: MethodGroup[];
 		kindLabels: Record<NodeKind, string>;
-		visibilityLabels: Record<Visibility, string>;
 		edgeLabels: Record<EdgeKind, string>;
 		displayNode: (id: string) => string;
 		theme?: 'dark' | 'light';
@@ -58,11 +61,16 @@
 		getNodeUrl?: (id: string) => string;
 		/** Check if a node exists in the graph */
 		nodeExists?: (nodeId: string) => boolean;
-		/** Fetch related node metadata (e.g. is_external, kind) */
-		nodeMeta?: (nodeId: string) => { is_external?: boolean; kind?: NodeKind } | undefined;
+		/** Fetch related node metadata (full related node when available). */
+		nodeMeta?: (nodeId: string) => Node | undefined;
 		crateName?: string;
 		crateVersion?: string;
 		crateVersions?: Record<string, string>;
+		/** Optional content inserted right after the title block (kind label +
+		 *  h1 + path + source) and before the Documentation / Methods / etc.
+		 *  sections. The DetailView hoists the relationship graph card into
+		 *  this slot so the visual context appears before the doc prose. */
+		belowTitle?: import('svelte').Snippet;
 	}>();
 
 	const totalImpls = $derived(sourceImpls.length + blanketImpls.length);
@@ -74,8 +82,15 @@
 
 	function resolveVersionForCrate(id?: string | null) {
 		const idCrate = crateFromId(id);
-		if (!idCrate) return undefined;
-		return idCrate === crateName ? crateVersion : undefined;
+		if (!idCrate) return crateVersion;
+		if (crateName && normalizeCrateName(idCrate) === normalizeCrateName(crateName)) {
+			return crateVersion;
+		}
+		return (
+			crateVersions?.[idCrate] ??
+			crateVersions?.[normalizeCrateName(idCrate)] ??
+			crateVersions?.[hyphenateCrateName(idCrate)]
+		);
 	}
 
 	function isExternalNode(nodeId: string): boolean {
@@ -232,33 +247,21 @@
 		return result;
 	}
 
-	// Track collapsible section refs for expand/collapse all
+	// Track collapsible section refs for expand/collapse all.
+	// The top-level doc sections (Documentation, Methods, Trait Impls,
+	// Relationships, Attributes) are no longer collapsible — they render
+	// inline via DocSection, matching the doc-classic design.
 	let signatureRef = $state<CollapsibleSection | null>(null);
 	let fieldsRef = $state<CollapsibleSection | null>(null);
 	let variantsRef = $state<CollapsibleSection | null>(null);
 	let typeInfoRef = $state<CollapsibleSection | null>(null);
 	let boundsRef = $state<CollapsibleSection | null>(null);
 	let variantTypeRef = $state<CollapsibleSection | null>(null);
-	let docsRef = $state<CollapsibleSection | null>(null);
-	let methodsRef = $state<CollapsibleSection | null>(null);
-	let implsRef = $state<CollapsibleSection | null>(null);
-	let relationshipsRef = $state<CollapsibleSection | null>(null);
-	let attrsRef = $state<CollapsibleSection | null>(null);
 
 	let allRefs = $derived(
-		[
-			signatureRef,
-			fieldsRef,
-			variantsRef,
-			typeInfoRef,
-			boundsRef,
-			variantTypeRef,
-			docsRef,
-			methodsRef,
-			implsRef,
-			relationshipsRef,
-			attrsRef,
-		].filter(Boolean) as CollapsibleSection[],
+		[signatureRef, fieldsRef, variantsRef, typeInfoRef, boundsRef, variantTypeRef].filter(
+			Boolean,
+		) as CollapsibleSection[],
 	);
 
 	function expandAll() {
@@ -295,11 +298,31 @@
 		ReExports: 'Re-exports this item via pub use',
 	};
 
+	function implCategoryLabel(category: Node['impl_category']): string | null {
+		switch (category) {
+			case 'Blanket':
+				return 'blanket';
+			case 'Negative':
+				return 'negative';
+			case 'Synthetic':
+				return 'synthetic';
+			case 'Trait':
+				return 'trait';
+			case 'Inherent':
+				return 'inherent';
+			default:
+				return null;
+		}
+	}
+
 	function isTupleVariant(fields: { name: string }[]): boolean {
 		return fields.length > 0 && fields.every((f) => /^\d+$/.test(f.name));
 	}
 
-	const SIGNATURE_WRAP_COLUMN = 100;
+	// fn signatures are now formatted by SignatureBlock, which measures the
+	// real container width via ResizeObserver and picks inline-vs-multiline
+	// dynamically — see SignatureBlock.svelte for the rustfmt-style break
+	// shape (header `(`, one arg per line, closing `)` before `->`).
 	const TYPE_WRAP_COLUMN = 80;
 
 	function formatTypeName(typeName: string): string {
@@ -339,28 +362,6 @@
 		return `${prefix}<\n${wrappedArgs},\n>${suffix}`;
 	}
 
-	function formatSignature(node: Node): string | null {
-		if (!node.signature) return null;
-		const sig = node.signature;
-		const parts: string[] = [];
-		if (sig.is_const) parts.push('const');
-		if (sig.is_async) parts.push('async');
-		if (sig.is_unsafe) parts.push('unsafe');
-		parts.push('fn');
-		parts.push(node.name);
-		const args = sig.inputs.map((a) => `${a.name}: ${a.type_name}`);
-		const ret = sig.output ? ` -> ${sig.output}` : '';
-		const header = parts.join(' ');
-		const inline = `${header}(${args.join(', ')})${ret}`;
-
-		if (args.length === 0 || inline.length <= SIGNATURE_WRAP_COLUMN) {
-			return inline;
-		}
-
-		const indent = '    ';
-		const wrappedArgs = args.map((arg) => `${indent}${arg}`).join(',\n');
-		return `${header}(\n${wrappedArgs},\n)${ret}`;
-	}
 </script>
 
 {#snippet segmentLinks(segs: BoundSegment[])}
@@ -454,10 +455,26 @@
 {/snippet}
 
 {#snippet implRow(implBlock: Node)}
+	{@const implCategory = implCategoryLabel(implBlock.impl_category)}
+	{@const traitNode = implBlock.impl_trait ? nodeMeta?.(implBlock.impl_trait) : undefined}
+	{@const requiredCount = traitNode?.required_trait_methods?.length ?? 0}
+	{@const defaultCount = traitNode?.default_trait_methods?.length ?? 0}
+	{@const providedDefaultCount = implBlock.provided_trait_methods?.length ?? 0}
 	<div
 		class="flex flex-wrap items-center gap-2 text-sm [contain-intrinsic-size:auto_28px] [content-visibility:auto]"
 	>
 		<span class="badge">impl</span>
+		{#if implCategory}
+			<span
+				class="badge {implBlock.impl_category === 'Negative'
+					? 'border-(--danger-border) bg-(--danger-bg) text-(--danger)'
+					: implBlock.impl_category === 'Blanket' || implBlock.impl_category === 'Synthetic'
+						? 'opacity-80'
+						: ''}"
+			>
+				{implCategory}
+			</span>
+		{/if}
 		{#if implBlock.generics && implBlock.generics.length > 0}
 			{#each implBlock.generics as generic (generic)}
 				{@render linkedBadge(generic, implBlock.bound_links, true)}
@@ -484,49 +501,70 @@
 				{@render linkedBadge(predicate, implBlock.bound_links, false)}
 			{/each}
 		{/if}
+		{#if implBlock.impl_trait && (requiredCount > 0 || defaultCount > 0)}
+			<span class="text-xs text-(--muted)">
+				{requiredCount} required, {defaultCount} default
+				{#if providedDefaultCount > 0}
+					· using {providedDefaultCount} default
+				{/if}
+			</span>
+		{/if}
 	</div>
 {/snippet}
 
 {#if selected}
 	<div class="max-w-3xl">
-		<!-- Header -->
+		<!-- Header — doc-classic title row: kind label + h1 + qualified path -->
 		<div class="mb-6">
-			<div class="flex items-center justify-between">
-				<div class="flex items-center gap-3">
-					<span
-						class="badge badge-lg badge-filled text-sm"
-						style="background-color: {kindColors[selectedKind]}"
-					>
-						{kindLabels[selected.kind]}
+			<div class="flex items-baseline gap-3 flex-wrap">
+				<span
+					class="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase"
+					style="color: {kindColors[selectedKind]}"
+				>
+					{kindLabels[selected.kind]}
+				</span>
+				<h1
+					class="font-display text-[34px] font-semibold leading-none tracking-tight text-(--ink) {selected.is_deprecated
+						? 'line-through opacity-80'
+						: ''}"
+				>
+					{selected.name}
+				</h1>
+				<span class="font-mono text-[12px] text-(--muted-soft)">{selected.id}</span>
+				{#if !isPublic(selected.visibility)}
+					<span class="badge badge-sm">{visibilityLabel(selected.visibility)}</span>
+				{/if}
+				{#if selected.is_deprecated}
+					<span class="badge badge-sm border-(--danger-border) bg-(--danger-bg) text-(--danger)">
+						Deprecated
 					</span>
-					<span class="badge badge-strong">
-						{visibilityLabels[selected.visibility]}
-					</span>
-				</div>
-				<div class="flex items-center gap-1">
+				{/if}
+				<div class="ml-auto flex items-center gap-1">
 					<button
 						type="button"
 						class="badge badge-sm inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 						onclick={expandAll}
 					>
-						<ChevronsUpDown size={12} />
-						Expand all
+						<ChevronsUpDown size={11} />
+						Expand
 					</button>
-					<span class="text-(--muted)">|</span>
 					<button
 						type="button"
 						class="badge badge-sm inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 						onclick={collapseAll}
 					>
-						<ChevronsDownUp size={12} />
-						Collapse all
+						<ChevronsDownUp size={11} />
+						Collapse
 					</button>
 				</div>
 			</div>
-			<h2 class="mt-3 text-2xl font-bold text-(--ink)">{selected.name}</h2>
-			<p class="mt-1 text-sm font-(--font-code) text-(--muted)">{selected.id}</p>
+			{#if selected.deprecation?.note}
+				<p class="mt-2 text-sm text-(--danger)">{selected.deprecation.note}</p>
+			{/if}
 			{#if selected?.span}
-				<div class="mt-2 text-xs">
+				<div
+					class="mt-3 flex items-center gap-3 font-mono text-[11px] text-(--muted-soft)"
+				>
 					<SourceViewer
 						span={selected?.span ?? { file: '', line: 0 }}
 						{theme}
@@ -552,6 +590,10 @@
 			{/if}
 		</div>
 
+		<!-- Below-title slot: doc page hoists the Relationship Graph here so
+			 the visual context shows before the prose. -->
+		{@render belowTitle?.()}
+
 		<!-- Parent context for associated items -->
 		{#if selected.parent_impl}
 			<div class="mb-4 flex items-center gap-2 text-sm">
@@ -574,7 +616,7 @@
 		{#if selected.signature}
 			<CollapsibleSection bind:this={signatureRef} title="Signature" defaultOpen={true}>
 				<div>
-					<CodeBlock code={formatSignature(selected) ?? ''} lang="rust" {theme} />
+					<SignatureBlock node={selected} {theme} />
 				</div>
 				{#if selected.signature.inputs.length > 0}
 					<div class="mt-4">
@@ -621,7 +663,7 @@
 							<tr class="group">
 								<td class="py-2 pr-3 align-baseline whitespace-nowrap">
 									<span class="inline-flex items-baseline gap-1.5">
-										{#if field.visibility === 'Public'}
+										{#if isPublic(field.visibility)}
 											<span class="text-[10px] font-medium text-(--accent)">pub</span>
 										{:else}
 											<span class="text-[10px] font-medium text-(--muted)">prv</span>
@@ -755,7 +797,7 @@
 
 		<!-- Documentation (always open) -->
 		{#if selected.docs}
-			<CollapsibleSection bind:this={docsRef} title="Documentation" defaultOpen={true}>
+			<DocSection title="Documentation" anchor="documentation">
 				<Documentation
 					docs={selected.docs}
 					defaultLang="rust"
@@ -764,17 +806,12 @@
 					{getNodeUrl}
 					{nodeExists}
 				/>
-			</CollapsibleSection>
+			</DocSection>
 		{/if}
 
 		<!-- Methods -->
 		{#if methodCount > 0}
-			<CollapsibleSection
-				bind:this={methodsRef}
-				title="Methods"
-				count={methodCount}
-				defaultOpen={methodCount <= METHODS_COLLAPSE_THRESHOLD}
-			>
+			<DocSection title="Methods" anchor="methods" count={methodCount}>
 				<div class="space-y-6">
 					{#each methodGroups as group (group.impl.id)}
 						<div
@@ -810,49 +847,52 @@
 							</div>
 							<div>
 								{#each group.methods as method, index (method.id)}
+									{@const hasModifiers =
+										isPublic(method.visibility) ||
+										method.signature?.is_async ||
+										method.signature?.is_unsafe ||
+										method.signature?.is_const}
 									<div
-										class={`bg-(--panel-solid) p-3 [contain-intrinsic-size:auto_80px] [content-visibility:auto] ${index ? 'border-t border-(--panel-border)' : ''}`}
+										class={`bg-(--panel-solid) px-3 py-3 [contain-intrinsic-size:auto_80px] [content-visibility:auto] ${index ? 'border-t border-(--panel-border)' : ''}`}
 									>
-										<div class="flex flex-wrap items-center gap-2">
-											{#if method.visibility === 'Public'}
-												<span class="badge badge-strong text-(--accent)">pub</span>
-											{/if}
-											<code class="badge badge-strong badge-code">{method.name}</code>
-											{#if method.signature?.is_async}
-												<span class="badge">async</span>
-											{/if}
-											{#if method.signature?.is_unsafe}
-												<span class="badge">unsafe</span>
-											{/if}
-											{#if method.signature?.is_const}
-												<span class="badge">const</span>
-											{/if}
-										</div>
-										<div class="mt-1 flex flex-wrap items-center gap-3">
-											{#if method.signature}
-												<div class="min-w-0 flex-1">
-													<CodeBlock
-														code={formatSignature(method) ?? ''}
-														lang="rust"
-														variant="flat"
-														{theme}
-													/>
+										<!-- Header strip: chips left, source link right. Keeps both
+											 out of the signature's flow so the signature can claim
+											 the full row width and word-wrap with rustfmt-style
+											 breaks without fighting other content for space. -->
+										{#if hasModifiers || method.span}
+											<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+												<div class="flex items-center gap-1">
+													{#if isPublic(method.visibility)}
+														<span class="badge badge-strong text-(--accent)">pub</span>
+													{/if}
+													{#if method.signature?.is_async}
+														<span class="badge">async</span>
+													{/if}
+													{#if method.signature?.is_unsafe}
+														<span class="badge">unsafe</span>
+													{/if}
+													{#if method.signature?.is_const}
+														<span class="badge">const</span>
+													{/if}
 												</div>
-											{/if}
-											{#if method.span}
-												<div class="shrink-0 text-xs">
-													<SourceViewer
-														span={method.span}
-														{theme}
-														crateName={crateFromId(method.id) ?? crateName}
-														crateVersion={resolveVersionForCrate(method.id)}
-													/>
-												</div>
-											{/if}
-										</div>
+												{#if method.span}
+													<div class="text-xs">
+														<SourceViewer
+															span={method.span}
+															{theme}
+															crateName={crateFromId(method.id) ?? crateName}
+															crateVersion={resolveVersionForCrate(method.id)}
+														/>
+													</div>
+												{/if}
+											</div>
+										{/if}
+										{#if method.signature}
+											<SignatureBlock node={method} {theme} variant="flat" />
+										{/if}
 										{#if method.docs}
 											<div
-												class={`mt-3 text-sm text-(--muted) ${method.signature ? 'border-t border-(--panel-border) pt-3' : ''}`}
+												class={`mt-3 text-sm text-(--muted) ${method.signature ? 'border-t border-(--panel-border-soft) pt-3' : ''}`}
 											>
 												<Documentation
 													docs={method.docs}
@@ -870,16 +910,11 @@
 						</div>
 					{/each}
 				</div>
-			</CollapsibleSection>
+			</DocSection>
 		{/if}
 
 		{#if totalImpls > 0}
-			<CollapsibleSection
-				bind:this={implsRef}
-				title="Trait Implementations"
-				count={totalImpls}
-				defaultOpen={totalImpls <= IMPLS_COLLAPSE_THRESHOLD}
-			>
+			<DocSection title="Trait implementations" anchor="trait-impls" count={totalImpls}>
 				<div class="space-y-4">
 					<!-- Source (user-written) implementations -->
 					{#if sourceImpls.length > 0}
@@ -906,17 +941,18 @@
 						</details>
 					{/if}
 				</div>
-			</CollapsibleSection>
+			</DocSection>
 		{/if}
 
-		<!-- Relationships (collapse if many edges) -->
-		<CollapsibleSection
-			bind:this={relationshipsRef}
-			title="Relationships"
-			count={selectedEdges.outgoing.length + selectedEdges.incoming.length}
-			defaultOpen={selectedEdges.outgoing.length + selectedEdges.incoming.length <=
-				EDGES_COLLAPSE_THRESHOLD}
-		>
+		<!-- Relationships — inline section with the full edge layout.
+			 Hide entirely when the node has no edges (e.g. crate root) — the
+			 default "no outgoing / no incoming" empty state is noise. -->
+		{#if selectedEdges.outgoing.length + selectedEdges.incoming.length > 0}
+			<DocSection
+				title="Relationships"
+				anchor="relationships"
+				count={selectedEdges.outgoing.length + selectedEdges.incoming.length}
+			>
 			<div class="grid gap-6 md:grid-cols-2">
 				<!-- Outgoing edges -->
 				<div>
@@ -928,13 +964,25 @@
 							<p class="col-span-2 text-(--muted)">No outgoing edges</p>
 						{:else}
 							{#each selectedEdges.outgoing as edge (edge.kind + '-' + edge.to)}
-								<div>
+								<div class="flex items-center gap-1.5">
 									<span
 										class="badge"
 										{@attach tooltip(edgeKindDescriptions[edge.kind as EdgeKind] ?? edge.kind)}
 									>
 										{edgeLabels[edge.kind]}
 									</span>
+									{#if edge.kind === 'ReExports' && edge.is_glob}
+										<span class="badge" title="Glob re-export (pub use ...::*)">glob</span>
+									{/if}
+									{#if edge.confidence !== 'Static'}
+										<span
+											class="badge {edge.confidence === 'Inferred'
+												? 'border-(--panel-border) opacity-80'
+												: ''}"
+										>
+											{edge.confidence}
+										</span>
+									{/if}
 								</div>
 								<div>
 									{#if getNodeUrl && !isExternalNode(edge.to)}
@@ -974,13 +1022,25 @@
 							<p class="col-span-2 text-(--muted)">No incoming edges</p>
 						{:else}
 							{#each selectedEdges.incoming as edge (edge.kind + '-' + edge.from)}
-								<div>
+								<div class="flex items-center gap-1.5">
 									<span
 										class="badge"
 										{@attach tooltip(edgeKindDescriptions[edge.kind as EdgeKind] ?? edge.kind)}
 									>
 										{edgeLabels[edge.kind]}
 									</span>
+									{#if edge.kind === 'ReExports' && edge.is_glob}
+										<span class="badge" title="Glob re-export (pub use ...::*)">glob</span>
+									{/if}
+									{#if edge.confidence !== 'Static'}
+										<span
+											class="badge {edge.confidence === 'Inferred'
+												? 'border-(--panel-border) opacity-80'
+												: ''}"
+										>
+											{edge.confidence}
+										</span>
+									{/if}
 								</div>
 								<div>
 									{#if getNodeUrl && !isExternalNode(edge.from)}
@@ -1010,22 +1070,18 @@
 					</div>
 				</div>
 			</div>
-		</CollapsibleSection>
+			</DocSection>
+		{/if}
 
 		<!-- Attributes -->
 		{#if selected.attrs && selected.attrs.length > 0}
-			<CollapsibleSection
-				bind:this={attrsRef}
-				title="Attributes"
-				count={selected.attrs.length}
-				defaultOpen={selected.attrs.length <= 3}
-			>
+			<DocSection title="Attributes" anchor="attributes" count={selected.attrs.length}>
 				<div class="space-y-1">
 					{#each selected.attrs as attr (attr)}
 						<code class="token-meta block text-sm">{attr}</code>
 					{/each}
 				</div>
-			</CollapsibleSection>
+			</DocSection>
 		{/if}
 	</div>
 {:else}

@@ -14,12 +14,9 @@
 		crateName,
 		version,
 		workspaceCrateCount,
-		externalCrateCount,
 		crateVersionOptions,
 		workspaceCrates,
-		externalCrates,
 		loadingWorkspaceCrates,
-		loadingExternalCrates,
 		onVersionChange,
 		debugInfo,
 		filter,
@@ -32,8 +29,10 @@
 		activeKinds,
 		kindFilter,
 		rootChildren,
+		prefetchedTreeChildren = [],
 		status,
 		progressNodeCount,
+		showGraphBlanketImpls,
 		getNodeUrl,
 		onToggleKind,
 		onRetryTree,
@@ -41,12 +40,9 @@
 		crateName: string | undefined;
 		version: string | undefined;
 		workspaceCrateCount: number | null;
-		externalCrateCount: number | null;
 		crateVersionOptions: string[];
 		workspaceCrates: Array<{ id: string; name?: string; version: string }>;
-		externalCrates: Array<{ id: string; name?: string; version: string }>;
 		loadingWorkspaceCrates: boolean;
-		loadingExternalCrates: boolean;
 		onVersionChange: (e: Event) => void;
 		debugInfo?: {
 			statusDebugKey: string;
@@ -62,8 +58,10 @@
 		activeKinds: Set<NodeKind>;
 		kindFilter: Set<NodeKind>;
 		rootChildren?: { id: string; children: TreeNodeDTO[] } | null;
+		prefetchedTreeChildren?: Array<{ id: string; children: TreeNodeDTO[] }>;
 		status: CrateStatusValue;
 		progressNodeCount: number;
+		showGraphBlanketImpls: boolean;
 		getNodeUrl: (id: string) => string;
 		onToggleKind: (kind: NodeKind) => void;
 		onRetryTree?: (reset: () => void) => void;
@@ -71,21 +69,26 @@
 
 	const log = getLogger('crate-sidebar');
 	const orderedKinds = $derived.by(() => Array.from(new Set(nodeKindOrder)));
+	const totalItems = $derived.by(() => {
+		let total = 0;
+		for (const count of kindCountMap.values()) total += count;
+		return total;
+	});
 </script>
 
-<div class="flex w-80 flex-col border-r border-(--panel-border) bg-(--panel)">
+<div
+	class="flex h-[45vh] max-h-[28rem] w-full shrink-0 flex-col border-b border-(--panel-border) bg-(--panel) md:h-auto md:max-h-none md:w-80 md:border-r md:border-b-0"
+>
 	<CrateHeader
 		{crateName}
 		{version}
 		{workspaceCrateCount}
-		{externalCrateCount}
 		{crateVersionOptions}
 		{workspaceCrates}
-		{externalCrates}
 		{loadingWorkspaceCrates}
-		{loadingExternalCrates}
 		{onVersionChange}
 		{debugInfo}
+		{totalItems}
 	/>
 
 	<form
@@ -109,31 +112,35 @@
 					<input type="hidden" name="k" value={kind} />
 				{/each}
 			{/if}
+			{#if showGraphBlanketImpls}
+				<input type="hidden" name="gbi" value="1" />
+			{/if}
 		</div>
 	</form>
 
 	<svelte:boundary>
-		<div class="flex flex-wrap items-center gap-1 border-b border-(--panel-border) px-2 py-1.5">
-			{#each orderedKinds as kind (kind)}
-				{@const count = kindCountMap.get(kind) ?? 0}
-				{@const isActive = activeKinds.has(kind)}
-				{@const isEmpty = count === 0}
-				<button
-					type="button"
-					data-kind={kind}
-					data-active={isActive ? 'true' : undefined}
-					disabled={isEmpty}
-					class="badge badge-sm transition-colors {isActive
-						? 'badge-accent'
-						: isEmpty
-							? 'cursor-default opacity-40'
+		{@const populatedKinds = orderedKinds.filter(
+			(k) => (kindCountMap.get(k) ?? 0) > 0 || activeKinds.has(k),
+		)}
+		{#if populatedKinds.length > 0}
+			<div class="flex flex-wrap items-center gap-1 border-b border-(--panel-border) px-2 py-1.5">
+				{#each populatedKinds as kind (kind)}
+					{@const count = kindCountMap.get(kind) ?? 0}
+					{@const isActive = activeKinds.has(kind)}
+					<button
+						type="button"
+						data-kind={kind}
+						data-active={isActive ? 'true' : undefined}
+						class="badge badge-sm transition-colors {isActive
+							? 'badge-accent'
 							: 'hover:bg-(--panel-strong) hover:text-(--ink)'}"
-					onclick={() => !isEmpty && onToggleKind(kind)}
-				>
-					{kindLabels[kind]}{count > 0 ? ` (${count})` : ''}
-				</button>
-			{/each}
-		</div>
+						onclick={() => onToggleKind(kind)}
+					>
+						{kindLabels[kind]}{count > 0 ? ` (${count.toLocaleString()})` : ''}
+					</button>
+				{/each}
+			</div>
+		{/if}
 
 		<div class="flex-1 overflow-auto">
 			{#if filter && searchQuery}
@@ -154,6 +161,8 @@
 					filter=""
 					{kindFilter}
 					{rootChildren}
+					prefetchedChildren={prefetchedTreeChildren}
+					showBlanketImpls={showGraphBlanketImpls}
 				/>
 			{:else if status === 'processing' || status === 'unknown'}
 				<SkeletonTree count={progressNodeCount || 24} showKindBadges={false} />
@@ -165,7 +174,7 @@
 			{/if}
 		</div>
 		{#snippet failed(error, reset)}
-			{@const _ = log.error`CrateSidebar tree boundary: ${error instanceof Error ? error.stack ?? error.message : String(error)} crate=${crateName}@${version}`}
+			{@const _ = log.error`CrateSidebar tree boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} crate=${crateName}@${version}`}
 			<div class="p-4 text-sm text-(--danger)">
 				<p class="font-medium">Failed to load tree</p>
 				<button

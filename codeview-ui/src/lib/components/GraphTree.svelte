@@ -1,16 +1,19 @@
 <script lang="ts">
 	import type { Node, NodeKind } from '$lib/graph';
-	import type { TreeNodeDTO } from '$lib/schema';
+	import type { NodeSummary, TreeNodeDTO } from '$lib/schema';
 	import type { CrateStatusValue } from '$lib/context';
+	import { Data, Effect } from 'effect';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { CHILDREN_PLACEHOLDER, matchesFilter, type TreeNode } from '$lib/tree';
 	import { expandPathCtx, treeParamsCtx } from '$lib/context';
-	import { getTreeChildren } from '$lib/rpc/children.remote';
-	import { getTreeAncestors } from '$lib/rpc/ancestors.remote';
+	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
+	import { getStaticTreeAncestors, getTreeAncestors } from '$lib/rpc/ancestors.remote';
+	import { isHosted } from '$lib/platform';
 	import VirtualTree from './VirtualTree.svelte';
 	import { perf } from '$lib/perf';
 	import { perfTick } from '$lib/perf.svelte';
 	import { getLogger } from '$lib/log';
+	import { onMount } from 'svelte';
 
 	let {
 		roots = null,
@@ -22,6 +25,9 @@
 		filter,
 		kindFilter,
 		rootChildren = null,
+		prefetchedChildren = [],
+		status = 'unknown',
+		showBlanketImpls = false,
 	} = $props<{
 		/** Root DTOs from server. */
 		roots?: TreeNodeDTO[] | null;
@@ -36,9 +42,56 @@
 		filter: string;
 		kindFilter: Set<NodeKind>;
 		rootChildren?: { id: string; children: TreeNodeDTO[] } | null;
+		prefetchedChildren?: Array<{ id: string; children: TreeNodeDTO[] }> | null;
 		status?: CrateStatusValue;
+		showBlanketImpls?: boolean;
 	}>();
 	const log = getLogger('graph-tree');
+
+	class TreeChildrenFetchError extends Data.TaggedError('TreeChildrenFetchError')<{
+		readonly nodeId: string;
+		readonly cause: unknown;
+		readonly message: string;
+	}> {}
+
+	function unknownMessage(cause: unknown): string {
+		return cause instanceof Error ? cause.message : String(cause);
+	}
+
+	function loadTreeChildren(input: { name: string; version?: string; nodeId: string }) {
+		return isHosted ? getStaticTreeChildren(input) : getTreeChildren(input);
+	}
+
+	function loadTreeAncestors(input: { name: string; version?: string; nodeId: string }) {
+		return isHosted ? getStaticTreeAncestors(input) : getTreeAncestors(input);
+	}
+
+	function loadTreeChildrenEffect(crate: string, ver: string, nodeId: string) {
+		return Effect.tryPromise({
+			try: async () => ({
+				id: nodeId,
+				children: await loadTreeChildren({ name: crate, version: ver, nodeId }),
+			}),
+			catch: (cause) =>
+				new TreeChildrenFetchError({
+					nodeId,
+					cause,
+					message: `children fetch failed for ${nodeId}: ${unknownMessage(cause)}`,
+				}),
+		});
+	}
+
+	function loadTreeChildrenBatch(crate: string, ver: string, nodeIds: string[]) {
+		return Effect.forEach(nodeIds, (nodeId) => loadTreeChildrenEffect(crate, ver, nodeId), {
+			concurrency: 8,
+		});
+	}
+
+	let hydrated = $state(false);
+
+	onMount(() => {
+		hydrated = true;
+	});
 
 	/** Pre-fetched expand path from DetailView via context (ancestors + children). */
 	const expandPath = $derived(expandPathCtx.getOr(null));
@@ -71,27 +124,72 @@
 	// Version counter bumped when cache changes (triggers reactive derivations)
 	let cacheVersion = $state(0);
 
-	$effect(() => {
-		if (!rootChildren?.id) return;
-		const rootId = rootChildren.id;
-		if (collapsedIds.has(rootId)) return;
-		const cached = childrenCache.get(rootId);
-		const shouldRefresh =
-			!cached ||
-			(rootChildren.children.length > cached.length && rootChildren.children.length > 0) ||
-			(status === 'ready' && cached.length === 0 && rootChildren.children.length > 0);
-		if (!shouldRefresh) return;
-		childrenCache.set(rootId, rootChildren.children);
-		if (expandedIds.size === 0 || expandedIds.has(rootId)) {
-			expandedIds.add(rootId);
+	function seedServerChildren(bumpVersion: boolean) {
+		let changed = false;
+		if (rootChildren?.id) {
+			const rootId = rootChildren.id;
+			const cached = childrenCache.get(rootId);
+			const shouldRefresh =
+				!cached ||
+				(rootChildren.children.length > cached.length && rootChildren.children.length > 0) ||
+				(status === 'ready' && cached.length === 0 && rootChildren.children.length > 0);
+			if (shouldRefresh) {
+				childrenCache.set(rootId, rootChildren.children);
+				changed = true;
+			}
+			if (!collapsedIds.has(rootId)) {
+				if (!expandedIds.has(rootId)) changed = true;
+				expandedIds.add(rootId);
+			}
 		}
-		cacheVersion += 1;
+
+		const seeds = prefetchedChildren ?? [];
+		for (const { id, children } of seeds) {
+			if (!id) continue;
+			const cached = childrenCache.get(id);
+			if (cached !== children) {
+				childrenCache.set(id, children);
+				changed = true;
+			}
+			if (!collapsedIds.has(id) && !expandedIds.has(id)) {
+				expandedIds.add(id);
+				changed = true;
+			}
+		}
+		if (changed && bumpVersion) cacheVersion += 1;
+	}
+
+	seedServerChildren(false);
+
+	$effect(() => {
+		seedServerChildren(true);
 	});
 
+	function isBlanketImplNode(node: { kind: NodeKind; [key: string]: unknown }): boolean {
+		if (node.kind !== 'Impl') return false;
+		const category = node.impl_category;
+		return category === 'Blanket' || category === 'Synthetic';
+	}
+
+	function shouldIncludeTreeNode(node: NodeSummary): boolean {
+		if (showBlanketImpls) return true;
+		if (node.id === selId) return true;
+		return !isBlanketImplNode(node);
+	}
+
+	function visibleTreeDtos(items: TreeNodeDTO[]): TreeNodeDTO[] {
+		if (showBlanketImpls) return items;
+		return items.filter((dto) => shouldIncludeTreeNode(dto.node));
+	}
+
 	function dtoToTreeNode(dto: TreeNodeDTO): TreeNode {
+		const cachedChildren = childrenCache.get(dto.node.id);
+		const hasChildren = cachedChildren
+			? visibleTreeDtos(cachedChildren).length > 0
+			: dto.hasChildren;
 		return {
 			node: dto.node as Node,
-			children: dto.hasChildren ? CHILDREN_PLACEHOLDER : [],
+			children: hasChildren ? CHILDREN_PLACEHOLDER : [],
 			selectable: true,
 		};
 	}
@@ -100,7 +198,7 @@
 	function getChildren(parentId: string): TreeNode[] {
 		const cached = childrenCache.get(parentId);
 		if (!cached) return [];
-		return cached.map(dtoToTreeNode);
+		return visibleTreeDtos(cached).map(dtoToTreeNode);
 	}
 
 	// Build a parentMap from the fetched children cache
@@ -120,13 +218,12 @@
 
 	// Root DTOs → TreeNodes (children resolved lazily by VirtualTree via resolveChildren)
 	const baseTree = $derived(
-		roots?.length ? roots.map(dtoToTreeNode) : ([] as TreeNode[]),
+		roots?.length ? visibleTreeDtos(roots).map(dtoToTreeNode) : ([] as TreeNode[]),
 	);
 
 	function filterTree(trees: TreeNode[], filter: string, kindFilter: Set<NodeKind>): TreeNode[] {
 		function filterNode(tn: TreeNode): TreeNode | null {
-			const children =
-				tn.children === CHILDREN_PLACEHOLDER ? getChildren(tn.node.id) : tn.children;
+			const children = tn.children === CHILDREN_PLACEHOLDER ? getChildren(tn.node.id) : tn.children;
 
 			const filteredChildren: TreeNode[] = [];
 			for (const child of children) {
@@ -214,20 +311,11 @@
 		else treeParams.delete('ex');
 	});
 
-	// Auto-expand the selected node when selection changes.
-	let lastAutoExpandedId: string | null = null;
-	$effect.pre(() => {
-		if (selId && selId !== lastAutoExpandedId) {
-			lastAutoExpandedId = selId;
-			collapsedIds.clear();
-			void expandAndFetch(selId);
-		}
-	});
-
 	// Reset internal state on cross-crate navigation (avoids stale tree data
 	// when the component stays mounted through an {#if} transition).
 	let lastCrateKey = '';
 	let lastReadyKey = '';
+	let observedNonReady = false;
 	let lastRootExpandKey = '';
 	let lastReadyExpandKey = '';
 	$effect(() => {
@@ -238,12 +326,12 @@
 			expandedIds.clear();
 			collapsedIds.clear();
 			lastExpandKey = null;
-			lastAutoExpandedId = null;
-			lastReadyKey = '';
 			cacheVersion += 1;
 			treeParams?.delete('ex');
 			log.debug`crate changed ${lastCrateKey} → ${key}, reset tree state`;
 		}
+		observedNonReady = status !== 'ready';
+		lastReadyKey = status === 'ready' ? key : '';
 		// First mount seeding from URL is done synchronously at component init
 		// (above expandedIds declaration) to prevent the extraExpandedIds write-effect
 		// from clearing treeParams before this effect runs.
@@ -266,8 +354,15 @@
 
 	$effect(() => {
 		if (!crateName || !crateVersion) return;
-		if (status !== 'ready') return;
+		if (status !== 'ready') {
+			observedNonReady = true;
+			return;
+		}
 		const key = `${crateName}@${crateVersion}`;
+		if (!observedNonReady) {
+			lastReadyKey = key;
+			return;
+		}
 		if (lastReadyKey === key) return;
 		lastReadyKey = key;
 
@@ -310,10 +405,10 @@
 		lastExpandKey = key;
 
 		if (expandPath) {
-			// Fetch children for path ancestors + selected + any user-expanded (from URL `ex`)
-			// in one batch, then expand. query.batch groups all calls into 1 HTTP request.
+			// Fetch children for path ancestors + any user-expanded branches.
+			// The selected node's own children stay lazy until the user expands it.
 			fetchAndExpand(
-				[...expandPath.ancestors.map((a) => a.id), selId],
+				expandPath.ancestors.map((a) => a.id),
 				expandPath,
 				crateName,
 				crateVersion,
@@ -322,7 +417,9 @@
 		}
 
 		// Fallback: fetch ancestors + children (edge case: direct GraphTree usage without DetailView)
-		expandToNode(selId, crateName, crateVersion);
+		if (hydrated) {
+			expandToNode(selId, crateName, crateVersion);
+		}
 	});
 
 	/** Fetch children for the given IDs + any already-expanded nodes, then expand ancestors. */
@@ -338,13 +435,9 @@
 
 		if (idsToFetch.length > 0) {
 			try {
-				const results = await Promise.all(
-					idsToFetch.map((id) =>
-						getTreeChildren({ name: crate, version: ver, nodeId: id }),
-					),
-				);
-				for (let i = 0; i < idsToFetch.length; i++) {
-					childrenCache.set(idsToFetch[i], results[i]);
+				const results = await Effect.runPromise(loadTreeChildrenBatch(crate, ver, idsToFetch));
+				for (const { id, children } of results) {
+					childrenCache.set(id, children);
 				}
 			} catch (err) {
 				log.warn`fetchAndExpand failed: ${String(err)}`;
@@ -355,31 +448,24 @@
 			expandedIds.add(ancestor.id);
 			collapsedIds.delete(ancestor.id);
 		}
-		expandedIds.add(pathIds[pathIds.length - 1]);
 		cacheVersion += 1;
 	}
 
 	/** Fallback: resolve ancestors via RPC, fetch their children, then expand. */
 	async function expandToNode(nodeId: string, crate: string, ver: string) {
 		try {
-			const ancestors = await getTreeAncestors({
+			const ancestors = await loadTreeAncestors({
 				name: crate,
 				version: ver,
 				nodeId,
 			});
 			if (!ancestors.length) return;
 
-			const idsToFetch = ancestors
-				.map((a) => a.id)
-				.filter((id) => !childrenCache.has(id));
+			const idsToFetch = ancestors.map((a) => a.id).filter((id) => !childrenCache.has(id));
 			if (idsToFetch.length > 0) {
-				const results = await Promise.all(
-					idsToFetch.map((id) =>
-						getTreeChildren({ name: crate, version: ver, nodeId: id }),
-					),
-				);
-				for (let i = 0; i < idsToFetch.length; i++) {
-					childrenCache.set(idsToFetch[i], results[i]);
+				const results = await Effect.runPromise(loadTreeChildrenBatch(crate, ver, idsToFetch));
+				for (const { id, children } of results) {
+					childrenCache.set(id, children);
 				}
 			}
 
@@ -407,11 +493,9 @@
 	async function expandAndFetch(id: string) {
 		if (!childrenCache.has(id) && crateName && crateVersion) {
 			try {
-				const children = await getTreeChildren({
-					name: crateName,
-					version: crateVersion,
-					nodeId: id,
-				});
+				const { children } = await Effect.runPromise(
+					loadTreeChildrenEffect(crateName, crateVersion, id),
+				);
 				childrenCache.set(id, children);
 			} catch (err) {
 				log.warn`children fetch failed for ${id}: ${String(err)}`;

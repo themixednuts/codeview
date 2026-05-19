@@ -15,8 +15,7 @@
 		if (!parseToastState.step) return 5;
 		const base = stepPercents[parseToastState.step] ?? 10;
 		const nextIdx = stepIndex + 1;
-		const ceil =
-			nextIdx < stepTotal ? (stepPercents[STEP_ORDER[nextIdx]] ?? 100) : 100;
+		const ceil = nextIdx < stepTotal ? (stepPercents[STEP_ORDER[nextIdx]] ?? 100) : 100;
 		if (isParsing && parseToastState.nodeCount > 0) {
 			const denominator =
 				parseToastState.totalItems && parseToastState.totalItems > 0
@@ -36,7 +35,9 @@
 	);
 </script>
 
-<div class="w-72 overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) shadow-lg">
+<div
+	class="w-72 overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) shadow-lg"
+>
 	<div class="h-1 w-full bg-(--panel-strong)">
 		<div
 			class="h-full bg-(--accent) transition-all duration-500 ease-out"

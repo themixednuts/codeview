@@ -54,18 +54,46 @@ export type SourceProviderMode = 'auto' | 'crates-io' | 'github';
 export type CrateStatusValue = 'unknown' | 'processing' | 'ready' | 'failed';
 export type VcsMode = 'git' | 'jj';
 
+/** Solarized-based accent family — swaps `--accent`, `--accent-strong`, etc. */
+export type AccentMode = 'orange' | 'cobalt' | 'forest' | 'plum' | 'char';
+
+/** Spacing/density scale — drives `--density` + `--base-fs`. */
+export type DensityMode = 'compact' | 'comfortable' | 'spacious';
+
+/**
+ * Typographic register.
+ * - editorial: Fraunces display + Inter body (default)
+ * - technical: IBM Plex Sans (tight weights), no serif display
+ * - geometric: Space Grotesk everywhere
+ */
+export type VoiceMode = 'editorial' | 'technical' | 'geometric';
+
+/** Code theme — fully specified in app.css via [data-code-theme="..."]. */
+export type CodeTheme =
+	| 'solarized-light'
+	| 'solarized-dark'
+	| 'catppuccin-latte'
+	| 'catppuccin-mocha'
+	| 'one-light'
+	| 'one-dark'
+	| 'github-light'
+	| 'github-dark';
+
 // --- Root layout contexts ---
 export const themeCtx = new ReactiveContext<Theme>('theme');
 export const resolvedThemeCtx = new ReactiveContext<ResolvedTheme>('resolvedTheme');
+export const accentModeCtx = new ReactiveContext<AccentMode>('accentMode');
+export const densityModeCtx = new ReactiveContext<DensityMode>('densityMode');
+export const voiceModeCtx = new ReactiveContext<VoiceMode>('voiceMode');
+export const codeThemeLightCtx = new ReactiveContext<CodeTheme>('codeThemeLight');
+export const codeThemeDarkCtx = new ReactiveContext<CodeTheme>('codeThemeDark');
 export const extLinkModeCtx = new ReactiveContext<ExternalLinkMode>('extLinkMode');
 export const sourceProviderModeCtx = new ReactiveContext<SourceProviderMode>('sourceProviderMode');
 export const vcsModeCtx = new ReactiveContext<VcsMode>('vcsMode');
 export const editorSchemeCtx = new ReactiveContext<string>('editorScheme');
 
 // --- Crate layout contexts ---
-export const getNodeUrlCtx = new ReactiveContext<(id: string) => string>(
-	'getNodeUrl',
-);
+export const getNodeUrlCtx = new ReactiveContext<(id: string) => string>('getNodeUrl');
 export const crateVersionsCtx = new ReactiveContext<Record<string, string>>('crateVersions');
 export const crateStatusCtx = new ReactiveContext<CrateStatusValue>('crateStatus');
 /** Parse progress connection - properties are reactive via $state */
@@ -81,4 +109,6 @@ export const expandPathCtx = new ReactiveContext<ExpandPath>('expandPath');
 export const setExpandPathCtx = new ReactiveContext<(path: ExpandPath) => void>('setExpandPath');
 
 /** Reactive URL search params singleton for tree state (shared layout ↔ GraphTree). */
-export const treeParamsCtx = new ReactiveContext<import('svelte/reactivity').SvelteURLSearchParams | null>('treeParams');
+export const treeParamsCtx = new ReactiveContext<
+	import('svelte/reactivity').SvelteURLSearchParams | null
+>('treeParams');

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Graph, Node } from '$lib/graph';
 	import type { LayoutMode, VisEdge, VisNode } from '$lib/graph/layout';
-	import { resolve } from '$app/paths';
+	import { resolveAppPath } from '$lib/app-paths';
 	import { kindColors } from '$lib/tree';
 	import { KeyedMemo, keyEqual, keyOf } from '$lib/reactivity.svelte';
 	import { CENTER_X, CENTER_Y, LAYOUT_HEIGHT, LAYOUT_WIDTH } from '$lib/graph/layout';
@@ -14,7 +14,12 @@
 	} from '$lib/graph/projection';
 	import { getNodeVisual, getVisNodeEdgeAnchor } from '$lib/graph/visual';
 	import { renderExcalidraw } from '$lib/exporters/excalidraw';
-	import { type BaseScene, buildBaseScene, buildNodeMap, computeSceneLabels } from '$lib/renderers/graph';
+	import {
+		type BaseScene,
+		buildBaseScene,
+		buildNodeMap,
+		computeSceneLabels,
+	} from '$lib/renderers/graph';
 	import type { GraphScene } from '$lib/renderers/graph';
 	import { Button } from '$lib/shadcn/ui/button';
 	import { ButtonGroup } from '$lib/shadcn/ui/button-group';
@@ -28,9 +33,11 @@
 		layoutMode = 'ego',
 		showStructural = false,
 		showSemantic = true,
+		showBlanketImpls = false,
 		bypassProjection = false,
 		onToggleStructural,
 		onToggleSemantic,
+		onToggleBlanketImpls,
 	} = $props<{
 		graph: Graph;
 		selected: Node;
@@ -38,9 +45,11 @@
 		layoutMode?: LayoutMode;
 		showStructural?: boolean;
 		showSemantic?: boolean;
+		showBlanketImpls?: boolean;
 		bypassProjection?: boolean;
 		onToggleStructural?: () => void;
 		onToggleSemantic?: () => void;
+		onToggleBlanketImpls?: () => void;
 	}>();
 
 	type DragOffset = { x: number; y: number };
@@ -109,6 +118,31 @@
 
 	const MIN_ZOOM = 0.3;
 	const MAX_ZOOM = 3;
+
+	function isBlanketImplNode(node: Node): boolean {
+		if (node.kind !== 'Impl') return false;
+		const category = (node as Node & { impl_category?: string | null }).impl_category;
+		return category === 'Blanket' || category === 'Synthetic';
+	}
+
+	function stripBlanketImplNodes(input: Graph, selectedId: string): Graph {
+		const hiddenIds = new Set<string>();
+		for (const node of input.nodes) {
+			if (node.id === selectedId) continue;
+			if (isBlanketImplNode(node)) hiddenIds.add(node.id);
+		}
+		if (hiddenIds.size === 0) return input;
+
+		const nodes = input.nodes.filter((node) => !hiddenIds.has(node.id));
+		const edges = input.edges.filter(
+			(edge) => !hiddenIds.has(edge.from) && !hiddenIds.has(edge.to),
+		);
+		return { nodes, edges };
+	}
+
+	function isDeprecatedNode(node: Node): boolean {
+		return (node as Node & { is_deprecated?: boolean }).is_deprecated === true;
+	}
 
 	function captureContainer(element: HTMLDivElement) {
 		containerEl = element;
@@ -214,9 +248,7 @@
 
 	function resolveCssVars(value: string): string {
 		return value.replace(/var\((--[\w-]+)\)/g, (_, token: string) => {
-			const resolved = getComputedStyle(document.documentElement)
-				.getPropertyValue(token)
-				.trim();
+			const resolved = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
 			return resolved || `var(${token})`;
 		});
 	}
@@ -280,7 +312,10 @@
 		inlineSvgStyles(svgEl, clone);
 
 		const svgText = new XMLSerializer().serializeToString(clone);
-		downloadBlob(new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' }), `${exportFilenameStem()}.svg`);
+		downloadBlob(
+			new Blob([svgText], { type: 'image/svg+xml;charset=utf-8' }),
+			`${exportFilenameStem()}.svg`,
+		);
 	}
 
 	function exportExcalidraw(): void {
@@ -412,6 +447,7 @@
 		CallsStatic: 'var(--edge-calls)',
 		CallsRuntime: 'var(--edge-calls-runtime)',
 		Derives: 'var(--edge-derives)',
+		ReExports: 'var(--edge-reexports)',
 	};
 
 	function getNodeLabelMetrics(
@@ -460,6 +496,15 @@
 
 	let hoveredNodeId = $state<string | null>(null);
 	let hoveredEdgeIndex = $state<number | null>(null);
+	let hiddenBlanketImplCount = $derived.by(() => {
+		if (showBlanketImpls || !graph || !selected) return 0;
+		let count = 0;
+		for (const node of graph.nodes) {
+			if (node.id === selected.id) continue;
+			if (isBlanketImplNode(node)) count += 1;
+		}
+		return count;
+	});
 
 	const EMPTY_PROJECTION: GraphProjectionResult = {
 		graph: { nodes: [], edges: [] },
@@ -467,12 +512,22 @@
 		syntheticNodeIds: new Set(),
 	};
 	const projectionMemo = new KeyedMemo(
-		() => keyOf(graph, selected?.id ?? '', layoutMode, showStructural, showSemantic, bypassProjection),
+		() =>
+			keyOf(
+				graph,
+				selected?.id ?? '',
+				layoutMode,
+				showStructural,
+				showSemantic,
+				bypassProjection,
+				showBlanketImpls,
+			),
 		() => {
 			if (!graph || !selected) return EMPTY_PROJECTION;
+			const displayGraph = showBlanketImpls ? graph : stripBlanketImplNodes(graph, selected.id);
 			if (bypassProjection) {
 				return {
-					graph,
+					graph: displayGraph,
 					traitMetadataByNodeId: new Map(),
 					syntheticNodeIds: new Set(),
 				} satisfies GraphProjectionResult;
@@ -481,7 +536,7 @@
 				'derived',
 				'projectedGraph',
 				() =>
-					projectGraphForRendering(graph, selected, {
+					projectGraphForRendering(displayGraph, selected, {
 						showStructural,
 						showSemantic,
 						layoutMode,
@@ -498,7 +553,13 @@
 
 	// Stage 1: base scene (layout + similarity groups). Cached behind KeyedMemo.
 	// Guard: selected/graph can be null during Svelte async teardown race (_Batch.revive)
-	const EMPTY_SCENE: BaseScene = { nodes: [], edges: [], groups: [], similarityGroups: new Map(), mode: 'ego' };
+	const EMPTY_SCENE: BaseScene = {
+		nodes: [],
+		edges: [],
+		groups: [],
+		similarityGroups: new Map(),
+		mode: 'ego',
+	};
 	const baseSceneMemo = new KeyedMemo(
 		() => keyOf(projectedGraph.graph, selected?.id ?? '', layoutMode, showStructural, showSemantic),
 		() => {
@@ -697,39 +758,65 @@
 		<div class="flex items-center gap-3">
 			<span class="text-sm font-medium text-(--ink)">Relationship Graph</span>
 			{#if bypassProjection}
-				<span class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400 uppercase">Raw</span>
+				<span
+					class="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-amber-400 uppercase"
+				>
+					Raw
+				</span>
 			{/if}
 			<!-- Edge count indicator -->
 			<span class="text-xs text-(--muted)">
 				{baseScene.nodes.length} nodes, {baseScene.edges.length} edges
 			</span>
 		</div>
-		<div class="flex flex-wrap items-center gap-4">
-			<!-- Edge type filters -->
+		<div class="flex flex-wrap items-center gap-3">
+			<!-- Edge type filters: relabelled from the cryptic "Structure / Semantic"
+				 to direct descriptions. Default state shows semantic edges (the
+				 useful ones — UsesType, Implements, Calls); structural ones (Contains,
+				 Defines) and blanket impls are opt-in for power users. -->
 			<div class="flex items-center gap-1">
-				<button
-					type="button"
-					onclick={() => onToggleStructural?.()}
-					class="corner-squircle rounded-(--radius-control) border px-2 py-1 text-xs transition-colors {showStructural
-						? 'border-(--accent) bg-(--accent) text-(--on-accent)'
-						: 'border-(--panel-border) bg-(--panel-solid) text-(--muted) hover:bg-(--panel-strong)'}"
-					title="Show structural edges (Contains, Defines)"
-				>
-					Structure
-				</button>
+				<span class="mr-1 text-[10px] font-medium tracking-wide text-(--muted) uppercase">
+					Edges
+				</span>
 				<button
 					type="button"
 					onclick={() => onToggleSemantic?.()}
 					class="corner-squircle rounded-(--radius-control) border px-2 py-1 text-xs transition-colors {showSemantic
 						? 'border-(--accent) bg-(--accent) text-(--on-accent)'
 						: 'border-(--panel-border) bg-(--panel-solid) text-(--muted) hover:bg-(--panel-strong)'}"
-					title="Show semantic edges (UsesType, Implements, Calls, Derives)"
+					title="Show type-use, trait impl, call, derive, and re-export edges"
 				>
-					Semantic
+					Type refs
+				</button>
+				<button
+					type="button"
+					onclick={() => onToggleStructural?.()}
+					class="corner-squircle rounded-(--radius-control) border px-2 py-1 text-xs transition-colors {showStructural
+						? 'border-(--accent) bg-(--accent) text-(--on-accent)'
+						: 'border-(--panel-border) bg-(--panel-solid) text-(--muted) hover:bg-(--panel-strong)'}"
+					title="Show Contains / Defines edges (parent-child relationships)"
+				>
+					Containment
+				</button>
+				<button
+					type="button"
+					onclick={() => onToggleBlanketImpls?.()}
+					class="corner-squircle rounded-(--radius-control) border px-2 py-1 text-xs transition-colors {showBlanketImpls
+						? 'border-(--accent) bg-(--accent) text-(--on-accent)'
+						: 'border-(--panel-border) bg-(--panel-solid) text-(--muted) hover:bg-(--panel-strong)'}"
+					title={hiddenBlanketImplCount > 0
+						? `Show ${hiddenBlanketImplCount} blanket / synthetic impl blocks`
+						: 'Show blanket and synthetic impl blocks'}
+				>
+					Blanket impls{#if hiddenBlanketImplCount > 0 && !showBlanketImpls}
+						<span class="ml-1 opacity-70">+{hiddenBlanketImplCount}</span>
+					{/if}
 				</button>
 			</div>
 			<div class="flex items-center gap-1">
-				<span class="mr-1 text-[10px] font-medium tracking-wide text-(--muted) uppercase">Render</span>
+				<span class="mr-1 text-[10px] font-medium tracking-wide text-(--muted) uppercase">
+					Nodes
+				</span>
 				<button
 					type="button"
 					onclick={() => {
@@ -739,7 +826,7 @@
 					'auto'
 						? 'border-(--accent) bg-(--accent) text-(--on-accent)'
 						: 'border-(--panel-border) bg-(--panel-solid) text-(--muted) hover:bg-(--panel-strong)'}"
-					title="Switch automatically between detail and dense dots"
+					title="Cards when sparse, dots when dense"
 				>
 					Auto
 				</button>
@@ -752,9 +839,9 @@
 					'detail'
 						? 'border-(--accent) bg-(--accent) text-(--on-accent)'
 						: 'border-(--panel-border) bg-(--panel-solid) text-(--muted) hover:bg-(--panel-strong)'}"
-					title="Always use full node cards"
+					title="Always render full node cards"
 				>
-					Detail
+					Cards
 				</button>
 				<button
 					type="button"
@@ -769,11 +856,6 @@
 				>
 					Dots
 				</button>
-				{#if nodeRenderMode === 'auto'}
-					<span class="ml-1 rounded bg-(--panel-strong) px-1.5 py-0.5 text-[10px] text-(--muted)">
-						{isDotMode ? 'Dense' : 'Detail'}
-					</span>
-				{/if}
 			</div>
 			<!-- Zoom controls -->
 			<div class="flex items-center gap-1">
@@ -847,7 +929,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		{@attach captureContainer}
-		class="graph-container relative h-[500px] select-none"
+		class="graph-container relative h-full min-h-[320px] select-none"
 		style="cursor: {isPanning ? 'grabbing' : 'grab'};"
 		onwheel={handleWheel}
 		onmousedown={handleMouseDown}
@@ -931,7 +1013,7 @@
 					: 'auto'};"
 			>
 				<!-- Edges (culled to viewport, with invisible hit areas for easier hovering) -->
-				{#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind)}
+				{#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind + '|' + edge.confidence + '|' + (edge.is_glob ? 'glob' : 'named'))}
 					{@const fromNode = positionedNodeMap.get(edge.from.node.id) ?? edge.from}
 					{@const toNode = positionedNodeMap.get(edge.to.node.id) ?? edge.to}
 					{@const startAnchor = getVisNodeEdgeAnchor(fromNode, toNode)}
@@ -948,6 +1030,13 @@
 						hoveredNodeId === edge.from.node.id ||
 						hoveredNodeId === edge.to.node.id ||
 						hoveredEdgeIndex === edgeIndex}
+					{@const edgeDash =
+						edge.confidence === 'Inferred'
+							? '6 4'
+							: edge.confidence === 'Runtime'
+								? '3 3'
+								: undefined}
+					{@const edgeConfidenceOpacity = edge.confidence === 'Inferred' ? 0.72 : 1}
 					<g
 						class="edge {isInteracting ? '' : 'transition-opacity duration-150'}"
 						style="opacity: {hoveredNodeId && !isHighlighted
@@ -984,6 +1073,8 @@
 								: isHighlighted
 									? 'url(#arrow-in-highlight)'
 									: 'url(#arrow-in)'}
+							stroke-dasharray={edgeDash}
+							stroke-opacity={edgeConfidenceOpacity}
 							class={isInteracting ? '' : 'transition-all duration-150'}
 							style="pointer-events: none"
 						/>
@@ -992,11 +1083,12 @@
 
 				<!-- Edge labels (rendered after edges so they're on top, culled to viewport) -->
 				{#if shouldShowEdgeLabels}
-					{#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind + '|label')}
+					{#each visibleEdges as { edge, index: edgeIndex } (edge.from.node.id + '|' + edge.to.node.id + '|' + edge.kind + '|' + edge.confidence + '|' + (edge.is_glob ? 'glob' : 'named') + '|label')}
 						{@const isHighlighted =
 							hoveredEdgeIndex === edgeIndex ||
 							hoveredNodeId === edge.from.node.id ||
 							hoveredNodeId === edge.to.node.id}
+						{@const isInferred = edge.confidence === 'Inferred'}
 						{@const labelMetrics = getEdgeLabelMetrics(edge.kind, isHighlighted)}
 						{@const labelPos = edgeLabelPositions[edgeIndex] ?? { x: 0, y: 0, anchor: 'middle' }}
 						<g
@@ -1024,7 +1116,9 @@
 									? 'fill-(--ink) text-[11px] font-medium'
 									: 'fill-(--muted) text-[9px]'}"
 							>
-								{edge.kind}
+								{edge.kind}{edge.is_glob && edge.kind.includes('ReExports') ? ' *' : ''}{isInferred
+									? ' ?'
+									: ''}
 							</text>
 						</g>
 					{/each}
@@ -1037,7 +1131,8 @@
 					{@const shouldDim = hoveredNodeId && !isHovered && !isRelatedToHover && !visNode.isCenter}
 					{@const isDragging = dragNodeId === visNode.node.id}
 					{@const visual = getNodeVisual(visNode.node.kind, visNode.isCenter)}
-					{@const hoverScale = isHovered && !isDragging ? (isDotMode ? 1.18 : visNode.isCenter ? 1 : 1.06) : 1}
+					{@const hoverScale =
+						isHovered && !isDragging ? (isDotMode ? 1.18 : visNode.isCenter ? 1 : 1.06) : 1}
 					{@const dotRadius = getDotRadius(visNode, isHovered, isRelatedToHover)}
 					{@const hasHeader = visual.headerHeight > 0}
 					{@const headerDividerY = -visual.height / 2 + visual.headerHeight}
@@ -1048,11 +1143,7 @@
 						estimateLabelWidth(nodeLabel, labelMetrics.fontSize) > labelMetrics.maxWidth}
 					{@const link = nodeLink(visNode.node)}
 					<a
-						href={link.disabled
-							? undefined
-							: link.external
-								? link.href
-								: resolve(link.href as `/${string}`)}
+						href={link.disabled ? undefined : link.external ? link.href : resolveAppPath(link.href)}
 						data-sveltekit-noscroll={link.disabled || link.external ? undefined : true}
 						target={link.disabled || !link.external ? undefined : '_blank'}
 						rel={link.disabled || !link.external ? undefined : 'noopener noreferrer'}
@@ -1138,7 +1229,9 @@
 									lengthAdjust={compressLabel ? 'spacingAndGlyphs' : null}
 									class="pointer-events-none fill-(--on-accent) font-medium {visNode.isCenter
 										? 'text-sm'
-										: 'text-[11px]'}"
+										: 'text-[11px]'} {isDeprecatedNode(visNode.node)
+										? 'line-through opacity-80'
+										: ''}"
 								>
 									{nodeLabel}
 								</text>
@@ -1147,7 +1240,7 @@
 									<text
 										y={hasHeader ? bodyCenterY : 14}
 										text-anchor="middle"
-										class="pointer-events-none fill-(--on-accent) opacity-70 text-[10px]"
+										class="pointer-events-none fill-(--on-accent) text-[10px] opacity-70"
 									>
 										{visNode.node.kind}
 									</text>
@@ -1174,7 +1267,13 @@
 				class="corner-squircle pointer-events-none absolute z-50 max-w-xs rounded-(--radius-popover) border border-(--panel-border) bg-(--panel-solid) px-3 py-2 text-sm shadow-lg"
 				style="left: {tooltipX + 12}px; top: {tooltipY - 10}px; transform: translateY(-100%);"
 			>
-				<div class="font-medium text-(--ink)">{tooltipNode.node.name}</div>
+				<div
+					class="font-medium text-(--ink) {isDeprecatedNode(tooltipNode.node)
+						? 'line-through opacity-80'
+						: ''}"
+				>
+					{tooltipNode.node.name}
+				</div>
 				<div class="mt-0.5 text-xs text-(--muted)">{tooltipNode.node.id}</div>
 				<div class="mt-1 flex items-center gap-2">
 					<span

@@ -1,7 +1,5 @@
 import { query } from '$app/server';
-import {
-	type NodeSummary,
-} from '$lib/schema';
+import { type NodeSummary } from '$lib/schema';
 import { sanitizeSearchQuery } from '$lib/server/validation';
 import { loader, getAllNodes, summarizeNode } from './helpers';
 import { assertCrateRef } from './remote-utils';

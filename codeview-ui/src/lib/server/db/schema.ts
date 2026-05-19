@@ -36,6 +36,7 @@ export const crossEdges = sqliteTable(
 		toId: text('to_id').notNull(),
 		kind: text('kind').notNull(),
 		confidence: text('confidence').notNull(),
+		isGlob: integer('is_glob', { mode: 'boolean' }).notNull().default(false),
 	},
 	(table) => [
 		primaryKey({
@@ -106,6 +107,7 @@ export const edges = sqliteTable(
 		toId: text('to_id').notNull(),
 		kind: text('kind').notNull(),
 		confidence: text('confidence').notNull(),
+		isGlob: integer('is_glob', { mode: 'boolean' }).notNull().default(false),
 	},
 	(table) => [
 		primaryKey({

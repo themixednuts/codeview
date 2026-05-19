@@ -233,10 +233,6 @@ export async function extractSourceFileFromTarGz(
 			continue;
 		}
 
-		if (totalBytes + size > options.maxBytes) {
-			return { status: 'over-limit', totalBytes };
-		}
-
 		const needsThisFile = targets.has(normalizedPath);
 		if (!needsThisFile) {
 			if (!(await tar.skipExact(size))) {
@@ -245,6 +241,10 @@ export async function extractSourceFileFromTarGz(
 			await tar.skipPadding(size);
 			totalBytes += size;
 			continue;
+		}
+
+		if (size > options.maxBytes) {
+			return { status: 'over-limit', totalBytes };
 		}
 
 		const data = await tar.readExact(size);

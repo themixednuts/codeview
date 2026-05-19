@@ -67,7 +67,8 @@ export class ParseProgressConnection implements Disposable {
 	}
 
 	#onProgressData(msg: ProgressEvent) {
-		this.#log.debug`msg ${this.tag} type=${msg.type} nodes=${msg.nodeCount ?? 0} edges=${msg.edgeCount ?? 0} total=${msg.totalItems ?? '-'}`;
+		this.#log
+			.debug`msg ${this.tag} type=${msg.type} nodes=${msg.nodeCount ?? 0} edges=${msg.edgeCount ?? 0} total=${msg.totalItems ?? '-'}`;
 
 		if (typeof msg.nodeCount === 'number') this.nodeCount = msg.nodeCount;
 		if (typeof msg.edgeCount === 'number') this.edgeCount = msg.edgeCount;

@@ -1,6 +1,34 @@
 import * as v from 'valibot';
+import type {
+	ArgumentInfo,
+	Confidence,
+	CrateGraph,
+	Deprecation,
+	Edge,
+	EdgeKind,
+	ExternalCrate,
+	FieldInfo,
+	FunctionSignature,
+	ImplCategory,
+	ImplType,
+	Node,
+	NodeKind,
+	Span,
+	VariantInfo,
+	VariantKind,
+	Visibility,
+	Workspace,
+} from './generated/codeview-schema';
 
 /** Current graph schema version supported by this UI */
+/**
+ * Current graph schema version (mirrors `codeview-core::SCHEMA_VERSION`).
+ *
+ * **Pinned at 1 pre-release.** See the Rust constant's doc-comment for
+ * the full rationale — during pre-release iteration `parserRevision`
+ * (git SHA) carries the drift signal so this constant only bumps for
+ * artifact-shape changes the worker has to adapt to.
+ */
 export const SCHEMA_VERSION = 1;
 
 // --- Enums ---
@@ -31,12 +59,30 @@ export const NodeKindSchema = v.picklist([
 
 export const ImplTypeSchema = v.picklist(['Trait', 'Inherent']);
 
-export const VisibilitySchema = v.picklist([
-	'Public',
-	'Crate',
-	'Restricted',
-	'Inherited',
-	'Unknown',
+export const ImplCategorySchema = v.picklist([
+	'Inherent',
+	'Trait',
+	'Blanket',
+	'Negative',
+	'Synthetic',
+]);
+
+/**
+ * Visibility is a tagged union (schema v3+) — the `Restricted` variant
+ * carries the optional restriction `path` (e.g. `crate::foo::bar`).
+ * Other variants are tag-only objects: `{ kind: 'Public' }` etc.
+ *
+ * Use the discriminated `v.variant` so each branch validates its own
+ * shape and the inferred TS type lines up with the generated
+ * `Visibility` from codeview-schema.d.ts (verified by the
+ * `_VisibilitySchemaMatchesGenerated` Assert below).
+ */
+export const VisibilitySchema = v.variant('kind', [
+	v.object({ kind: v.literal('Public') }),
+	v.object({ kind: v.literal('Crate') }),
+	v.object({ kind: v.literal('Restricted'), path: v.string() }),
+	v.object({ kind: v.literal('Inherited') }),
+	v.object({ kind: v.literal('Unknown') }),
 ]);
 
 export const EdgeKindSchema = v.picklist([
@@ -84,6 +130,13 @@ export const FunctionSignatureSchema = v.object({
 	is_async: v.boolean(),
 	is_unsafe: v.boolean(),
 	is_const: v.boolean(),
+	abi: v.optional(v.nullable(v.string())),
+	is_c_variadic: v.optional(v.boolean()),
+});
+
+export const DeprecationSchema = v.object({
+	since: v.optional(v.nullable(v.string())),
+	note: v.optional(v.nullable(v.string())),
 });
 
 // --- Node & Edge ---
@@ -94,8 +147,18 @@ export const NodeSchema = v.object({
 	kind: NodeKindSchema,
 	visibility: VisibilitySchema,
 	span: v.optional(v.nullable(SpanSchema)),
-	attrs: v.optional(v.array(v.string())),
+	line_count: v.optional(v.nullable(v.number())),
+	attrs: v.array(v.string()),
 	is_external: v.optional(v.boolean()),
+	is_deprecated: v.optional(v.boolean()),
+	is_unsafe: v.optional(v.boolean()),
+	is_auto: v.optional(v.boolean()),
+	is_mutable: v.optional(v.boolean()),
+	is_stripped: v.optional(v.boolean()),
+	has_stripped_fields: v.optional(v.boolean()),
+	has_stripped_variants: v.optional(v.boolean()),
+	is_dyn_compatible: v.optional(v.nullable(v.boolean())),
+	deprecation: v.optional(v.nullable(DeprecationSchema)),
 	fields: v.optional(v.nullable(v.array(FieldInfoSchema))),
 	variants: v.optional(v.nullable(v.array(VariantInfoSchema))),
 	signature: v.optional(v.nullable(FunctionSignatureSchema)),
@@ -105,8 +168,12 @@ export const NodeSchema = v.object({
 	doc_links: v.optional(v.record(v.string(), v.string())),
 	bound_links: v.optional(v.record(v.string(), v.string())),
 	impl_type: v.optional(v.nullable(ImplTypeSchema)),
+	impl_category: v.optional(v.nullable(ImplCategorySchema)),
 	parent_impl: v.optional(v.nullable(v.string())),
 	impl_trait: v.optional(v.nullable(v.string())),
+	provided_trait_methods: v.optional(v.nullable(v.array(v.string()))),
+	required_trait_methods: v.optional(v.nullable(v.array(v.string()))),
+	default_trait_methods: v.optional(v.nullable(v.array(v.string()))),
 	// StructField / AssocType / AssocConst: the type
 	type_name: v.optional(v.nullable(v.string())),
 	// Variant: unit, tuple, or struct
@@ -117,6 +184,15 @@ export const NodeSchema = v.object({
 	const_value: v.optional(v.nullable(v.string())),
 	// AssocType: trait bounds on the associated type
 	bounds: v.optional(v.nullable(v.array(v.string()))),
+	// Import / extern crate / macro metadata preserved from rustdoc JSON
+	import_source: v.optional(v.nullable(v.string())),
+	import_name: v.optional(v.nullable(v.string())),
+	is_glob: v.optional(v.boolean()),
+	extern_crate_name: v.optional(v.nullable(v.string())),
+	extern_crate_rename: v.optional(v.nullable(v.string())),
+	macro_source: v.optional(v.nullable(v.string())),
+	proc_macro_kind: v.optional(v.nullable(v.string())),
+	proc_macro_helpers: v.optional(v.array(v.string())),
 });
 
 export const EdgeSchema = v.object({
@@ -124,6 +200,7 @@ export const EdgeSchema = v.object({
 	to: v.string(),
 	kind: EdgeKindSchema,
 	confidence: ConfidenceSchema,
+	is_glob: v.optional(v.boolean()),
 });
 
 // --- Per-crate graph ---
@@ -134,6 +211,9 @@ export const CrateGraphSchema = v.object({
 	version: v.string(),
 	nodes: v.array(NodeSchema),
 	edges: v.array(EdgeSchema),
+	// public_path → canonical_node_id; skipped in JSON when empty (matches
+	// `#[serde(skip_serializing_if = "HashMap::is_empty")]` on the Rust side).
+	aliases: v.optional(v.record(v.string(), v.string())),
 });
 
 export const ExternalCrateSchema = v.object({
@@ -146,7 +226,7 @@ export const ExternalCrateSchema = v.object({
 // --- Top-level Workspace ---
 
 export const WorkspaceSchema = v.object({
-	version: v.optional(v.number(), 1),
+	version: v.optional(v.number()),
 	crates: v.array(CrateGraphSchema),
 	external_crates: v.array(ExternalCrateSchema),
 	cross_crate_edges: v.array(EdgeSchema),
@@ -163,8 +243,10 @@ export const NodeSummarySchema = v.object({
 	kind: NodeKindSchema,
 	visibility: VisibilitySchema,
 	is_external: v.optional(v.boolean()),
+	is_deprecated: v.optional(v.boolean()),
 	// Impl-specific fields (only populated for Impl nodes)
 	impl_trait: v.optional(v.nullable(v.string())),
+	impl_category: v.optional(v.nullable(ImplCategorySchema)),
 	generics: v.optional(v.nullable(v.array(v.string()))),
 	where_clause: v.optional(v.nullable(v.array(v.string()))),
 	bound_links: v.optional(v.record(v.string(), v.string())),
@@ -226,20 +308,113 @@ export const CrateStatusSchema = v.object({
 });
 
 export const CrateSearchResultSchema = v.object({
+	id: v.optional(v.string()),
 	name: v.string(),
 	version: v.string(),
 	description: v.optional(v.string()),
 });
 
-// --- Inferred types ---
+// --- Types ---
 
-export type WorkspaceOutput = v.InferOutput<typeof WorkspaceSchema>;
-export type NodeSummary = v.InferOutput<typeof NodeSummarySchema>;
+type IsEqual<Actual, Expected> =
+	(<T>() => T extends Actual ? 1 : 2) extends <T>() => T extends Expected ? 1 : 2
+		? (<T>() => T extends Expected ? 1 : 2) extends <T>() => T extends Actual ? 1 : 2
+			? true
+			: false
+		: false;
+type Assert<T extends true> = T;
+
+type _ConfidenceSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof ConfidenceSchema>, Confidence>
+>;
+type _CrateGraphSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof CrateGraphSchema>, CrateGraph>
+>;
+type _DeprecationSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof DeprecationSchema>, Deprecation>
+>;
+type _EdgeKindSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof EdgeKindSchema>, EdgeKind>
+>;
+type _EdgeSchemaMatchesGenerated = Assert<IsEqual<v.InferOutput<typeof EdgeSchema>, Edge>>;
+type _ExternalCrateSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof ExternalCrateSchema>, ExternalCrate>
+>;
+type _FieldInfoSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof FieldInfoSchema>, FieldInfo>
+>;
+type _FunctionSignatureSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof FunctionSignatureSchema>, FunctionSignature>
+>;
+type _ImplCategorySchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof ImplCategorySchema>, ImplCategory>
+>;
+type _ImplTypeSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof ImplTypeSchema>, ImplType>
+>;
+type _NodeKindSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof NodeKindSchema>, NodeKind>
+>;
+type _NodeSchemaMatchesGenerated = Assert<IsEqual<v.InferOutput<typeof NodeSchema>, Node>>;
+type _SpanSchemaMatchesGenerated = Assert<IsEqual<v.InferOutput<typeof SpanSchema>, Span>>;
+type _VariantInfoSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof VariantInfoSchema>, VariantInfo>
+>;
+type _VisibilitySchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof VisibilitySchema>, Visibility>
+>;
+type _WorkspaceSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof WorkspaceSchema>, Workspace>
+>;
+
+export type {
+	ArgumentInfo,
+	Confidence,
+	CrateGraph,
+	Deprecation,
+	Edge,
+	EdgeKind,
+	ExternalCrate,
+	FieldInfo,
+	FunctionSignature,
+	ImplCategory,
+	ImplType,
+	Node,
+	NodeKind,
+	Span,
+	VariantInfo,
+	VariantKind,
+	Visibility,
+	Workspace,
+};
+
+export type WorkspaceOutput = Workspace;
+export type NodeSummary = Pick<
+	Node,
+	| 'id'
+	| 'name'
+	| 'kind'
+	| 'visibility'
+	| 'is_external'
+	| 'is_deprecated'
+	| 'impl_trait'
+	| 'impl_category'
+	| 'generics'
+	| 'where_clause'
+	| 'bound_links'
+>;
 export type CrateSummary = v.InferOutput<typeof CrateSummarySchema>;
 export type CrateIndexEntry = v.InferOutput<typeof CrateIndexEntrySchema>;
 export type CrateIndex = v.InferOutput<typeof CrateIndexSchema>;
-export type CrateTree = v.InferOutput<typeof CrateTreeSchema>;
-export type NodeDetail = v.InferOutput<typeof NodeDetailSchema>;
+export type CrateTree = {
+	nodes: NodeSummary[];
+	edges: Edge[];
+};
+export type NodeDetail = {
+	node: Node;
+	edges: Edge[];
+	relatedNodes: Node[];
+};
 export type SourceResult = v.InferOutput<typeof SourceResultSchema>;
 export type CrateStatus = v.InferOutput<typeof CrateStatusSchema>;
 export type CrateSearchResult = v.InferOutput<typeof CrateSearchResultSchema>;
@@ -258,6 +433,83 @@ export const TreeNodeDTOSchema = v.object({
 });
 export type TreeNodeDTO = v.InferOutput<typeof TreeNodeDTOSchema>;
 
+export const STATIC_ARTIFACT_SCHEMA_VERSION = 1;
+
+export const StaticCrateManifestSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	name: v.string(),
+	version: v.string(),
+	index: CrateIndexSchema,
+	nodeCount: v.number(),
+	edgeCount: v.number(),
+	kindCounts: v.record(v.string(), v.number()),
+	roots: v.array(TreeNodeDTOSchema),
+	rootChildren: v.record(v.string(), v.array(TreeNodeDTOSchema)),
+	/**
+	 * Lists of populated shard buckets per kind (hex strings like `"00f"`).
+	 * Worker reads these before issuing a shard GET to skip empty buckets.
+	 * Optional for back-compat with pre-S3 artifacts.
+	 */
+	populatedShards: v.optional(
+		v.object({
+			nodes: v.array(v.string()),
+			nodeDetails: v.array(v.string()),
+			treeChildren: v.array(v.string()),
+		}),
+	),
+});
+export type StaticCrateManifest = v.InferOutput<typeof StaticCrateManifestSchema>;
+
+export const StaticCrateCatalogEntrySchema = v.object({
+	name: v.string(),
+	version: v.string(),
+	storageName: v.optional(v.string()),
+	source: v.optional(v.picklist(['std', 'crates.io'])),
+	description: v.optional(v.string()),
+	nodeCount: v.optional(v.number()),
+	edgeCount: v.optional(v.number()),
+});
+export type StaticCrateCatalogEntry = v.InferOutput<typeof StaticCrateCatalogEntrySchema>;
+
+export const StaticCrateCatalogSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	generatedAt: v.optional(v.string()),
+	crates: v.array(StaticCrateCatalogEntrySchema),
+});
+export type StaticCrateCatalog = v.InferOutput<typeof StaticCrateCatalogSchema>;
+
+export const StaticTreeChildrenShardSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	name: v.string(),
+	version: v.string(),
+	bucket: v.string(),
+	parents: v.record(
+		v.string(),
+		v.object({
+			parent: NodeSummarySchema,
+			children: v.array(TreeNodeDTOSchema),
+		}),
+	),
+});
+export type StaticTreeChildrenShard = v.InferOutput<typeof StaticTreeChildrenShardSchema>;
+
+export const StaticSearchShardSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	name: v.string(),
+	version: v.string(),
+	prefix: v.string(),
+	entries: v.array(NodeSummarySchema),
+});
+export type StaticSearchShard = v.InferOutput<typeof StaticSearchShardSchema>;
+
+export const StaticSearchManifestSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	name: v.string(),
+	version: v.string(),
+	prefixes: v.array(v.string()),
+});
+export type StaticSearchManifest = v.InferOutput<typeof StaticSearchManifestSchema>;
+
 /** Lightweight crate metadata: index + versions + kind counts (no tree nodes). */
 export const CrateMetaSchema = v.object({
 	index: v.nullable(CrateIndexSchema),
@@ -272,6 +524,32 @@ export const NodeViewSchema = v.object({
 	ancestors: v.array(NodeSummarySchema),
 });
 export type NodeView = v.InferOutput<typeof NodeViewSchema>;
+
+export const StaticNodeShardSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	name: v.string(),
+	version: v.string(),
+	bucket: v.string(),
+	nodes: v.record(v.string(), NodeSchema),
+});
+export type StaticNodeShard = v.InferOutput<typeof StaticNodeShardSchema>;
+
+export const StaticNodeDetailEntrySchema = v.object({
+	nodeId: v.string(),
+	edges: v.array(EdgeSchema),
+	relatedIds: v.array(v.string()),
+	ancestors: v.array(NodeSummarySchema),
+});
+export type StaticNodeDetailEntry = v.InferOutput<typeof StaticNodeDetailEntrySchema>;
+
+export const StaticNodeDetailShardSchema = v.object({
+	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+	name: v.string(),
+	version: v.string(),
+	bucket: v.string(),
+	details: v.record(v.string(), StaticNodeDetailEntrySchema),
+});
+export type StaticNodeDetailShard = v.InferOutput<typeof StaticNodeDetailShardSchema>;
 
 /** Node kinds that were merged — normalize before validation. */
 const KIND_ALIASES: Record<string, string> = {

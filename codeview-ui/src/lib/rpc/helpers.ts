@@ -1,16 +1,23 @@
 import { getRequestEvent } from '$app/server';
+import { Effect } from 'effect';
 import { initProvider } from '$lib/server/provider';
 import { perf } from '$lib/perf';
 import { isHosted } from '$lib/platform';
 import { normalizeCrateName, hyphenateCrateName } from '$lib/crate-names';
 import { TreeIndex } from '$lib/graph/tree-index';
 import type { Node, Edge, Workspace } from '$lib/graph';
-import type { NodeSummary, CrateTree, NodeDetail, CrateMeta, TreeNodeDTO, NodeView } from '$lib/schema';
+import type {
+	NodeSummary,
+	CrateTree,
+	NodeDetail,
+	CrateMeta,
+	TreeNodeDTO,
+	NodeView,
+} from '$lib/schema';
 import { getLogger } from '$lib/log';
 import type { NodeViewInput } from './schemas';
 
 const log = getLogger('rpc.helpers');
-
 
 export type Provider = Awaited<ReturnType<typeof initProvider>>;
 export type NodeDetailInput = {
@@ -67,7 +74,9 @@ export const tree = {
 					: null;
 			const crateRoot =
 				preferredRoot ??
-				crateTree.nodes.find((node) => node.kind === 'Crate' && (!node.is_external || includeExternal))?.id ??
+				crateTree.nodes.find(
+					(node) => node.kind === 'Crate' && (!node.is_external || includeExternal),
+				)?.id ??
 				null;
 
 			if (crateRoot) {
@@ -226,7 +235,10 @@ function getCrateEdgeIndex(crate: { edges: Edge[] }): Map<string, Edge[]> {
 	for (const e of crate.edges) {
 		for (const id of [e.from, e.to]) {
 			let list = index.get(id);
-			if (!list) { list = []; index.set(id, list); }
+			if (!list) {
+				list = [];
+				index.set(id, list);
+			}
 			list.push(e);
 		}
 	}
@@ -242,14 +254,34 @@ export function summarizeNode(n: Node): NodeSummary {
 		kind: n.kind,
 		visibility: n.visibility,
 		is_external: n.is_external,
+		is_deprecated: n.is_deprecated,
 		...(n.kind === 'Impl'
 			? {
 					impl_trait: n.impl_trait,
+					impl_category: n.impl_category,
 					generics: n.generics,
 					where_clause: n.where_clause,
 					bound_links: n.bound_links,
 				}
 			: {}),
+	};
+}
+
+function nodeFromSummary(summary: NodeSummary): Node {
+	return {
+		id: summary.id,
+		name: summary.name,
+		kind: summary.kind,
+		visibility: summary.visibility,
+		span: null,
+		attrs: [],
+		is_external: summary.is_external,
+		is_deprecated: summary.is_deprecated,
+		generics: summary.generics,
+		where_clause: summary.where_clause,
+		bound_links: summary.bound_links,
+		impl_category: summary.impl_category,
+		impl_trait: summary.impl_trait,
 	};
 }
 
@@ -305,10 +337,10 @@ export class Resolver {
 						}
 						relatedIds.delete(nodeId);
 
-						const relatedNodes: NodeSummary[] = [];
+						const relatedNodes: Node[] = [];
 						for (const id of relatedIds) {
 							const n = allNodes.get(id);
-							if (n) relatedNodes.push(summarizeNode(n));
+							if (n) relatedNodes.push(n);
 						}
 
 						return { node, edges, relatedNodes };
@@ -338,8 +370,13 @@ export class Resolver {
 
 				const edges = graph.edges.filter((e) => e.from === nodeId || e.to === nodeId);
 				const crossData = await provider.getCrossEdgeData(nodeId);
-				const edgeKey = (e: { from: string; to: string; kind: string; confidence: string }) =>
-					`${e.from}|${e.to}|${e.kind}|${e.confidence}`;
+				const edgeKey = (e: {
+					from: string;
+					to: string;
+					kind: string;
+					confidence: string;
+					is_glob?: boolean;
+				}) => `${e.from}|${e.to}|${e.kind}|${e.confidence}|${e.is_glob ? 'glob' : 'named'}`;
 				const edgeKeys = new Set(edges.map((e) => edgeKey(e)));
 				for (const e of crossData.edges) {
 					if (!edgeKeys.has(edgeKey(e))) {
@@ -354,13 +391,13 @@ export class Resolver {
 				}
 				relatedIds.delete(nodeId);
 
-				const relatedNodesMap = new Map<string, NodeSummary>();
+				const relatedNodesMap = new Map<string, Node>();
 				for (const id of relatedIds) {
 					const n = nodesById.get(id);
-					if (n) relatedNodesMap.set(id, summarizeNode(n));
+					if (n) relatedNodesMap.set(id, n);
 				}
 				for (const n of crossData.nodes) {
-					if (!relatedNodesMap.has(n.id)) relatedNodesMap.set(n.id, n);
+					if (!relatedNodesMap.has(n.id)) relatedNodesMap.set(n.id, nodeFromSummary(n));
 				}
 				const relatedNodes = Array.from(relatedNodesMap.values());
 
@@ -372,11 +409,7 @@ export class Resolver {
 		);
 	}
 
-	async treeIndex(
-		name: string,
-		version: string,
-		provider?: Provider,
-	): Promise<TreeIndex | null> {
+	async treeIndex(name: string, version: string, provider?: Provider): Promise<TreeIndex | null> {
 		const key = `${name}@${version}`;
 		const cached = this.#cache.get(key);
 		const resolved = await this.#loader.provider(provider);
@@ -402,7 +435,10 @@ export class Resolver {
 						internalIds.has(e.from) &&
 						internalIds.has(e.to),
 				);
-				crateTree = tree.canonicalize(name, { nodes: internalNodes.map(summarizeNode), edges: treeEdges });
+				crateTree = tree.canonicalize(name, {
+					nodes: internalNodes.map(summarizeNode),
+					edges: treeEdges,
+				});
 			}
 
 			// Provider tree
@@ -417,7 +453,11 @@ export class Resolver {
 
 			// Fallback: full graph (local only)
 			if (!crateTree && !isHosted) {
-				const graph = await this.#loader.crateGraph(name, version === 'latest' ? undefined : version, resolved);
+				const graph = await this.#loader.crateGraph(
+					name,
+					version === 'latest' ? undefined : version,
+					resolved,
+				);
 				if (graph) {
 					const internalNodes = graph.nodes.filter((n) => !n.is_external);
 					const internalIds = new Set(internalNodes.map((n) => n.id));
@@ -448,16 +488,27 @@ export class Resolver {
 
 	async crateMeta(name: string, version: string): Promise<CrateMeta | null> {
 		const provider = await this.#loader.provider();
-		const [index, versions, treeIdx] = await Promise.all([
-			provider.loadCrateIndex(name, version),
-			provider.getCrateVersions(name, 20),
-			this.treeIndex(name, version, provider),
-		]);
+		const [index, versions, treeMeta] = await Effect.runPromise(
+			Effect.all(
+				[
+					Effect.promise(() => provider.loadCrateIndex(name, version)),
+					Effect.promise(() => provider.getCrateVersions(name, 20)),
+					Effect.promise(() => provider.loadTreeMeta?.(name, version) ?? Promise.resolve(null)),
+				] as const,
+				{ concurrency: 3 },
+			),
+		);
+		if (treeMeta) return { index, versions, kindCounts: treeMeta.kindCounts };
+		const treeIdx = await this.treeIndex(name, version, provider);
 		const kindCounts = treeIdx ? tree.kindCounts(treeIdx) : {};
 		return { index, versions, kindCounts };
 	}
 
 	async treeRoots(name: string, version: string): Promise<TreeNodeDTO[]> {
+		const provider = await this.#loader.provider();
+		if (isHosted && provider.loadTreeRootsDirect) {
+			return (await provider.loadTreeRootsDirect(name, version)) ?? [];
+		}
 		const idx = await this.treeIndex(name, version);
 		if (idx) {
 			const rootIds = idx.getRootIds();
@@ -470,7 +521,6 @@ export class Resolver {
 			return roots;
 		}
 		// Fallback: query DB directly (works mid-parse before treeJson is written)
-		const provider = await this.#loader.provider();
 		if (provider.loadTreeRootsDirect) {
 			return (await provider.loadTreeRootsDirect(name, version)) ?? [];
 		}
@@ -480,11 +530,39 @@ export class Resolver {
 	async nodeView({ name, version, nodeId }: NodeViewInput): Promise<NodeView | null> {
 		const provider = await this.#loader.provider();
 		const resolvedVersion = version ?? 'latest';
+		if (isHosted && provider.loadNodeViewDirect) {
+			return provider.loadNodeViewDirect(name, resolvedVersion, nodeId);
+		}
 		const ws = await this.#loader.workspace(provider);
-		const [detail, idx] = await Promise.all([
-			this.nodeDetail({ nodeId, version: resolvedVersion }, provider, ws),
-			this.treeIndex(name, resolvedVersion, provider),
-		]);
+		if (isHosted) {
+			const [detail, ancestors] = await Effect.runPromise(
+				Effect.all(
+					[
+						Effect.promise(() =>
+							this.nodeDetail({ nodeId, version: resolvedVersion }, provider, ws),
+						),
+						Effect.promise(
+							() =>
+								provider.loadTreeAncestorsDirect?.(name, resolvedVersion, nodeId) ??
+								Promise.resolve([]),
+						),
+					] as const,
+					{ concurrency: 2 },
+				),
+			);
+			if (detail) return { detail, ancestors: ancestors ?? [] };
+		}
+		const [detail, idx] = await Effect.runPromise(
+			Effect.all(
+				[
+					Effect.promise(() =>
+						this.nodeDetail({ nodeId, version: resolvedVersion }, provider, ws),
+					),
+					Effect.promise(() => this.treeIndex(name, resolvedVersion, provider)),
+				] as const,
+				{ concurrency: 2 },
+			),
+		);
 
 		let resolvedDetail = detail;
 		let resolvedNodeId = nodeId;
@@ -512,7 +590,8 @@ export class Resolver {
 		if (idx) {
 			ancestors = this.#walkAncestors(idx, resolvedNodeId);
 		} else if (provider.loadTreeAncestorsDirect) {
-			ancestors = (await provider.loadTreeAncestorsDirect(name, resolvedVersion, resolvedNodeId)) ?? [];
+			ancestors =
+				(await provider.loadTreeAncestorsDirect(name, resolvedVersion, resolvedNodeId)) ?? [];
 		}
 
 		return { detail: resolvedDetail, ancestors };
@@ -581,12 +660,15 @@ export class Resolver {
 	}
 
 	async treeChildren(name: string, version: string, parentId: string): Promise<TreeNodeDTO[]> {
+		const provider = await this.#loader.provider();
+		if (isHosted && provider.loadTreeChildrenDirect) {
+			return (await provider.loadTreeChildrenDirect(name, version, parentId)) ?? [];
+		}
 		const idx = await this.treeIndex(name, version);
 		if (idx) {
 			return this.#childDTOs(idx, parentId);
 		}
 		// Fallback: direct DB query (works mid-parse)
-		const provider = await this.#loader.provider();
 		if (provider.loadTreeChildrenDirect) {
 			return (await provider.loadTreeChildrenDirect(name, version, parentId)) ?? [];
 		}

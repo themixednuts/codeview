@@ -27,9 +27,13 @@
 	const sourceProviderMode = $derived(sourceProviderModeCtx.getOr('auto'));
 
 	/** Unique key for this span (guards against null during teardown) */
-	const spanKey = $derived(
-		span ? `${span.file}:${span.line}:${span.end_line ?? span.line}` : '',
-	);
+	const spanKey = $derived(span ? `${span.file}:${span.line}:${span.end_line ?? span.line}` : '');
+
+	/** Display path with forward slashes — rustdoc JSON generated on Windows
+	 *  carries backslashes (e.g. `library\alloc\src\boxed.rs`) which look wrong
+	 *  on the web. We normalise display only; the request payload still uses
+	 *  the raw path so the server's source loader resolves correctly. */
+	const displayFile = $derived(span?.file ? span.file.replace(/\\/g, '/') : '');
 
 	const isOpen = $derived(browser && !!spanKey && page.state?.sourceSpanKey === spanKey);
 
@@ -71,9 +75,7 @@
 
 	function openInEditor() {
 		if (!absolutePath || !span) return;
-		const uri = editorScheme
-			.replace('{path}', absolutePath)
-			.replace('{line}', String(span.line));
+		const uri = editorScheme.replace('{path}', absolutePath).replace('{line}', String(span.line));
 		window.open(uri);
 	}
 
@@ -187,7 +189,7 @@
 </script>
 
 <button type="button" class="source-link" onclick={open} title="View source">
-	<span class="token-name">{span.file}</span>
+	<span class="token-name">{displayFile}</span>
 	<span class="token-meta">:{span.line}:{span.column}</span>
 </button>
 
@@ -196,32 +198,22 @@
 	{@attach syncDialog}
 	onclose={handleDialogClose}
 	onclick={handleBackdropClick}
-	aria-label="Source: {span.file}"
+	aria-label="Source: {displayFile}"
 >
 	<div class="modal-panel">
 		<header class="modal-header">
 			<div class="modal-title">
-				<span class="modal-file">{span.file}</span>
+				<span class="modal-file">{displayFile}</span>
 				<span class="modal-line">:{span.line}:{span.column}</span>
 			</div>
 			<div class="modal-actions">
 				{#if absolutePath}
-					<button
-						type="button"
-						class="modal-action"
-						onclick={openInEditor}
-						title="Open in editor"
-					>
+					<button type="button" class="modal-action" onclick={openInEditor} title="Open in editor">
 						<SquareArrowOutUpRight size={16} />
 					</button>
 				{/if}
 				{#if repoUrl}
-					<button
-						type="button"
-						class="modal-action"
-						onclick={openOnGitHub}
-						title="View on GitHub"
-					>
+					<button type="button" class="modal-action" onclick={openOnGitHub} title="View on GitHub">
 						<ExternalLink size={16} />
 					</button>
 				{/if}

@@ -1,10 +1,18 @@
 <script lang="ts">
-	import { resolve } from '$app/paths';
-	import type { CrateMapData, CrateMapModuleNode, CrateMapSemanticKind } from '$lib/graph/crate-map';
+	import type {
+		CrateMapData,
+		CrateMapModuleNode,
+		CrateMapSemanticKind,
+	} from '$lib/graph/crate-map';
+	import { resolveAppPath } from '$lib/app-paths';
 	import { findContainingModule, moduleDepthColor } from '$lib/graph/crate-map';
 	import { edgeLabels } from '$lib/display-names';
 
-	let { data, selectedNodeId = null, getNodeUrl } = $props<{
+	let {
+		data,
+		selectedNodeId = null,
+		getNodeUrl,
+	} = $props<{
 		data: CrateMapData;
 		selectedNodeId?: string | null;
 		getNodeUrl: (id: string) => string;
@@ -16,7 +24,10 @@
 
 	// Build edge summary per module (outgoing semantic edge count by kind)
 	const edgeSummaryByModule = $derived.by(() => {
-		const summaries = new Map<string, { total: number; topKinds: Array<[CrateMapSemanticKind, number]> }>();
+		const summaries = new Map<
+			string,
+			{ total: number; topKinds: Array<[CrateMapSemanticKind, number]> }
+		>();
 		const outgoing = new Map<string, Map<CrateMapSemanticKind, number>>();
 
 		for (const edge of data.moduleEdges) {
@@ -27,7 +38,10 @@
 			}
 			for (const [kind, count] of Object.entries(edge.kindCounts) as [string, number][]) {
 				if (count > 0) {
-					byKind.set(kind as CrateMapSemanticKind, (byKind.get(kind as CrateMapSemanticKind) ?? 0) + count);
+					byKind.set(
+						kind as CrateMapSemanticKind,
+						(byKind.get(kind as CrateMapSemanticKind) ?? 0) + count,
+					);
 				}
 			}
 		}
@@ -46,7 +60,10 @@
 		const root = data.moduleNodes.find((m: CrateMapModuleNode) => m.parentId === null);
 		const rest = data.moduleNodes
 			.filter((m: CrateMapModuleNode) => m.parentId !== null)
-			.sort((a: CrateMapModuleNode, b: CrateMapModuleNode) => b.totalNodeCount - a.totalNodeCount || a.name.localeCompare(b.name));
+			.sort(
+				(a: CrateMapModuleNode, b: CrateMapModuleNode) =>
+					b.totalNodeCount - a.totalNodeCount || a.name.localeCompare(b.name),
+			);
 		return root ? [root, ...rest] : rest;
 	});
 
@@ -67,9 +84,7 @@
 	function moduleLabel(m: CrateMapModuleNode): string {
 		if (m.depth <= 1) return m.name;
 		const parts = m.id.split('::');
-		return parts.length >= 2
-			? `${parts[parts.length - 2]}::${parts[parts.length - 1]}`
-			: m.name;
+		return parts.length >= 2 ? `${parts[parts.length - 2]}::${parts[parts.length - 1]}` : m.name;
 	}
 
 	const depthColor = moduleDepthColor;
@@ -80,7 +95,10 @@
 	}
 
 	const maxNodeCount = $derived(
-		data.moduleNodes.reduce((max: number, m: CrateMapModuleNode) => Math.max(max, m.totalNodeCount), 1),
+		data.moduleNodes.reduce(
+			(max: number, m: CrateMapModuleNode) => Math.max(max, m.totalNodeCount),
+			1,
+		),
 	);
 </script>
 
@@ -105,12 +123,15 @@
 					{depth === 0 ? 'Root' : `Depth ${depth}`}
 					<span class="font-normal">({modules.length})</span>
 				</h3>
-				<div class="grid gap-2" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))">
+				<div
+					class="grid gap-2"
+					style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr))"
+				>
 					{#each modules as m (m.id)}
 						{@const isHighlighted = highlightedModuleId === m.id}
 						{@const summary = edgeSummaryByModule.get(m.id)}
 						<a
-							href={resolve(getNodeUrl(m.id) as `/${string}`)}
+							href={resolveAppPath(getNodeUrl(m.id))}
 							data-sveltekit-noscroll
 							class="corner-squircle group relative flex flex-col gap-1.5 rounded-(--radius-control) border p-3 transition-all hover:shadow-sm {isHighlighted
 								? 'border-(--accent) bg-(--panel-strong) shadow-sm'
@@ -123,7 +144,9 @@
 							></div>
 
 							<div class="ml-2 flex items-start justify-between gap-2">
-								<span class="text-sm font-medium leading-tight text-(--ink) group-hover:text-(--accent)">
+								<span
+									class="text-sm leading-tight font-medium text-(--ink) group-hover:text-(--accent)"
+								>
 									{moduleLabel(m)}
 								</span>
 								<span class="badge badge-sm shrink-0 tabular-nums">
@@ -136,7 +159,10 @@
 								<div class="h-1.5 w-full overflow-hidden rounded-full bg-(--panel-muted)">
 									<div
 										class="h-full rounded-full transition-all"
-										style="width: {sizeBar(m.totalNodeCount, maxNodeCount)}%; background: {depthColor(m.depth)}; opacity: 0.6"
+										style="width: {sizeBar(
+											m.totalNodeCount,
+											maxNodeCount,
+										)}%; background: {depthColor(m.depth)}; opacity: 0.6"
 									></div>
 								</div>
 							</div>
@@ -154,7 +180,8 @@
 								<div class="ml-2 flex flex-wrap gap-1">
 									{#each summary.topKinds as [kind, count] (kind)}
 										<span class="badge badge-sm text-[9px]">
-											{edgeLabels[kind]} {count}
+											{edgeLabels[kind]}
+											{count}
 										</span>
 									{/each}
 								</div>

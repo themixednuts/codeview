@@ -3,6 +3,8 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { LoaderCircleIcon } from '@lucide/svelte';
+	import { isHosted } from '$lib/platform';
+	import { isStdCrate } from '$lib/std';
 
 	let {
 		crateName,
@@ -30,6 +32,15 @@
 
 	const canRetry = $derived(!!crateName && !!version);
 
+	const isStd = $derived(!!crateName && isStdCrate(crateName));
+	const externalDocsHref = $derived.by(() => {
+		if (!crateName || !version) return null;
+		return isStd
+			? `https://doc.rust-lang.org/${version}/${crateName}/`
+			: `https://docs.rs/crate/${crateName}/${version}`;
+	});
+	const externalDocsLabel = $derived(isStd ? 'View on doc.rust-lang.org' : 'View on docs.rs');
+
 	function goBack() {
 		void goto(resolve('/'));
 	}
@@ -51,9 +62,28 @@
 	>
 		<div class="mb-2 text-lg font-semibold text-(--ink)">Documentation not available yet</div>
 		<div class="mb-4 text-sm text-(--muted)">
-			docs.rs hasn't published rustdoc JSON for
-			<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">{crateName} {version}</code>
-			. This usually takes a few minutes after a new release.
+			{#if isStd}
+				Codeview doesn't have a parsed graph for the standard library crate
+				<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">
+					{crateName}
+					{version}
+				</code>
+				. The official rustdoc is available on doc.rust-lang.org.
+			{:else if isHosted}
+				Codeview has not published a static graph for
+				<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">
+					{crateName}
+					{version}
+				</code>
+				yet.
+			{:else}
+				docs.rs hasn't published rustdoc JSON for
+				<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">
+					{crateName}
+					{version}
+				</code>
+				. This usually takes a few minutes after a new release.
+			{/if}
 		</div>
 
 		<svelte:boundary>
@@ -83,35 +113,37 @@
 		</svelte:boundary>
 
 		<div class="mt-2 flex items-center justify-center gap-3">
-			{#if crateName && version}
+			{#if externalDocsHref}
 				<a
-					href="https://docs.rs/crate/{crateName}/{version}"
+					href={externalDocsHref}
 					target="_blank"
 					rel="noopener noreferrer"
 					class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"
 				>
-					View on docs.rs
+					{externalDocsLabel}
 				</a>
 			{/if}
-			<form
-				{...retryForm.enhance(async ({ submit }) => {
-					if (!canRetry) return;
-					onRetryStart?.();
-					try {
-						await submit();
-					} catch (err) {
-						onRetryError?.(err instanceof Error ? err.message : String(err));
-					}
-				})}
-			>
-				<button
-					type="submit"
-					disabled={!canRetry}
-					class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+			{#if !isHosted}
+				<form
+					{...retryForm.enhance(async ({ submit }) => {
+						if (!canRetry) return;
+						onRetryStart?.();
+						try {
+							await submit();
+						} catch (err) {
+							onRetryError?.(err instanceof Error ? err.message : String(err));
+						}
+					})}
 				>
-					Retry
-				</button>
-			</form>
+					<button
+						type="submit"
+						disabled={!canRetry}
+						class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+					>
+						Retry
+					</button>
+				</form>
+			{/if}
 			<button
 				type="button"
 				class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"

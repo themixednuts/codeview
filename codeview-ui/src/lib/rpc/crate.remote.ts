@@ -48,14 +48,11 @@ export const getProcessingCrates = query(
 );
 
 /** Get available versions for a crate */
-export const getCrateVersions = query(
-	CrateNameInputSchema,
-	async ({ name }): Promise<string[]> => {
-		assertCrateName(name);
-		const provider = await loader.provider();
-		return await provider.getCrateVersions(name, 20);
-	},
-);
+export const getCrateVersions = query(CrateNameInputSchema, async ({ name }): Promise<string[]> => {
+	assertCrateName(name);
+	const provider = await loader.provider();
+	return await provider.getCrateVersions(name, 20);
+});
 
 /** Get a lightweight crate index for hosted mode (external crate list + versions). */
 export const getCrateIndex = query(

@@ -1,0 +1,749 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workspace",
+  "description": "Top-level workspace: per-crate graphs with cross-crate edges.",
+  "type": "object",
+  "properties": {
+    "crates": {
+      "description": "Workspace member crates (fully analyzed)",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/CrateGraph"
+      }
+    },
+    "cross_crate_edges": {
+      "description": "Edges that cross crate boundaries (from_crate != to_crate)",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Edge"
+      }
+    },
+    "external_crates": {
+      "description": "External crate stubs (referenced but not analyzed)",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ExternalCrate"
+      }
+    },
+    "ref": {
+      "description": "Git ref (branch, tag, or commit SHA) for source fetching on Cloudflare",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "repo": {
+      "description": "GitHub repository (e.g. \"owner/repo\") for source fetching on Cloudflare",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "type": "integer",
+      "format": "uint32",
+      "default": 3,
+      "minimum": 0
+    }
+  },
+  "required": [
+    "crates",
+    "external_crates",
+    "cross_crate_edges"
+  ],
+  "$defs": {
+    "ArgumentInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type_name"
+      ]
+    },
+    "Confidence": {
+      "type": "string",
+      "enum": [
+        "Static",
+        "Runtime",
+        "Inferred"
+      ]
+    },
+    "CrateGraph": {
+      "description": "A single crate's graph data.",
+      "type": "object",
+      "properties": {
+        "aliases": {
+          "description": "Public re-export path → canonical node ID (see `Graph::aliases`).",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "edges": {
+          "description": "Internal edges (both from+to within this crate)",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Edge"
+          }
+        },
+        "id": {
+          "description": "Crate identifier (e.g. \"drizzle_core\")",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "All nodes belonging to this crate",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "version": {
+          "description": "Crate version string",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "nodes",
+        "edges"
+      ]
+    },
+    "Deprecation": {
+      "type": "object",
+      "properties": {
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "since": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Edge": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "from": {
+          "type": "string"
+        },
+        "is_glob": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/EdgeKind"
+        },
+        "to": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind",
+        "confidence"
+      ]
+    },
+    "EdgeKind": {
+      "type": "string",
+      "enum": [
+        "Contains",
+        "Defines",
+        "Implements",
+        "UsesType",
+        "CallsStatic",
+        "CallsRuntime",
+        "Derives",
+        "ReExports"
+      ]
+    },
+    "ExternalCrate": {
+      "description": "Stub for an external crate referenced by workspace crates.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Crate identifier (e.g. \"std\")",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name",
+          "type": "string"
+        },
+        "nodes": {
+          "description": "Stub nodes for external items referenced by workspace crates",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Node"
+          }
+        },
+        "version": {
+          "description": "Pinned version from cargo metadata (None for std/core/alloc)",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "nodes"
+      ]
+    },
+    "FieldInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type_name": {
+          "type": "string"
+        },
+        "visibility": {
+          "$ref": "#/$defs/Visibility"
+        }
+      },
+      "required": [
+        "name",
+        "type_name",
+        "visibility"
+      ]
+    },
+    "FunctionSignature": {
+      "type": "object",
+      "properties": {
+        "abi": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ArgumentInfo"
+          }
+        },
+        "is_async": {
+          "type": "boolean"
+        },
+        "is_c_variadic": {
+          "type": "boolean"
+        },
+        "is_const": {
+          "type": "boolean"
+        },
+        "is_unsafe": {
+          "type": "boolean"
+        },
+        "output": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "inputs",
+        "is_async",
+        "is_unsafe",
+        "is_const"
+      ]
+    },
+    "ImplCategory": {
+      "type": "string",
+      "enum": [
+        "Inherent",
+        "Trait",
+        "Blanket",
+        "Negative",
+        "Synthetic"
+      ]
+    },
+    "ImplType": {
+      "type": "string",
+      "enum": [
+        "Trait",
+        "Inherent"
+      ]
+    },
+    "Node": {
+      "type": "object",
+      "properties": {
+        "attrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bound_links": {
+          "description": "Resolved trait bound links from generics/where clauses:\nmaps display name (e.g., \"Clone\") to node ID (e.g., \"core::clone::Clone\")",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "bounds": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "const_value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "default_trait_methods": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deprecation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Deprecation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "discriminant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "doc_links": {
+          "description": "Resolved intra-doc links: maps link text (e.g., \"Vec\") to node ID (e.g., \"std::vec::Vec\")",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "docs": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extern_crate_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extern_crate_rename": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/FieldInfo"
+          }
+        },
+        "generics": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "has_stripped_fields": {
+          "type": "boolean"
+        },
+        "has_stripped_variants": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "impl_category": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImplCategory"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "impl_trait": {
+          "description": "For impl blocks: the ID of the trait being implemented (if trait impl)",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "impl_type": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ImplType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "import_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "import_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "is_auto": {
+          "type": "boolean"
+        },
+        "is_deprecated": {
+          "type": "boolean"
+        },
+        "is_dyn_compatible": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "is_external": {
+          "type": "boolean"
+        },
+        "is_glob": {
+          "type": "boolean"
+        },
+        "is_mutable": {
+          "type": "boolean"
+        },
+        "is_stripped": {
+          "type": "boolean"
+        },
+        "is_unsafe": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/NodeKind"
+        },
+        "line_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "macro_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent_impl": {
+          "description": "For methods: the ID of the parent impl block",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proc_macro_helpers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "proc_macro_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provided_trait_methods": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "required_trait_methods": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "signature": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FunctionSignature"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Span"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VariantKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "variants": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/$defs/VariantInfo"
+          }
+        },
+        "visibility": {
+          "$ref": "#/$defs/Visibility"
+        },
+        "where_clause": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "visibility",
+        "attrs"
+      ]
+    },
+    "NodeKind": {
+      "type": "string",
+      "enum": [
+        "Crate",
+        "Module",
+        "Struct",
+        "StructField",
+        "Union",
+        "Enum",
+        "Variant",
+        "Trait",
+        "TraitAlias",
+        "Impl",
+        "Function",
+        "TypeAlias",
+        "AssocType",
+        "Constant",
+        "AssocConst",
+        "Static",
+        "Macro",
+        "Primitive",
+        "ExternCrate",
+        "Import",
+        "ProcMacro"
+      ]
+    },
+    "Span": {
+      "type": "object",
+      "properties": {
+        "column": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_column": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "end_line": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "column"
+      ]
+    },
+    "VariantInfo": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FieldInfo"
+          }
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "fields"
+      ]
+    },
+    "VariantKind": {
+      "type": "string",
+      "enum": [
+        "unit",
+        "tuple",
+        "struct"
+      ]
+    },
+    "Visibility": {
+      "description": "Visibility level. Carries the restriction path when the visibility is\n`pub(crate)` / `pub(super)` / `pub(in path::to::module)`.\n\nTagged enum (serde `tag = \"kind\"`) so JSON and TypeScript consumers get\na uniformly-shaped object regardless of variant. Adds an optional\n`path` only on the `Restricted` variant. Schema bump (v2 → v3): older\nflat-string artifacts won't deserialise as-is; the freshness registry\nre-parses everything when SCHEMA_VERSION changes.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Public"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Crate"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Restricted"
+            },
+            "path": {
+              "description": "The path with which the restriction parent was referenced,\ne.g. `crate::foo::bar`, `super::super`, or `crate`. From rustdoc\nJSON `Visibility::Restricted.path`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Inherited"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "Unknown"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    }
+  }
+}

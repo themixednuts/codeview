@@ -1,4 +1,5 @@
 import { query } from '$app/server';
+import { Effect } from 'effect';
 import type { NodeDetail } from '$lib/schema';
 import { loader, resolve, type NodeDetailInput } from './helpers';
 import { NodeDetailInputSchema } from './schemas';
@@ -9,8 +10,12 @@ export const getNodeDetail = query.batch(
 	async (inputs): Promise<(input: NodeDetailInput, index: number) => NodeDetail | null> => {
 		const provider = await loader.provider();
 		const workspace = await provider.loadWorkspace();
-		const results = await Promise.all(
-			inputs.map((input) => resolve.nodeDetail(input, provider, workspace)),
+		const results = await Effect.runPromise(
+			Effect.forEach(
+				inputs,
+				(input) => Effect.promise(() => resolve.nodeDetail(input, provider, workspace)),
+				{ concurrency: 8 },
+			),
 		);
 		return (_input, index) => results[index] ?? null;
 	},

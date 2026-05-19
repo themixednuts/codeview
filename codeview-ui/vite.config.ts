@@ -1,48 +1,11 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
-import { build, type Plugin } from 'vite';
-import { defineConfig } from 'vitest/config';
-import { resolve } from 'path';
+import { defineConfig, type Plugin } from 'vite-plus';
 
 const isCloudflare = process.env.PUBLIC_CODEVIEW_PLATFORM === 'cloudflare';
 
 /** Fixed port for the dev-mode Bun WebSocket server. */
 const DEV_WS_PORT = 15173;
-
-/**
- * After the main SvelteKit build, build the codeview-services worker entry
- * with Vite so import.meta.glob (used by migrations.ts) gets resolved.
- * The workers wrangler.toml points at the output with no_bundle = true.
- */
-function cloudflareWorkers(): Plugin {
-	return {
-		name: 'cloudflare-workers',
-		apply: 'build',
-		async closeBundle() {
-			if (!isCloudflare) return;
-			console.log('\nBuilding codeview-services worker…');
-			await build({
-				configFile: false,
-				build: {
-					ssr: resolve(__dirname, 'src/lib/server/cloudflare/workers/src/index.ts'),
-					outDir: resolve(__dirname, 'src/lib/server/cloudflare/workers/dist'),
-					emptyOutDir: true,
-					rollupOptions: {
-						external: ['cloudflare:workers'],
-						output: { entryFileNames: 'index.js' },
-					},
-				},
-				resolve: {
-					alias: {
-						$lib: resolve(__dirname, 'src/lib'),
-						$cloudflare: resolve(__dirname, 'src/lib/server/cloudflare'),
-					},
-				},
-				ssr: { noExternal: true },
-			});
-		},
-	};
-}
 
 /**
  * Dev-mode WebSocket bridge using Bun's native WebSocket API.
@@ -89,21 +52,30 @@ function localWebSocket(): Plugin {
 						const connectionId = ws.data.connectionId;
 						console.log('[local-ws] open connectionId=' + connectionId);
 
-						loadModules().then(() => {
-							const conn = { ws: ws as unknown as { send(data: string): void }, tags: new Set<string>() };
-							wsMod!.connections.set(connectionId, conn);
-							ws.send(JSON.stringify({ type: 'connected', connectionId }));
-							console.log('[local-ws] sent connected, id=' + connectionId);
-						}).catch((err) => {
-							console.error('[local-ws] module load error:', err);
-							ws.close();
-						});
+						loadModules()
+							.then(() => {
+								const conn = {
+									ws: ws as unknown as { send(data: string): void },
+									tags: new Set<string>(),
+								};
+								wsMod!.connections.set(connectionId, conn);
+								ws.send(JSON.stringify({ type: 'connected', connectionId }));
+								console.log('[local-ws] sent connected, id=' + connectionId);
+							})
+							.catch((err) => {
+								console.error('[local-ws] module load error:', err);
+								ws.close();
+							});
 					},
 					message(ws, msg) {
 						if (!wsMod) return;
 						const raw = typeof msg === 'string' ? msg : new TextDecoder().decode(msg);
 						let parsed: { action?: string; tags?: string[] };
-						try { parsed = JSON.parse(raw); } catch { return; }
+						try {
+							parsed = JSON.parse(raw);
+						} catch {
+							return;
+						}
 
 						const conn = wsMod.connections.get(ws.data.connectionId);
 						if (!conn) return;
@@ -136,16 +108,16 @@ function localWebSocket(): Plugin {
 }
 
 export default defineConfig({
-	plugins: [tailwindcss(), sveltekit(), localWebSocket(), cloudflareWorkers()],
+	plugins: [tailwindcss(), sveltekit(), localWebSocket()],
 	css: { devSourcemap: true },
 	build: {
 		sourcemap: !isCloudflare,
-		minify: false
+		minify: false,
 	},
 	resolve: {
-		...(process.env.VITEST ? { conditions: ['browser'] } : {})
+		...(process.env.VITEST ? { conditions: ['browser'] } : {}),
 	},
-  test: {
-    include: ['src/**/*.{test,spec}.{js,ts}']
-  }
+	test: {
+		include: ['src/**/*.{test,spec}.{js,ts}'],
+	},
 });

@@ -38,9 +38,7 @@ export const source = {
 	pathCandidates(path: string): string[] {
 		const normalized = path.replace(/\\/g, '/').replace(/^\.\//, '');
 		const withSrc = normalized.startsWith('src/') ? normalized : `src/${normalized}`;
-		const withoutSrc = normalized.startsWith('src/')
-			? normalized.slice('src/'.length)
-			: normalized;
+		const withoutSrc = normalized.startsWith('src/') ? normalized.slice('src/'.length) : normalized;
 		const values = [normalized, withSrc, withoutSrc];
 		return values.filter((v, i, all) => v.length > 0 && all.indexOf(v) === i);
 	},
@@ -60,10 +58,7 @@ export const source = {
 		return null;
 	},
 
-	selectProviders(
-		group: SourceProviderGroup,
-		mode: SourceProviderMode,
-	): SourceProviderGroup {
+	selectProviders(group: SourceProviderGroup, mode: SourceProviderMode): SourceProviderGroup {
 		if (mode === 'auto') return group;
 		if (mode === 'crates-io') {
 			return {
@@ -79,3 +74,71 @@ export const source = {
 		};
 	},
 } satisfies SourceOps;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Std-library source loader
+//
+// The standard-library crates (`std`/`core`/`alloc`/`proc_macro`/`test`) live
+// in `rust-lang/rust` under `library/{crate}/...`. Their rustdoc spans already
+// use that exact form (e.g. `library/alloc/src/boxed.rs`), so we just pick a
+// git ref that matches the crate version and stream the file from GitHub raw.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pick a rust-lang/rust git ref for an std crate version.
+ * - "1.x.y-nightly" → master (no exact commit pinned in rustdoc JSON)
+ * - "1.x.y-beta.N"  → beta
+ * - "1.x.y"          → tag "1.x.y"
+ * - channel aliases  → branch matching the channel
+ */
+export function stdRustRef(version: string): string {
+	const v = version.trim();
+	if (v === 'stable') return 'stable';
+	if (v === 'beta') return 'beta';
+	if (v === 'nightly' || v === 'latest') return 'master';
+	if (/-nightly(\.|$)/i.test(v)) return 'master';
+	if (/-beta(\.|$)/i.test(v)) return 'beta';
+	if (/^\d+\.\d+(\.\d+)?$/.test(v)) return v;
+	return 'master';
+}
+
+/** GitHub raw + blob URL pair for an std-library source path. */
+export function buildStdSourceUrls(
+	relativePath: string,
+	version: string,
+): { rawUrl: string; blobUrl: string } {
+	const ref = stdRustRef(version);
+	const normalized = relativePath.replace(/\\/g, '/').replace(/^\.\//, '');
+	return {
+		rawUrl: `https://raw.githubusercontent.com/rust-lang/rust/${ref}/${normalized}`,
+		blobUrl: `https://github.com/rust-lang/rust/blob/${ref}/${normalized}`,
+	};
+}
+
+/** Fetch an std-library source file from rust-lang/rust on GitHub. */
+export async function fetchStdSourceFile(
+	relativePath: string,
+	version: string,
+	maxBytes: number,
+	userAgent: string,
+): Promise<{ content: string; blobUrl: string } | { error: string; blobUrl: string }> {
+	const { rawUrl, blobUrl } = buildStdSourceUrls(relativePath, version);
+	try {
+		const response = await fetch(rawUrl, {
+			headers: { 'User-Agent': userAgent, Accept: 'text/plain' },
+		});
+		if (!response.ok) {
+			return {
+				error: `Std source fetch failed: ${response.status} ${response.statusText}`,
+				blobUrl,
+			};
+		}
+		const text = await response.text();
+		return { content: text.length > maxBytes ? text.slice(0, maxBytes) : text, blobUrl };
+	} catch (err) {
+		return {
+			error: `Std source fetch error: ${err instanceof Error ? err.message : String(err)}`,
+			blobUrl,
+		};
+	}
+}

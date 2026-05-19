@@ -1,5 +1,5 @@
 import type { Graph, Node } from '$lib/graph';
-import { kindOrder } from '$lib/tree';
+import { compareNodeLike, kindOrder } from '$lib/node-order';
 import { getLogger } from '$lib/log';
 
 const log = getLogger('tree-index');
@@ -99,11 +99,7 @@ export class TreeIndex {
 				const last = graph.nodes[graph.nodes.length - 1];
 				const iFirst = first ? this.#nodes.get(first.id) : undefined;
 				const iLast = last ? this.#nodes.get(last.id) : undefined;
-				if (
-					iFirst && iLast &&
-					iFirst.kind === first.kind &&
-					iLast.kind === last.kind
-				) {
+				if (iFirst && iLast && iFirst.kind === first.kind && iLast.kind === last.kind) {
 					this.#nodeArrayRef = graph.nodes;
 					this.#edgeArrayRef = graph.edges;
 					return 'noop';
@@ -122,10 +118,7 @@ export class TreeIndex {
 			return 'rebuild';
 		}
 
-		if (
-			graph.nodes.length === this.#nodeLength &&
-			graph.edges.length === this.#edgeLength
-		) {
+		if (graph.nodes.length === this.#nodeLength && graph.edges.length === this.#edgeLength) {
 			return 'noop';
 		}
 
@@ -163,9 +156,7 @@ export class TreeIndex {
 		if (!an && !bn) return a < b ? -1 : a > b ? 1 : 0;
 		if (!an) return 1;
 		if (!bn) return -1;
-		const kindDiff = (kindOrder[an.kind] ?? 99) - (kindOrder[bn.kind] ?? 99);
-		if (kindDiff !== 0) return kindDiff;
-		return an.name < bn.name ? -1 : an.name > bn.name ? 1 : 0;
+		return compareNodeLike(an, bn);
 	}
 
 	// ── Private: sorted insertion ──────────────────────────────────────
@@ -221,12 +212,7 @@ export class TreeIndex {
 		return true;
 	}
 
-	#appendIndex(
-		graph: Graph,
-		nodeStart: number,
-		edgeStart: number,
-		streaming: boolean,
-	): boolean {
+	#appendIndex(graph: Graph, nodeStart: number, edgeStart: number, streaming: boolean): boolean {
 		let changed = false;
 
 		for (let i = nodeStart; i < graph.nodes.length; i++) {

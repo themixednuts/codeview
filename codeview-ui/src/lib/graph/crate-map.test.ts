@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import type { Edge, Graph, Node } from '$lib/graph';
 import { buildCrateMapData } from './crate-map';
 
@@ -7,7 +7,8 @@ function node(id: string, kind: Node['kind'], name = id.split('::').pop() ?? id)
 		id,
 		name,
 		kind,
-		visibility: 'Public',
+		visibility: { kind: 'Public' },
+		attrs: [],
 	};
 }
 

@@ -1,6 +1,3 @@
-import Root from "./button-group.svelte";
+import Root from './button-group.svelte';
 
-export {
-	Root,
-	Root as ButtonGroup,
-};
+export { Root, Root as ButtonGroup };

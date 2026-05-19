@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { tooltip } from '$lib/tooltip';
 
-	export type VizMode = 'treemap' | 'sunburst' | 'grid';
+	export type VizMode = 'graph' | 'treemap' | 'sunburst' | 'grid';
 
 	interface Props {
 		mode: VizMode;
@@ -11,6 +11,11 @@
 	let { mode, onModeChange }: Props = $props();
 
 	const vizModes: { id: VizMode; label: string; description: string }[] = [
+		{
+			id: 'graph',
+			label: 'Graph',
+			description: 'Force-directed module dependency graph — see coupling between modules',
+		},
 		{
 			id: 'treemap',
 			label: 'Treemap',
@@ -29,6 +34,7 @@
 	];
 
 	let buttonRefs: Record<VizMode, HTMLButtonElement | null> = $state({
+		graph: null,
 		treemap: null,
 		sunburst: null,
 		grid: null,
@@ -58,7 +64,9 @@
 >
 	<div
 		class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-150 ease-out"
-		style="left: {indicatorStyle.left}px; width: {indicatorStyle.width}px; opacity: {indicatorStyle.ready ? 1 : 0}; view-transition-name: viz-indicator"
+		style="left: {indicatorStyle.left}px; width: {indicatorStyle.width}px; opacity: {indicatorStyle.ready
+			? 1
+			: 0}; view-transition-name: viz-indicator"
 	></div>
 
 	{#each vizModes as viz (viz.id)}

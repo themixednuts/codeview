@@ -1,7 +1,5 @@
 /// <reference types="@types/bun" />
 import { Result } from 'better-result';
-import { Database } from 'bun:sqlite';
-import { drizzle } from 'drizzle-orm/bun-sqlite';
 import { formatToMillis, type MigrationMeta } from 'drizzle-orm/migrator';
 import type { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core/dialect';
 import type { SQLiteSession } from 'drizzle-orm/sqlite-core/session';
@@ -10,13 +8,29 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from '../db/schema';
 import { normalizeCrateName } from '../validation';
-import type { CrateGraph, Node, Edge } from '$lib/graph';
+import type { CrateGraph, Node, Edge, Visibility } from '$lib/graph';
 import type { CrateIndex, CrateTree } from '$lib/schema';
 import { getLogger } from '$lib/log';
+import { visibilityKey, parseVisibilityKey } from '$lib/display-names';
 
 const log = getLogger('cache');
+
+/**
+ * `bun:sqlite` is a Bun-only module — fatal to mention at the workerd
+ * module-init phase. Lazily resolve `createRequire` so cf:dev hot-reload
+ * accidentally bundling this file (PUBLIC_CODEVIEW_PLATFORM lost across
+ * a wrangler --live-reload rebuild) doesn't crash the worker at startup.
+ * The function is only invoked from the local-mode code paths.
+ */
+function loadBunSqlite() {
+	const require = createRequire(import.meta.url);
+	const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
+	const { drizzle } = require('drizzle-orm/bun-sqlite') as typeof import('drizzle-orm/bun-sqlite');
+	return { Database, drizzle };
+}
 
 const sqlModules = import.meta.glob('../db/migrations/*/migration.sql', {
 	query: '?raw',
@@ -82,6 +96,7 @@ export class LocalCache {
 	}
 
 	constructor() {
+		const { Database, drizzle } = loadBunSqlite();
 		mkdirSync(CACHE_DIR, { recursive: true });
 		const client = new Database(CACHE_DB);
 		client.exec('PRAGMA journal_mode = WAL;');
@@ -187,6 +202,7 @@ export class LocalCache {
 				toId: edges.toId,
 				kind: edges.kind,
 				confidence: edges.confidence,
+				isGlob: edges.isGlob,
 			})
 			.from(edges)
 			.where(
@@ -199,6 +215,7 @@ export class LocalCache {
 			to: row.toId,
 			kind: row.kind as Edge['kind'],
 			confidence: row.confidence as Edge['confidence'],
+			is_glob: row.isGlob ? true : undefined,
 		}));
 
 		const t3 = performance.now();
@@ -248,6 +265,7 @@ export class LocalCache {
 				toId: edges.toId,
 				kind: edges.kind,
 				confidence: edges.confidence,
+				isGlob: edges.isGlob,
 			})
 			.from(edges)
 			.where(
@@ -265,6 +283,7 @@ export class LocalCache {
 			to: row.toId,
 			kind: row.kind as Edge['kind'],
 			confidence: row.confidence as Edge['confidence'],
+			is_glob: row.isGlob ? true : undefined,
 		}));
 	}
 
@@ -430,6 +449,7 @@ export class LocalCache {
 			toId: edge.to,
 			kind: edge.kind,
 			confidence: edge.confidence,
+			isGlob: edge.is_glob === true,
 		}));
 
 		// Batch insert in chunks of 500 for SQLite efficiency
@@ -587,12 +607,18 @@ export class LocalCache {
 		ecosystem: string,
 		name: string,
 		version: string,
-		edges: Array<{ from: string; to: string; kind: string; confidence: string }>,
+		edges: Array<{
+			from: string;
+			to: string;
+			kind: string;
+			confidence: string;
+			is_glob?: boolean;
+		}>,
 		nodes: Array<{
 			id: string;
 			name: string;
 			kind: string;
-			visibility: string;
+			visibility: Visibility;
 			is_external?: boolean;
 		}>,
 	): void {
@@ -618,6 +644,7 @@ export class LocalCache {
 				toId: edge.to,
 				kind: edge.kind,
 				confidence: edge.confidence,
+				isGlob: edge.is_glob === true,
 			}));
 			for (let i = 0; i < rows.length; i += BATCH) {
 				this.db
@@ -635,7 +662,10 @@ export class LocalCache {
 				nodeId: node.id,
 				name: node.name,
 				kind: node.kind,
-				visibility: node.visibility,
+				// SQLite TEXT column; serialize the tagged enum to its
+				// canonical key form ("Public" | "Restricted:crate::foo" | ...)
+				// for storage. `parseVisibilityKey` reconstructs on read.
+				visibility: visibilityKey(node.visibility),
 				isExternal: Boolean(node.is_external),
 				updatedAt: now,
 			}));
@@ -662,12 +692,18 @@ export class LocalCache {
 		ecosystem: string,
 		nodeId: string,
 	): {
-		edges: Array<{ from: string; to: string; kind: string; confidence: string }>;
+		edges: Array<{
+			from: string;
+			to: string;
+			kind: string;
+			confidence: string;
+			is_glob?: boolean;
+		}>;
 		nodes: Array<{
 			id: string;
 			name: string;
 			kind: string;
-			visibility: string;
+			visibility: Visibility;
 			is_external?: boolean;
 		}>;
 	} {
@@ -677,6 +713,7 @@ export class LocalCache {
 				toId: crossEdges.toId,
 				kind: crossEdges.kind,
 				confidence: crossEdges.confidence,
+				isGlob: crossEdges.isGlob,
 			})
 			.from(crossEdges)
 			.where(
@@ -691,6 +728,7 @@ export class LocalCache {
 			to: row.toId,
 			kind: row.kind,
 			confidence: row.confidence,
+			is_glob: row.isGlob ? true : undefined,
 		}));
 
 		const nodeIds = new Set<string>();
@@ -703,7 +741,7 @@ export class LocalCache {
 			id: string;
 			name: string;
 			kind: string;
-			visibility: string;
+			visibility: Visibility;
 			is_external?: boolean;
 		}> = [];
 		if (nodeIds.size === 0) return { edges, nodes: resultNodes };
@@ -728,7 +766,9 @@ export class LocalCache {
 					id: row.nodeId,
 					name: row.name,
 					kind: row.kind,
-					visibility: row.visibility,
+					// SQLite stores the canonical key form; parse back to
+					// the tagged Visibility tag.
+					visibility: parseVisibilityKey(row.visibility),
 					is_external: row.isExternal,
 				});
 			}
@@ -745,10 +785,7 @@ export class LocalCache {
 	 * During progressive parsing, edge-based root detection is unreliable
 	 * because parent edges arrive in batches, so we just find the known root.
 	 */
-	getTreeRootsDirect(
-		name: string,
-		version: string,
-	): { node: Node; hasChildren: boolean }[] {
+	getTreeRootsDirect(name: string, version: string): { node: Node; hasChildren: boolean }[] {
 		const n = this.norm(name);
 		// Rust crate root node ID is the underscore-normalized name
 		const rootNodeId = n.replace(/-/g, '_');
@@ -869,9 +906,11 @@ function summarizeNode(n: Node): CrateTree['nodes'][number] {
 		kind: n.kind,
 		visibility: n.visibility,
 		is_external: n.is_external,
+		is_deprecated: n.is_deprecated,
 		...(n.kind === 'Impl'
 			? {
 					impl_trait: n.impl_trait,
+					impl_category: n.impl_category,
 					generics: n.generics,
 					where_clause: n.where_clause,
 					bound_links: n.bound_links,

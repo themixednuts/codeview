@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'vite-plus/test';
 import {
 	buildScene,
 	buildBaseScene,
@@ -21,7 +21,7 @@ function makeNode(id: string, name: string, kind: Node['kind'] = 'Function'): No
 		id,
 		name,
 		kind,
-		visibility: 'Public',
+		visibility: { kind: 'Public' },
 	} as Node;
 }
 
@@ -49,6 +49,7 @@ describe('edge kind constants', () => {
 		expect(semanticEdgeKinds).toContain('CallsStatic');
 		expect(semanticEdgeKinds).toContain('CallsRuntime');
 		expect(semanticEdgeKinds).toContain('Derives');
+		expect(semanticEdgeKinds).toContain('ReExports');
 	});
 
 	it('constants are readonly (no overlap)', () => {

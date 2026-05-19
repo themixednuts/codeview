@@ -55,12 +55,12 @@ function resolveLogLevel(): LogLevel {
 	return 'info';
 }
 
-function buildFileSink(): Record<string, ReturnType<typeof getStreamSink>> {
+async function buildFileSink(): Promise<Record<string, ReturnType<typeof getStreamSink>>> {
 	if (isBrowser || isCloudflare) return {};
 	try {
 		const logFile = process.env.LOG_FILE;
 		if (!logFile) return {};
-		const { createWriteStream } = require('node:fs') as typeof import('node:fs');
+		const { createWriteStream } = await import('node:fs');
 		const ws = createWriteStream(logFile, { flags: 'a' });
 		const webStream = globalThis.WritableStream
 			? new WritableStream({
@@ -100,7 +100,7 @@ export async function setupLogging(): Promise<void> {
 
 	const perfEnabled = isPerfEnabled();
 	const logLevel = resolveLogLevel();
-	const fileSinks = buildFileSink();
+	const fileSinks = await buildFileSink();
 	const hasFile = 'file' in fileSinks;
 
 	const allSinks = hasFile ? ['console', 'file'] : ['console'];

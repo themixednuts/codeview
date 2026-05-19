@@ -1,6 +1,7 @@
 import type { Node, NodeKind } from '$lib/graph';
 import type { Component } from 'svelte';
 import { kindVisuals } from '$lib/graph/visual';
+import { compareNodeLike, kindOrder } from '$lib/node-order';
 import Package from '@lucide/svelte/icons/package';
 import FolderCode from '@lucide/svelte/icons/folder-code';
 import Box from '@lucide/svelte/icons/box';
@@ -51,29 +52,7 @@ export const kindIcons: Record<NodeKind, Component> = {
 	ProcMacro: Sparkles,
 };
 
-export const kindOrder: Record<NodeKind, number> = {
-	Crate: 0,
-	Module: 1,
-	TypeAlias: 2,
-	Struct: 3,
-	StructField: 4,
-	Enum: 5,
-	Variant: 6,
-	Union: 7,
-	Function: 8,
-	AssocType: 9,
-	Constant: 10,
-	AssocConst: 11,
-	Static: 12,
-	Macro: 13,
-	ProcMacro: 14,
-	Primitive: 15,
-	ExternCrate: 16,
-	Import: 17,
-	Impl: 18,
-	Trait: 19,
-	TraitAlias: 20,
-};
+export { kindOrder };
 
 export interface TreeNode {
 	node: Node;
@@ -83,9 +62,7 @@ export interface TreeNode {
 
 /** Compare TreeNodes by kindOrder then name. Used for lazy sorting. */
 export function compareTreeNodes(a: TreeNode, b: TreeNode): number {
-	const kindDiff = (kindOrder[a.node.kind] ?? 99) - (kindOrder[b.node.kind] ?? 99);
-	if (kindDiff !== 0) return kindDiff;
-	return a.node.name < b.node.name ? -1 : a.node.name > b.node.name ? 1 : 0;
+	return compareNodeLike(a.node, b.node);
 }
 
 /**
@@ -95,7 +72,7 @@ export function compareTreeNodes(a: TreeNode, b: TreeNode): number {
  */
 export const CHILDREN_PLACEHOLDER: TreeNode[] = Object.freeze([
 	{
-		node: { id: '', name: '', kind: 'Module' as const, visibility: 'Public' as const },
+		node: { id: '', name: '', kind: 'Module' as const, visibility: { kind: 'Public' as const } },
 		children: [],
 		selectable: false,
 	},

@@ -3,24 +3,57 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			rel="preload"
+			as="style"
+			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+			onload="
+				this.onload = null;
+				this.rel = 'stylesheet';
+			"
+		/>
+		<noscript>
+			<link
+				rel="stylesheet"
+				href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+			/>
+		</noscript>
 		<script>
 			(function () {
 				try {
-					var key = 'codeview-theme';
-					var stored = localStorage.getItem(key);
+					var stored = function (k, fallback) {
+						var v = localStorage.getItem(k);
+						return v === null ? fallback : v;
+					};
 					var prefersDark =
 						window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-					var theme;
-					if (stored === 'system' || (!stored && !prefersDark && !stored)) {
-						theme = prefersDark ? 'dark' : 'light';
-					} else if (stored === 'dark' || stored === 'light') {
-						theme = stored;
-					} else {
-						theme = prefersDark ? 'dark' : 'light';
-					}
-					document.documentElement.dataset.theme = theme;
+
+					// UI mode
+					var modePref = stored('codeview-theme', 'system');
+					var mode =
+						modePref === 'system' ? (prefersDark ? 'dark' : 'light') : modePref;
+					document.documentElement.dataset.theme = mode === 'dark' ? 'dark' : 'light';
+
+					// Tweakable axes (accent / density / voice / code themes)
+					var accent = stored('codeview-accent', 'orange');
+					var density = stored('codeview-density', 'comfortable');
+					var voice = stored('codeview-voice', 'editorial');
+					var codeLight = stored('codeview-code-light', 'solarized-light');
+					var codeDark = stored('codeview-code-dark', 'solarized-dark');
+
+					document.documentElement.dataset.accent = accent;
+					document.documentElement.dataset.density = density;
+					document.documentElement.dataset.voice = voice;
+					document.documentElement.dataset.codeTheme =
+						mode === 'dark' ? codeDark : codeLight;
 				} catch (e) {
 					document.documentElement.dataset.theme = 'light';
+					document.documentElement.dataset.accent = 'orange';
+					document.documentElement.dataset.density = 'comfortable';
+					document.documentElement.dataset.voice = 'editorial';
+					document.documentElement.dataset.codeTheme = 'solarized-light';
 				}
 			})();
 		</script>

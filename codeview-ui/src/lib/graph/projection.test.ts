@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vite-plus/test';
 import type { Edge, Graph, Node } from '$lib/graph';
 import { isSyntheticProjectionNodeId, projectGraphForRendering } from './projection';
 
@@ -7,7 +7,8 @@ function makeNode(id: string, name: string, kind: Node['kind'] = 'Function'): No
 		id,
 		name,
 		kind,
-		visibility: 'Public',
+		visibility: { kind: 'Public' },
+		attrs: [],
 	};
 }
 
@@ -20,7 +21,11 @@ function makeEdge(from: string, to: string, kind: Edge['kind'] = 'UsesType'): Ed
 	};
 }
 
-function project(graph: Graph, selected: Node, overrides?: Partial<Parameters<typeof projectGraphForRendering>[2]>) {
+function project(
+	graph: Graph,
+	selected: Node,
+	overrides?: Partial<Parameters<typeof projectGraphForRendering>[2]>,
+) {
 	return projectGraphForRendering(graph, selected, {
 		showStructural: true,
 		showSemantic: true,
@@ -84,14 +89,18 @@ describe('projectGraphForRendering', () => {
 		expect(result.graph.edges.length).toBeLessThanOrEqual(80);
 		expect(result.graph.nodes.some((node) => node.id === selected.id)).toBe(true);
 
-		const syntheticNodes = result.graph.nodes.filter((node) => isSyntheticProjectionNodeId(node.id));
+		const syntheticNodes = result.graph.nodes.filter((node) =>
+			isSyntheticProjectionNodeId(node.id),
+		);
 		expect(syntheticNodes.length).toBeGreaterThan(0);
 		expect(syntheticNodes.some((node) => node.name.startsWith('+'))).toBe(true);
 	});
 
 	it('caps edge count and preserves selected node visibility', () => {
 		const selected = makeNode('crate::Center', 'Center', 'Struct');
-		const neighbors = Array.from({ length: 40 }, (_, i) => makeNode(`crate::n_${i}`, `n_${i}`, 'Function'));
+		const neighbors = Array.from({ length: 40 }, (_, i) =>
+			makeNode(`crate::n_${i}`, `n_${i}`, 'Function'),
+		);
 		const edges: Edge[] = [];
 		for (const node of neighbors) {
 			edges.push(makeEdge(selected.id, node.id, 'UsesType'));

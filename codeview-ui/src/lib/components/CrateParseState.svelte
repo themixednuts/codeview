@@ -132,29 +132,11 @@
 </script>
 
 {#if status === 'failed' && action === 'install_std_docs'}
-	<StdDocsPrompt
-		{crateName}
-		{version}
-		{installedVersion}
-		onInstallStart={onInstallStart}
-		onInstallError={onInstallError}
-	/>
+	<StdDocsPrompt {crateName} {version} {installedVersion} {onInstallStart} {onInstallError} />
 {:else if status === 'failed' && action === 'docs_unavailable' && !hasTreeData}
-	<DocsUnavailable
-		{crateName}
-		{version}
-		{crateVersionOptions}
-		onRetryStart={onRetryStart}
-		onRetryError={onRetryError}
-	/>
+	<DocsUnavailable {crateName} {version} {crateVersionOptions} {onRetryStart} {onRetryError} />
 {:else if status === 'failed' && !hasTreeData}
-	<ParseError
-		{crateName}
-		{version}
-		error={error}
-		onRetryStart={onRetryStart}
-		onRetryError={onRetryError}
-	/>
+	<ParseError {crateName} {version} {error} {onRetryStart} {onRetryError} />
 {:else}
 	{@render children?.()}
 {/if}

@@ -1,4 +1,15 @@
 import { normalizeCrateName } from '$lib/crate-names';
+import {
+	forceCenter,
+	forceCollide,
+	forceLink,
+	forceManyBody,
+	forceSimulation,
+	forceX,
+	forceY,
+	type SimulationLinkDatum,
+	type SimulationNodeDatum,
+} from 'd3-force';
 import type { EdgeKind, Graph, NodeKind } from '$lib/graph';
 
 const STRUCTURAL_EDGE_KINDS = new Set<EdgeKind>(['Contains', 'Defines']);
@@ -190,7 +201,11 @@ export function buildCrateMapData(
 	for (const moduleId of moduleIds) {
 		if (moduleId === rootId) continue;
 		const parentId = moduleParentById.get(moduleId) ?? null;
-		if (!parentId || parentId === moduleId || hasParentCycle(moduleId, parentId, moduleParentById)) {
+		if (
+			!parentId ||
+			parentId === moduleId ||
+			hasParentCycle(moduleId, parentId, moduleParentById)
+		) {
 			moduleParentById.set(moduleId, rootId);
 		}
 	}
@@ -435,9 +450,7 @@ export type LayoutRect = { x: number; y: number; w: number; h: number };
  * Build a parent→children lookup from the flat module list.
  * Shared by treemap + sunburst layout functions.
  */
-function buildChildrenMap(
-	modules: CrateMapModuleNode[],
-): Map<string, CrateMapModuleNode[]> {
+function buildChildrenMap(modules: CrateMapModuleNode[]): Map<string, CrateMapModuleNode[]> {
 	const byParent = new Map<string, CrateMapModuleNode[]>();
 	for (const m of modules) {
 		if (!m.parentId) continue;
@@ -473,11 +486,7 @@ export function computeSquarifiedLayout(
 
 	const rects: TreemapRect[] = [];
 
-	function squarify(
-		items: CrateMapModuleNode[],
-		totalValue: number,
-		rect: LayoutRect,
-	): void {
+	function squarify(items: CrateMapModuleNode[], totalValue: number, rect: LayoutRect): void {
 		if (items.length === 0 || rect.w <= 0 || rect.h <= 0) return;
 		if (items.length === 1) {
 			rects.push({
@@ -519,9 +528,7 @@ export function computeSquarifiedLayout(
 
 		// Layout the chosen row
 		const rowFraction = rowValue / totalValue;
-		const rowThickness = isHorizontal
-			? rect.w * rowFraction
-			: rect.h * rowFraction;
+		const rowThickness = isHorizontal ? rect.w * rowFraction : rect.h * rowFraction;
 
 		let cursor = 0;
 		for (let i = 0; i < row.length; i++) {
@@ -561,11 +568,19 @@ export function computeSquarifiedLayout(
 		if (!children || children.length === 0) return;
 
 		const PADDING = 2;
+		// Reserve a header strip at the top of the parent rect for its own
+		// label so child rects (and their labels) don't overlap it. Skip the
+		// header when the parent is too small to render a label anyway.
+		const HEADER_MIN_HEIGHT = 32;
+		const HEADER_HEIGHT = 16;
+		const headerInset =
+			parentRect.h >= HEADER_MIN_HEIGHT && parentRect.w >= 48 ? HEADER_HEIGHT : 0;
+
 		const inner: LayoutRect = {
 			x: parentRect.x + PADDING,
-			y: parentRect.y + PADDING,
+			y: parentRect.y + PADDING + headerInset,
 			w: Math.max(0, parentRect.w - PADDING * 2),
-			h: Math.max(0, parentRect.h - PADDING * 2),
+			h: Math.max(0, parentRect.h - PADDING * 2 - headerInset),
 		};
 		if (inner.w <= 0 || inner.h <= 0) return;
 
@@ -603,9 +618,10 @@ function worstAspectRatio(
 		const val = Math.max(1, item.totalNodeCount);
 		const itemArea = (val / rowValue) * rowArea;
 		const itemHeight = rowWidth > 0 ? itemArea / rowWidth : 0;
-		const aspect = rowWidth > 0 && itemHeight > 0
-			? Math.max(rowWidth / itemHeight, itemHeight / rowWidth)
-			: Infinity;
+		const aspect =
+			rowWidth > 0 && itemHeight > 0
+				? Math.max(rowWidth / itemHeight, itemHeight / rowWidth)
+				: Infinity;
 		if (aspect > worst) worst = aspect;
 	}
 	return worst;
@@ -629,10 +645,7 @@ export type SunburstArc = {
  * Each module's angular extent is proportional to its totalNodeCount
  * relative to its parent.
  */
-export function computeSunburstArcs(
-	modules: CrateMapModuleNode[],
-	ringWidth = 40,
-): SunburstArc[] {
+export function computeSunburstArcs(modules: CrateMapModuleNode[], ringWidth = 40): SunburstArc[] {
 	if (modules.length === 0) return [];
 
 	const childrenMap = buildChildrenMap(modules);
@@ -662,18 +675,14 @@ export function computeSunburstArcs(
 		const children = childrenMap.get(node.id);
 		if (!children || children.length === 0) return;
 
-		const totalChildValue = children.reduce(
-			(s, c) => s + Math.max(1, c.totalNodeCount),
-			0,
-		);
+		const totalChildValue = children.reduce((s, c) => s + Math.max(1, c.totalNodeCount), 0);
 		if (totalChildValue <= 0) return;
 
 		const angularRange = endAngle - startAngle;
 		let cursor = startAngle;
 
 		for (const child of children) {
-			const childFraction =
-				Math.max(1, child.totalNodeCount) / totalChildValue;
+			const childFraction = Math.max(1, child.totalNodeCount) / totalChildValue;
 			const childAngle = angularRange * childFraction;
 			layoutArc(child, cursor, cursor + childAngle, depth + 1);
 			cursor += childAngle;
@@ -742,12 +751,22 @@ export type CrateGraphNodePos = {
 	r: number;
 };
 
+type CrateForceDatum = SimulationNodeDatum & {
+	id: string;
+	module: CrateMapModuleNode;
+	r: number;
+};
+
+type CrateForceLink = SimulationLinkDatum<CrateForceDatum> & {
+	total: number;
+};
+
 /**
  * Compute a force-directed layout for module dependency graph.
  *
- * Repulsion between all pairs (capped at ~24 nodes), attraction along
- * coupling edges weighted by strength, center gravity, and a cooling
- * schedule over 80 iterations. Coupled modules cluster together.
+ * Deterministic d3-force simulation: coupling edges pull related modules
+ * together, charge/collision keep labels legible, and a final clamp keeps
+ * every node inside the chart viewport.
  */
 export function computeForceDirectedLayout(
 	modules: CrateMapModuleNode[],
@@ -771,110 +790,59 @@ export function computeForceDirectedLayout(
 		return result;
 	}
 
-	// Initialize positions in a circle (deterministic starting layout)
 	const cx = width / 2;
 	const cy = height / 2;
 	const initRadius = Math.min(width, height) * 0.3;
-	const xs = new Float64Array(n);
-	const ys = new Float64Array(n);
-	const idToIdx = new Map<string, number>();
-
-	for (let i = 0; i < n; i++) {
-		const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
-		xs[i] = cx + initRadius * Math.cos(angle);
-		ys[i] = cy + initRadius * Math.sin(angle);
-		idToIdx.set(modules[i].id, i);
-	}
-
-	// Pre-build edge index: [fromIdx, toIdx, weight] tuples
 	const maxTotal = edges.reduce((max, e) => Math.max(max, e.total), 1);
-	const edgeIdx: [number, number, number][] = [];
-	for (const e of edges) {
-		const fi = idToIdx.get(e.from);
-		const ti = idToIdx.get(e.to);
-		if (fi == null || ti == null || fi === ti) continue;
-		// Normalised weight ∈ [0.3, 1.0]
-		const w = 0.3 + 0.7 * (Math.log1p(e.total) / Math.log1p(maxTotal));
-		edgeIdx.push([fi, ti, w]);
-	}
 
-	// Simulation constants
-	const ITERATIONS = 80;
-	const REPULSION = 6000;
-	const ATTRACTION = 0.005;
-	const GRAVITY = 0.02;
-	const IDEAL_DISTANCE = Math.min(width, height) / Math.sqrt(n + 1);
-	const MIN_DIST = 1;
-	let temperature = Math.min(width, height) * 0.1;
-	const cooling = temperature / (ITERATIONS + 1);
+	const nodes: CrateForceDatum[] = modules.map((module, i) => {
+		const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+		return {
+			id: module.id,
+			module,
+			r: nodeRadius,
+			x: cx + initRadius * Math.cos(angle),
+			y: cy + initRadius * Math.sin(angle),
+		};
+	});
+	const nodeById = new Map(nodes.map((node) => [node.id, node]));
+	const links: CrateForceLink[] = edges
+		.filter((edge) => edge.from !== edge.to && nodeById.has(edge.from) && nodeById.has(edge.to))
+		.map((edge) => ({ source: edge.from, target: edge.to, total: edge.total }));
+	const weightFor = (total: number): number =>
+		0.25 + 0.75 * (Math.log1p(total) / Math.log1p(maxTotal));
+	const idealDistance = Math.max(nodeRadius * 3, Math.min(width, height) / Math.sqrt(n + 1));
 
-	const dxs = new Float64Array(n);
-	const dys = new Float64Array(n);
+	const simulation = forceSimulation(nodes)
+		.randomSource(() => 0.5)
+		.force(
+			'link',
+			forceLink<CrateForceDatum, CrateForceLink>(links)
+				.id((datum) => datum.id)
+				.distance((link) => idealDistance * (1.2 - 0.45 * weightFor(link.total)))
+				.strength((link) => 0.08 + 0.32 * weightFor(link.total)),
+		)
+		.force('charge', forceManyBody<CrateForceDatum>().strength(-nodeRadius * 18))
+		.force(
+			'collide',
+			forceCollide<CrateForceDatum>()
+				.radius((node) => node.r + 10)
+				.iterations(2),
+		)
+		.force('center', forceCenter(cx, cy))
+		.force('x', forceX<CrateForceDatum>(cx).strength(0.035))
+		.force('y', forceY<CrateForceDatum>(cy).strength(0.035))
+		.stop();
 
-	for (let iter = 0; iter < ITERATIONS; iter++) {
-		// Reset forces
-		dxs.fill(0);
-		dys.fill(0);
+	for (let i = 0; i < 90; i += 1) simulation.tick();
+	simulation.stop();
 
-		// Repulsion (all pairs)
-		for (let i = 0; i < n; i++) {
-			for (let j = i + 1; j < n; j++) {
-				let dx = xs[i] - xs[j];
-				let dy = ys[i] - ys[j];
-				const dist = Math.max(MIN_DIST, Math.sqrt(dx * dx + dy * dy));
-				const force = REPULSION / (dist * dist);
-				dx = (dx / dist) * force;
-				dy = (dy / dist) * force;
-				dxs[i] += dx;
-				dys[i] += dy;
-				dxs[j] -= dx;
-				dys[j] -= dy;
-			}
-		}
-
-		// Attraction along edges
-		for (const [fi, ti, w] of edgeIdx) {
-			const dx = xs[ti] - xs[fi];
-			const dy = ys[ti] - ys[fi];
-			const dist = Math.max(MIN_DIST, Math.sqrt(dx * dx + dy * dy));
-			const force = ATTRACTION * w * (dist - IDEAL_DISTANCE);
-			const fx = (dx / dist) * force;
-			const fy = (dy / dist) * force;
-			dxs[fi] += fx;
-			dys[fi] += fy;
-			dxs[ti] -= fx;
-			dys[ti] -= fy;
-		}
-
-		// Center gravity
-		for (let i = 0; i < n; i++) {
-			dxs[i] += (cx - xs[i]) * GRAVITY;
-			dys[i] += (cy - ys[i]) * GRAVITY;
-		}
-
-		// Apply forces with temperature limiting
-		for (let i = 0; i < n; i++) {
-			const mag = Math.sqrt(dxs[i] * dxs[i] + dys[i] * dys[i]);
-			if (mag > 0) {
-				const capped = Math.min(mag, temperature) / mag;
-				xs[i] += dxs[i] * capped;
-				ys[i] += dys[i] * capped;
-			}
-			// Keep within bounds (with padding)
-			const pad = nodeRadius + 10;
-			xs[i] = Math.max(pad, Math.min(width - pad, xs[i]));
-			ys[i] = Math.max(pad, Math.min(height - pad, ys[i]));
-		}
-
-		temperature -= cooling;
-	}
-
-	// Build result
-	for (let i = 0; i < n; i++) {
-		result.set(modules[i].id, {
-			module: modules[i],
-			x: xs[i],
-			y: ys[i],
+	const pad = nodeRadius + 10;
+	for (const node of nodes) {
+		result.set(node.id, {
+			module: node.module,
+			x: Math.max(pad, Math.min(width - pad, node.x ?? cx)),
+			y: Math.max(pad, Math.min(height - pad, node.y ?? cy)),
 			r: nodeRadius,
 		});
 	}
@@ -890,10 +858,7 @@ export function computeForceDirectedLayout(
  * Given a node ID (e.g. `serde::de::Deserialize`) and a list of modules,
  * find which module contains the node by walking up `::` path segments.
  */
-export function findContainingModule(
-	nodeId: string,
-	modules: CrateMapModuleNode[],
-): string | null {
+export function findContainingModule(nodeId: string, modules: CrateMapModuleNode[]): string | null {
 	if (!nodeId || modules.length === 0) return null;
 
 	const moduleIds = new Set(modules.map((m) => m.id));
@@ -915,14 +880,16 @@ export function findContainingModule(
 // Shared depth-color palette for all crate map visualizations
 // ────────────────────────────────────────────────────
 
-/** Consistent depth → color mapping used by treemap, sunburst, grid, and graph. */
+/** Consistent depth → color mapping used by treemap, sunburst, grid, and graph.
+ *  Solarized accent palette — equal CIELAB luminance so depth gradient
+ *  shifts in hue, not brightness. */
 const MODULE_DEPTH_COLORS = [
-	'#e8720c', // depth 0: Crate (kindVisuals.Crate.fill)
-	'#2d8a5e', // depth 1: Module (kindVisuals.Module.fill)
-	'#3b82f6', // depth 2: blue
-	'#8b5cf6', // depth 3: violet
-	'#ec4899', // depth 4: pink
-	'#f59e0b', // depth 5+: amber
+	'#cb4b16', // depth 0: orange (Crate)
+	'#859900', // depth 1: green  (Module)
+	'#268bd2', // depth 2: blue
+	'#6c71c4', // depth 3: violet
+	'#d33682', // depth 4: magenta
+	'#b58900', // depth 5+: yellow
 ];
 
 /** Map a module depth to a color. Depths beyond the palette clamp to the last entry. */

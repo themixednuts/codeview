@@ -79,6 +79,12 @@ fn main() {
     };
     let sidecar_path = sidecar_dir.join(&sidecar_name);
 
+    if env::var_os("CODEVIEW_SKIP_SIDECAR").is_some() {
+        fs::write(&sidecar_path, []).expect("failed to write placeholder sidecar");
+        println!("cargo:rustc-env=SIDECAR_PATH={}", sidecar_path.display());
+        return;
+    }
+
     // Build SvelteKit app with @jesterkit/exe-sveltekit adapter
     // This adapter builds directly to dist/codeview-server(.exe)
     let status = Command::new("bun")

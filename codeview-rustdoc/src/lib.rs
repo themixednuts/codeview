@@ -8,8 +8,9 @@ use std::process::Command;
 #[cfg(feature = "native")]
 use cargo_metadata::{MetadataCommand, TargetKind};
 use codeview_core::{
-    ArgumentInfo, Confidence, CrateGraph, Edge, EdgeKind, ExternalCrate, FieldInfo,
-    FunctionSignature, Graph, ImplType, Node, NodeKind, Span, VariantInfo, Visibility, Workspace,
+    ArgumentInfo, Confidence, CrateGraph, Deprecation, Edge, EdgeKind, ExternalCrate, FieldInfo,
+    FunctionSignature, Graph, ImplCategory, ImplType, Node, NodeKind, Span, VariantInfo,
+    VariantKind as CvVariantKind, Visibility, Workspace,
 };
 use rustdoc_types as rdt;
 use syn::visit::Visit;
@@ -106,12 +107,16 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         .ok_or(RustdocError::MissingRootPackage)?;
     // Normalize crate name: Cargo uses hyphens but Rust uses underscores internally
     let crate_name = package.name.replace('-', "_");
-    let lib_target = package.targets.iter().find(|t| {
-        t.kind.iter().any(|k| is_lib_target(k))
-    });
+    let lib_target = package
+        .targets
+        .iter()
+        .find(|t| t.kind.iter().any(|k| is_lib_target(k)));
     let primary_target = lib_target
         .or_else(|| {
-            package.targets.iter().find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
+            package
+                .targets
+                .iter()
+                .find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)))
         })
         .ok_or(RustdocError::MissingRootPackage)?;
     let src_path = primary_target.src_path.clone().into_std_path_buf();
@@ -175,12 +180,14 @@ pub fn generate_workspace_rustdoc_json(
         }
 
         // Determine the right target flag: prefer --lib, fall back to first bin
-        let lib_target = package.targets.iter().find(|t| {
-            t.kind.iter().any(|k| is_lib_target(k))
-        });
-        let bin_target = package.targets.iter().find(|t| {
-            t.kind.iter().any(|k| matches!(k, TargetKind::Bin))
-        });
+        let lib_target = package
+            .targets
+            .iter()
+            .find(|t| t.kind.iter().any(|k| is_lib_target(k)));
+        let bin_target = package
+            .targets
+            .iter()
+            .find(|t| t.kind.iter().any(|k| matches!(k, TargetKind::Bin)));
         let primary_target = lib_target.or(bin_target);
         let Some(primary_target) = primary_target else {
             if verbose {
@@ -281,7 +288,8 @@ pub fn load_workspace_graph(
                 all_crate_versions.insert(crate_name, package.version.to_string());
             }
             // Workspace members are the subset we fully analyze
-            metadata.workspace_packages()
+            metadata
+                .workspace_packages()
                 .iter()
                 .map(|pkg| pkg.name.replace('-', "_"))
                 .collect()
@@ -387,6 +395,7 @@ pub fn load_workspace_graph(
             version,
             nodes,
             edges,
+            aliases: std::collections::HashMap::new(),
         });
     }
     crate_graphs.sort_by(|a, b| a.id.cmp(&b.id));
@@ -515,7 +524,10 @@ pub fn load_graph_from_path_with_sources(
 /// in-place JSON fixups based on the document's `format_version`.
 fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
     #[cfg(feature = "wasm")]
-    wasm_log!("[wasm] parse_rustdoc_lenient: starting with {} bytes", json.len());
+    wasm_log!(
+        "[wasm] parse_rustdoc_lenient: starting with {} bytes",
+        json.len()
+    );
     #[cfg(feature = "wasm")]
     let t0 = js_sys::Date::now();
 
@@ -524,7 +536,10 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
     wasm_log!("[wasm] parse_rustdoc_lenient: attempting fast path");
     if let Ok(krate) = serde_json::from_str::<rdt::Crate>(json) {
         #[cfg(feature = "wasm")]
-        wasm_log!("[wasm] rustdoc parsed (fast path): {:.0}ms", js_sys::Date::now() - t0);
+        wasm_log!(
+            "[wasm] rustdoc parsed (fast path): {:.0}ms",
+            js_sys::Date::now() - t0
+        );
         return Ok(krate);
     }
 
@@ -543,7 +558,34 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
         .unwrap_or(0) as u32;
 
     #[cfg(feature = "wasm")]
-    wasm_log!("[wasm] rustdoc parsed to Value: {:.0}ms (format_version: {})", t2 - t1, source_version);
+    wasm_log!(
+        "[wasm] rustdoc parsed to Value: {:.0}ms (format_version: {})",
+        t2 - t1,
+        source_version
+    );
+
+    // Drift detection: if rustdoc is serving a *newer* format_version than
+    // we know about, log loudly on the native side. The compat layer still
+    // does best-effort parsing (fixup_unknown_attrs catches new Attribute
+    // variants) but any new structured fields will be silently ignored.
+    // Surfacing the drift early lets the maintainer bump rustdoc-types
+    // before subtle data loss accumulates across many parsed crates.
+    if source_version > rdt::FORMAT_VERSION {
+        #[cfg(not(feature = "wasm"))]
+        eprintln!(
+            "warning: rustdoc JSON format_version {} is newer than our supported v{}. \
+             Parsing in best-effort mode; new fields will be ignored. \
+             Consider bumping the rustdoc-types crate.",
+            source_version,
+            rdt::FORMAT_VERSION,
+        );
+        #[cfg(feature = "wasm")]
+        wasm_log!(
+            "warning: rustdoc format_version {} > our v{} (best-effort parse)",
+            source_version,
+            rdt::FORMAT_VERSION
+        );
+    }
 
     compat::upgrade(&mut doc, source_version);
 
@@ -553,7 +595,10 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
     let result = serde_json::from_value(doc).map_err(Into::into);
 
     #[cfg(feature = "wasm")]
-    wasm_log!("[wasm] rustdoc upgrade + from_value: {:.0}ms", js_sys::Date::now() - t3);
+    wasm_log!(
+        "[wasm] rustdoc upgrade + from_value: {:.0}ms",
+        js_sys::Date::now() - t3
+    );
 
     result
 }
@@ -577,7 +622,7 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
 /// v51 is backward-compatible: old JSON with inline `GenericArgs` objects
 /// deserializes into `Some(Box<GenericArgs>)`.
 mod compat {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     const TARGET: u32 = super::rdt::FORMAT_VERSION;
 
@@ -606,7 +651,9 @@ mod compat {
     /// v54: `Item.attrs` changed from `Vec<String>` to `Vec<Attribute>`.
     /// Wrap each bare string as `{"other": s}` to match the enum layout.
     fn fixup_string_attrs(map: &mut serde_json::Map<String, Value>) {
-        let Some(Value::Array(attrs)) = map.get_mut("attrs") else { return };
+        let Some(Value::Array(attrs)) = map.get_mut("attrs") else {
+            return;
+        };
         for attr in attrs.iter_mut() {
             if let Value::String(s) = attr {
                 *attr = json!({"other": std::mem::take(s)});
@@ -616,7 +663,9 @@ mod compat {
 
     /// v57: `ExternalCrate` gained required `path: PathBuf`. Inject empty default.
     fn fixup_external_crate_path(doc: &mut Value) {
-        let Some(Value::Object(ext_crates)) = doc.get_mut("external_crates") else { return };
+        let Some(Value::Object(ext_crates)) = doc.get_mut("external_crates") else {
+            return;
+        };
         for ec in ext_crates.values_mut() {
             let Value::Object(obj) = ec else { continue };
             obj.entry("path").or_insert(Value::String(String::new()));
@@ -626,7 +675,9 @@ mod compat {
     /// Normalize any `Attribute` variant our `rustdoc-types` can't deserialize.
     /// Replaces unrecognized values with `{"other": "<json>"}`.
     fn fixup_unknown_attrs(map: &mut serde_json::Map<String, Value>) {
-        let Some(Value::Array(attrs)) = map.get_mut("attrs") else { return };
+        let Some(Value::Array(attrs)) = map.get_mut("attrs") else {
+            return;
+        };
         for attr in attrs.iter_mut() {
             // Strings are either already fixed by fixup_string_attrs or are
             // valid unit variant names — let serde handle them.
@@ -660,13 +711,17 @@ mod compat {
 
 pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
-    build_graph(&krate, crate_name, BuildGraphOptions {
-        workspace_members: None,
-        source: None,
-        call_mode: CallMode::Strict,
-        skip_external_nodes: true,
-        rustdoc_name: None,
-    })
+    build_graph(
+        &krate,
+        crate_name,
+        BuildGraphOptions {
+            workspace_members: None,
+            source: None,
+            call_mode: CallMode::Strict,
+            skip_external_nodes: true,
+            rustdoc_name: None,
+        },
+    )
 }
 
 /// Extract a crate graph with call edges from in-memory source files.
@@ -682,13 +737,17 @@ pub fn extract_graph_with_source_map(
 ) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
     let provider = MemorySourceProvider::new(source_files);
-    build_graph(&krate, crate_name, BuildGraphOptions {
-        workspace_members: None,
-        source: Some((Path::new(root_file), &provider)),
-        call_mode,
-        skip_external_nodes: true,
-        rustdoc_name: None,
-    })
+    build_graph(
+        &krate,
+        crate_name,
+        BuildGraphOptions {
+            workspace_members: None,
+            source: Some((Path::new(root_file), &provider)),
+            call_mode,
+            skip_external_nodes: true,
+            rustdoc_name: None,
+        },
+    )
 }
 
 #[cfg(feature = "native")]
@@ -702,13 +761,17 @@ pub fn extract_graph_with_sources(
 ) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
     let workspace_members = get_workspace_members(workspace_manifest_path)?;
-    build_graph(&krate, crate_name, BuildGraphOptions {
-        workspace_members: Some(workspace_members),
-        source: Some((root_file, &FsSourceProvider)),
-        call_mode,
-        skip_external_nodes: false,
-        rustdoc_name: rustdoc_name.map(|s| s.to_string()),
-    })
+    build_graph(
+        &krate,
+        crate_name,
+        BuildGraphOptions {
+            workspace_members: Some(workspace_members),
+            source: Some((root_file, &FsSourceProvider)),
+            call_mode,
+            skip_external_nodes: false,
+            rustdoc_name: rustdoc_name.map(|s| s.to_string()),
+        },
+    )
 }
 
 /// Options for graph extraction.
@@ -735,7 +798,11 @@ fn build_graph(
     opts: BuildGraphOptions<'_>,
 ) -> Result<Graph, RustdocError> {
     #[cfg(feature = "wasm")]
-    wasm_log!("[wasm] build_graph: starting with {} items in index, {} paths", krate.index.len(), krate.paths.len());
+    wasm_log!(
+        "[wasm] build_graph: starting with {} items in index, {} paths",
+        krate.index.len(),
+        krate.paths.len()
+    );
 
     // For binary crates, rustdoc uses the binary target name (e.g. "codeview") as the
     // first path segment, but we want to use the package/crate name (e.g. "codeview_cli").
@@ -763,12 +830,37 @@ fn build_graph(
     let mut node_cache = HashSet::new();
     let mut edge_cache = HashSet::new();
     let method_ids = collect_method_ids(krate);
+    let path_index = build_path_index(krate, crate_name);
     let function_index = build_function_index(krate, &method_ids, crate_name);
-    let trait_lookup = build_trait_lookup(krate, crate_name);
-    
+    let trait_lookup = build_trait_lookup(krate, crate_name, &path_index);
+    let mut placeholder_module_nodes = HashSet::new();
+
+    // Built early because `extract_doc_links` needs it to rewrite intra-doc
+    // link targets to their user-friendly re-export aliases (e.g. so a link
+    // to `core::async_iter::async_iter::AsyncIterator` becomes
+    // `core::async_iter::AsyncIterator`). Used again later for re-export edges
+    // and the final `graph.aliases` field.
+    let item_to_parent: HashMap<rdt::Id, rdt::Id> = {
+        let mut map = HashMap::new();
+        for (module_id, item) in &krate.index {
+            if let rdt::ItemEnum::Module(module) = &item.inner {
+                for child_id in &module.items {
+                    map.insert(*child_id, *module_id);
+                }
+            }
+        }
+        map
+    };
+    let aliases = build_aliases(krate, crate_name, &path_index, &item_to_parent);
+    let canonical_to_alias = invert_aliases(&aliases);
+
     #[cfg(feature = "wasm")]
-    wasm_log!("[wasm] build_graph: indexes built, {} method_ids, {} function_index entries, {} trait_lookup entries", 
-              method_ids.len(), function_index.callables.len(), trait_lookup.len());
+    wasm_log!(
+        "[wasm] build_graph: indexes built, {} method_ids, {} function_index entries, {} trait_lookup entries",
+        method_ids.len(),
+        function_index.callables.len(),
+        trait_lookup.len()
+    );
 
     let workspace_members = opts
         .workspace_members
@@ -825,13 +917,19 @@ fn build_graph(
             &mut graph,
             &mut node_cache,
             &mut edge_cache,
+            &mut placeholder_module_nodes,
             &item_crate_name,
             &summary.path,
+            &path_index,
             is_external,
         );
 
-        let node_id = join_path(&item_crate_name, &summary.path);
-        if !node_cache.contains(&node_id) {
+        let node_id = path_index
+            .node_ids_by_rustdoc_id
+            .get(item_id)
+            .cloned()
+            .unwrap_or_else(|| join_path(&item_crate_name, &summary.path));
+        if !node_cache.contains(&node_id) || placeholder_module_nodes.contains(&node_id) {
             let item = krate.index.get(item_id);
             let visibility = item
                 .map(|item| map_visibility(&item.visibility))
@@ -846,32 +944,53 @@ fn build_graph(
                 .cloned()
                 .unwrap_or_else(|| node_id.clone());
 
-            let (fields, variants, signature, generics, where_clause, docs) = item
+            let details = item
                 .map(|item| extract_item_details(&krate.index, item))
                 .unwrap_or_default();
+            let deprecation = item.and_then(|item| map_deprecation(item.deprecation.as_ref()));
 
             let doc_links = item
-                .map(|item| extract_doc_links(item, krate, crate_name))
+                .map(|item| {
+                    extract_doc_links(item, krate, crate_name, &path_index, &canonical_to_alias)
+                })
                 .unwrap_or_default();
 
             let mut bound_links = item
                 .and_then(|item| item_generics(item))
-                .map(|g| extract_bound_links(g, krate, crate_name))
+                .map(|g| extract_bound_links(g, krate, crate_name, &path_index))
                 .unwrap_or_default();
 
             // Add type links from signatures
             if let Some(item) = item {
                 match &item.inner {
                     rdt::ItemEnum::Function(f) => {
-                        bound_links.extend(extract_signature_links(&f.sig, krate, crate_name));
+                        bound_links.extend(extract_signature_links(
+                            &f.sig,
+                            krate,
+                            crate_name,
+                            &path_index,
+                        ));
+                    }
+                    rdt::ItemEnum::StructField(ty) => {
+                        let mut links = HashMap::new();
+                        collect_type_links(ty, krate, crate_name, &path_index, &mut links);
+                        bound_links.extend(links);
                     }
                     rdt::ItemEnum::Struct(s) => {
                         let field_ids: Vec<_> = match &s.kind {
                             rdt::StructKind::Plain { fields, .. } => fields.clone(),
-                            rdt::StructKind::Tuple(fields) => fields.iter().filter_map(|f| *f).collect(),
+                            rdt::StructKind::Tuple(fields) => {
+                                fields.iter().filter_map(|f| *f).collect()
+                            }
                             rdt::StructKind::Unit => vec![],
                         };
-                        bound_links.extend(extract_field_type_links(&krate.index, &field_ids, krate, crate_name));
+                        bound_links.extend(extract_field_type_links(
+                            &krate.index,
+                            &field_ids,
+                            krate,
+                            crate_name,
+                            &path_index,
+                        ));
                     }
                     rdt::ItemEnum::Enum(e) => {
                         for variant_id in &e.variants {
@@ -880,73 +999,152 @@ fn build_graph(
                             {
                                 let field_ids: Vec<_> = match &v.kind {
                                     rdt::VariantKind::Plain => vec![],
-                                    rdt::VariantKind::Tuple(fields) => fields.iter().filter_map(|f| *f).collect(),
+                                    rdt::VariantKind::Tuple(fields) => {
+                                        fields.iter().filter_map(|f| *f).collect()
+                                    }
                                     rdt::VariantKind::Struct { fields, .. } => fields.clone(),
                                 };
-                                bound_links.extend(extract_field_type_links(&krate.index, &field_ids, krate, crate_name));
+                                bound_links.extend(extract_field_type_links(
+                                    &krate.index,
+                                    &field_ids,
+                                    krate,
+                                    crate_name,
+                                    &path_index,
+                                ));
                             }
                         }
+                    }
+                    rdt::ItemEnum::Trait(t) => {
+                        bound_links.extend(collect_bound_links(
+                            &t.bounds,
+                            krate,
+                            crate_name,
+                            &path_index,
+                        ));
+                    }
+                    rdt::ItemEnum::TraitAlias(a) => {
+                        bound_links.extend(collect_bound_links(
+                            &a.params,
+                            krate,
+                            crate_name,
+                            &path_index,
+                        ));
+                    }
+                    rdt::ItemEnum::TypeAlias(a) => {
+                        let mut links = HashMap::new();
+                        collect_type_links(&a.type_, krate, crate_name, &path_index, &mut links);
+                        bound_links.extend(links);
+                    }
+                    rdt::ItemEnum::Constant { type_, .. } => {
+                        let mut links = HashMap::new();
+                        collect_type_links(type_, krate, crate_name, &path_index, &mut links);
+                        bound_links.extend(links);
+                    }
+                    rdt::ItemEnum::Static(s) => {
+                        let mut links = HashMap::new();
+                        collect_type_links(&s.type_, krate, crate_name, &path_index, &mut links);
+                        bound_links.extend(links);
+                    }
+                    rdt::ItemEnum::AssocType { bounds, type_, .. } => {
+                        bound_links.extend(collect_bound_links(
+                            bounds,
+                            krate,
+                            crate_name,
+                            &path_index,
+                        ));
+                        if let Some(type_) = type_ {
+                            let mut links = HashMap::new();
+                            collect_type_links(type_, krate, crate_name, &path_index, &mut links);
+                            bound_links.extend(links);
+                        }
+                    }
+                    rdt::ItemEnum::AssocConst { type_, .. } => {
+                        let mut links = HashMap::new();
+                        collect_type_links(type_, krate, crate_name, &path_index, &mut links);
+                        bound_links.extend(links);
                     }
                     _ => {}
                 }
             }
 
-            graph.add_node(Node {
-                id: node_id.clone(),
-                name,
-                kind: node_kind,
-                visibility,
-                span,
-                attrs,
-                is_external,
-                fields,
-                variants,
-                signature,
-                generics,
-                where_clause,
-                docs,
-                doc_links,
-                bound_links,
-                impl_type: None,
-                parent_impl: None,
-                impl_trait: None,
-            });
-            node_cache.insert(node_id.clone());
+            upsert_node(
+                &mut graph,
+                &mut node_cache,
+                &mut placeholder_module_nodes,
+                Node {
+                    id: node_id.clone(),
+                    name,
+                    kind: node_kind,
+                    visibility,
+                    line_count: line_count(&span),
+                    span,
+                    attrs,
+                    is_external,
+                    is_deprecated: deprecation.is_some(),
+                    is_unsafe: details.is_unsafe,
+                    is_auto: details.is_auto,
+                    is_mutable: details.is_mutable,
+                    is_stripped: details.is_stripped,
+                    has_stripped_fields: details.has_stripped_fields,
+                    has_stripped_variants: details.has_stripped_variants,
+                    is_dyn_compatible: details.is_dyn_compatible,
+                    deprecation,
+                    fields: details.fields,
+                    variants: details.variants,
+                    signature: details.signature,
+                    generics: details.generics,
+                    where_clause: details.where_clause,
+                    docs: details.docs,
+                    doc_links,
+                    bound_links,
+                    impl_type: None,
+                    parent_impl: None,
+                    impl_trait: None,
+                    impl_category: None,
+                    provided_trait_methods: None,
+                    required_trait_methods: details.required_trait_methods,
+                    default_trait_methods: details.default_trait_methods,
+                    type_name: details.type_name,
+                    variant_kind: details.variant_kind,
+                    discriminant: details.discriminant,
+                    const_value: details.const_value,
+                    bounds: details.bounds,
+                    import_source: details.import_source,
+                    import_name: details.import_name,
+                    is_glob: details.is_glob,
+                    extern_crate_name: details.extern_crate_name,
+                    extern_crate_rename: details.extern_crate_rename,
+                    macro_source: details.macro_source,
+                    proc_macro_kind: details.proc_macro_kind,
+                    proc_macro_helpers: details.proc_macro_helpers,
+                },
+            );
         }
 
         if let Some(parent_id) = parent_path_id(&item_crate_name, &summary.path) {
             // Skip self-loops (can happen when path is just the crate name)
             if parent_id != node_id {
+                let kind = structural_edge_kind(&parent_id, &item_crate_name, &path_index);
                 push_edge(
                     &mut graph,
                     &mut edge_cache,
                     parent_id,
                     node_id,
-                    EdgeKind::Contains,
+                    kind,
                     Confidence::Static,
                 );
             }
         }
     }
 
-    // Build item_to_parent map from module children (used for re-exports and impl parenting)
-    let item_to_parent: HashMap<rdt::Id, rdt::Id> = {
-        let mut map = HashMap::new();
-        for (module_id, item) in &krate.index {
-            if let rdt::ItemEnum::Module(module) = &item.inner {
-                for child_id in &module.items {
-                    map.insert(*child_id, *module_id);
-                }
-            }
-        }
-        map
-    };
-
+    // item_to_parent was built earlier (top of build_graph) so doc-link
+    // alias rewriting could use it. Just reuse it here.
     add_use_import_edges_with_parent_map(
         &mut graph,
         &mut edge_cache,
         krate,
         crate_name,
+        &path_index,
         &item_to_parent,
     );
 
@@ -970,44 +1168,99 @@ fn build_graph(
                 );
                 let impl_id = impl_node_id(&item_crate_name, item.id);
                 // Resolve the trait ID for trait impls
-                let impl_trait_id = impl_block
-                    .trait_
-                    .as_ref()
-                    .and_then(|trait_path| resolve_id(krate, crate_name, trait_path.id));
+                let impl_trait_id = impl_block.trait_.as_ref().and_then(|trait_path| {
+                    resolve_id(krate, crate_name, &path_index, trait_path.id)
+                });
 
                 if !node_cache.contains(&impl_id) {
-                    let name = impl_node_name(krate, crate_name, impl_block);
+                    let name = impl_node_name(krate, crate_name, &path_index, impl_block);
                     let impl_type = if impl_block.trait_.is_some() {
                         Some(ImplType::Trait)
                     } else {
                         Some(ImplType::Inherent)
                     };
+                    let impl_category = if impl_block.is_synthetic {
+                        ImplCategory::Synthetic
+                    } else if impl_block.is_negative {
+                        ImplCategory::Negative
+                    } else if impl_block.blanket_impl.is_some() {
+                        ImplCategory::Blanket
+                    } else if impl_block.trait_.is_some() {
+                        ImplCategory::Trait
+                    } else {
+                        ImplCategory::Inherent
+                    };
+                    let span = item.span.as_ref().map(map_span);
+                    let deprecation = map_deprecation(item.deprecation.as_ref());
                     graph.add_node(Node {
                         id: impl_id.clone(),
                         name,
                         kind: NodeKind::Impl,
                         visibility: map_visibility(&item.visibility),
-                        span: item.span.as_ref().map(map_span),
+                        line_count: line_count(&span),
+                        span,
                         attrs: format_attributes(&item.attrs),
                         is_external,
+                        is_deprecated: deprecation.is_some(),
+                        is_unsafe: impl_block.is_unsafe,
+                        is_auto: false,
+                        is_mutable: false,
+                        is_stripped: false,
+                        has_stripped_fields: false,
+                        has_stripped_variants: false,
+                        is_dyn_compatible: None,
+                        deprecation,
                         fields: None,
                         variants: None,
                         signature: None,
                         generics: extract_generics(&impl_block.generics),
                         where_clause: extract_where_clause(&impl_block.generics),
                         docs: extract_docs(item),
-                        doc_links: extract_doc_links(item, krate, crate_name),
-                        bound_links: extract_bound_links(&impl_block.generics, krate, crate_name),
+                        doc_links: extract_doc_links(
+                            item,
+                            krate,
+                            crate_name,
+                            &path_index,
+                            &canonical_to_alias,
+                        ),
+                        bound_links: extract_bound_links(
+                            &impl_block.generics,
+                            krate,
+                            crate_name,
+                            &path_index,
+                        ),
                         impl_type,
                         parent_impl: None,
                         impl_trait: impl_trait_id.clone(),
+                        impl_category: Some(impl_category),
+                        provided_trait_methods: if impl_block.provided_trait_methods.is_empty() {
+                            None
+                        } else {
+                            Some(impl_block.provided_trait_methods.clone())
+                        },
+                        required_trait_methods: None,
+                        default_trait_methods: None,
+                        type_name: None,
+                        variant_kind: None,
+                        discriminant: None,
+                        const_value: None,
+                        bounds: None,
+                        import_source: None,
+                        import_name: None,
+                        is_glob: false,
+                        extern_crate_name: None,
+                        extern_crate_rename: None,
+                        macro_source: None,
+                        proc_macro_kind: None,
+                        proc_macro_helpers: Vec::new(),
                     });
                     node_cache.insert(impl_id.clone());
                 }
 
                 // Add Contains edge from parent module to impl node
                 if let Some(parent_id) = item_to_parent.get(&item.id)
-                    && let Some(parent_node_id) = resolve_id(krate, crate_name, *parent_id)
+                    && let Some(parent_node_id) =
+                        resolve_id(krate, crate_name, &path_index, *parent_id)
                 {
                     push_edge(
                         &mut graph,
@@ -1020,7 +1273,7 @@ fn build_graph(
                 }
 
                 if let Some(for_id) = type_to_id(&impl_block.for_)
-                    && let Some(type_node_id) = resolve_id(krate, crate_name, for_id)
+                    && let Some(type_node_id) = resolve_id(krate, crate_name, &path_index, for_id)
                 {
                     push_edge(
                         &mut graph,
@@ -1032,7 +1285,8 @@ fn build_graph(
                     );
 
                     if let Some(trait_path) = impl_block.trait_.as_ref()
-                        && let Some(trait_node_id) = resolve_id(krate, crate_name, trait_path.id)
+                        && let Some(trait_node_id) =
+                            resolve_id(krate, crate_name, &path_index, trait_path.id)
                     {
                         push_edge(
                             &mut graph,
@@ -1050,50 +1304,135 @@ fn build_graph(
                         continue;
                     };
 
-                    let kind = match &assoc_item.inner {
-                        rdt::ItemEnum::Function(_) => NodeKind::Method,
-                        rdt::ItemEnum::Constant { .. } => continue,
-                        rdt::ItemEnum::TypeAlias(_) => NodeKind::TypeAlias,
+                    let (kind, assoc_prefix) = match &assoc_item.inner {
+                        rdt::ItemEnum::Function(_) => (NodeKind::Function, "method"),
+                        rdt::ItemEnum::AssocType { .. } => (NodeKind::AssocType, "type"),
+                        rdt::ItemEnum::AssocConst { .. } => (NodeKind::AssocConst, "const"),
+                        rdt::ItemEnum::Constant { .. } => (NodeKind::Constant, "const"),
+                        rdt::ItemEnum::TypeAlias(_) => (NodeKind::TypeAlias, "type"),
                         _ => continue,
                     };
 
                     // Create a per-impl node so each impl block owns its own child.
                     // This avoids shared children when the same rustdoc ID appears
                     // in multiple impl blocks (e.g. blanket impls like `impl<T> Any for T`).
-                    let assoc_node_id = format!("{}::method-{}", impl_id, assoc_id.0);
+                    let assoc_node_id = format!("{}::{}-{}", impl_id, assoc_prefix, assoc_id.0);
                     if !node_cache.contains(&assoc_node_id) {
                         let name = assoc_item
                             .name
                             .clone()
                             .unwrap_or_else(|| assoc_node_id.clone());
-                        let (fields, variants, signature, generics, where_clause, docs) =
-                            extract_item_details(&krate.index, assoc_item);
+                        let details = extract_item_details(&krate.index, assoc_item);
                         let mut bound_links = item_generics(assoc_item)
-                            .map(|g| extract_bound_links(g, krate, crate_name))
+                            .map(|g| extract_bound_links(g, krate, crate_name, &path_index))
                             .unwrap_or_default();
-                        // Add type links from method signature
-                        if let rdt::ItemEnum::Function(f) = &assoc_item.inner {
-                            bound_links.extend(extract_signature_links(&f.sig, krate, crate_name));
+                        match &assoc_item.inner {
+                            rdt::ItemEnum::Function(f) => {
+                                bound_links.extend(extract_signature_links(
+                                    &f.sig,
+                                    krate,
+                                    crate_name,
+                                    &path_index,
+                                ));
+                            }
+                            rdt::ItemEnum::AssocType { bounds, type_, .. } => {
+                                bound_links.extend(collect_bound_links(
+                                    bounds,
+                                    krate,
+                                    crate_name,
+                                    &path_index,
+                                ));
+                                if let Some(type_) = type_ {
+                                    let mut links = HashMap::new();
+                                    collect_type_links(
+                                        type_,
+                                        krate,
+                                        crate_name,
+                                        &path_index,
+                                        &mut links,
+                                    );
+                                    bound_links.extend(links);
+                                }
+                            }
+                            rdt::ItemEnum::AssocConst { type_, .. }
+                            | rdt::ItemEnum::Constant { type_, .. } => {
+                                let mut links = HashMap::new();
+                                collect_type_links(
+                                    type_,
+                                    krate,
+                                    crate_name,
+                                    &path_index,
+                                    &mut links,
+                                );
+                                bound_links.extend(links);
+                            }
+                            rdt::ItemEnum::TypeAlias(alias) => {
+                                let mut links = HashMap::new();
+                                collect_type_links(
+                                    &alias.type_,
+                                    krate,
+                                    crate_name,
+                                    &path_index,
+                                    &mut links,
+                                );
+                                bound_links.extend(links);
+                            }
+                            _ => {}
                         }
+                        let span = assoc_item.span.as_ref().map(map_span);
+                        let deprecation = map_deprecation(assoc_item.deprecation.as_ref());
                         graph.add_node(Node {
                             id: assoc_node_id.clone(),
                             name,
                             kind,
                             visibility: map_visibility(&assoc_item.visibility),
-                            span: assoc_item.span.as_ref().map(map_span),
+                            line_count: line_count(&span),
+                            span,
                             attrs: format_attributes(&assoc_item.attrs),
                             is_external,
-                            fields,
-                            variants,
-                            signature,
-                            generics,
-                            where_clause,
-                            docs,
-                            doc_links: extract_doc_links(assoc_item, krate, crate_name),
+                            is_deprecated: deprecation.is_some(),
+                            is_unsafe: details.is_unsafe,
+                            is_auto: details.is_auto,
+                            is_mutable: details.is_mutable,
+                            is_stripped: details.is_stripped,
+                            has_stripped_fields: details.has_stripped_fields,
+                            has_stripped_variants: details.has_stripped_variants,
+                            is_dyn_compatible: details.is_dyn_compatible,
+                            deprecation,
+                            fields: details.fields,
+                            variants: details.variants,
+                            signature: details.signature,
+                            generics: details.generics,
+                            where_clause: details.where_clause,
+                            docs: details.docs,
+                            doc_links: extract_doc_links(
+                                assoc_item,
+                                krate,
+                                crate_name,
+                                &path_index,
+                                &canonical_to_alias,
+                            ),
                             bound_links,
                             impl_type: None,
                             parent_impl: Some(impl_id.clone()),
                             impl_trait: None,
+                            impl_category: None,
+                            provided_trait_methods: None,
+                            required_trait_methods: details.required_trait_methods,
+                            default_trait_methods: details.default_trait_methods,
+                            type_name: details.type_name,
+                            variant_kind: details.variant_kind,
+                            discriminant: details.discriminant,
+                            const_value: details.const_value,
+                            bounds: details.bounds,
+                            import_source: details.import_source,
+                            import_name: details.import_name,
+                            is_glob: details.is_glob,
+                            extern_crate_name: details.extern_crate_name,
+                            extern_crate_rename: details.extern_crate_rename,
+                            macro_source: details.macro_source,
+                            proc_macro_kind: details.proc_macro_kind,
+                            proc_macro_helpers: details.proc_macro_helpers,
                         });
                         node_cache.insert(assoc_node_id.clone());
                     }
@@ -1110,7 +1449,7 @@ fn build_graph(
 
                 impl_id
             }
-            _ => match resolve_id(krate, crate_name, item.id) {
+            _ => match resolve_id(krate, crate_name, &path_index, item.id) {
                 Some(id) => id,
                 None => continue,
             },
@@ -1135,7 +1474,9 @@ fn build_graph(
                 collect_bounds_ids(&item_trait.bounds, &mut type_ids);
 
                 for assoc_id in &item_trait.items {
-                    if let Some(assoc_node_id) = resolve_id(krate, crate_name, *assoc_id) {
+                    if let Some(assoc_node_id) =
+                        resolve_id(krate, crate_name, &path_index, *assoc_id)
+                    {
                         push_edge(
                             &mut graph,
                             &mut edge_cache,
@@ -1185,6 +1526,7 @@ fn build_graph(
             type_ids,
             krate,
             crate_name,
+            &path_index,
         );
 
         add_derives_edges(
@@ -1207,6 +1549,18 @@ fn build_graph(
         )?;
     }
 
+    materialize_missing_external_edge_nodes(
+        &mut graph,
+        &mut node_cache,
+        &workspace_members,
+        &path_index,
+    );
+    prune_dangling_edges(&mut graph, &node_cache);
+
+    // Persist the alias map so server URL routing can resolve user-friendly
+    // paths back to their canonical node IDs.
+    graph.aliases = aliases;
+
     Ok(graph)
 }
 
@@ -1226,17 +1580,125 @@ fn collect_method_ids(krate: &rdt::Crate) -> HashSet<rdt::Id> {
     method_ids
 }
 
+#[derive(Debug, Default)]
+struct PathIndex {
+    known_paths: HashSet<String>,
+    module_paths: HashSet<String>,
+    node_kinds: HashMap<String, NodeKind>,
+    node_ids_by_rustdoc_id: HashMap<rdt::Id, String>,
+}
+
+impl PathIndex {
+    fn is_known_non_module(&self, id: &str) -> bool {
+        self.known_paths.contains(id) && !self.module_paths.contains(id)
+    }
+
+    fn is_module(&self, id: &str) -> bool {
+        self.module_paths.contains(id)
+    }
+}
+
+fn build_path_index(krate: &rdt::Crate, default_crate_name: &str) -> PathIndex {
+    let mut index = PathIndex::default();
+    let mut entries_by_path: HashMap<String, Vec<(rdt::Id, NodeKind)>> = HashMap::new();
+
+    for (item_id, summary) in &krate.paths {
+        if summary.path.is_empty() {
+            continue;
+        }
+        let crate_name = crate_name_for_id(krate, summary.crate_id, default_crate_name);
+        let id = join_path(&crate_name, &summary.path);
+        index.known_paths.insert(id.clone());
+        if summary.kind == rdt::ItemKind::Module {
+            index.module_paths.insert(id.clone());
+        }
+        if let Some(kind) = map_item_kind(&summary.kind, false) {
+            entries_by_path
+                .entry(id)
+                .or_default()
+                .push((*item_id, kind));
+        }
+    }
+
+    for (path_id, mut entries) in entries_by_path {
+        entries.sort_by_key(|(item_id, kind)| {
+            let priority = if *kind == NodeKind::Module { 0 } else { 1 };
+            (priority, item_id.0)
+        });
+        let has_collision = entries.len() > 1;
+        let clean_item_id = entries
+            .iter()
+            .find(|(_, kind)| *kind == NodeKind::Module)
+            .map(|(item_id, _)| *item_id)
+            .or_else(|| entries.first().map(|(item_id, _)| *item_id));
+
+        for (item_id, kind) in entries {
+            let node_id = if has_collision && Some(item_id) != clean_item_id {
+                format!("{}~{}-{}", path_id, node_kind_slug(kind), item_id.0)
+            } else {
+                path_id.clone()
+            };
+            index.node_kinds.insert(node_id.clone(), kind);
+            index.node_ids_by_rustdoc_id.insert(item_id, node_id);
+        }
+    }
+
+    index
+}
+
+fn structural_edge_kind(parent_id: &str, crate_name: &str, path_index: &PathIndex) -> EdgeKind {
+    if parent_id == crate_name
+        || path_index.is_module(parent_id)
+        || !path_index.known_paths.contains(parent_id)
+    {
+        EdgeKind::Contains
+    } else {
+        EdgeKind::Defines
+    }
+}
+
+fn node_kind_slug(kind: NodeKind) -> &'static str {
+    match kind {
+        NodeKind::Crate => "crate",
+        NodeKind::Module => "module",
+        NodeKind::Struct => "struct",
+        NodeKind::StructField => "field",
+        NodeKind::Union => "union",
+        NodeKind::Enum => "enum",
+        NodeKind::Variant => "variant",
+        NodeKind::Trait => "trait",
+        NodeKind::TraitAlias => "trait-alias",
+        NodeKind::Impl => "impl",
+        NodeKind::Function => "fn",
+        NodeKind::TypeAlias => "type",
+        NodeKind::AssocType => "assoc-type",
+        NodeKind::Constant => "const",
+        NodeKind::AssocConst => "assoc-const",
+        NodeKind::Static => "static",
+        NodeKind::Macro => "macro",
+        NodeKind::Primitive => "primitive",
+        NodeKind::ExternCrate => "extern-crate",
+        NodeKind::Import => "import",
+        NodeKind::ProcMacro => "proc-macro",
+    }
+}
+
 fn build_trait_lookup(
     krate: &rdt::Crate,
     default_crate_name: &str,
+    path_index: &PathIndex,
 ) -> HashMap<String, Vec<String>> {
     let mut lookup = HashMap::new();
-    for summary in krate.paths.values() {
+    for (item_id, summary) in &krate.paths {
         if summary.kind != rdt::ItemKind::Trait {
             continue;
         }
         let crate_name = crate_name_for_id(krate, summary.crate_id, default_crate_name);
-        let full_path = join_path(&crate_name, &summary.path);
+        let full_path = path_index
+            .node_ids_by_rustdoc_id
+            .get(item_id)
+            .cloned()
+            .unwrap_or_else(|| join_path(&crate_name, &summary.path));
         lookup
             .entry(full_path.clone())
             .or_insert_with(|| vec![full_path.clone()]);
@@ -1250,18 +1712,29 @@ fn build_trait_lookup(
 fn map_item_kind(kind: &rdt::ItemKind, is_method: bool) -> Option<NodeKind> {
     match kind {
         rdt::ItemKind::Module => Some(NodeKind::Module),
+        rdt::ItemKind::ExternCrate => Some(NodeKind::ExternCrate),
+        rdt::ItemKind::Use => Some(NodeKind::Import),
         rdt::ItemKind::Struct => Some(NodeKind::Struct),
+        rdt::ItemKind::StructField => Some(NodeKind::StructField),
         rdt::ItemKind::Union => Some(NodeKind::Union),
         rdt::ItemKind::Enum => Some(NodeKind::Enum),
+        rdt::ItemKind::Variant => Some(NodeKind::Variant),
         rdt::ItemKind::Trait => Some(NodeKind::Trait),
         rdt::ItemKind::TraitAlias => Some(NodeKind::TraitAlias),
         rdt::ItemKind::Impl => Some(NodeKind::Impl),
         rdt::ItemKind::Function => Some(if is_method {
-            NodeKind::Method
+            NodeKind::Function
         } else {
             NodeKind::Function
         }),
         rdt::ItemKind::TypeAlias => Some(NodeKind::TypeAlias),
+        rdt::ItemKind::Constant => Some(NodeKind::Constant),
+        rdt::ItemKind::Static => Some(NodeKind::Static),
+        rdt::ItemKind::Macro => Some(NodeKind::Macro),
+        rdt::ItemKind::ProcAttribute | rdt::ItemKind::ProcDerive => Some(NodeKind::ProcMacro),
+        rdt::ItemKind::AssocConst => Some(NodeKind::AssocConst),
+        rdt::ItemKind::AssocType => Some(NodeKind::AssocType),
+        rdt::ItemKind::Primitive => Some(NodeKind::Primitive),
         _ => None,
     }
 }
@@ -1270,7 +1743,7 @@ fn map_visibility(visibility: &rdt::Visibility) -> Visibility {
     match visibility {
         rdt::Visibility::Public => Visibility::Public,
         rdt::Visibility::Crate => Visibility::Crate,
-        rdt::Visibility::Restricted { .. } => Visibility::Restricted,
+        rdt::Visibility::Restricted { path, .. } => Visibility::Restricted { path: path.clone() },
         rdt::Visibility::Default => Visibility::Inherited,
     }
 }
@@ -1286,6 +1759,23 @@ fn map_span(span: &rdt::Span) -> Span {
     }
 }
 
+fn line_count(span: &Option<Span>) -> Option<u32> {
+    let span = span.as_ref()?;
+    Some(
+        span.end_line
+            .filter(|end| *end >= span.line)
+            .map(|end| end - span.line + 1)
+            .unwrap_or(1),
+    )
+}
+
+fn map_deprecation(deprecation: Option<&rdt::Deprecation>) -> Option<Deprecation> {
+    deprecation.map(|deprecation| Deprecation {
+        since: deprecation.since.clone(),
+        note: deprecation.note.clone(),
+    })
+}
+
 /// Strip `$crate::` prefixes that leak from rustdoc macro expansions.
 /// `$crate::clone::Clone` → `Clone`, `$crate::fmt::Debug` → `Debug`.
 fn clean_path(path: &str) -> String {
@@ -1294,6 +1784,29 @@ fn clean_path(path: &str) -> String {
     //      "$crate::clone::Clone" → "Clone",
     //      "std::path::Path" → "Path"
     path.rsplit("::").next().unwrap_or(path).to_string()
+}
+
+fn format_generic_bound(bound: &rdt::GenericBound) -> Option<String> {
+    match bound {
+        rdt::GenericBound::TraitBound { trait_, .. } => {
+            let mut text = clean_path(&trait_.path);
+            if let Some(args) = trait_.args.as_deref() {
+                text.push_str(&format_generic_args(args));
+            }
+            Some(text)
+        }
+        rdt::GenericBound::Outlives(lifetime) => Some(lifetime.clone()),
+        rdt::GenericBound::Use(_) => None,
+    }
+}
+
+fn format_bounds(bounds: &[rdt::GenericBound]) -> Option<Vec<String>> {
+    let formatted: Vec<_> = bounds.iter().filter_map(format_generic_bound).collect();
+    if formatted.is_empty() {
+        None
+    } else {
+        Some(formatted)
+    }
 }
 
 fn format_type(ty: &rdt::Type) -> String {
@@ -1309,9 +1822,20 @@ fn format_type(ty: &rdt::Type) -> String {
             let traits: Vec<_> = dyn_trait
                 .traits
                 .iter()
-                .map(|p| clean_path(&p.trait_.path))
+                .map(|p| {
+                    let mut text = clean_path(&p.trait_.path);
+                    if let Some(args) = p.trait_.args.as_deref() {
+                        text.push_str(&format_generic_args(args));
+                    }
+                    text
+                })
                 .collect();
-            format!("dyn {}", traits.join(" + "))
+            let lifetime = dyn_trait
+                .lifetime
+                .as_ref()
+                .map(|lifetime| format!(" + {lifetime}"))
+                .unwrap_or_default();
+            format!("dyn {}{}", traits.join(" + "), lifetime)
         }
         rdt::Type::Generic(name) => name.clone(),
         rdt::Type::Primitive(name) => name.clone(),
@@ -1354,28 +1878,52 @@ fn format_type(ty: &rdt::Type) -> String {
             format!("&{}{}", mutability, format_type(type_))
         }
         rdt::Type::QualifiedPath {
-            self_type, name, ..
+            self_type,
+            name,
+            args,
+            trait_,
         } => {
-            format!("<{}>::{}", format_type(self_type), name)
+            let assoc_args = args
+                .as_deref()
+                .map(|args| format_generic_args(args))
+                .unwrap_or_default();
+            if let Some(trait_path) = trait_ {
+                let mut trait_name = clean_path(&trait_path.path);
+                if let Some(args) = trait_path.args.as_deref() {
+                    trait_name.push_str(&format_generic_args(args));
+                }
+                format!(
+                    "<{} as {}>::{}{}",
+                    format_type(self_type),
+                    trait_name,
+                    name,
+                    assoc_args
+                )
+            } else {
+                format!("<{}>::{}{}", format_type(self_type), name, assoc_args)
+            }
         }
     }
 }
 
 fn format_generic_args(args: &rdt::GenericArgs) -> String {
     match args {
-        rdt::GenericArgs::AngleBracketed { args, .. } => {
-            if args.is_empty() {
+        rdt::GenericArgs::AngleBracketed { args, constraints } => {
+            if args.is_empty() && constraints.is_empty() {
                 String::new()
             } else {
-                let arg_strs: Vec<_> = args
+                let mut arg_strs: Vec<_> = args
                     .iter()
                     .map(|a| match a {
                         rdt::GenericArg::Type(t) => format_type(t),
                         rdt::GenericArg::Lifetime(l) => l.clone(),
-                        rdt::GenericArg::Const(c) => c.value.clone().unwrap_or_default(),
+                        rdt::GenericArg::Const(c) => {
+                            c.value.clone().unwrap_or_else(|| c.expr.clone())
+                        }
                         rdt::GenericArg::Infer => "_".to_string(),
                     })
                     .collect();
+                arg_strs.extend(constraints.iter().map(format_assoc_item_constraint));
                 format!("<{}>", arg_strs.join(", "))
             }
         }
@@ -1388,6 +1936,37 @@ fn format_generic_args(args: &rdt::GenericArgs) -> String {
             format!("({}){}", input_strs.join(", "), output_str)
         }
         rdt::GenericArgs::ReturnTypeNotation => "(..)".to_string(),
+    }
+}
+
+fn format_assoc_item_constraint(constraint: &rdt::AssocItemConstraint) -> String {
+    let args = constraint
+        .args
+        .as_deref()
+        .map(format_generic_args)
+        .unwrap_or_default();
+    match &constraint.binding {
+        rdt::AssocItemConstraintKind::Equality(term) => {
+            format!("{}{} = {}", constraint.name, args, format_term(term))
+        }
+        rdt::AssocItemConstraintKind::Constraint(bounds) => {
+            let bounds = format_bounds(bounds).unwrap_or_default();
+            if bounds.is_empty() {
+                format!("{}{}", constraint.name, args)
+            } else {
+                format!("{}{}: {}", constraint.name, args, bounds.join(" + "))
+            }
+        }
+    }
+}
+
+fn format_term(term: &rdt::Term) -> String {
+    match term {
+        rdt::Term::Type(ty) => format_type(ty),
+        rdt::Term::Constant(constant) => constant
+            .value
+            .clone()
+            .unwrap_or_else(|| constant.expr.clone()),
     }
 }
 
@@ -1441,6 +2020,31 @@ fn extract_struct_fields(
                 Some(field_infos)
             }
         }
+    }
+}
+
+fn extract_field_list(
+    index: &HashMap<rdt::Id, rdt::Item>,
+    fields: &[rdt::Id],
+) -> Option<Vec<FieldInfo>> {
+    let field_infos: Vec<_> = fields
+        .iter()
+        .filter_map(|id| {
+            let item = index.get(id)?;
+            let rdt::ItemEnum::StructField(ty) = &item.inner else {
+                return None;
+            };
+            Some(FieldInfo {
+                name: item.name.clone().unwrap_or_default(),
+                type_name: format_type(ty),
+                visibility: map_visibility(&item.visibility),
+            })
+        })
+        .collect();
+    if field_infos.is_empty() {
+        None
+    } else {
+        Some(field_infos)
     }
 }
 
@@ -1501,6 +2105,28 @@ fn extract_enum_variants(
     }
 }
 
+fn struct_has_stripped_fields(kind: &rdt::StructKind) -> bool {
+    match kind {
+        rdt::StructKind::Plain {
+            has_stripped_fields,
+            ..
+        } => *has_stripped_fields,
+        rdt::StructKind::Tuple(fields) => fields.iter().any(Option::is_none),
+        rdt::StructKind::Unit => false,
+    }
+}
+
+fn variant_has_stripped_fields(kind: &rdt::VariantKind) -> bool {
+    match kind {
+        rdt::VariantKind::Struct {
+            has_stripped_fields,
+            ..
+        } => *has_stripped_fields,
+        rdt::VariantKind::Tuple(fields) => fields.iter().any(Option::is_none),
+        rdt::VariantKind::Plain => false,
+    }
+}
+
 fn extract_function_signature(
     sig: &rdt::FunctionSignature,
     header: &rdt::FunctionHeader,
@@ -1518,7 +2144,42 @@ fn extract_function_signature(
         is_async: header.is_async,
         is_unsafe: header.is_unsafe,
         is_const: header.is_const,
+        abi: format_abi(&header.abi),
+        is_c_variadic: sig.is_c_variadic,
     }
+}
+
+fn format_abi(abi: &rdt::Abi) -> Option<String> {
+    let text = match abi {
+        rdt::Abi::Rust => return None,
+        rdt::Abi::C { unwind } => abi_with_unwind("C", *unwind),
+        rdt::Abi::Cdecl { unwind } => abi_with_unwind("cdecl", *unwind),
+        rdt::Abi::Stdcall { unwind } => abi_with_unwind("stdcall", *unwind),
+        rdt::Abi::Fastcall { unwind } => abi_with_unwind("fastcall", *unwind),
+        rdt::Abi::Aapcs { unwind } => abi_with_unwind("aapcs", *unwind),
+        rdt::Abi::Win64 { unwind } => abi_with_unwind("win64", *unwind),
+        rdt::Abi::SysV64 { unwind } => abi_with_unwind("sysv64", *unwind),
+        rdt::Abi::System { unwind } => abi_with_unwind("system", *unwind),
+        rdt::Abi::Other(name) => name.clone(),
+    };
+    Some(text)
+}
+
+fn abi_with_unwind(name: &str, unwind: bool) -> String {
+    if unwind {
+        format!("{name}-unwind")
+    } else {
+        name.to_string()
+    }
+}
+
+fn format_proc_macro_kind(kind: rdt::MacroKind) -> String {
+    match kind {
+        rdt::MacroKind::Bang => "bang",
+        rdt::MacroKind::Attr => "attr",
+        rdt::MacroKind::Derive => "derive",
+    }
+    .to_string()
 }
 
 /// Get the generics from an item's inner data, if any.
@@ -1531,6 +2192,7 @@ fn item_generics(item: &rdt::Item) -> Option<&rdt::Generics> {
         rdt::ItemEnum::Trait(t) => Some(&t.generics),
         rdt::ItemEnum::TraitAlias(a) => Some(&a.generics),
         rdt::ItemEnum::TypeAlias(a) => Some(&a.generics),
+        rdt::ItemEnum::AssocType { generics, .. } => Some(generics),
         _ => None,
     }
 }
@@ -1541,26 +2203,27 @@ fn collect_type_links(
     ty: &rdt::Type,
     krate: &rdt::Crate,
     crate_name: &str,
+    path_index: &PathIndex,
     links: &mut HashMap<String, String>,
 ) {
     match ty {
         rdt::Type::ResolvedPath(path) => {
             let display = clean_path(&path.path);
-            if let Some(node_id) = resolve_id(krate, crate_name, path.id) {
+            if let Some(node_id) = resolve_id(krate, crate_name, path_index, path.id) {
                 links.insert(display, node_id);
             }
             if let Some(args) = &path.args {
-                collect_generic_args_links(args, krate, crate_name, links);
+                collect_generic_args_links(args, krate, crate_name, path_index, links);
             }
         }
         rdt::Type::DynTrait(dyn_trait) => {
             for poly in &dyn_trait.traits {
                 let display = clean_path(&poly.trait_.path);
-                if let Some(node_id) = resolve_id(krate, crate_name, poly.trait_.id) {
+                if let Some(node_id) = resolve_id(krate, crate_name, path_index, poly.trait_.id) {
                     links.insert(display, node_id);
                 }
                 if let Some(args) = &poly.trait_.args {
-                    collect_generic_args_links(args, krate, crate_name, links);
+                    collect_generic_args_links(args, krate, crate_name, path_index, links);
                 }
             }
         }
@@ -1569,30 +2232,30 @@ fn collect_type_links(
         | rdt::Type::Slice(type_)
         | rdt::Type::Array { type_, .. }
         | rdt::Type::Pat { type_, .. } => {
-            collect_type_links(type_, krate, crate_name, links);
+            collect_type_links(type_, krate, crate_name, path_index, links);
         }
         rdt::Type::Tuple(types) => {
             for t in types {
-                collect_type_links(t, krate, crate_name, links);
+                collect_type_links(t, krate, crate_name, path_index, links);
             }
         }
         rdt::Type::FunctionPointer(fp) => {
             for (_, t) in &fp.sig.inputs {
-                collect_type_links(t, krate, crate_name, links);
+                collect_type_links(t, krate, crate_name, path_index, links);
             }
             if let Some(out) = &fp.sig.output {
-                collect_type_links(out, krate, crate_name, links);
+                collect_type_links(out, krate, crate_name, path_index, links);
             }
         }
         rdt::Type::ImplTrait(bounds) => {
             for bound in bounds {
                 if let rdt::GenericBound::TraitBound { trait_, .. } = bound {
                     let display = clean_path(&trait_.path);
-                    if let Some(node_id) = resolve_id(krate, crate_name, trait_.id) {
+                    if let Some(node_id) = resolve_id(krate, crate_name, path_index, trait_.id) {
                         links.insert(display, node_id);
                     }
                     if let Some(args) = &trait_.args {
-                        collect_generic_args_links(args, krate, crate_name, links);
+                        collect_generic_args_links(args, krate, crate_name, path_index, links);
                     }
                 }
             }
@@ -1603,18 +2266,18 @@ fn collect_type_links(
             args,
             ..
         } => {
-            collect_type_links(self_type, krate, crate_name, links);
+            collect_type_links(self_type, krate, crate_name, path_index, links);
             if let Some(trait_path) = trait_ {
                 let display = clean_path(&trait_path.path);
-                if let Some(node_id) = resolve_id(krate, crate_name, trait_path.id) {
+                if let Some(node_id) = resolve_id(krate, crate_name, path_index, trait_path.id) {
                     links.insert(display, node_id);
                 }
                 if let Some(args) = &trait_path.args {
-                    collect_generic_args_links(args, krate, crate_name, links);
+                    collect_generic_args_links(args, krate, crate_name, path_index, links);
                 }
             }
             if let Some(args) = args.as_deref() {
-                collect_generic_args_links(args, krate, crate_name, links);
+                collect_generic_args_links(args, krate, crate_name, path_index, links);
             }
         }
         _ => {}
@@ -1625,25 +2288,63 @@ fn collect_generic_args_links(
     args: &rdt::GenericArgs,
     krate: &rdt::Crate,
     crate_name: &str,
+    path_index: &PathIndex,
     links: &mut HashMap<String, String>,
 ) {
     match args {
-        rdt::GenericArgs::AngleBracketed { args, .. } => {
+        rdt::GenericArgs::AngleBracketed { args, constraints } => {
             for arg in args {
                 if let rdt::GenericArg::Type(t) = arg {
-                    collect_type_links(t, krate, crate_name, links);
+                    collect_type_links(t, krate, crate_name, path_index, links);
                 }
+            }
+            for constraint in constraints {
+                collect_assoc_constraint_links(constraint, krate, crate_name, path_index, links);
             }
         }
         rdt::GenericArgs::Parenthesized { inputs, output } => {
             for input in inputs {
-                collect_type_links(input, krate, crate_name, links);
+                collect_type_links(input, krate, crate_name, path_index, links);
             }
             if let Some(out) = output {
-                collect_type_links(out, krate, crate_name, links);
+                collect_type_links(out, krate, crate_name, path_index, links);
             }
         }
         rdt::GenericArgs::ReturnTypeNotation => {}
+    }
+}
+
+fn collect_assoc_constraint_links(
+    constraint: &rdt::AssocItemConstraint,
+    krate: &rdt::Crate,
+    crate_name: &str,
+    path_index: &PathIndex,
+    links: &mut HashMap<String, String>,
+) {
+    if let Some(args) = constraint.args.as_deref() {
+        collect_generic_args_links(args, krate, crate_name, path_index, links);
+    }
+    match &constraint.binding {
+        rdt::AssocItemConstraintKind::Equality(term) => {
+            collect_term_links(term, krate, crate_name, path_index, links);
+        }
+        rdt::AssocItemConstraintKind::Constraint(bounds) => {
+            for (display, node_id) in collect_bound_links(bounds, krate, crate_name, path_index) {
+                links.insert(display, node_id);
+            }
+        }
+    }
+}
+
+fn collect_term_links(
+    term: &rdt::Term,
+    krate: &rdt::Crate,
+    crate_name: &str,
+    path_index: &PathIndex,
+    links: &mut HashMap<String, String>,
+) {
+    if let rdt::Term::Type(ty) = term {
+        collect_type_links(ty, krate, crate_name, path_index, links);
     }
 }
 
@@ -1652,13 +2353,14 @@ fn extract_signature_links(
     sig: &rdt::FunctionSignature,
     krate: &rdt::Crate,
     crate_name: &str,
+    path_index: &PathIndex,
 ) -> HashMap<String, String> {
     let mut links = HashMap::new();
     for (_, ty) in &sig.inputs {
-        collect_type_links(ty, krate, crate_name, &mut links);
+        collect_type_links(ty, krate, crate_name, path_index, &mut links);
     }
     if let Some(output) = &sig.output {
-        collect_type_links(output, krate, crate_name, &mut links);
+        collect_type_links(output, krate, crate_name, path_index, &mut links);
     }
     links
 }
@@ -1669,13 +2371,14 @@ fn extract_field_type_links(
     field_ids: &[rdt::Id],
     krate: &rdt::Crate,
     crate_name: &str,
+    path_index: &PathIndex,
 ) -> HashMap<String, String> {
     let mut links = HashMap::new();
     for field_id in field_ids {
         if let Some(item) = index.get(field_id)
             && let rdt::ItemEnum::StructField(ty) = &item.inner
         {
-            collect_type_links(ty, krate, crate_name, &mut links);
+            collect_type_links(ty, krate, crate_name, path_index, &mut links);
         }
     }
     links
@@ -1687,20 +2390,61 @@ fn collect_bound_links(
     bounds: &[rdt::GenericBound],
     krate: &rdt::Crate,
     crate_name: &str,
+    path_index: &PathIndex,
 ) -> HashMap<String, String> {
     let mut links = HashMap::new();
     for bound in bounds {
-        if let rdt::GenericBound::TraitBound { trait_, .. } = bound {
+        if let rdt::GenericBound::TraitBound {
+            trait_,
+            generic_params,
+            ..
+        } = bound
+        {
             let display = clean_path(&trait_.path);
-            if let Some(node_id) = resolve_id(krate, crate_name, trait_.id) {
+            if let Some(node_id) = resolve_id(krate, crate_name, path_index, trait_.id) {
                 links.insert(display, node_id);
             }
             if let Some(args) = &trait_.args {
-                collect_generic_args_links(args, krate, crate_name, &mut links);
+                collect_generic_args_links(args, krate, crate_name, path_index, &mut links);
             }
+            collect_generic_param_def_links(
+                generic_params,
+                krate,
+                crate_name,
+                path_index,
+                &mut links,
+            );
         }
     }
     links
+}
+
+fn collect_generic_param_def_links(
+    params: &[rdt::GenericParamDef],
+    krate: &rdt::Crate,
+    crate_name: &str,
+    path_index: &PathIndex,
+    links: &mut HashMap<String, String>,
+) {
+    for param in params {
+        match &param.kind {
+            rdt::GenericParamDefKind::Lifetime { .. } => {}
+            rdt::GenericParamDefKind::Type {
+                bounds, default, ..
+            } => {
+                for (display, node_id) in collect_bound_links(bounds, krate, crate_name, path_index)
+                {
+                    links.insert(display, node_id);
+                }
+                if let Some(default) = default {
+                    collect_type_links(default, krate, crate_name, path_index, links);
+                }
+            }
+            rdt::GenericParamDefKind::Const { type_, .. } => {
+                collect_type_links(type_, krate, crate_name, path_index, links);
+            }
+        }
+    }
 }
 
 fn extract_generics(generics: &rdt::Generics) -> Option<Vec<String>> {
@@ -1713,16 +2457,8 @@ fn extract_generics(generics: &rdt::Generics) -> Option<Vec<String>> {
             } => {
                 let mut s = p.name.clone();
                 if !bounds.is_empty() {
-                    let bound_strs: Vec<_> = bounds
-                        .iter()
-                        .filter_map(|b| match b {
-                            rdt::GenericBound::TraitBound { trait_, .. } => {
-                                Some(clean_path(&trait_.path))
-                            }
-                            rdt::GenericBound::Outlives(lt) => Some(lt.clone()),
-                            _ => None,
-                        })
-                        .collect();
+                    let bound_strs: Vec<_> =
+                        bounds.iter().filter_map(format_generic_bound).collect();
                     if !bound_strs.is_empty() {
                         s.push_str(": ");
                         s.push_str(&bound_strs.join(" + "));
@@ -1752,18 +2488,42 @@ fn extract_bound_links(
     generics: &rdt::Generics,
     krate: &rdt::Crate,
     crate_name: &str,
+    path_index: &PathIndex,
 ) -> HashMap<String, String> {
     let mut links = HashMap::new();
     // From generic params
     for param in &generics.params {
-        if let rdt::GenericParamDefKind::Type { bounds, .. } = &param.kind {
-            links.extend(collect_bound_links(bounds, krate, crate_name));
-        }
+        collect_generic_param_def_links(
+            std::slice::from_ref(param),
+            krate,
+            crate_name,
+            path_index,
+            &mut links,
+        );
     }
     // From where predicates
     for pred in &generics.where_predicates {
-        if let rdt::WherePredicate::BoundPredicate { bounds, .. } = pred {
-            links.extend(collect_bound_links(bounds, krate, crate_name));
+        match pred {
+            rdt::WherePredicate::BoundPredicate {
+                type_,
+                bounds,
+                generic_params,
+            } => {
+                collect_type_links(type_, krate, crate_name, path_index, &mut links);
+                links.extend(collect_bound_links(bounds, krate, crate_name, path_index));
+                collect_generic_param_def_links(
+                    generic_params,
+                    krate,
+                    crate_name,
+                    path_index,
+                    &mut links,
+                );
+            }
+            rdt::WherePredicate::LifetimePredicate { .. } => {}
+            rdt::WherePredicate::EqPredicate { lhs, rhs } => {
+                collect_type_links(lhs, krate, crate_name, path_index, &mut links);
+                collect_term_links(rhs, krate, crate_name, path_index, &mut links);
+            }
         }
     }
     links
@@ -1776,16 +2536,7 @@ fn extract_where_clause(generics: &rdt::Generics) -> Option<Vec<String>> {
         .filter_map(|pred| match pred {
             rdt::WherePredicate::BoundPredicate { type_, bounds, .. } => {
                 let ty = format_type(type_);
-                let bound_strs: Vec<_> = bounds
-                    .iter()
-                    .filter_map(|b| match b {
-                        rdt::GenericBound::TraitBound { trait_, .. } => {
-                            Some(clean_path(&trait_.path))
-                        }
-                        rdt::GenericBound::Outlives(lt) => Some(lt.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                let bound_strs: Vec<_> = bounds.iter().filter_map(format_generic_bound).collect();
                 if bound_strs.is_empty() {
                     None
                 } else {
@@ -1825,37 +2576,111 @@ fn extract_doc_links(
     item: &rdt::Item,
     krate: &rdt::Crate,
     default_crate_name: &str,
+    path_index: &PathIndex,
+    canonical_to_alias: &HashMap<String, String>,
 ) -> HashMap<String, String> {
     item.links
         .iter()
         .filter_map(|(text, id)| {
-            resolve_id(krate, default_crate_name, *id).map(|resolved| (text.clone(), resolved))
+            resolve_id(krate, default_crate_name, path_index, *id).map(|resolved| {
+                // Prefer the user-friendly re-export alias over the verbose
+                // canonical path when available.
+                let target = canonical_to_alias
+                    .get(&resolved)
+                    .cloned()
+                    .unwrap_or(resolved);
+                (text.clone(), target)
+            })
         })
         .collect()
 }
 
-#[allow(clippy::type_complexity)]
-fn extract_item_details(
+#[derive(Default)]
+struct ItemDetails {
+    fields: Option<Vec<FieldInfo>>,
+    variants: Option<Vec<VariantInfo>>,
+    signature: Option<FunctionSignature>,
+    generics: Option<Vec<String>>,
+    where_clause: Option<Vec<String>>,
+    docs: Option<String>,
+    is_unsafe: bool,
+    is_auto: bool,
+    is_mutable: bool,
+    is_stripped: bool,
+    has_stripped_fields: bool,
+    has_stripped_variants: bool,
+    is_dyn_compatible: Option<bool>,
+    required_trait_methods: Option<Vec<String>>,
+    default_trait_methods: Option<Vec<String>>,
+    type_name: Option<String>,
+    variant_kind: Option<CvVariantKind>,
+    discriminant: Option<String>,
+    const_value: Option<String>,
+    bounds: Option<Vec<String>>,
+    import_source: Option<String>,
+    import_name: Option<String>,
+    is_glob: bool,
+    extern_crate_name: Option<String>,
+    extern_crate_rename: Option<String>,
+    macro_source: Option<String>,
+    proc_macro_kind: Option<String>,
+    proc_macro_helpers: Vec<String>,
+}
+
+fn trait_method_sets(
     index: &HashMap<rdt::Id, rdt::Item>,
-    item: &rdt::Item,
-) -> (
-    Option<Vec<FieldInfo>>,
-    Option<Vec<VariantInfo>>,
-    Option<FunctionSignature>,
-    Option<Vec<String>>,
-    Option<Vec<String>>,
-    Option<String>,
-) {
+    trait_items: &[rdt::Id],
+) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    let mut required = Vec::new();
+    let mut defaulted = Vec::new();
+    for trait_item_id in trait_items {
+        let Some(trait_item) = index.get(trait_item_id) else {
+            continue;
+        };
+        let rdt::ItemEnum::Function(function) = &trait_item.inner else {
+            continue;
+        };
+        let Some(name) = trait_item.name.clone() else {
+            continue;
+        };
+        if function.has_body {
+            defaulted.push(name);
+        } else {
+            required.push(name);
+        }
+    }
+    required.sort();
+    defaulted.sort();
+    (
+        if required.is_empty() {
+            None
+        } else {
+            Some(required)
+        },
+        if defaulted.is_empty() {
+            None
+        } else {
+            Some(defaulted)
+        },
+    )
+}
+
+fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -> ItemDetails {
     let docs = extract_docs(item);
     match &item.inner {
-        rdt::ItemEnum::Struct(item_struct) => (
-            extract_struct_fields(index, &item_struct.kind),
-            None,
-            None,
-            extract_generics(&item_struct.generics),
-            extract_where_clause(&item_struct.generics),
+        rdt::ItemEnum::Module(module) => ItemDetails {
+            is_stripped: module.is_stripped,
             docs,
-        ),
+            ..Default::default()
+        },
+        rdt::ItemEnum::Struct(item_struct) => ItemDetails {
+            fields: extract_struct_fields(index, &item_struct.kind),
+            generics: extract_generics(&item_struct.generics),
+            where_clause: extract_where_clause(&item_struct.generics),
+            has_stripped_fields: struct_has_stripped_fields(&item_struct.kind),
+            docs,
+            ..Default::default()
+        },
         rdt::ItemEnum::Union(item_union) => {
             let fields: Vec<_> = item_union
                 .fields
@@ -1872,60 +2697,169 @@ fn extract_item_details(
                     })
                 })
                 .collect();
-            (
-                if fields.is_empty() {
+            ItemDetails {
+                fields: if fields.is_empty() {
                     None
                 } else {
                     Some(fields)
                 },
-                None,
-                None,
-                extract_generics(&item_union.generics),
-                extract_where_clause(&item_union.generics),
+                generics: extract_generics(&item_union.generics),
+                where_clause: extract_where_clause(&item_union.generics),
+                has_stripped_fields: item_union.has_stripped_fields,
                 docs,
-            )
+                ..Default::default()
+            }
         }
-        rdt::ItemEnum::Enum(item_enum) => (
-            None,
-            extract_enum_variants(index, &item_enum.variants),
-            None,
-            extract_generics(&item_enum.generics),
-            extract_where_clause(&item_enum.generics),
+        rdt::ItemEnum::Enum(item_enum) => ItemDetails {
+            variants: extract_enum_variants(index, &item_enum.variants),
+            generics: extract_generics(&item_enum.generics),
+            where_clause: extract_where_clause(&item_enum.generics),
+            has_stripped_variants: item_enum.has_stripped_variants,
             docs,
-        ),
-        rdt::ItemEnum::Function(function) => (
-            None,
-            None,
-            Some(extract_function_signature(&function.sig, &function.header)),
-            extract_generics(&function.generics),
-            extract_where_clause(&function.generics),
+            ..Default::default()
+        },
+        rdt::ItemEnum::Variant(variant) => {
+            let (variant_kind, field_ids): (CvVariantKind, Vec<rdt::Id>) = match &variant.kind {
+                rdt::VariantKind::Plain => (CvVariantKind::Unit, Vec::new()),
+                rdt::VariantKind::Tuple(fields) => (
+                    CvVariantKind::Tuple,
+                    fields.iter().filter_map(|id| *id).collect(),
+                ),
+                rdt::VariantKind::Struct { fields, .. } => (CvVariantKind::Struct, fields.clone()),
+            };
+            ItemDetails {
+                fields: extract_field_list(index, &field_ids),
+                variant_kind: Some(variant_kind),
+                discriminant: variant.discriminant.as_ref().map(|d| d.expr.clone()),
+                has_stripped_fields: variant_has_stripped_fields(&variant.kind),
+                docs,
+                ..Default::default()
+            }
+        }
+        rdt::ItemEnum::StructField(ty) => ItemDetails {
+            type_name: Some(format_type(ty)),
             docs,
-        ),
-        rdt::ItemEnum::Trait(item_trait) => (
-            None,
-            None,
-            None,
-            extract_generics(&item_trait.generics),
-            extract_where_clause(&item_trait.generics),
+            ..Default::default()
+        },
+        rdt::ItemEnum::Function(function) => ItemDetails {
+            signature: Some(extract_function_signature(&function.sig, &function.header)),
+            generics: extract_generics(&function.generics),
+            where_clause: extract_where_clause(&function.generics),
             docs,
-        ),
-        rdt::ItemEnum::TraitAlias(alias) => (
-            None,
-            None,
-            None,
-            extract_generics(&alias.generics),
-            extract_where_clause(&alias.generics),
+            ..Default::default()
+        },
+        rdt::ItemEnum::Trait(item_trait) => {
+            let (required_trait_methods, default_trait_methods) =
+                trait_method_sets(index, &item_trait.items);
+            ItemDetails {
+                generics: extract_generics(&item_trait.generics),
+                where_clause: extract_where_clause(&item_trait.generics),
+                is_unsafe: item_trait.is_unsafe,
+                is_auto: item_trait.is_auto,
+                is_dyn_compatible: Some(item_trait.is_dyn_compatible),
+                bounds: format_bounds(&item_trait.bounds),
+                required_trait_methods,
+                default_trait_methods,
+                docs,
+                ..Default::default()
+            }
+        }
+        rdt::ItemEnum::TraitAlias(alias) => ItemDetails {
+            generics: extract_generics(&alias.generics),
+            where_clause: extract_where_clause(&alias.generics),
+            bounds: format_bounds(&alias.params),
             docs,
-        ),
-        rdt::ItemEnum::TypeAlias(alias) => (
-            None,
-            None,
-            None,
-            extract_generics(&alias.generics),
-            extract_where_clause(&alias.generics),
+            ..Default::default()
+        },
+        rdt::ItemEnum::TypeAlias(alias) => ItemDetails {
+            generics: extract_generics(&alias.generics),
+            where_clause: extract_where_clause(&alias.generics),
+            type_name: Some(format_type(&alias.type_)),
             docs,
-        ),
-        _ => (None, None, None, None, None, docs),
+            ..Default::default()
+        },
+        rdt::ItemEnum::Constant { type_, const_ } => ItemDetails {
+            type_name: Some(format_type(type_)),
+            const_value: Some(const_.expr.clone()),
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::Static(item_static) => ItemDetails {
+            type_name: Some(format_type(&item_static.type_)),
+            const_value: Some(item_static.expr.clone()),
+            is_mutable: item_static.is_mutable,
+            is_unsafe: item_static.is_unsafe,
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::Use(use_item) => ItemDetails {
+            import_source: Some(use_item.source.clone()),
+            import_name: Some(use_item.name.clone()),
+            is_glob: use_item.is_glob,
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::ExternCrate { name, rename } => ItemDetails {
+            extern_crate_name: Some(name.clone()),
+            extern_crate_rename: rename.clone(),
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::Macro(source) => ItemDetails {
+            macro_source: Some(source.clone()),
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::ProcMacro(proc_macro) => ItemDetails {
+            proc_macro_kind: Some(format_proc_macro_kind(proc_macro.kind)),
+            proc_macro_helpers: proc_macro.helpers.clone(),
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::AssocType {
+            generics,
+            bounds,
+            type_,
+        } => ItemDetails {
+            generics: extract_generics(generics),
+            where_clause: extract_where_clause(generics),
+            bounds: format_bounds(bounds),
+            type_name: type_.as_ref().map(format_type),
+            docs,
+            ..Default::default()
+        },
+        rdt::ItemEnum::AssocConst { type_, value } => ItemDetails {
+            type_name: Some(format_type(type_)),
+            const_value: value.clone(),
+            docs,
+            ..Default::default()
+        },
+        // Primitive item kinds carry only `name` + an `impls` list; the
+        // impl IDs are processed separately by the edge-resolution path
+        // (each impl becomes an Implements edge), so there's nothing to
+        // extract into ItemDetails beyond the docs.
+        rdt::ItemEnum::Primitive(_) => ItemDetails {
+            docs,
+            ..Default::default()
+        },
+        // `extern { type Foo; }` — opaque, no payload, no impls.
+        rdt::ItemEnum::ExternType => ItemDetails {
+            docs,
+            ..Default::default()
+        },
+        // Impl blocks are handled by `process_impl` in the edge-resolution
+        // path, not here. Falling through means impl items somehow leaked
+        // out of that path — preserve docs and continue.
+        rdt::ItemEnum::Impl(_) => ItemDetails {
+            docs,
+            ..Default::default()
+        },
+        // No catch-all: a missing arm fails compile when rustdoc-types
+        // adds a new variant, which is precisely the schema-drift signal
+        // we want at the maintainer's CI step rather than as silent data
+        // loss in production. The format-version warning in
+        // parse_rustdoc_lenient surfaces drift at parse time as a
+        // secondary defence.
     }
 }
 
@@ -1945,9 +2879,19 @@ fn ensure_crate_node(
         name: crate_name.to_string(),
         kind: NodeKind::Crate,
         visibility,
+        line_count: None,
         span: None,
         attrs: Vec::new(),
         is_external,
+        is_deprecated: false,
+        is_unsafe: false,
+        is_auto: false,
+        is_mutable: false,
+        is_stripped: false,
+        has_stripped_fields: false,
+        has_stripped_variants: false,
+        is_dyn_compatible: None,
+        deprecation: None,
         fields: None,
         variants: None,
         signature: None,
@@ -1959,6 +2903,23 @@ fn ensure_crate_node(
         impl_type: None,
         parent_impl: None,
         impl_trait: None,
+        impl_category: None,
+        provided_trait_methods: None,
+        required_trait_methods: None,
+        default_trait_methods: None,
+        type_name: None,
+        variant_kind: None,
+        discriminant: None,
+        const_value: None,
+        bounds: None,
+        import_source: None,
+        import_name: None,
+        is_glob: false,
+        extern_crate_name: None,
+        extern_crate_rename: None,
+        macro_source: None,
+        proc_macro_kind: None,
+        proc_macro_helpers: Vec::new(),
     });
     node_cache.insert(crate_name.to_string());
 }
@@ -1967,8 +2928,10 @@ fn ensure_module_nodes(
     graph: &mut Graph,
     node_cache: &mut HashSet<String>,
     edge_cache: &mut HashSet<String>,
+    placeholder_module_nodes: &mut HashSet<String>,
     crate_name: &str,
     path: &[String],
+    path_index: &PathIndex,
     is_external: bool,
 ) {
     if path.len() <= 1 {
@@ -1978,15 +2941,28 @@ fn ensure_module_nodes(
     let mut parent_id = crate_name.to_string();
     for (index, segment) in path[..path.len() - 1].iter().enumerate() {
         let module_id = join_path(crate_name, &path[..=index]);
+        if path_index.is_known_non_module(&module_id) {
+            break;
+        }
         if !node_cache.contains(&module_id) {
             graph.add_node(Node {
                 id: module_id.clone(),
                 name: segment.clone(),
                 kind: NodeKind::Module,
                 visibility: Visibility::Unknown,
+                line_count: None,
                 span: None,
                 attrs: Vec::new(),
                 is_external,
+                is_deprecated: false,
+                is_unsafe: false,
+                is_auto: false,
+                is_mutable: false,
+                is_stripped: false,
+                has_stripped_fields: false,
+                has_stripped_variants: false,
+                is_dyn_compatible: None,
+                deprecation: None,
                 fields: None,
                 variants: None,
                 signature: None,
@@ -1998,8 +2974,26 @@ fn ensure_module_nodes(
                 impl_type: None,
                 parent_impl: None,
                 impl_trait: None,
+                impl_category: None,
+                provided_trait_methods: None,
+                required_trait_methods: None,
+                default_trait_methods: None,
+                type_name: None,
+                variant_kind: None,
+                discriminant: None,
+                const_value: None,
+                bounds: None,
+                import_source: None,
+                import_name: None,
+                is_glob: false,
+                extern_crate_name: None,
+                extern_crate_rename: None,
+                macro_source: None,
+                proc_macro_kind: None,
+                proc_macro_helpers: Vec::new(),
             });
             node_cache.insert(module_id.clone());
+            placeholder_module_nodes.insert(module_id.clone());
         }
 
         // Skip self-loops
@@ -2015,6 +3009,115 @@ fn ensure_module_nodes(
         }
 
         parent_id = module_id;
+    }
+}
+
+fn upsert_node(
+    graph: &mut Graph,
+    node_cache: &mut HashSet<String>,
+    placeholder_module_nodes: &mut HashSet<String>,
+    node: Node,
+) {
+    let id = node.id.clone();
+    if placeholder_module_nodes.remove(&id) {
+        if let Some(existing) = graph.nodes.iter_mut().find(|existing| existing.id == id) {
+            *existing = node;
+        } else {
+            graph.add_node(node);
+        }
+        node_cache.insert(id);
+        return;
+    }
+
+    if node_cache.insert(id) {
+        graph.add_node(node);
+    }
+}
+
+fn materialize_missing_external_edge_nodes(
+    graph: &mut Graph,
+    node_cache: &mut HashSet<String>,
+    workspace_members: &HashSet<String>,
+    path_index: &PathIndex,
+) {
+    let mut missing = HashSet::new();
+    for edge in &graph.edges {
+        if !node_cache.contains(&edge.from) {
+            missing.insert(edge.from.clone());
+        }
+        if !node_cache.contains(&edge.to) {
+            missing.insert(edge.to.clone());
+        }
+    }
+
+    for id in missing {
+        let crate_name = id.split("::").next().unwrap_or(id.as_str());
+        if workspace_members.contains(crate_name) {
+            continue;
+        }
+        let Some(kind) = path_index.node_kinds.get(&id).copied() else {
+            continue;
+        };
+        ensure_crate_node(graph, node_cache, crate_name, Visibility::Public, true);
+        if node_cache.insert(id.clone()) {
+            graph.add_node(external_stub_node(id, kind));
+        }
+    }
+}
+
+fn prune_dangling_edges(graph: &mut Graph, node_cache: &HashSet<String>) {
+    graph
+        .edges
+        .retain(|edge| node_cache.contains(&edge.from) && node_cache.contains(&edge.to));
+}
+
+fn external_stub_node(id: String, kind: NodeKind) -> Node {
+    Node {
+        name: last_segment(id.clone()),
+        id,
+        kind,
+        visibility: Visibility::Unknown,
+        line_count: None,
+        span: None,
+        attrs: Vec::new(),
+        is_external: true,
+        is_deprecated: false,
+        is_unsafe: false,
+        is_auto: false,
+        is_mutable: false,
+        is_stripped: false,
+        has_stripped_fields: false,
+        has_stripped_variants: false,
+        is_dyn_compatible: None,
+        deprecation: None,
+        fields: None,
+        variants: None,
+        signature: None,
+        generics: None,
+        where_clause: None,
+        docs: None,
+        doc_links: HashMap::new(),
+        bound_links: HashMap::new(),
+        impl_type: None,
+        parent_impl: None,
+        impl_trait: None,
+        impl_category: None,
+        provided_trait_methods: None,
+        required_trait_methods: None,
+        default_trait_methods: None,
+        type_name: None,
+        variant_kind: None,
+        discriminant: None,
+        const_value: None,
+        bounds: None,
+        import_source: None,
+        import_name: None,
+        is_glob: false,
+        extern_crate_name: None,
+        extern_crate_rename: None,
+        macro_source: None,
+        proc_macro_kind: None,
+        proc_macro_helpers: Vec::new(),
     }
 }
 
@@ -2057,11 +3160,92 @@ fn crate_name_for_id(krate: &rdt::Crate, crate_id: u32, fallback: &str) -> Strin
         .unwrap_or_else(|| fallback.to_string())
 }
 
-fn resolve_id(krate: &rdt::Crate, default_crate_name: &str, id: rdt::Id) -> Option<String> {
+fn resolve_id(
+    krate: &rdt::Crate,
+    default_crate_name: &str,
+    path_index: &PathIndex,
+    id: rdt::Id,
+) -> Option<String> {
+    if let Some(node_id) = path_index.node_ids_by_rustdoc_id.get(&id) {
+        return Some(node_id.clone());
+    }
     krate.paths.get(&id).map(|summary| {
         let crate_name = crate_name_for_id(krate, summary.crate_id, default_crate_name);
         join_path(&crate_name, &summary.path)
     })
+}
+
+/// Build the alias map: `public_path → canonical_node_id`.
+///
+/// For each non-glob `pub use Module::Item` re-export, this records the
+/// re-export's location (`parent_module::Item`) as an alias of the canonical
+/// definition path. Only registers when the public path is strictly shorter
+/// than the canonical (the common case being a private same-name submodule
+/// that's re-exported from its parent, e.g. `core::async_iter::async_iter::X`
+/// publicly reachable as `core::async_iter::X`).
+fn build_aliases(
+    krate: &rdt::Crate,
+    default_crate_name: &str,
+    path_index: &PathIndex,
+    item_to_parent: &HashMap<rdt::Id, rdt::Id>,
+) -> HashMap<String, String> {
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    for (use_item_id, item) in &krate.index {
+        let rdt::ItemEnum::Use(use_item) = &item.inner else {
+            continue;
+        };
+        if use_item.is_glob {
+            continue;
+        }
+        let Some(target_id) = use_item.id else {
+            continue;
+        };
+        let Some(canonical) = resolve_id(krate, default_crate_name, path_index, target_id) else {
+            continue;
+        };
+        let Some(parent_id) = item_to_parent.get(use_item_id) else {
+            continue;
+        };
+        let Some(parent_canonical) =
+            resolve_id(krate, default_crate_name, path_index, *parent_id)
+        else {
+            continue;
+        };
+
+        let public_path = format!("{parent_canonical}::{}", use_item.name);
+        if public_path == canonical {
+            continue;
+        }
+        // Skip when the public path is no shorter than the canonical — those
+        // are just sibling aliases and don't help URL ergonomics.
+        if public_path.split("::").count() >= canonical.split("::").count() {
+            continue;
+        }
+        // First alias wins; further re-exports of the same target keep the
+        // shortest-discovered path stable.
+        aliases.entry(public_path).or_insert(canonical);
+    }
+    aliases
+}
+
+/// Inverse alias map: canonical_id → shortest_public_alias.
+/// Used to rewrite intra-doc link targets so links land on the user-friendly
+/// URL rather than the verbose canonical path.
+fn invert_aliases(aliases: &HashMap<String, String>) -> HashMap<String, String> {
+    let mut inverse: HashMap<String, String> = HashMap::new();
+    for (alias, canonical) in aliases {
+        match inverse.entry(canonical.clone()) {
+            std::collections::hash_map::Entry::Vacant(e) => {
+                e.insert(alias.clone());
+            }
+            std::collections::hash_map::Entry::Occupied(mut e) => {
+                if alias.len() < e.get().len() {
+                    e.insert(alias.clone());
+                }
+            }
+        }
+    }
+    inverse
 }
 
 fn type_to_id(ty: &rdt::Type) -> Option<rdt::Id> {
@@ -2076,14 +3260,19 @@ fn impl_node_id(crate_name: &str, id: rdt::Id) -> String {
     format!("{crate_name}::impl-{}", id.0)
 }
 
-fn impl_node_name(krate: &rdt::Crate, default_crate_name: &str, impl_block: &rdt::Impl) -> String {
+fn impl_node_name(
+    krate: &rdt::Crate,
+    default_crate_name: &str,
+    path_index: &PathIndex,
+    impl_block: &rdt::Impl,
+) -> String {
     let type_name = type_to_id(&impl_block.for_)
-        .and_then(|id| resolve_id(krate, default_crate_name, id))
+        .and_then(|id| resolve_id(krate, default_crate_name, path_index, id))
         .map(last_segment)
         .unwrap_or_else(|| "type".to_string());
 
     if let Some(trait_path) = impl_block.trait_.as_ref() {
-        let trait_name = resolve_id(krate, default_crate_name, trait_path.id)
+        let trait_name = resolve_id(krate, default_crate_name, path_index, trait_path.id)
             .map(last_segment)
             .unwrap_or_else(|| last_segment(trait_path.path.clone()));
         format!("impl {trait_name} for {type_name}")
@@ -2340,9 +3529,10 @@ fn add_uses_edges(
     type_ids: HashSet<rdt::Id>,
     krate: &rdt::Crate,
     default_crate_name: &str,
+    path_index: &PathIndex,
 ) {
     for type_id in type_ids {
-        if let Some(target_id) = resolve_id(krate, default_crate_name, type_id) {
+        if let Some(target_id) = resolve_id(krate, default_crate_name, path_index, type_id) {
             if target_id == owner_id {
                 continue;
             }
@@ -2363,6 +3553,7 @@ fn add_use_import_edges_with_parent_map(
     edge_cache: &mut HashSet<String>,
     krate: &rdt::Crate,
     default_crate_name: &str,
+    path_index: &PathIndex,
     item_to_parent: &HashMap<rdt::Id, rdt::Id>,
 ) {
     // Process use items and create edges from parent module to target
@@ -2382,23 +3573,27 @@ fn add_use_import_edges_with_parent_map(
         };
 
         // Resolve the parent module to a node ID
-        let Some(parent_node_id) = resolve_id(krate, default_crate_name, parent_module_id) else {
+        let Some(parent_node_id) =
+            resolve_id(krate, default_crate_name, path_index, parent_module_id)
+        else {
             continue;
         };
 
         // Resolve the target to a node ID
-        let Some(target_node_id) = resolve_id(krate, default_crate_name, target_id) else {
+        let Some(target_node_id) = resolve_id(krate, default_crate_name, path_index, target_id)
+        else {
             continue;
         };
 
         // Create edge from parent module to re-exported item
-        push_edge(
+        push_edge_with_glob(
             graph,
             edge_cache,
             parent_node_id,
             target_node_id,
             EdgeKind::ReExports,
             Confidence::Static,
+            use_item.is_glob,
         );
     }
 }
@@ -2486,7 +3681,7 @@ fn attribute_to_string(attr: &rdt::Attribute) -> Option<String> {
                 .join(", ");
             Some(format!("#[target_feature({joined})]"))
         }
-        rdt::Attribute::Other(value) => Some(clean_trace_attrs(value)),
+        rdt::Attribute::Other(value) => clean_other_attr(value),
     }
 }
 
@@ -2497,6 +3692,183 @@ fn clean_trace_attrs(value: &str) -> String {
     value
         .replace("<cfg_attr_trace>", "cfg_attr")
         .replace("<cfg_trace>", "cfg")
+}
+
+/// Convert nightly rustdoc's `#[attr = DebugRepr…]` strings back into source-level
+/// attribute syntax. Newer rustdoc JSON emits structured attrs as `Other` strings
+/// containing the compiler-internal `Debug` representation, which is unreadable
+/// in a UI. We pattern-match the common cases (Stability, Inline, Cold, etc.) and
+/// drop internal-only markers (CfgAttrTrace, CfgTrace).
+fn clean_other_attr(value: &str) -> Option<String> {
+    let cleaned = clean_trace_attrs(value);
+    // Normalise multi-line debug output to a single line — the compiler often
+    // wraps long argument lists.
+    let one_line: String = cleaned
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    // Strip the standard `#[attr = X]` wrapper to get the bare Debug payload.
+    let payload = one_line
+        .strip_prefix("#[attr = ")
+        .and_then(|rest| rest.strip_suffix(']'));
+
+    let Some(payload) = payload else {
+        // Not in the Debug-wrapper form — pass through (already source-shaped
+        // like `#[must_use = "..."]`).
+        return Some(one_line);
+    };
+
+    // ── Internal compiler markers we never want to show users ──
+    // Match both bare unit forms (`CfgAttrTrace`) and tuple/struct forms with
+    // args (`CfgTrace([...])`, `AllowInternalUnstable([...])`).
+    const INTERNAL_PREFIXES: &[&str] = &[
+        "CfgAttrTrace",
+        "CfgTrace",
+        "AllowInternalUnsafe",
+        "AllowInternalUnstable",
+        "AllowConstFn",
+        "RustcAllowConstFnUnstable",
+        "Feature",
+        "DocAlias",
+        "ProcMacro",
+        "Used",
+        "Coverage",
+        "PassByValue",
+        "PointeeSized",
+        "ConstParamTy",
+    ];
+    if INTERNAL_PREFIXES
+        .iter()
+        .any(|p| payload == *p || payload.starts_with(&format!("{p}(")))
+    {
+        return None;
+    }
+
+    // ── Lang(VariantName) → #[lang = "snake_name"] ──
+    if let Some(arg) = payload.strip_prefix("Lang(").and_then(|s| s.strip_suffix(')')) {
+        return Some(format!("#[lang = \"{}\"]", camel_to_snake(arg)));
+    }
+
+    // ── RustcDiagnosticItem("Name") → #[rustc_diagnostic_item = "Name"] ──
+    if let Some(arg) = payload
+        .strip_prefix("RustcDiagnosticItem(\"")
+        .and_then(|s| s.strip_suffix("\")"))
+    {
+        return Some(format!("#[rustc_diagnostic_item = \"{arg}\"]"));
+    }
+
+    // ── Stability { stability: Stability { level: ..., feature: "..." } } ──
+    if payload.starts_with("Stability ") {
+        if let Some(rendered) = render_stability(payload) {
+            return Some(rendered);
+        }
+    }
+
+    // ── ConstStability / BodyStability / DefaultBodyStability — same shape ──
+    for prefix in ["ConstStability ", "DefaultBodyStability ", "BodyStability "] {
+        if payload.starts_with(prefix) {
+            if let Some(rendered) = render_stability(payload) {
+                return Some(rendered);
+            }
+        }
+    }
+
+    // ── Inline(Hint | Always | Never | No) ──
+    if let Some(arg) = payload.strip_prefix("Inline(").and_then(|s| s.strip_suffix(')')) {
+        return match arg {
+            "Hint" => Some("#[inline]".to_string()),
+            "Always" => Some("#[inline(always)]".to_string()),
+            "Never" => Some("#[inline(never)]".to_string()),
+            "No" => None, // default — not worth showing
+            _ => Some("#[inline]".to_string()),
+        };
+    }
+
+    // ── Optimize(Speed | Size | None) ──
+    if let Some(arg) = payload
+        .strip_prefix("Optimize(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
+        return match arg {
+            "Speed" => Some("#[optimize(speed)]".to_string()),
+            "Size" => Some("#[optimize(size)]".to_string()),
+            "None" => None,
+            _ => Some(format!("#[optimize({})]", arg.to_lowercase())),
+        };
+    }
+
+    // ── Bare unit variants → lowercase attribute name ──
+    if payload.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && payload.chars().next().is_some_and(char::is_uppercase)
+    {
+        return Some(format!("#[{}]", camel_to_snake(payload)));
+    }
+
+    // ── Final fallback: keep the cleaned form so users see *something*, but
+    //    strip the noisy `#[attr = ]` wrapper and the wrapping `Foo { … }`. ──
+    Some(format!("#[{payload}]"))
+}
+
+/// Parse a `Stability { stability: Stability { level: …, feature: "…" } }` Debug
+/// payload back into `#[stable(feature = "…", since = "X.Y.Z")]` or
+/// `#[unstable(feature = "…", issue = "N")]`.
+fn render_stability(payload: &str) -> Option<String> {
+    let feature = capture_between(payload, "feature: \"", "\"")?;
+
+    if payload.contains("level: Stable ") {
+        let major = capture_between(payload, "major: ", ",")?;
+        let minor = capture_between(payload, "minor: ", ",")?;
+        let patch = capture_between(payload, "patch: ", " ")?
+            .trim_end_matches(['}', ')'])
+            .to_string();
+        return Some(format!(
+            "#[stable(feature = \"{feature}\", since = \"{major}.{minor}.{patch}\")]"
+        ));
+    }
+
+    if payload.contains("level: Unstable ") {
+        let issue = capture_between(payload, "issue: ", "}")
+            .map(|s| s.trim().trim_end_matches([',', ')']).to_string())
+            .unwrap_or_else(|| "None".to_string());
+        let reason = capture_between(payload, "reason: Some(\"", "\")");
+        let mut parts = vec![format!("feature = \"{feature}\"")];
+        if issue != "None" && !issue.is_empty() {
+            parts.push(format!("issue = \"{issue}\""));
+        }
+        if let Some(reason) = reason {
+            parts.push(format!("reason = \"{reason}\""));
+        }
+        return Some(format!("#[unstable({})]", parts.join(", ")));
+    }
+
+    None
+}
+
+/// Find a substring between `start` and `end` markers (first occurrence after start).
+fn capture_between(s: &str, start: &str, end: &str) -> Option<String> {
+    let begin = s.find(start)? + start.len();
+    let rest = &s[begin..];
+    let stop = rest.find(end)?;
+    Some(rest[..stop].to_string())
+}
+
+/// Camel-or-Pascal case to snake_case. `MustUse` → `must_use`, `MacroExport` →
+/// `macro_export`. Conservative — only inserts `_` before uppercase letters that
+/// follow a lowercase letter.
+fn camel_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c.is_uppercase() && prev_lower {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+        prev_lower = c.is_lowercase();
+    }
+    out
 }
 
 fn format_repr(repr: &rdt::AttributeRepr) -> String {
@@ -2607,13 +3979,12 @@ impl MemorySourceProvider {
 impl SourceProvider for MemorySourceProvider {
     fn read_file(&self, path: &Path) -> Result<String, RustdocError> {
         let key = normalize_memory_path(path);
-        self.files
-            .get(&key)
-            .cloned()
-            .ok_or_else(|| RustdocError::Io(std::io::Error::new(
+        self.files.get(&key).cloned().ok_or_else(|| {
+            RustdocError::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("file not in memory source map: {}", path.display()),
-            )))
+            ))
+        })
     }
     fn file_exists(&self, path: &Path) -> bool {
         let key = normalize_memory_path(path);
@@ -2631,11 +4002,16 @@ fn add_call_edges(
     call_mode: CallMode,
     source_provider: &dyn SourceProvider,
 ) -> Result<(), RustdocError> {
-    let mut parser = SourceParser::new(function_index, graph, edge_cache, call_mode, source_provider);
+    let mut parser = SourceParser::new(
+        function_index,
+        graph,
+        edge_cache,
+        call_mode,
+        source_provider,
+    );
     parser.parse_module_file(root_file, Vec::new())?;
     Ok(())
 }
-
 
 pub(crate) struct FunctionIndex {
     callables: Vec<String>,
@@ -3029,7 +4405,11 @@ impl<'a> SourceParser<'a> {
     }
 }
 
-fn resolve_module_file(current_dir: &Path, item_mod: &syn::ItemMod, source_provider: &dyn SourceProvider) -> Option<PathBuf> {
+fn resolve_module_file(
+    current_dir: &Path,
+    item_mod: &syn::ItemMod,
+    source_provider: &dyn SourceProvider,
+) -> Option<PathBuf> {
     if let Some(path_override) = module_path_override(item_mod) {
         let full_path = if path_override.is_absolute() {
             path_override
@@ -3220,13 +4600,388 @@ fn push_edge(
     kind: EdgeKind,
     confidence: Confidence,
 ) {
-    let key = format!("{from}|{to}|{kind:?}");
+    push_edge_with_glob(graph, edge_cache, from, to, kind, confidence, false);
+}
+
+fn push_edge_with_glob(
+    graph: &mut Graph,
+    edge_cache: &mut HashSet<String>,
+    from: String,
+    to: String,
+    kind: EdgeKind,
+    confidence: Confidence,
+    is_glob: bool,
+) {
+    let key = format!(
+        "{from}|{to}|{kind:?}|{}",
+        if is_glob { "glob" } else { "named" }
+    );
     if edge_cache.insert(key) {
         graph.add_edge(Edge {
             from,
             to,
             kind,
             confidence,
+            is_glob,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_other_attr_stability_stable() {
+        let input = "#[attr = Stability {stability: Stability {level: Stable {since: Version(RustcVersion { major: 1, minor: 28, patch: 0 })}, feature: \"global_alloc\"}}]";
+        assert_eq!(
+            clean_other_attr(input),
+            Some("#[stable(feature = \"global_alloc\", since = \"1.28.0\")]".to_string()),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_stability_unstable() {
+        let input = "#[attr = Stability {stability: Stability {level: Unstable {reason: None, issue: 107540}, feature: \"btree_cursors\"}}]";
+        assert_eq!(
+            clean_other_attr(input),
+            Some("#[unstable(feature = \"btree_cursors\", issue = \"107540\")]".to_string()),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_inline_hint() {
+        assert_eq!(
+            clean_other_attr("#[attr = Inline(Hint)]"),
+            Some("#[inline]".to_string()),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_inline_always() {
+        assert_eq!(
+            clean_other_attr("#[attr = Inline(Always)]"),
+            Some("#[inline(always)]".to_string()),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_internal_filtered() {
+        assert_eq!(clean_other_attr("#[attr = CfgAttrTrace]"), None);
+        assert_eq!(
+            clean_other_attr("#[attr = CfgTrace([All([Not(NameValue { name: \"miri\" })])])]"),
+            None,
+        );
+        assert_eq!(
+            clean_other_attr("#[attr = AllowInternalUnstable([\"liballoc_internals\"])]"),
+            None,
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_passthrough_source_form() {
+        // Already in user-source form — should round-trip unchanged.
+        assert_eq!(
+            clean_other_attr("#[allow(deprecated)]"),
+            Some("#[allow(deprecated)]".to_string()),
+        );
+    }
+
+    fn path_index(known: &[&str], modules: &[&str]) -> PathIndex {
+        let module_paths: HashSet<String> = modules.iter().map(|id| (*id).to_string()).collect();
+        PathIndex {
+            known_paths: known.iter().map(|id| (*id).to_string()).collect(),
+            module_paths: module_paths.clone(),
+            node_kinds: known
+                .iter()
+                .map(|id| {
+                    let id = (*id).to_string();
+                    let kind = if module_paths.contains(&id) {
+                        NodeKind::Module
+                    } else {
+                        NodeKind::Trait
+                    };
+                    (id, kind)
+                })
+                .collect(),
+            node_ids_by_rustdoc_id: HashMap::new(),
+        }
+    }
+
+    fn test_node(id: &str, kind: NodeKind) -> Node {
+        Node {
+            id: id.to_string(),
+            name: id.rsplit("::").next().unwrap_or(id).to_string(),
+            kind,
+            visibility: Visibility::Public,
+            line_count: None,
+            span: None,
+            attrs: Vec::new(),
+            is_external: false,
+            is_deprecated: false,
+            is_unsafe: false,
+            is_auto: false,
+            is_mutable: false,
+            is_stripped: false,
+            has_stripped_fields: false,
+            has_stripped_variants: false,
+            is_dyn_compatible: None,
+            deprecation: None,
+            fields: None,
+            variants: None,
+            signature: None,
+            generics: None,
+            where_clause: None,
+            docs: None,
+            doc_links: HashMap::new(),
+            bound_links: HashMap::new(),
+            impl_type: None,
+            parent_impl: None,
+            impl_trait: None,
+            impl_category: None,
+            provided_trait_methods: None,
+            required_trait_methods: None,
+            default_trait_methods: None,
+            type_name: None,
+            variant_kind: None,
+            discriminant: None,
+            const_value: None,
+            bounds: None,
+            import_source: None,
+            import_name: None,
+            is_glob: false,
+            extern_crate_name: None,
+            extern_crate_rename: None,
+            macro_source: None,
+            proc_macro_kind: None,
+            proc_macro_helpers: Vec::new(),
+        }
+    }
+
+    fn minimal_crate(
+        paths: impl IntoIterator<Item = (rdt::Id, Vec<&'static str>, rdt::ItemKind)>,
+    ) -> rdt::Crate {
+        rdt::Crate {
+            root: rdt::Id(0),
+            crate_version: None,
+            includes_private: false,
+            index: HashMap::new(),
+            paths: paths
+                .into_iter()
+                .map(|(id, path, kind)| {
+                    (
+                        id,
+                        rdt::ItemSummary {
+                            crate_id: 0,
+                            path: path.into_iter().map(str::to_string).collect(),
+                            kind,
+                        },
+                    )
+                })
+                .collect(),
+            external_crates: HashMap::new(),
+            target: rdt::Target {
+                triple: String::new(),
+                target_features: Vec::new(),
+            },
+            format_version: rdt::FORMAT_VERSION,
+        }
+    }
+
+    #[test]
+    fn non_module_path_prefix_is_not_created_as_module() {
+        let mut graph = Graph::new();
+        let mut node_cache = HashSet::from(["fixture".to_string()]);
+        let mut edge_cache = HashSet::new();
+        let mut placeholder_modules = HashSet::new();
+        let path_index = path_index(
+            &["fixture", "fixture::Trait", "fixture::Trait::method"],
+            &["fixture"],
+        );
+        let path = ["fixture", "Trait", "method"].map(str::to_string);
+
+        ensure_module_nodes(
+            &mut graph,
+            &mut node_cache,
+            &mut edge_cache,
+            &mut placeholder_modules,
+            "fixture",
+            &path,
+            &path_index,
+            false,
+        );
+
+        assert!(!node_cache.contains("fixture::Trait"));
+        assert!(!placeholder_modules.contains("fixture::Trait"));
+        assert!(graph.nodes.is_empty());
+        assert_eq!(
+            structural_edge_kind("fixture::Trait", "fixture", &path_index),
+            EdgeKind::Defines
+        );
+    }
+
+    #[test]
+    fn placeholder_module_is_replaced_by_real_module_node() {
+        let mut graph = Graph::new();
+        let mut node_cache = HashSet::from(["fixture".to_string()]);
+        let mut edge_cache = HashSet::new();
+        let mut placeholder_modules = HashSet::new();
+        let path_index = path_index(
+            &["fixture", "fixture::module", "fixture::module::Item"],
+            &["fixture", "fixture::module"],
+        );
+        let path = ["fixture", "module", "Item"].map(str::to_string);
+
+        ensure_module_nodes(
+            &mut graph,
+            &mut node_cache,
+            &mut edge_cache,
+            &mut placeholder_modules,
+            "fixture",
+            &path,
+            &path_index,
+            false,
+        );
+        assert!(placeholder_modules.contains("fixture::module"));
+
+        let mut real = test_node("fixture::module", NodeKind::Module);
+        real.docs = Some("real docs".to_string());
+        upsert_node(&mut graph, &mut node_cache, &mut placeholder_modules, real);
+
+        let modules: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|node| node.id == "fixture::module")
+            .collect();
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0].docs.as_deref(), Some("real docs"));
+        assert!(!placeholder_modules.contains("fixture::module"));
+    }
+
+    #[test]
+    fn namespace_collision_keeps_module_branch_and_disambiguates_value_item() {
+        let krate = minimal_crate([
+            (rdt::Id(1), vec!["fixture", "parse"], rdt::ItemKind::Module),
+            (
+                rdt::Id(2),
+                vec!["fixture", "parse"],
+                rdt::ItemKind::Function,
+            ),
+            (
+                rdt::Id(3),
+                vec!["fixture", "parse", "Parser"],
+                rdt::ItemKind::Trait,
+            ),
+        ]);
+
+        let graph = build_graph(
+            &krate,
+            "fixture",
+            BuildGraphOptions {
+                workspace_members: Some(HashSet::from(["fixture".to_string()])),
+                source: None,
+                call_mode: CallMode::Strict,
+                skip_external_nodes: false,
+                rustdoc_name: None,
+            },
+        )
+        .expect("fixture graph builds");
+
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "fixture::parse" && node.kind == NodeKind::Module)
+        );
+        assert!(graph.nodes.iter().any(|node| {
+            node.id.starts_with("fixture::parse~fn-")
+                && node.name == "parse"
+                && node.kind == NodeKind::Function
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "fixture::parse"
+                && edge.to == "fixture::parse::Parser"
+                && edge.kind == EdgeKind::Contains
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "fixture"
+                && edge.to.starts_with("fixture::parse~fn-")
+                && edge.kind == EdgeKind::Contains
+        }));
+    }
+
+    #[test]
+    fn generic_arg_constraints_are_formatted_and_linked() {
+        let output_path = rdt::Path {
+            path: "fixture::Output".to_string(),
+            id: rdt::Id(2),
+            args: None,
+        };
+        let args = rdt::GenericArgs::AngleBracketed {
+            args: Vec::new(),
+            constraints: vec![rdt::AssocItemConstraint {
+                name: "Item".to_string(),
+                args: None,
+                binding: rdt::AssocItemConstraintKind::Equality(rdt::Term::Type(
+                    rdt::Type::ResolvedPath(output_path),
+                )),
+            }],
+        };
+        let krate = minimal_crate([(rdt::Id(2), vec!["fixture", "Output"], rdt::ItemKind::Struct)]);
+        let path_index = build_path_index(&krate, "fixture");
+        let mut links = HashMap::new();
+
+        collect_generic_args_links(&args, &krate, "fixture", &path_index, &mut links);
+
+        assert_eq!(format_generic_args(&args), "<Item = Output>");
+        assert_eq!(
+            links.get("Output").map(String::as_str),
+            Some("fixture::Output")
+        );
+    }
+
+    #[test]
+    fn missing_external_edge_targets_are_materialized_as_stubs() {
+        let mut graph = Graph::new();
+        graph.add_node(test_node("fixture::Type", NodeKind::Struct));
+        graph.add_edge(Edge {
+            from: "fixture::Type".to_string(),
+            to: "core::clone::Clone".to_string(),
+            kind: EdgeKind::Implements,
+            confidence: Confidence::Static,
+            is_glob: false,
+        });
+        graph.add_edge(Edge {
+            from: "fixture::missing_generated".to_string(),
+            to: "fixture::Type".to_string(),
+            kind: EdgeKind::UsesType,
+            confidence: Confidence::Static,
+            is_glob: false,
+        });
+        let mut node_cache = HashSet::from(["fixture::Type".to_string()]);
+        let mut path_index = path_index(&["core::clone::Clone"], &[]);
+        path_index
+            .node_kinds
+            .insert("core::clone::Clone".to_string(), NodeKind::Trait);
+        let workspace_members = HashSet::from(["fixture".to_string()]);
+
+        materialize_missing_external_edge_nodes(
+            &mut graph,
+            &mut node_cache,
+            &workspace_members,
+            &path_index,
+        );
+        prune_dangling_edges(&mut graph, &node_cache);
+
+        let external = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "core::clone::Clone")
+            .expect("external stub should be created");
+        assert_eq!(external.kind, NodeKind::Trait);
+        assert!(external.is_external);
+        assert!(graph.nodes.iter().any(|node| node.id == "core"));
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].to, "core::clone::Clone");
     }
 }

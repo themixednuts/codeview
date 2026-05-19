@@ -9,6 +9,7 @@
 		expandPathCtx,
 		setExpandPathCtx,
 		treeParamsCtx,
+		type CrateStatusValue,
 		type ExpandPath,
 	} from '$lib/context';
 	import { page } from '$app/state';
@@ -17,8 +18,8 @@
 	import { browser } from '$app/environment';
 	import { SvelteURLSearchParams } from 'svelte/reactivity';
 	import { getCrates } from '$lib/rpc/crate.remote';
-	import { getCrateMeta } from '$lib/rpc/meta.remote';
-	import { getTreeRoots } from '$lib/rpc/roots.remote';
+	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
+	import { getStaticTreeRoots, getTreeRoots } from '$lib/rpc/roots.remote';
 	import { searchNodes } from '$lib/rpc/search.remote';
 	import { nodeIdFromPath, nodeUrl } from '$lib/url';
 	import { hyphenateCrateName } from '$lib/crate-names';
@@ -33,11 +34,13 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import type { Snippet } from 'svelte';
 	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
+	import { isHosted } from '$lib/platform';
 
 	const log = getLogger('layout');
 
 	type LayoutData = import('./$types').LayoutData & {
 		rootChildren?: { id: string; children: TreeNodeDTO[] } | null;
+		prefetchedTreeChildren?: Array<{ id: string; children: TreeNodeDTO[] }>;
 	};
 
 	let { children, data } = $props<{ children: Snippet; data: LayoutData }>();
@@ -53,6 +56,15 @@
 	// --- SSE connections for status and parse progress ---
 	const statusConn = new CrateStatusConnection();
 	const progressConn = new ParseProgressConnection();
+	const loadStatus = $derived(data?.status ?? null);
+	const effectiveCrateStatus: CrateStatusValue = $derived(
+		statusConn.status === 'unknown' && loadStatus ? loadStatus.status : statusConn.status,
+	);
+	const effectiveCrateError = $derived(statusConn.error ?? loadStatus?.error ?? null);
+	const effectiveCrateAction = $derived(statusConn.action ?? loadStatus?.action);
+	const effectiveInstalledVersion = $derived(
+		statusConn.installedVersion ?? loadStatus?.installedVersion,
+	);
 	let lastProgressKey = '';
 	let activeRouteKey = '';
 	let rafMonitor: number | null = null;
@@ -60,8 +72,14 @@
 	let metaRefreshInFlight: Promise<void> | null = null;
 	let clientReady = $state(false);
 
+	function refreshRemote(resource: unknown): Promise<unknown> {
+		const refresh = (resource as { refresh?: () => Promise<unknown> } | null | undefined)?.refresh;
+		return refresh ? refresh.call(resource) : Promise.resolve();
+	}
+
 	function startMainThreadMonitor() {
 		if (!browser) return;
+		if (!showPerfDebug) return;
 		if (rafMonitor !== null) return;
 		const onVisibility = () => {
 			wasHidden = document.visibilityState !== 'visible';
@@ -99,7 +117,7 @@
 		const t0 = performance.now();
 		const refreshPath = page.url.pathname + page.url.search;
 		log.debug`meta refresh start ${canonicalCrateName}@${version} reason=${reason}`;
-		metaRefreshInFlight = Promise.all([metaProxy?.refresh(), rootsProxy?.refresh()])
+		metaRefreshInFlight = Promise.all([refreshRemote(metaProxy), refreshRemote(rootsProxy)])
 			.then(() => {
 				const ms = Math.round(performance.now() - t0);
 				const metaCurrent = metaProxy?.current;
@@ -131,12 +149,30 @@
 		progressConn.reset();
 		lastProgressKey = '';
 		activeRouteKey = routeKey;
+
+		// Seed status from SSR data — if server returned a nodeView promise,
+		// it means the server confirmed the crate is ready (not subject to withTimeout).
+		if (data?.status) {
+			statusConn.status = data.status.status;
+			statusConn.error = data.status.error ?? null;
+			statusConn.step = data.status.step ?? null;
+			statusConn.action = data.status.action;
+			statusConn.installedVersion = data.status.installedVersion;
+			wasReady = data.status.status === 'ready';
+		}
+		if (data?.nodeView != null) {
+			statusConn.status = 'ready';
+			wasReady = true;
+		}
+
+		if (isHosted) return;
 		statusConn.connect(canonicalCrateName, version);
 	}
 
 	function connectProgressForCurrentRoute() {
+		if (isHosted) return;
 		if (!browser || !canonicalCrateName || !version || !canQueryCrate) return;
-		if (statusConn.status !== 'processing') return;
+		if (effectiveCrateStatus !== 'processing') return;
 		const nextKey = `${canonicalCrateName}@${version}`;
 		if (nextKey === lastProgressKey) return;
 		lastProgressKey = nextKey;
@@ -181,9 +217,15 @@
 	});
 
 	// ── Expand path context (ancestor IDs from nodeView → GraphTree) ──
-	let currentExpandPath = $state.raw<ExpandPath>(null);
+	const serverExpandPath: ExpandPath = $derived(
+		data?.nodeView?.ancestors?.length ? { ancestors: data.nodeView.ancestors } : null,
+	);
+	let detailExpandPath = $state.raw<ExpandPath>(null);
+	const currentExpandPath: ExpandPath = $derived(detailExpandPath ?? serverExpandPath);
 	expandPathCtx.set(() => currentExpandPath);
-	setExpandPathCtx.set(() => (path: ExpandPath) => { currentExpandPath = path; });
+	setExpandPathCtx.set(() => (path: ExpandPath) => {
+		detailExpandPath = path;
+	});
 
 	// ── Reactive tree params singleton (shared with GraphTree via context) ──
 	const treeParams = new SvelteURLSearchParams(page.url.search);
@@ -207,14 +249,14 @@
 	// Getters are closures — called lazily by child components after init.
 	getNodeUrlCtx.set(() => getNodeUrl);
 	crateVersionsCtx.set(() => crateVersions);
-	crateStatusCtx.set(() => statusConn.status);
+	crateStatusCtx.set(() => effectiveCrateStatus);
 	parseProgressCtx.set(() => progressConn);
 
 	// Refresh roots once when first parse progress arrives (partial data becomes available)
 	let hasRefreshedDuringParse = $state(false);
 	$effect(() => {
 		const nc = progressConn.nodeCount;
-		const status = statusConn.status;
+		const status = effectiveCrateStatus;
 		const hasRoots = (rootsProxy?.current?.length ?? 0) > 0;
 		if (status === 'processing' && nc >= 200 && !hasRefreshedDuringParse && !hasRoots) {
 			hasRefreshedDuringParse = true;
@@ -227,8 +269,9 @@
 
 	// Status transitions
 	let wasReady = $state(false);
+	let hasObservedStatus = false;
 	$effect(() => {
-		const currentStatus = statusConn.status;
+		const currentStatus = effectiveCrateStatus;
 		const currentStep = statusConn.step;
 		const hasRoots = (rootsProxy?.current?.length ?? 0) > 0;
 
@@ -252,6 +295,11 @@
 		}
 
 		const isReady = currentStatus === 'ready';
+		if (!hasObservedStatus) {
+			hasObservedStatus = true;
+			wasReady = isReady;
+			return;
+		}
 		if (isReady && !wasReady) {
 			progressConn.disconnect();
 			// Re-run server load to get fresh data now that the crate is ready.
@@ -273,14 +321,15 @@
 	const workspaceCratesQuery = $derived(clientReady ? getCrates() : null);
 	const workspaceCrates = $derived(workspaceCratesQuery?.current ?? null);
 
-	// Query proxies for client-side reactivity (SWR revalidation, .refresh()).
+	// Client-side remote resources. Hosted/static reads use prerender remotes for
+	// browser cache persistence; local keeps queries so parse-progress refreshes work.
 	// During SSR, data comes from the load function (data prop) — creating
 	// query proxies during SSR makes the component implicitly async, which
 	// causes <svelte:boundary> to render its pending snippet.
 	const canClientQuery = $derived(clientReady && canQueryCrate);
 	const metaProxy = $derived(
 		canClientQuery
-			? getCrateMeta({
+			? (isHosted ? getStaticCrateMeta : getCrateMeta)({
 					name: canonicalCrateName,
 					version,
 					mode: 'structural',
@@ -291,7 +340,7 @@
 
 	const rootsProxy = $derived(
 		canClientQuery
-			? getTreeRoots({
+			? (isHosted ? getStaticTreeRoots : getTreeRoots)({
 					name: canonicalCrateName,
 					version,
 					mode: 'structural',
@@ -299,7 +348,6 @@
 				})
 			: null,
 	);
-
 
 	const indexFromProxy = $derived(metaProxy?.current?.index ?? null);
 
@@ -341,7 +389,7 @@
 		const base = nodeUrl(id, crateVersions);
 		const params = new URLSearchParams();
 		// Preserve params we care about from the current URL
-		for (const key of ['layout', 'structural', 'semantic', 'q', 'raw']) {
+		for (const key of ['layout', 'structural', 'semantic', 'q', 'raw', 'gbi']) {
 			const val = page.url.searchParams.get(key);
 			if (val) params.set(key, val);
 		}
@@ -357,6 +405,7 @@
 
 	// Search / filter state from URL
 	const filter = $derived(page.url.searchParams.get('q') ?? '');
+	const showGraphBlanketImpls = $derived(page.url.searchParams.get('gbi') === '1');
 	// Server-side search when there's a query
 	const searchQuery = $derived(
 		filter ? searchNodes({ crate: crateName, version, q: filter }) : null,
@@ -444,7 +493,9 @@
 
 	function buildWorkspaceCrates(
 		workspace: Array<{ id: string; name?: string; version: string }> | null,
-		index: { crates: Array<{ id: string; name?: string; version: string; is_external?: boolean }> } | null,
+		index: {
+			crates: Array<{ id: string; name?: string; version: string; is_external?: boolean }>;
+		} | null,
 		currentCrate: string | undefined,
 	): Array<{ id: string; name?: string; version: string }> {
 		if (workspace && workspace.length > 0) {
@@ -458,16 +509,6 @@
 		return [];
 	}
 
-	function buildExternalCrates(
-		index: { crates: Array<{ id: string; name?: string; version: string; is_external?: boolean }> } | null,
-		currentCrate: string | undefined,
-	): Array<{ id: string; name?: string; version: string }> {
-		if (!index?.crates) return [];
-		return index.crates.filter(
-			(c) => c.is_external && c.id !== currentCrate && c.name !== currentCrate,
-		);
-	}
-
 	function buildWorkspaceCount(
 		workspace: Array<{ id: string; name?: string }> | null,
 		index: { crates: Array<{ id: string; name?: string; is_external?: boolean }> } | null,
@@ -477,14 +518,10 @@
 		return null;
 	}
 
-	function buildExternalCount(
-		index: { crates: Array<{ id: string; name?: string; is_external?: boolean }> } | null,
-	): number | null {
-		if (!index?.crates) return null;
-		return index.crates.filter((c) => c.is_external).length;
-	}
-
-	function buildCrateVersionOptions(versions: string[], currentVersion: string | undefined): string[] {
+	function buildCrateVersionOptions(
+		versions: string[],
+		currentVersion: string | undefined,
+	): string[] {
 		if (currentVersion && !versions.includes(currentVersion)) {
 			return [currentVersion, ...versions];
 		}
@@ -494,32 +531,33 @@
 	const loadMeta = $derived(data?.meta ?? null);
 	const loadRoots = $derived(data?.roots ?? null);
 	const loadRootChildren = $derived(data?.rootChildren ?? null);
+	const loadPrefetchedTreeChildren = $derived(data?.prefetchedTreeChildren ?? []);
 	const meta = $derived(metaProxy?.current ?? loadMeta ?? null);
 	const treeRoots = $derived(rootsProxy?.current ?? loadRoots ?? null);
 	const rootChildren = $derived(filter || kindParamList.length > 0 ? null : loadRootChildren);
+	const prefetchedTreeChildren = $derived(
+		filter || kindParamList.length > 0 ? [] : loadPrefetchedTreeChildren,
+	);
 	const indexFromQuery = $derived(meta?.index ?? null);
 	const versionsFromQuery = $derived(meta?.versions ?? []);
 	const kindCountsFromMeta = $derived(meta?.kindCounts ?? null);
 	const hasTreeData = $derived(treeRoots != null && treeRoots.length > 0);
 	const kindCountMap = $derived(buildKindCountMap(kindCountsFromMeta));
 	const workspaceCrateCount = $derived(buildWorkspaceCount(workspaceCrates, indexFromQuery));
-	const externalCrateCount = $derived(buildExternalCount(indexFromQuery));
 	const workspaceCratesList = $derived(
 		buildWorkspaceCrates(workspaceCrates, indexFromQuery, crateName),
 	);
-	const externalCratesList = $derived(buildExternalCrates(indexFromQuery, crateName));
 	const crateVersionOptions = $derived(buildCrateVersionOptions(versionsFromQuery, version));
 	const loadingWorkspaceCrates = $derived(!workspaceCrates && !indexFromQuery);
-	const loadingExternalCrates = $derived(!indexFromQuery);
 </script>
 
 <CrateParseState
 	{crateName}
 	{version}
-	status={statusConn.status}
-	action={statusConn.action}
-	error={statusConn.error}
-	installedVersion={statusConn.installedVersion}
+	status={effectiveCrateStatus}
+	action={effectiveCrateAction}
+	error={effectiveCrateError}
+	installedVersion={effectiveInstalledVersion}
 	{crateVersionOptions}
 	{hasTreeData}
 	onInstallStart={() => {
@@ -528,7 +566,7 @@
 		statusConn.step = 'resolving';
 		statusConn.action = undefined;
 		statusConn.error = null;
-		statusConn.connect(crateName, version);
+		if (!isHosted) statusConn.connect(crateName, version);
 	}}
 	onInstallError={(msg) => {
 		log.warn`std install failed ${crateName}@${version}: ${msg}`;
@@ -541,7 +579,7 @@
 		statusConn.step = 'resolving';
 		statusConn.action = undefined;
 		statusConn.error = null;
-		statusConn.connect(crateName, version);
+		if (!isHosted) statusConn.connect(crateName, version);
 		log.info`retry parse ${crateName}@${version}`;
 	}}
 	onRetryError={(msg) => {
@@ -549,25 +587,22 @@
 		statusConn.status = 'failed';
 		statusConn.error = msg;
 	}}
-	showProgress={statusConn.status === 'processing'}
+	showProgress={effectiveCrateStatus === 'processing'}
 	progressStep={statusConn.step}
 	progressNodeCount={progressConn.nodeCount}
 	progressEdgeCount={progressConn.edgeCount}
 	progressTotalItems={progressConn.totalItems}
 >
-	<div class="flex flex-1 overflow-hidden">
+	<div class="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
 		<CrateSidebar
 			{crateName}
 			{version}
 			{workspaceCrateCount}
-			{externalCrateCount}
 			{crateVersionOptions}
 			workspaceCrates={workspaceCratesList}
-			externalCrates={externalCratesList}
 			{loadingWorkspaceCrates}
-			{loadingExternalCrates}
 			{onVersionChange}
-			debugInfo={showPerfDebug && statusConn.status === 'processing'
+			debugInfo={showPerfDebug && effectiveCrateStatus === 'processing'
 				? {
 						statusDebugKey: crateName && version ? `rust:${crateName}:${version}` : '-',
 						progressDebugKey: crateName && version ? `progress:rust:${crateName}:${version}` : '-',
@@ -577,24 +612,26 @@
 			kindParams={kindParamList}
 			{searchQuery}
 			{selectedNodeId}
-			treeRoots={treeRoots}
-			canonicalCrateName={canonicalCrateName}
+			{treeRoots}
+			{canonicalCrateName}
 			{kindCountMap}
 			{activeKinds}
 			{kindFilter}
 			{rootChildren}
-			status={statusConn.status}
+			{prefetchedTreeChildren}
+			status={effectiveCrateStatus}
 			progressNodeCount={progressConn.nodeCount || 0}
+			{showGraphBlanketImpls}
 			{getNodeUrl}
 			onToggleKind={toggleKindFilter}
 			onRetryTree={(reset) => {
-				metaProxy?.refresh();
-				rootsProxy?.refresh();
+				void refreshRemote(metaProxy);
+				void refreshRemote(rootsProxy);
 				reset();
 			}}
 		/>
 
-		<div class="relative flex-1 overflow-auto bg-(--bg) p-6">
+		<div class="relative min-h-0 flex-1 overflow-auto bg-(--bg) p-4 md:p-6">
 			{@render children()}
 		</div>
 	</div>

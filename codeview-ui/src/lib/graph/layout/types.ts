@@ -1,4 +1,4 @@
-import type { Edge, Node } from '$lib/graph';
+import type { Confidence, Edge, Node } from '$lib/graph';
 
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 
@@ -22,6 +22,8 @@ export type VisEdge = {
 	from: VisNode;
 	to: VisNode;
 	kind: string;
+	confidence: Confidence;
+	is_glob?: boolean;
 	direction: 'in' | 'out';
 };
 

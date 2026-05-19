@@ -10,19 +10,29 @@
 	import {
 		themeCtx,
 		resolvedThemeCtx,
+		accentModeCtx,
+		densityModeCtx,
+		voiceModeCtx,
+		codeThemeLightCtx,
+		codeThemeDarkCtx,
 		extLinkModeCtx,
 		sourceProviderModeCtx,
 		vcsModeCtx,
 		editorSchemeCtx,
 		type Theme,
 		type ResolvedTheme,
+		type AccentMode,
+		type DensityMode,
+		type VoiceMode,
+		type CodeTheme,
 		type ExternalLinkMode,
 		type SourceProviderMode,
 		type VcsMode,
 	} from '$lib/context';
-	import { LoaderCircleIcon, SettingsIcon } from '@lucide/svelte';
+	import { LoaderCircleIcon, SettingsIcon, SearchIcon, GithubIcon } from '@lucide/svelte';
 	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
+	import { isHosted } from '$lib/platform';
 
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
@@ -75,9 +85,8 @@
 		if (!current.contains(next)) closeProcessingPopover();
 	}
 
-
 	onMount(() => {
-		if (!browser) return () => processingConn.destroy();
+		if (!browser || isHosted) return () => processingConn.destroy();
 		const syncProcessingStream = () => {
 			if (document.visibilityState === 'visible') {
 				processingConn.connect('rust');
@@ -94,9 +103,34 @@
 	});
 
 	const THEME_KEY = 'codeview-theme';
+	const ACCENT_KEY = 'codeview-accent';
+	const DENSITY_KEY = 'codeview-density';
+	const VOICE_KEY = 'codeview-voice';
+	const CODE_LIGHT_KEY = 'codeview-code-light';
+	const CODE_DARK_KEY = 'codeview-code-dark';
 	const EXT_LINK_KEY = 'codeview-ext-link-mode';
 	const SOURCE_PROVIDER_KEY = 'codeview-source-provider-mode';
 	const VCS_KEY = 'codeview-vcs';
+
+	const ACCENT_VALUES: AccentMode[] = ['orange', 'cobalt', 'forest', 'plum', 'char'];
+	const DENSITY_VALUES: DensityMode[] = ['compact', 'comfortable', 'spacious'];
+	const VOICE_VALUES: VoiceMode[] = ['editorial', 'technical', 'geometric'];
+	const CODE_VALUES: CodeTheme[] = [
+		'solarized-light',
+		'solarized-dark',
+		'catppuccin-latte',
+		'catppuccin-mocha',
+		'one-light',
+		'one-dark',
+		'github-light',
+		'github-dark',
+	];
+
+	function readEnum<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+		if (!browser) return fallback;
+		const stored = localStorage.getItem(key);
+		return stored && (allowed as readonly string[]).includes(stored) ? (stored as T) : fallback;
+	}
 
 	function getInitialExtLinkMode(): ExternalLinkMode {
 		if (!browser) return 'codeview';
@@ -167,8 +201,26 @@
 	let theme = $state<Theme>('light');
 	let resolved = $state<ResolvedTheme>('light');
 
+	// Expressive tweak axes — see app.css for the data-* contracts.
+	let accentMode = $state<AccentMode>('orange');
+	let densityMode = $state<DensityMode>('comfortable');
+	let voiceMode = $state<VoiceMode>('editorial');
+	let codeThemeLight = $state<CodeTheme>('solarized-light');
+	let codeThemeDark = $state<CodeTheme>('solarized-dark');
+
 	themeCtx.set(() => theme);
 	resolvedThemeCtx.set(() => resolved);
+	accentModeCtx.set(() => accentMode);
+	densityModeCtx.set(() => densityMode);
+	voiceModeCtx.set(() => voiceMode);
+	codeThemeLightCtx.set(() => codeThemeLight);
+	codeThemeDarkCtx.set(() => codeThemeDark);
+
+	function applyCodeTheme() {
+		if (!browser) return;
+		document.documentElement.dataset.codeTheme =
+			resolved === 'dark' ? codeThemeDark : codeThemeLight;
+	}
 
 	function applyTheme(next: Theme) {
 		theme = next;
@@ -176,6 +228,42 @@
 		resolved = resolveTheme(next);
 		document.documentElement.dataset.theme = resolved;
 		localStorage.setItem(THEME_KEY, next);
+		applyCodeTheme();
+	}
+
+	function setAccent(next: AccentMode) {
+		accentMode = next;
+		if (!browser) return;
+		document.documentElement.dataset.accent = next;
+		localStorage.setItem(ACCENT_KEY, next);
+	}
+
+	function setDensity(next: DensityMode) {
+		densityMode = next;
+		if (!browser) return;
+		document.documentElement.dataset.density = next;
+		localStorage.setItem(DENSITY_KEY, next);
+	}
+
+	function setVoice(next: VoiceMode) {
+		voiceMode = next;
+		if (!browser) return;
+		document.documentElement.dataset.voice = next;
+		localStorage.setItem(VOICE_KEY, next);
+	}
+
+	function setCodeThemeLight(next: CodeTheme) {
+		codeThemeLight = next;
+		if (!browser) return;
+		localStorage.setItem(CODE_LIGHT_KEY, next);
+		applyCodeTheme();
+	}
+
+	function setCodeThemeDark(next: CodeTheme) {
+		codeThemeDark = next;
+		if (!browser) return;
+		localStorage.setItem(CODE_DARK_KEY, next);
+		applyCodeTheme();
 	}
 
 	onMount(() => {
@@ -184,12 +272,25 @@
 		sourceProviderMode = getInitialSourceProviderMode();
 		vcsMode = getInitialVcsMode();
 
+		// Restore tweak axes from localStorage (app.html's inline script set
+		// the initial dataset values; we sync our reactive state here).
+		accentMode = readEnum(ACCENT_KEY, ACCENT_VALUES, 'orange');
+		densityMode = readEnum(DENSITY_KEY, DENSITY_VALUES, 'comfortable');
+		voiceMode = readEnum(VOICE_KEY, VOICE_VALUES, 'editorial');
+		codeThemeLight = readEnum(CODE_LIGHT_KEY, CODE_VALUES, 'solarized-light');
+		codeThemeDark = readEnum(CODE_DARK_KEY, CODE_VALUES, 'solarized-dark');
+		document.documentElement.dataset.accent = accentMode;
+		document.documentElement.dataset.density = densityMode;
+		document.documentElement.dataset.voice = voiceMode;
+		applyCodeTheme();
+
 		// Listen for OS theme changes when in system mode
 		const mql = window.matchMedia('(prefers-color-scheme: dark)');
 		const onSystemChange = () => {
 			if (theme === 'system') {
 				resolved = resolveTheme('system');
 				document.documentElement.dataset.theme = resolved;
+				applyCodeTheme();
 			}
 		};
 		mql.addEventListener('change', onSystemChange);
@@ -205,18 +306,66 @@
 </svelte:head>
 
 <div class="flex h-screen flex-col bg-(--bg)">
-	<!-- Header -->
+	<!-- ── Global TopBar ─────────────────────────────────────────────
+		 doc-classic design: brand (orange-check logo + wordmark) on
+		 the left, primary nav center, global search + GitHub right. -->
 	<header
-		class="flex items-center justify-between border-b border-(--panel-border) bg-(--panel-solid) px-6 py-3 text-sm text-(--muted)"
+		class="flex h-12 items-center justify-between border-b border-(--panel-border) bg-(--panel-solid) px-6 text-sm text-(--muted)"
 	>
-		<a href={resolve('/')} class="text-base font-semibold tracking-tight text-(--ink)">Codeview</a>
+		<div class="flex items-center gap-3">
+			<a
+				href={resolve('/')}
+				class="flex items-center gap-2 text-(--ink) transition-colors hover:text-(--accent)"
+			>
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+					<rect x="3" y="3" width="18" height="18" rx="4" fill="var(--accent)" />
+					<path
+						d="M8 12l3 3 5-6"
+						stroke="var(--on-accent)"
+						stroke-width="2.4"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						fill="none"
+					/>
+				</svg>
+				<span class="font-display text-[15.5px] font-semibold tracking-tight">codeview</span>
+			</a>
+		</div>
+
+		<!-- Centred search affordance — clicking jumps to the landing page
+			 where the real search input lives. Visually a wide pill so the
+			 top bar reads as a doc-classic search header rather than empty
+			 space. The old std/core/alloc shortcuts that lived here were
+			 noise — ⌘K + the landing page's crate rails cover that work. -->
+		<a
+			href={resolve('/')}
+			class="corner-squircle hidden min-w-[320px] items-center justify-between gap-2 rounded-md border border-(--panel-border) bg-(--panel) px-3 py-1 font-mono text-[11.5px] text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex"
+			aria-label="Search"
+			title="Global search"
+		>
+			<span class="inline-flex items-center gap-2">
+				<SearchIcon size={12} />
+				<span>Search crates, types, functions…</span>
+			</span>
+			<span class="inline-flex items-center gap-1">
+				<span class="kbd">⌘</span>
+				<span class="kbd">K</span>
+			</span>
+		</a>
+
 		<div class="flex items-center gap-2">
+			<a
+				href="https://github.com/jonfontaine/codeview"
+				target="_blank"
+				rel="noopener noreferrer"
+				class="grid size-7 place-items-center rounded-md text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+				aria-label="GitHub"
+				title="View on GitHub"
+			>
+				<GithubIcon size={14} />
+			</a>
 			{#if processingCount > 0}
-				<div
-					class="relative"
-					onfocusin={openProcessingPopover}
-					onfocusout={handleProcessingBlur}
-				>
+				<div class="relative" onfocusin={openProcessingPopover} onfocusout={handleProcessingBlur}>
 					<button
 						type="button"
 						class="badge badge-sm"
@@ -245,8 +394,9 @@
 												<div
 													class="corner-squircle flex items-center justify-between gap-2 rounded-(--radius-chip) bg-(--panel) px-2 py-1"
 												>
-													<span class="truncate text-xs font-medium text-(--ink)">{crate.name}</span
-													>
+													<span class="truncate text-xs font-medium text-(--ink)">
+														{crate.name}
+													</span>
 													<span class="badge badge-sm">{crate.version}</span>
 												</div>
 											{/each}
@@ -285,10 +435,20 @@
 <SettingsDrawer
 	bind:open={settingsOpen}
 	{theme}
+	{accentMode}
+	{densityMode}
+	{voiceMode}
+	{codeThemeLight}
+	{codeThemeDark}
 	{extLinkMode}
 	{sourceProviderMode}
 	{vcsMode}
 	onThemeChange={applyTheme}
+	onAccentChange={setAccent}
+	onDensityChange={setDensity}
+	onVoiceChange={setVoice}
+	onCodeThemeLightChange={setCodeThemeLight}
+	onCodeThemeDarkChange={setCodeThemeDark}
 	onExtLinkModeChange={setExtLinkMode}
 	onSourceProviderModeChange={setSourceProviderMode}
 	onVcsModeChange={setVcsMode}

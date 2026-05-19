@@ -21,7 +21,7 @@ export function summarizeCrossEdgeNode(
 			id,
 			name,
 			kind,
-			visibility: 'Unknown',
+			visibility: { kind: 'Unknown' },
 			...(isExternal ? { is_external: true } : {}),
 		};
 		return summary;

@@ -1,7 +1,7 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "53aa6227-566c-4fef-998d-7475fc9e8db9",
+  "id": "691479b9-5c76-4e7c-8bd7-638ab0888fee",
   "prevIds": [
     "00000000-0000-0000-0000-000000000000"
   ],
@@ -85,6 +85,26 @@
       "default": null,
       "generated": null,
       "name": "tree_json",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "''",
+      "generated": null,
+      "name": "parse_session",
+      "entityType": "columns",
+      "table": "crate_graphs"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "committed",
       "entityType": "columns",
       "table": "crate_graphs"
     },
@@ -259,6 +279,16 @@
       "table": "cross_edges"
     },
     {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "is_glob",
+      "entityType": "columns",
+      "table": "cross_edges"
+    },
+    {
       "type": "text",
       "notNull": true,
       "autoincrement": false,
@@ -325,6 +355,16 @@
       "default": null,
       "generated": null,
       "name": "confidence",
+      "entityType": "columns",
+      "table": "edges"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "is_glob",
       "entityType": "columns",
       "table": "edges"
     },
