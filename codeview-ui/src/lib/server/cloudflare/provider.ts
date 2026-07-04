@@ -93,8 +93,14 @@ function buildGitHubFileUrl(metadata: PackageMetadata, filePath: string): string
 	}
 }
 
-
-const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
+const VERSION_ALIAS_VALUES = ['latest', 'stable', 'beta', 'nightly'] as const;
+type VersionAlias = (typeof VERSION_ALIAS_VALUES)[number];
+const VERSION_ALIASES = new Set<string>(VERSION_ALIAS_VALUES);
+const REF_ALIAS_TTL_MS = 60_000;
+const REF_CACHE_MAX = 512;
+const JSON_CACHE_MAX = 128;
+const ARTIFACT_JSON_CACHE_MAX = 256;
+const IMMUTABLE_ARTIFACT_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 
 function uniqueCrateNameVariants(name: string): string[] {
 	return [...new Set(crateNameVariants(name))];
@@ -103,7 +109,34 @@ function uniqueCrateNameVariants(name: string): string[] {
 type ArtifactRef = {
 	storageName: string;
 	version: string;
+	graphHash?: string;
 };
+
+type CrateRefTarget = {
+	version: string;
+	graphHash: string;
+};
+
+type CrateRefVersion = CrateRefTarget & {
+	parsedAt?: string;
+	nodes?: number;
+	edges?: number;
+};
+
+type CrateRefFile = {
+	schemaVersion?: number;
+	storageName: string;
+	displayName?: string;
+	aliases: Partial<Record<VersionAlias, CrateRefTarget>>;
+	versions: CrateRefVersion[];
+};
+
+type ResolvedRefCacheEntry = {
+	value: Promise<ArtifactRef | null>;
+	expiresAt: number | null;
+};
+
+const resolvedRefCache = new Map<string, ResolvedRefCacheEntry>();
 
 async function artifactManifestExists(
 	r2: R2Bucket,
@@ -118,7 +151,7 @@ async function artifactManifestExists(
 	}
 }
 
-async function resolveArtifactRef(
+async function resolveArtifactRefFallback(
 	r2: R2Bucket,
 	name: string,
 	version: string,
@@ -152,6 +185,102 @@ async function resolveArtifactRef(
 
 function artifactPrefix(name: string, version: string): string {
 	return `rust/${name}/${version}`;
+}
+
+function refsKey(storageName: string): string {
+	return `rust/_refs/${storageName}.json`;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseCrateRefTarget(value: unknown): CrateRefTarget | null {
+	if (!isObject(value)) return null;
+	const { version, graphHash } = value;
+	if (typeof version !== 'string' || version.length === 0) return null;
+	if (typeof graphHash !== 'string' || graphHash.length === 0) return null;
+	return { version, graphHash };
+}
+
+function parseCrateRefs(value: unknown): CrateRefFile | null {
+	if (!isObject(value)) return null;
+	const storageName = value.storageName;
+	const aliases = value.aliases;
+	const versions = value.versions;
+	if (typeof storageName !== 'string' || storageName.length === 0) return null;
+	if (!isObject(aliases) || !Array.isArray(versions)) return null;
+
+	const parsedAliases: CrateRefFile['aliases'] = {};
+	for (const alias of VERSION_ALIAS_VALUES) {
+		const target = parseCrateRefTarget(aliases[alias]);
+		if (target) parsedAliases[alias] = target;
+	}
+
+	const parsedVersions = versions
+		.map((entry): CrateRefVersion | null => {
+			const target = parseCrateRefTarget(entry);
+			if (!target) return null;
+			return isObject(entry)
+				? {
+						...target,
+						parsedAt: typeof entry.parsedAt === 'string' ? entry.parsedAt : undefined,
+						nodes: typeof entry.nodes === 'number' ? entry.nodes : undefined,
+						edges: typeof entry.edges === 'number' ? entry.edges : undefined,
+					}
+				: target;
+		})
+		.filter((entry): entry is CrateRefVersion => entry !== null);
+
+	if (parsedVersions.length === 0) return null;
+	return {
+		schemaVersion: typeof value.schemaVersion === 'number' ? value.schemaVersion : undefined,
+		storageName,
+		displayName: typeof value.displayName === 'string' ? value.displayName : undefined,
+		aliases: parsedAliases,
+		versions: parsedVersions,
+	};
+}
+
+function resolveRefFromRefs(refs: CrateRefFile, versionOrAlias: string): ArtifactRef | null {
+	const target = VERSION_ALIASES.has(versionOrAlias)
+		? refs.aliases[versionOrAlias as VersionAlias]
+		: refs.versions.find((entry) => entry.version === versionOrAlias);
+	if (!target) return null;
+	return {
+		storageName: refs.storageName,
+		version: target.version,
+		graphHash: target.graphHash,
+	};
+}
+
+function resolvedRefCacheKey(name: string, version: string): string {
+	return `${normalizeCrateName(name)}@${version}`;
+}
+
+function getCachedResolvedRef(key: string): Promise<ArtifactRef | null> | null {
+	const cached = resolvedRefCache.get(key);
+	if (!cached) return null;
+	if (cached.expiresAt !== null && cached.expiresAt <= Date.now()) {
+		resolvedRefCache.delete(key);
+		return null;
+	}
+	resolvedRefCache.delete(key);
+	resolvedRefCache.set(key, cached);
+	return cached.value;
+}
+
+function setCachedResolvedRef(
+	key: string,
+	value: Promise<ArtifactRef | null>,
+	expiresAt: number | null,
+): void {
+	resolvedRefCache.set(key, { value, expiresAt });
+	while (resolvedRefCache.size > REF_CACHE_MAX) {
+		const oldestKey = resolvedRefCache.keys().next().value;
+		if (oldestKey === undefined) break;
+		resolvedRefCache.delete(oldestKey);
+	}
 }
 
 function fnv1a32(value: string): number {
@@ -272,10 +401,93 @@ async function readR2Json<T>(r2: R2Bucket, key: string): Promise<T | null> {
 	return Effect.runPromise(readR2JsonEffect<T>(r2, key));
 }
 
+const artifactJsonCache = new Map<string, Promise<unknown | null>>();
+const artifactJsonInflight = new Map<string, Promise<unknown | null>>();
 const sourceFileCache = new Map<string, string>();
 const jsonCache = new Map<string, Promise<unknown | null>>();
 const SOURCE_FILE_CACHE_MAX = 512;
-const JSON_CACHE_MAX = 128;
+
+function artifactR2Key(ref: ArtifactRef, path: string): string {
+	return `${artifactPrefix(ref.storageName, ref.version)}/${path}`;
+}
+
+function encodePath(path: string): string {
+	return path.split('/').map(encodeURIComponent).join('/');
+}
+
+function artifactCacheUrl(ref: ArtifactRef, path: string): string | null {
+	if (!ref.graphHash) return null;
+	return `https://codeview.internal/artifacts/${encodeURIComponent(ref.storageName)}/${encodeURIComponent(
+		ref.version,
+	)}/${encodeURIComponent(ref.graphHash)}/${encodePath(path)}`;
+}
+
+function getDefaultWorkerCache(): Cache | null {
+	if (typeof caches === 'undefined') return null;
+	return (caches as CacheStorage & { default?: Cache }).default ?? null;
+}
+
+async function decodeR2ObjectText(_key: string, obj: R2ObjectBody): Promise<string> {
+	const bytes = new Uint8Array(await obj.arrayBuffer());
+	if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+		const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+		return new Response(stream).text();
+	}
+	return new TextDecoder().decode(bytes);
+}
+
+function setArtifactJsonCache(key: string, value: Promise<unknown | null>): void {
+	artifactJsonCache.set(key, value);
+	while (artifactJsonCache.size > ARTIFACT_JSON_CACHE_MAX) {
+		const oldestKey = artifactJsonCache.keys().next().value;
+		if (oldestKey === undefined) break;
+		artifactJsonCache.delete(oldestKey);
+	}
+}
+
+async function readArtifactJsonWithCache<T>(
+	r2: R2Bucket,
+	r2Key: string,
+	cacheUrl: string,
+): Promise<T | null> {
+	const request = new Request(cacheUrl, { method: 'GET' });
+	const cache = getDefaultWorkerCache();
+	if (cache) {
+		try {
+			const cached = await cache.match(request);
+			if (cached) return (await cached.json()) as T;
+		} catch (err) {
+			log.warn`Cache API match failed for ${cacheUrl}: ${String(err)}`;
+		}
+	}
+
+	let inflight = artifactJsonInflight.get(cacheUrl);
+	if (!inflight) {
+		inflight = (async (): Promise<T | null> => {
+			const obj = await r2.get(r2Key);
+			if (!obj) return null;
+			const text = await decodeR2ObjectText(r2Key, obj);
+			if (cache) {
+				const response = new Response(text, {
+					headers: {
+						'Content-Type': 'application/json; charset=utf-8',
+						'Cache-Control': IMMUTABLE_ARTIFACT_CACHE_CONTROL,
+					},
+				});
+				try {
+					await cache.put(request, response.clone());
+				} catch (err) {
+					log.warn`Cache API put failed for ${cacheUrl}: ${String(err)}`;
+				}
+			}
+			return JSON.parse(text) as T;
+		})().finally(() => {
+			artifactJsonInflight.delete(cacheUrl);
+		});
+		artifactJsonInflight.set(cacheUrl, inflight);
+	}
+	return (await inflight) as T | null;
+}
 
 export function createCloudflareProvider(env: AppEnv): DataProvider {
 	function sourceCacheKey(
@@ -329,8 +541,97 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		return cached as Promise<T | null>;
 	}
 
+	async function readArtifactJson<T>(ref: ArtifactRef, path: string): Promise<T | null> {
+		const r2Key = artifactR2Key(ref, path);
+		const cacheUrl = artifactCacheUrl(ref, path);
+		if (!cacheUrl) return readJson<T>(r2Key);
+
+		let cached = artifactJsonCache.get(cacheUrl);
+		if (!cached) {
+			cached = readArtifactJsonWithCache<T>(env.CRATE_GRAPHS, r2Key, cacheUrl).catch((err) => {
+				artifactJsonCache.delete(cacheUrl);
+				log.warn`R2 artifact read failed for ${r2Key}: ${String(err)}`;
+				return null;
+			});
+			setArtifactJsonCache(cacheUrl, cached);
+		}
+		return cached as Promise<T | null>;
+	}
+
+	async function readCrateRefs(storageName: string): Promise<CrateRefFile | null> {
+		const raw = await readJson<unknown>(refsKey(storageName));
+		if (!raw) return null;
+		const refs = parseCrateRefs(raw);
+		if (!refs) {
+			log.warn`Invalid crate refs at ${refsKey(storageName)}`;
+			return null;
+		}
+		return refs;
+	}
+
+	async function resolveRefForArtifactUncached(
+		name: string,
+		version: string,
+	): Promise<{ ref: ArtifactRef | null; cacheMode: 'none' | 'short' | 'forever' }> {
+		let foundRefs = false;
+		for (const variant of uniqueCrateNameVariants(name)) {
+			const refs = await readCrateRefs(variant);
+			if (!refs) continue;
+			foundRefs = true;
+			const ref = resolveRefFromRefs(refs, version);
+			if (!ref) continue;
+			return {
+				ref,
+				cacheMode: VERSION_ALIASES.has(version) ? 'short' : 'forever',
+			};
+		}
+
+		if (foundRefs) {
+			return { ref: null, cacheMode: 'short' };
+		}
+
+		return {
+			ref: await resolveArtifactRefFallback(env.CRATE_GRAPHS, name, version),
+			cacheMode: 'none',
+		};
+	}
+
 	async function resolveRefForArtifact(name: string, version: string): Promise<ArtifactRef | null> {
-		return resolveArtifactRef(env.CRATE_GRAPHS, name, version);
+		const key = resolvedRefCacheKey(name, version);
+		const cached = getCachedResolvedRef(key);
+		if (cached) return cached;
+
+		const pending = resolveRefForArtifactUncached(name, version)
+			.then(({ ref, cacheMode }) => {
+				if (cacheMode === 'none') {
+					resolvedRefCache.delete(key);
+					return ref;
+				}
+				const expiresAt =
+					cacheMode === 'forever' && ref?.graphHash ? null : Date.now() + REF_ALIAS_TTL_MS;
+				setCachedResolvedRef(key, Promise.resolve(ref), expiresAt);
+				return ref;
+			})
+			.catch((err) => {
+				resolvedRefCache.delete(key);
+				throw err;
+			});
+		setCachedResolvedRef(key, pending, Date.now() + REF_ALIAS_TTL_MS);
+		return pending;
+	}
+
+	async function listPublishedVersionsFromRefs(
+		name: string,
+		limit: number,
+	): Promise<string[] | null> {
+		let foundRefs = false;
+		for (const variant of uniqueCrateNameVariants(name)) {
+			const refs = await readCrateRefs(variant);
+			if (!refs) continue;
+			foundRefs = true;
+			return refs.versions.map((entry) => entry.version).slice(0, limit);
+		}
+		return foundRefs ? [] : null;
 	}
 
 	async function loadManifestArtifact(
@@ -339,9 +640,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	): Promise<StaticCrateManifest | null> {
 		const ref = await resolveRefForArtifact(name, version);
 		if (!ref) return null;
-		return readJson<StaticCrateManifest>(
-			`${artifactPrefix(ref.storageName, ref.version)}/manifest.json`,
-		);
+		return readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
 	}
 
 	/**
@@ -352,15 +651,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	 *               back-compat with the pre-shard-manifest layout.
 	 *   - `Map<kind, Set<bucket>>` : the typed lookup tables.
 	 *
-	 * The manifest itself is also cached by `readJson`'s in-process LRU; this
-	 * extra layer avoids the JSON.parse + Set construction on every shard
-	 * lookup (which happens dozens of times per page render for large crates).
+	 * The manifest body is cached by the artifact JSON reader; this extra layer
+	 * avoids the JSON.parse + Set construction on every shard lookup (which
+	 * happens dozens of times per page render for large crates).
 	 */
 	type PopulatedKind = 'nodes' | 'nodeDetails' | 'treeChildren';
-	const populatedShardsCache = new Map<
-		string,
-		Map<PopulatedKind, Set<string>> | null
-	>();
+	const populatedShardsCache = new Map<string, Map<PopulatedKind, Set<string>> | null>();
 
 	async function isShardPopulated(
 		ref: ArtifactRef,
@@ -370,9 +666,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		const cacheKey = `${ref.storageName}@${ref.version}`;
 		let entry = populatedShardsCache.get(cacheKey);
 		if (entry === undefined) {
-			const manifest = await readJson<StaticCrateManifest>(
-				`${artifactPrefix(ref.storageName, ref.version)}/manifest.json`,
-			);
+			const manifest = await readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
 			if (!manifest?.populatedShards) {
 				populatedShardsCache.set(cacheKey, null);
 				return true;
@@ -397,9 +691,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		if (!ref) return null;
 		const bucket = nodeViewBucket(nodeId);
 		if (!(await isShardPopulated(ref, 'nodes', bucket))) return null;
-		const shard = await readJson<StaticNodeShard>(
-			`${artifactPrefix(ref.storageName, ref.version)}/nodes/${bucket}.json`,
-		);
+		const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
 		return shard?.nodes[nodeId] ?? null;
 	}
 
@@ -422,9 +714,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		if (!ref) return null;
 		const key = `${ref.storageName}@${ref.version}`;
 		if (aliasCache.has(key)) return aliasCache.get(key) ?? null;
-		const map = await readJson<Record<string, string>>(
-			`${artifactPrefix(ref.storageName, ref.version)}/aliases.json`,
-		);
+		const map = await readArtifactJson<Record<string, string>>(ref, 'aliases.json');
 		const result = map ? new Map(Object.entries(map)) : null;
 		aliasCache.set(key, result);
 		return result;
@@ -439,9 +729,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		if (!ref) return null;
 		const bucket = nodeViewBucket(nodeId);
 		if (!(await isShardPopulated(ref, 'nodeDetails', bucket))) return null;
-		const shard = await readJson<StaticNodeDetailShard>(
-			`${artifactPrefix(ref.storageName, ref.version)}/node-details/${bucket}.json`,
-		);
+		const shard = await readArtifactJson<StaticNodeDetailShard>(ref, `node-details/${bucket}.json`);
 		return shard?.details[nodeId] ?? null;
 	}
 
@@ -502,9 +790,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 						// items). The populated-shards manifest tells us before we
 						// pay the R2 round-trip.
 						if (!(await isShardPopulated(ref, 'nodes', bucket))) return;
-						const shard = await readJson<StaticNodeShard>(
-							`${artifactPrefix(ref.storageName, ref.version)}/nodes/${bucket}.json`,
-						);
+						const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
 						if (!shard) return;
 						for (const id of ids) {
 							const related = shard.nodes[id];
@@ -533,9 +819,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	): Promise<StaticSearchManifest | null> {
 		const ref = await resolveRefForArtifact(name, version);
 		if (!ref) return null;
-		return readJson<StaticSearchManifest>(
-			`${artifactPrefix(ref.storageName, ref.version)}/search-manifest.json`,
-		);
+		return readArtifactJson<StaticSearchManifest>(ref, 'search-manifest.json');
 	}
 
 	async function loadSearchShardArtifact(
@@ -545,9 +829,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	): Promise<StaticSearchShard | null> {
 		const ref = await resolveRefForArtifact(name, version);
 		if (!ref) return null;
-		return readJson<StaticSearchShard>(
-			`${artifactPrefix(ref.storageName, ref.version)}/search/${prefix}.json`,
-		);
+		return readArtifactJson<StaticSearchShard>(ref, `search/${prefix}.json`);
 	}
 
 	async function loadTreeChildrenArtifact(
@@ -559,8 +841,9 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		if (!ref) return null;
 		const bucket = treeChildrenBucket(parentId);
 		if (!(await isShardPopulated(ref, 'treeChildren', bucket))) return null;
-		const shard = await readJson<StaticTreeChildrenShard>(
-			`${artifactPrefix(ref.storageName, ref.version)}/tree-children/${bucket}.json`,
+		const shard = await readArtifactJson<StaticTreeChildrenShard>(
+			ref,
+			`tree-children/${bucket}.json`,
 		);
 		return shard?.parents[parentId]?.children ?? null;
 	}
@@ -572,6 +855,9 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	}
 
 	async function listPublishedVersions(name: string, limit = 20): Promise<string[]> {
+		const refsVersions = await listPublishedVersionsFromRefs(name, limit);
+		if (refsVersions !== null) return refsVersions;
+
 		const versions = new Set<string>();
 		const aliases = isStdCrate(normalizeCrateName(name))
 			? (['stable', 'nightly', 'beta', 'latest'] as const)
@@ -886,9 +1172,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		): Promise<CrateMapData | null> {
 			const ref = await resolveRefForArtifact(name, version);
 			if (!ref) return null;
-			const artifact = await readJson<CrateMapData>(
-				`${artifactPrefix(ref.storageName, ref.version)}/crate-map.json`,
-			);
+			const artifact = await readArtifactJson<CrateMapData>(ref, 'crate-map.json');
 			return artifact ?? null;
 		},
 
@@ -933,9 +1217,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 					action: 'docs_unavailable' as const,
 				};
 			}
-			const manifest = await readJson<StaticCrateManifest>(
-				`${artifactPrefix(ref.storageName, ref.version)}/manifest.json`,
-			);
+			const manifest = await readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
 			if (manifest?.index) return { status: 'ready' as const };
 			return {
 				status: 'failed' as const,
