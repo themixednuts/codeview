@@ -46,6 +46,28 @@ pub enum RustdocError {
     Io(#[from] std::io::Error),
     #[error("failed to parse rustdoc json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid rustdoc json syntax: {0}")]
+    JsonSyntax(#[source] serde_json::Error),
+    #[error(
+        "unsupported rustdoc format_version {found}; supported range is {min_supported}..={max_supported}"
+    )]
+    UnsupportedFormatVersion {
+        found: u32,
+        min_supported: u32,
+        max_supported: u32,
+    },
+    #[error("invalid rustdoc json shape: {0}")]
+    ShallowShape(#[from] RustdocShapeError),
+    #[error("failed to deserialize rustdoc json at {path}: {source}")]
+    Deserialize {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("invalid rustdoc structure: {0}")]
+    Structural(#[from] RustdocStructuralError),
+    #[error("invalid rustdoc graph: {0}")]
+    Graph(#[from] RustdocGraphError),
     #[cfg(feature = "native")]
     #[error("failed to read cargo metadata: {0}")]
     Metadata(#[from] cargo_metadata::Error),
@@ -55,6 +77,144 @@ pub enum RustdocError {
     RustdocFailed(std::process::ExitStatus),
     #[error("missing root package in workspace metadata")]
     MissingRootPackage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RustdocShapeError {
+    #[error("document root must be a JSON object")]
+    RootNotObject,
+    #[error("missing required field `{field}`")]
+    MissingField { field: &'static str },
+    #[error("field `{field}` must be {expected}")]
+    WrongType {
+        field: &'static str,
+        expected: &'static str,
+    },
+    #[error("field `{field}` value {value} does not fit in u32")]
+    UnsignedIntegerOutOfRange { field: &'static str, value: String },
+    #[error("field `index` must contain at least one item")]
+    EmptyIndex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RustdocStructuralError {
+    #[error("index does not contain root item id {root}")]
+    MissingRootItem { root: u32 },
+    #[error("root item {root} is not a crate module")]
+    RootNotCrateModule { root: u32 },
+    #[error("local path id {id} is missing from index")]
+    LocalPathMissingIndex { id: u32 },
+    #[error("local module item {module} references missing child id {child}")]
+    MissingModuleChild { module: u32, child: u32 },
+    #[error("path id {path_id} references unnamed external crate id {crate_id}")]
+    MissingExternalCrateName { path_id: u32, crate_id: u32 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RustdocGraphError {
+    #[error("graph has no nodes")]
+    EmptyGraph,
+    #[error("edge endpoint was pruned or never created: {from} -> {to}")]
+    DanglingEdge { from: String, to: String },
+    #[error("graph is missing crate root node `{crate_name}`")]
+    MissingCrateRoot { crate_name: String },
+    #[error("graph has no local nodes")]
+    NoLocalNodes,
+    #[error("rustdoc contains no local path items")]
+    NoLocalRustdocItems,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RustdocFormatPolicy {
+    pub min_supported: u32,
+    pub max_supported: u32,
+    pub allow_newer_best_effort: bool,
+    pub allow_older_compat: bool,
+}
+
+impl RustdocFormatPolicy {
+    pub const fn strict() -> Self {
+        Self {
+            min_supported: 35,
+            max_supported: rdt::FORMAT_VERSION,
+            allow_newer_best_effort: false,
+            allow_older_compat: true,
+        }
+    }
+
+    pub const fn lenient() -> Self {
+        Self {
+            allow_newer_best_effort: true,
+            ..Self::strict()
+        }
+    }
+
+    fn validate(self, found: u32) -> Result<(), RustdocError> {
+        let unsupported = found < self.min_supported
+            || (found > self.max_supported && !self.allow_newer_best_effort)
+            || (found < self.max_supported && !self.allow_older_compat);
+        if unsupported {
+            return Err(RustdocError::UnsupportedFormatVersion {
+                found,
+                min_supported: self.min_supported,
+                max_supported: self.max_supported,
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for RustdocFormatPolicy {
+    fn default() -> Self {
+        Self::strict()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustdocValidationReport {
+    pub requested_crate_name: String,
+    pub parser_crate_version: String,
+    pub parser_format_version: u32,
+    pub source_format_version: u32,
+    pub raw_items: usize,
+    pub local_path_items: usize,
+    pub external_path_items: usize,
+    pub graph_nodes: usize,
+    pub graph_edges: usize,
+    pub external_graph_nodes: usize,
+    pub pruned_edges: usize,
+    pub warnings: Vec<String>,
+    pub quarantine_reason: Option<String>,
+}
+
+impl RustdocValidationReport {
+    fn new(requested_crate_name: &str, source_format_version: u32) -> Self {
+        Self {
+            requested_crate_name: requested_crate_name.to_string(),
+            parser_crate_version: env!("CARGO_PKG_VERSION").to_string(),
+            parser_format_version: rdt::FORMAT_VERSION,
+            source_format_version,
+            raw_items: 0,
+            local_path_items: 0,
+            external_path_items: 0,
+            graph_nodes: 0,
+            graph_edges: 0,
+            external_graph_nodes: 0,
+            pruned_edges: 0,
+            warnings: Vec::new(),
+            quarantine_reason: None,
+        }
+    }
+
+    pub fn is_quarantined(&self) -> bool {
+        self.quarantine_reason.is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ValidatedRustdoc {
+    pub krate: rdt::Crate,
+    pub report: RustdocValidationReport,
 }
 
 #[cfg(feature = "native")]
@@ -715,6 +875,264 @@ mod compat {
     }
 }
 
+pub fn validate_rustdoc_json(
+    json: &str,
+    crate_name: &str,
+    policy: &RustdocFormatPolicy,
+) -> Result<ValidatedRustdoc, RustdocError> {
+    let mut doc: serde_json::Value =
+        serde_json::from_str(json).map_err(RustdocError::JsonSyntax)?;
+    let source_format_version = preflight_rustdoc_json(&doc, policy)?;
+
+    if (source_format_version < rdt::FORMAT_VERSION && policy.allow_older_compat)
+        || (source_format_version > rdt::FORMAT_VERSION && policy.allow_newer_best_effort)
+    {
+        compat::upgrade(&mut doc, source_format_version);
+    }
+
+    let krate = deserialize_rustdoc_value(doc)?;
+    let mut report = RustdocValidationReport::new(crate_name, source_format_version);
+    validate_rustdoc_structure(&krate, crate_name, &mut report)?;
+
+    Ok(ValidatedRustdoc { krate, report })
+}
+
+pub fn extract_graph_validated(
+    json: &str,
+    crate_name: &str,
+    policy: &RustdocFormatPolicy,
+) -> Result<(Graph, RustdocValidationReport), RustdocError> {
+    let validated = validate_rustdoc_json(json, crate_name, policy)?;
+    let (graph, stats) = build_graph_with_stats(
+        &validated.krate,
+        crate_name,
+        BuildGraphOptions {
+            workspace_members: None,
+            source: None,
+            call_mode: CallMode::Strict,
+            skip_external_nodes: true,
+            rustdoc_name: None,
+        },
+    )?;
+    let mut report = validated.report;
+    report.pruned_edges = stats.pruned_edges;
+    validate_graph_quality(&graph, crate_name, &mut report)?;
+    Ok((graph, report))
+}
+
+fn preflight_rustdoc_json(
+    doc: &serde_json::Value,
+    policy: &RustdocFormatPolicy,
+) -> Result<u32, RustdocError> {
+    let obj = doc.as_object().ok_or(RustdocShapeError::RootNotObject)?;
+
+    let format_version = require_u32_field(obj, "format_version")?;
+    policy.validate(format_version)?;
+
+    require_u32_field(obj, "root")?;
+    let index = require_object_field(obj, "index")?;
+    require_object_field(obj, "paths")?;
+    require_object_field(obj, "external_crates")?;
+    if index.is_empty() {
+        return Err(RustdocShapeError::EmptyIndex.into());
+    }
+
+    Ok(format_version)
+}
+
+fn require_object_field<'a>(
+    obj: &'a serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+) -> Result<&'a serde_json::Map<String, serde_json::Value>, RustdocShapeError> {
+    obj.get(field)
+        .ok_or(RustdocShapeError::MissingField { field })?
+        .as_object()
+        .ok_or(RustdocShapeError::WrongType {
+            field,
+            expected: "a JSON object",
+        })
+}
+
+fn require_u32_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    field: &'static str,
+) -> Result<u32, RustdocShapeError> {
+    let value = obj
+        .get(field)
+        .ok_or(RustdocShapeError::MissingField { field })?;
+    let Some(number) = value.as_u64() else {
+        return Err(RustdocShapeError::WrongType {
+            field,
+            expected: "an unsigned integer",
+        });
+    };
+    u32::try_from(number).map_err(|_| RustdocShapeError::UnsignedIntegerOutOfRange {
+        field,
+        value: number.to_string(),
+    })
+}
+
+fn deserialize_rustdoc_value(doc: serde_json::Value) -> Result<rdt::Crate, RustdocError> {
+    serde_path_to_error::deserialize(doc).map_err(|err| {
+        let path = err.path().to_string();
+        let source = err.into_inner();
+        RustdocError::Deserialize { path, source }
+    })
+}
+
+fn validate_rustdoc_structure(
+    krate: &rdt::Crate,
+    crate_name: &str,
+    report: &mut RustdocValidationReport,
+) -> Result<(), RustdocError> {
+    report.raw_items = krate.index.len();
+    report.local_path_items = krate
+        .paths
+        .values()
+        .filter(|summary| summary.crate_id == 0)
+        .count();
+    report.external_path_items = krate.paths.len() - report.local_path_items;
+
+    let root_item = krate
+        .index
+        .get(&krate.root)
+        .ok_or(RustdocStructuralError::MissingRootItem { root: krate.root.0 })?;
+    match &root_item.inner {
+        rdt::ItemEnum::Module(module) if module.is_crate => {}
+        _ => {
+            return Err(RustdocStructuralError::RootNotCrateModule { root: krate.root.0 }.into());
+        }
+    }
+
+    for (id, summary) in &krate.paths {
+        if summary.crate_id == 0 {
+            if !krate.index.contains_key(id) {
+                return Err(RustdocStructuralError::LocalPathMissingIndex { id: id.0 }.into());
+            }
+            continue;
+        }
+
+        let Some(external_crate) = krate.external_crates.get(&summary.crate_id) else {
+            return Err(RustdocStructuralError::MissingExternalCrateName {
+                path_id: id.0,
+                crate_id: summary.crate_id,
+            }
+            .into());
+        };
+        if external_crate.name.trim().is_empty() {
+            return Err(RustdocStructuralError::MissingExternalCrateName {
+                path_id: id.0,
+                crate_id: summary.crate_id,
+            }
+            .into());
+        }
+    }
+
+    for item in krate.index.values() {
+        let rdt::ItemEnum::Module(module) = &item.inner else {
+            continue;
+        };
+        if item.crate_id != 0 {
+            continue;
+        }
+        for child in &module.items {
+            if !krate.index.contains_key(child) {
+                return Err(RustdocStructuralError::MissingModuleChild {
+                    module: item.id.0,
+                    child: child.0,
+                }
+                .into());
+            }
+        }
+    }
+
+    if let Some(actual) = local_crate_name_from_paths(krate)
+        && normalise_crate_name_for_validation(&actual)
+            != normalise_crate_name_for_validation(crate_name)
+    {
+        report.warnings.push(format!(
+            "local crate name `{actual}` does not match requested crate `{crate_name}`"
+        ));
+    }
+
+    Ok(())
+}
+
+fn local_crate_name_from_paths(krate: &rdt::Crate) -> Option<String> {
+    krate
+        .paths
+        .get(&krate.root)
+        .filter(|summary| summary.crate_id == 0)
+        .and_then(|summary| summary.path.first())
+        .cloned()
+        .or_else(|| {
+            krate
+                .paths
+                .values()
+                .filter(|summary| summary.crate_id == 0)
+                .find_map(|summary| summary.path.first().cloned())
+        })
+}
+
+fn normalise_crate_name_for_validation(name: &str) -> String {
+    name.replace('-', "_").to_lowercase()
+}
+
+fn validate_graph_quality(
+    graph: &Graph,
+    crate_name: &str,
+    report: &mut RustdocValidationReport,
+) -> Result<(), RustdocError> {
+    report.graph_nodes = graph.nodes.len();
+    report.graph_edges = graph.edges.len();
+    report.external_graph_nodes = graph.nodes.iter().filter(|node| node.is_external).count();
+
+    if graph.nodes.is_empty() {
+        return Err(RustdocGraphError::EmptyGraph.into());
+    }
+
+    let node_ids: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
+    for edge in &graph.edges {
+        if !node_ids.contains(edge.from.as_str()) || !node_ids.contains(edge.to.as_str()) {
+            return Err(RustdocGraphError::DanglingEdge {
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+            }
+            .into());
+        }
+    }
+
+    let has_crate_root = graph.nodes.iter().any(|node| {
+        node.kind == NodeKind::Crate
+            && !node.is_external
+            && normalise_crate_name_for_validation(&node.id)
+                == normalise_crate_name_for_validation(crate_name)
+    });
+    if !has_crate_root {
+        return Err(RustdocGraphError::MissingCrateRoot {
+            crate_name: crate_name.to_string(),
+        }
+        .into());
+    }
+
+    let local_nodes = graph.nodes.iter().filter(|node| !node.is_external).count();
+    if local_nodes == 0 {
+        return Err(RustdocGraphError::NoLocalNodes.into());
+    }
+    if report.local_path_items == 0 {
+        return Err(RustdocGraphError::NoLocalRustdocItems.into());
+    }
+
+    if report.local_path_items > 1 && local_nodes == 1 {
+        report.quarantine_reason = Some(
+            "local rustdoc items existed, but graph extraction produced only the crate node"
+                .to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
     build_graph(
@@ -798,11 +1216,25 @@ struct BuildGraphOptions<'a> {
     rustdoc_name: Option<String>,
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct BuildGraphStats {
+    pruned_edges: usize,
+}
+
 fn build_graph(
     krate: &rdt::Crate,
     crate_name: &str,
     opts: BuildGraphOptions<'_>,
 ) -> Result<Graph, RustdocError> {
+    let (graph, _) = build_graph_with_stats(krate, crate_name, opts)?;
+    Ok(graph)
+}
+
+fn build_graph_with_stats(
+    krate: &rdt::Crate,
+    crate_name: &str,
+    opts: BuildGraphOptions<'_>,
+) -> Result<(Graph, BuildGraphStats), RustdocError> {
     #[cfg(feature = "wasm")]
     wasm_log!(
         "[wasm] build_graph: starting with {} items in index, {} paths",
@@ -1385,13 +1817,13 @@ fn build_graph(
         &workspace_members,
         &path_index,
     );
-    prune_dangling_edges(&mut graph, &node_cache);
+    let pruned_edges = prune_dangling_edges(&mut graph, &node_cache);
 
     // Persist the alias map so server URL routing can resolve user-friendly
     // paths back to their canonical node IDs.
     graph.aliases = aliases;
 
-    Ok(graph)
+    Ok((graph, BuildGraphStats { pruned_edges }))
 }
 
 fn collect_method_ids(krate: &rdt::Crate) -> HashSet<rdt::Id> {
@@ -1620,7 +2052,8 @@ use codeview_core::{
     GenericArg as CvGenericArg, GenericArgs as CvGenericArgs, GenericBound as CvGenericBound,
     GenericParam as CvGenericParam, GenericParamKind as CvGenericParamKind, Generics as CvGenerics,
     NamedTypeRef as CvNamedTypeRef, PolyTrait as CvPolyTrait, PreciseCapture as CvPreciseCapture,
-    Term as CvTerm, TraitBoundModifier as CvTraitBoundModifier, TypeRef, WherePredicate as CvWherePred,
+    Term as CvTerm, TraitBoundModifier as CvTraitBoundModifier, TypeRef,
+    WherePredicate as CvWherePred,
 };
 
 fn map_type(ty: &rdt::Type) -> TypeRef {
@@ -1628,7 +2061,10 @@ fn map_type(ty: &rdt::Type) -> TypeRef {
         rdt::Type::ResolvedPath(path) => TypeRef::ResolvedPath {
             id: path.id.0.to_string(),
             path: path.path.clone(),
-            args: path.args.as_deref().map(|args| Box::new(map_generic_args(args))),
+            args: path
+                .args
+                .as_deref()
+                .map(|args| Box::new(map_generic_args(args))),
         },
         rdt::Type::DynTrait(dt) => TypeRef::DynTrait {
             traits: dt.traits.iter().map(map_poly_trait).collect(),
@@ -1649,7 +2085,10 @@ fn map_type(ty: &rdt::Type) -> TypeRef {
             element: Box::new(map_type(type_)),
             len: len.clone(),
         },
-        rdt::Type::Pat { type_, __pat_unstable_do_not_use } => TypeRef::Pat {
+        rdt::Type::Pat {
+            type_,
+            __pat_unstable_do_not_use,
+        } => TypeRef::Pat {
             base: Box::new(map_type(type_)),
             pat: __pat_unstable_do_not_use.clone(),
         },
@@ -1859,10 +2298,7 @@ fn map_where_predicate(p: &rdt::WherePredicate) -> CvWherePred {
             bounds: bounds.iter().map(map_generic_bound).collect(),
             hrtb_params: generic_params.iter().map(map_generic_param).collect(),
         },
-        rdt::WherePredicate::LifetimePredicate {
-            lifetime,
-            outlives,
-        } => CvWherePred::Lifetime {
+        rdt::WherePredicate::LifetimePredicate { lifetime, outlives } => CvWherePred::Lifetime {
             lifetime: lifetime.clone(),
             outlives: outlives.clone(),
         },
@@ -2863,10 +3299,12 @@ fn materialize_missing_external_edge_nodes(
     }
 }
 
-fn prune_dangling_edges(graph: &mut Graph, node_cache: &HashSet<String>) {
+fn prune_dangling_edges(graph: &mut Graph, node_cache: &HashSet<String>) -> usize {
+    let before = graph.edges.len();
     graph
         .edges
         .retain(|edge| node_cache.contains(&edge.from) && node_cache.contains(&edge.to));
+    before - graph.edges.len()
 }
 
 fn external_stub_node(id: String, kind: NodeKind) -> Node {
@@ -3002,8 +3440,7 @@ fn build_aliases(
         let Some(parent_id) = item_to_parent.get(use_item_id) else {
             continue;
         };
-        let Some(parent_canonical) =
-            resolve_id(krate, default_crate_name, path_index, *parent_id)
+        let Some(parent_canonical) = resolve_id(krate, default_crate_name, path_index, *parent_id)
         else {
             continue;
         };
@@ -3544,7 +3981,10 @@ fn clean_other_attr(value: &str) -> Option<String> {
     }
 
     // ── Lang(VariantName) → #[lang = "snake_name"] ──
-    if let Some(arg) = payload.strip_prefix("Lang(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(arg) = payload
+        .strip_prefix("Lang(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         return Some(format!("#[lang = \"{}\"]", camel_to_snake(arg)));
     }
 
@@ -3573,7 +4013,10 @@ fn clean_other_attr(value: &str) -> Option<String> {
     }
 
     // ── Inline(Hint | Always | Never | No) ──
-    if let Some(arg) = payload.strip_prefix("Inline(").and_then(|s| s.strip_suffix(')')) {
+    if let Some(arg) = payload
+        .strip_prefix("Inline(")
+        .and_then(|s| s.strip_suffix(')'))
+    {
         return match arg {
             "Hint" => Some("#[inline]".to_string()),
             "Always" => Some("#[inline(always)]".to_string()),
@@ -4582,6 +5025,239 @@ mod tests {
         }
     }
 
+    fn minimal_rustdoc_value(crate_name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "root": 0,
+            "crate_version": null,
+            "includes_private": false,
+            "index": {
+                "0": rustdoc_item(0, 0, crate_name, serde_json::json!({
+                    "module": {
+                        "is_crate": true,
+                        "items": [],
+                        "is_stripped": false
+                    }
+                }))
+            },
+            "paths": {
+                "0": {
+                    "crate_id": 0,
+                    "path": [crate_name],
+                    "kind": "module"
+                }
+            },
+            "external_crates": {},
+            "target": {
+                "triple": "x86_64-unknown-linux-gnu",
+                "target_features": []
+            },
+            "format_version": rdt::FORMAT_VERSION
+        })
+    }
+
+    fn minimal_rustdoc_json(crate_name: &str) -> String {
+        minimal_rustdoc_value(crate_name).to_string()
+    }
+
+    fn rustdoc_item(
+        id: u32,
+        crate_id: u32,
+        name: &str,
+        inner: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "crate_id": crate_id,
+            "name": name,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "inner": inner
+        })
+    }
+
+    #[test]
+    fn format_policy_defaults_and_lenient_newer_escape_hatch() {
+        let strict = RustdocFormatPolicy::strict();
+        assert_eq!(RustdocFormatPolicy::default(), strict);
+        assert_eq!(strict.min_supported, 35);
+        assert_eq!(strict.max_supported, rdt::FORMAT_VERSION);
+        assert!(!strict.allow_newer_best_effort);
+        assert!(strict.allow_older_compat);
+
+        let mut newer = minimal_rustdoc_value("fixture");
+        newer["format_version"] = serde_json::json!(rdt::FORMAT_VERSION + 1);
+        assert!(matches!(
+            validate_rustdoc_json(&newer.to_string(), "fixture", &strict),
+            Err(RustdocError::UnsupportedFormatVersion { found, .. })
+                if found == rdt::FORMAT_VERSION + 1
+        ));
+        assert!(
+            validate_rustdoc_json(
+                &newer.to_string(),
+                "fixture",
+                &RustdocFormatPolicy::lenient()
+            )
+            .is_ok()
+        );
+
+        let mut older = minimal_rustdoc_value("fixture");
+        older["format_version"] = serde_json::json!(rdt::FORMAT_VERSION - 1);
+        let no_compat = RustdocFormatPolicy {
+            allow_older_compat: false,
+            ..RustdocFormatPolicy::strict()
+        };
+        assert!(matches!(
+            validate_rustdoc_json(&older.to_string(), "fixture", &no_compat),
+            Err(RustdocError::UnsupportedFormatVersion { found, .. })
+                if found == rdt::FORMAT_VERSION - 1
+        ));
+    }
+
+    #[test]
+    fn gate2_rejects_truncated_json_as_syntax() {
+        assert!(matches!(
+            validate_rustdoc_json("{", "fixture", &RustdocFormatPolicy::strict()),
+            Err(RustdocError::JsonSyntax(_))
+        ));
+    }
+
+    #[test]
+    fn gate2_rejects_missing_required_shape() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value.as_object_mut().unwrap().remove("paths");
+
+        assert!(matches!(
+            validate_rustdoc_json(&value.to_string(), "fixture", &RustdocFormatPolicy::strict()),
+            Err(RustdocError::ShallowShape(RustdocShapeError::MissingField { field }))
+                if field == "paths"
+        ));
+    }
+
+    #[test]
+    fn gate2_rejects_newer_format_under_strict_policy() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["format_version"] = serde_json::json!(rdt::FORMAT_VERSION + 1);
+
+        assert!(matches!(
+            validate_rustdoc_json(&value.to_string(), "fixture", &RustdocFormatPolicy::strict()),
+            Err(RustdocError::UnsupportedFormatVersion { found, .. })
+                if found == rdt::FORMAT_VERSION + 1
+        ));
+    }
+
+    #[test]
+    fn gate3_deserialize_error_carries_path() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["includes_private"] = serde_json::json!("false");
+
+        match validate_rustdoc_json(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        ) {
+            Err(RustdocError::Deserialize { path, .. }) => {
+                assert_eq!(path, "includes_private");
+            }
+            other => panic!("expected path-aware deserialize error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gate4_rejects_local_path_missing_from_index() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "Missing"],
+            "kind": "struct"
+        });
+
+        assert!(matches!(
+            validate_rustdoc_json(
+                &value.to_string(),
+                "fixture",
+                &RustdocFormatPolicy::strict()
+            ),
+            Err(RustdocError::Structural(
+                RustdocStructuralError::LocalPathMissingIndex { id: 1 }
+            ))
+        ));
+    }
+
+    #[test]
+    fn gate5_rejects_all_external_or_empty_graph() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["paths"] = serde_json::json!({
+            "1": {
+                "crate_id": 1,
+                "path": ["external_crate", "Type"],
+                "kind": "struct"
+            }
+        });
+        value["external_crates"] = serde_json::json!({
+            "1": {
+                "name": "external_crate",
+                "html_root_url": null,
+                "path": ""
+            }
+        });
+
+        assert!(matches!(
+            extract_graph_validated(
+                &value.to_string(),
+                "fixture",
+                &RustdocFormatPolicy::strict()
+            ),
+            Err(RustdocError::Graph(RustdocGraphError::NoLocalRustdocItems))
+        ));
+    }
+
+    #[test]
+    fn gate5_quarantines_local_items_that_extract_to_only_crate_node() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_item(1, 0, "Opaque", serde_json::json!("extern_type"));
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "Opaque"],
+            "kind": "extern_type"
+        });
+
+        let (graph, report) = extract_graph_validated(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("quarantine is reported, not a hard parser error");
+
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(report.is_quarantined());
+        assert!(
+            report
+                .quarantine_reason
+                .unwrap()
+                .contains("only the crate node")
+        );
+    }
+
+    #[test]
+    fn known_good_minimal_rustdoc_json_parses() {
+        let (graph, report) = extract_graph_validated(
+            &minimal_rustdoc_json("fixture"),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("minimal rustdoc fixture parses");
+
+        assert!(graph.nodes.iter().any(|node| node.id == "fixture"));
+        assert_eq!(report.raw_items, 1);
+        assert_eq!(report.local_path_items, 1);
+        assert!(!report.is_quarantined());
+    }
+
     #[test]
     fn non_module_path_prefix_is_not_created_as_module() {
         let mut graph = Graph::new();
@@ -4727,7 +5403,22 @@ mod tests {
 
         collect_generic_args_links(&args, &krate, "fixture", &path_index, &mut links);
 
-        assert_eq!(format_generic_args(&args), "<Item = Output>");
+        let mapped = map_generic_args(&args);
+        let CvGenericArgs::AngleBracketed { constraints, .. } = mapped else {
+            panic!("expected angle-bracketed generic args");
+        };
+        assert_eq!(constraints.len(), 1);
+        assert_eq!(constraints[0].name, "Item");
+        let CvAssocItemConstraintKind::Equality {
+            value:
+                CvTerm::Type {
+                    value: TypeRef::ResolvedPath { path, .. },
+                },
+        } = &constraints[0].binding
+        else {
+            panic!("expected type equality constraint");
+        };
+        assert_eq!(path, "fixture::Output");
         assert_eq!(
             links.get("Output").map(String::as_str),
             Some("fixture::Output")
