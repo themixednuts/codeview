@@ -42,8 +42,9 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "fs", "io-util", "process"] }
 futures = "0.3"
 
-# Decompress docs.rs `.json.gz`
+# Decompress docs.rs rustdoc JSON (`/json` zstd and `.json.gz`)
 flate2 = "1.0"
+zstd = "0.13"
 
 # Local R2 emulation — miniflare SQLite schema mirrored 1:1 via drizzle
 drizzle = { version = "0.1.6", features = ["sqlite", "rusqlite", "serde"] }

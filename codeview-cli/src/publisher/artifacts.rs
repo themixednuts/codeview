@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use codeview_rustdoc::{RustdocError, RustdocFormatPolicy};
 use sha2::{Digest as _, Sha256};
 
 use super::docs_rs;
@@ -45,6 +46,8 @@ pub enum PublishError {
     Transient(#[from] anyhow::Error),
     #[error("permanent: {0}")]
     Permanent(String),
+    #[error("quarantine: {0}")]
+    Quarantine(String),
 }
 
 impl PublishError {
@@ -53,7 +56,7 @@ impl PublishError {
     pub fn exit_code(&self) -> i32 {
         match self {
             PublishError::Transient(_) => 64,
-            PublishError::Permanent(_) => 65,
+            PublishError::Permanent(_) | PublishError::Quarantine(_) => 65,
         }
     }
 }
@@ -142,16 +145,17 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
                             "docs.rs {url} returned {status}"
                         )));
                     }
-                    Err(docs_rs::DocsRsError::MalformedGzip(e)) => {
-                        return Err(PublishError::Permanent(format!("docs.rs gzip: {e:#}")));
+                    Err(docs_rs::DocsRsError::Corrupt(e)) => {
+                        return Err(PublishError::Permanent(format!("docs.rs artifact: {e:#}")));
                     }
                     Err(docs_rs::DocsRsError::Transient(e)) => {
                         return Err(PublishError::Transient(e));
                     }
                 };
             eprintln!(
-                "[parse-one] docs.rs JSON: {:.2} MB gz → {:.2} MB raw",
+                "[parse-one] docs.rs JSON: {:.2} MB {} → {:.2} MB raw",
                 download.compressed_bytes as f64 / 1024.0 / 1024.0,
+                download.encoding,
                 download.json.len() as f64 / 1024.0 / 1024.0,
             );
             (download.json, Source::DocsRs)
@@ -178,21 +182,27 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
 
     let json_str = std::str::from_utf8(&json_bytes)
         .context("rustdoc JSON not UTF-8")
-        .map_err(PublishError::Transient)?;
-    let graph = codeview_rustdoc::extract_graph(json_str, name).map_err(|err| {
-        // Parser errors are typed; "unsupported rustdoc" / "unknown variant"
-        // are permanent — won't change until parser revision bumps. Other
-        // failures may be transient (memory pressure, etc.).
-        let msg = err.to_string();
-        if msg.contains("unsupported rustdoc")
-            || msg.contains("format_version")
-            || msg.contains("unknown variant")
-        {
-            PublishError::Permanent(format!("parser rejected: {msg}"))
-        } else {
-            PublishError::Transient(anyhow::anyhow!("parser internal: {msg}"))
-        }
-    })?;
+        .map_err(|e| PublishError::Permanent(format!("rustdoc JSON not UTF-8: {e}")))?;
+    let (graph, validation) =
+        codeview_rustdoc::extract_graph_validated(json_str, name, &RustdocFormatPolicy::strict())
+            .map_err(classify_rustdoc_error)?;
+    eprintln!(
+        "[parse-one] rustdoc validation: format={} parser_format={} raw_items={} local_paths={} external_paths={} pruned_edges={}",
+        validation.source_format_version,
+        validation.parser_format_version,
+        validation.raw_items,
+        validation.local_path_items,
+        validation.external_path_items,
+        validation.pruned_edges,
+    );
+    for warning in &validation.warnings {
+        eprintln!("[parse-one] rustdoc warning: {warning}");
+    }
+    if let Some(reason) = validation.quarantine_reason {
+        return Err(PublishError::Quarantine(format!(
+            "{name}@{version}: {reason}"
+        )));
+    }
 
     // Convert internal Graph → CrateGraph for the static-artifact builders.
     let crate_graph = codeview_core::CrateGraph {
@@ -311,4 +321,30 @@ pub fn normalise_crate_name(s: &str) -> String {
 }
 pub fn hyphenate_crate_name(s: &str) -> String {
     s.replace('_', "-").to_lowercase()
+}
+
+fn classify_rustdoc_error(err: RustdocError) -> PublishError {
+    let msg = err.to_string();
+    match err {
+        RustdocError::Json(_)
+        | RustdocError::JsonSyntax(_)
+        | RustdocError::UnsupportedFormatVersion { .. }
+        | RustdocError::ShallowShape(_)
+        | RustdocError::Deserialize { .. }
+        | RustdocError::Structural(_)
+        | RustdocError::Graph(_) => PublishError::Permanent(format!("parser rejected: {msg}")),
+        RustdocError::Io(e) => PublishError::Transient(anyhow::Error::new(e).context("parser io")),
+        RustdocError::Metadata(e) => {
+            PublishError::Transient(anyhow::Error::new(e).context("parser cargo metadata"))
+        }
+        RustdocError::Syn(e) => {
+            PublishError::Transient(anyhow::Error::new(e).context("parser source parse"))
+        }
+        RustdocError::RustdocFailed(status) => {
+            PublishError::Transient(anyhow::anyhow!("cargo rustdoc failed with status {status}"))
+        }
+        RustdocError::MissingRootPackage => {
+            PublishError::Transient(anyhow::anyhow!("parser missing root package"))
+        }
+    }
 }
