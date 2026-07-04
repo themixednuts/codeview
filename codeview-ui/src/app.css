@@ -121,9 +121,6 @@
 		--danger-border: rgba(220, 50, 47, 0.25);
 		--success: #859900;
 
-		--node-circle-stroke: rgba(253, 246, 227, 0.7);
-		--node-label-divider: rgba(88, 110, 117, 0.25);
-
 		--font-ligatures: none;
 
 		/* Density scale — overridden by [data-density="…"] below */
@@ -215,8 +212,6 @@
 		--danger-border: rgba(255, 180, 173, 0.25);
 		--success: #7ce7ac;
 
-		--node-circle-stroke: rgba(7, 54, 66, 0.7);
-		--node-label-divider: rgba(147, 161, 161, 0.18);
 	}
 
 	/* ═══════════════════════════════════════════════════════════════
@@ -553,43 +548,6 @@
    ═══════════════════════════════════════════════════════════════ */
 
 @layer components {
-	.graph-node text {
-		font-size: 0.7rem;
-		font-weight: 500;
-		font-family: var(--font-body);
-		fill: var(--ink);
-		text-anchor: middle;
-		pointer-events: none;
-	}
-
-	.graph-node circle {
-		stroke: var(--node-circle-stroke);
-		stroke-width: 2px;
-		transition:
-			transform 0.2s ease,
-			stroke 0.2s ease,
-			stroke-width 0.2s ease;
-		cursor: pointer;
-	}
-
-	.graph-node.selected circle {
-		stroke: var(--accent-strong);
-		stroke-width: 3px;
-	}
-
-	.graph-link {
-		stroke-width: 1.6px;
-		opacity: 0.85;
-	}
-
-	.graph-link.inferred {
-		stroke-dasharray: 4 4;
-	}
-
-	.graph-link.runtime {
-		stroke-dasharray: 8 4;
-	}
-
 	/* Badge — chip with optional kind tint */
 	.badge {
 		display: inline-flex;
@@ -969,9 +927,4 @@
 
 ::view-transition-new(*):only-child {
 	animation: none;
-}
-
-/* Contain view transitions within graph area */
-.graph-container {
-	contain: layout style paint;
 }

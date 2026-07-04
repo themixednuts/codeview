@@ -135,7 +135,7 @@
 		log.debug`nodeView: nodeId="${nodeId}" detail=${detail ? 'yes' : 'null'} via=${nodeViewQuery ? 'proxy' : 'ssr'}`;
 	});
 
-	// Push ancestor path to GraphTree via context — tells tree which nodes to expand
+	// Push ancestor path to explorer context so the tree expands to the selected node.
 	$effect(() => {
 		if (page.data?.nodeView != null) return;
 		if (nodeView?.ancestors) {

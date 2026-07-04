@@ -11,7 +11,7 @@ const log = getLogger('tree-index');
  * and incremental delta appends (when new nodes/edges are added to the same arrays).
  *
  * Pure TypeScript -- no Svelte reactivity.  Does NOT build TreeNode objects --
- * consumers (GraphTree / VirtualTree) materialise them on demand for visible rows.
+ * UI consumers materialise them on demand for visible rows.
  */
 export class TreeIndex {
 	// ── Public readable state ──────────────────────────────────────────
@@ -267,7 +267,7 @@ export class TreeIndex {
 		// Pass 3: sort child lists (streaming only).
 		// For streaming, sort is required to maintain the sorted invariant for
 		// incremental binary-insertion in #addEdge. For query data, sorting is
-		// deferred to lazy on-demand sort in VirtualTree (saves ~166ms).
+		// deferred to lazy on-demand sort in UI tree consumers (saves ~166ms).
 		if (streaming) {
 			for (const children of this.#children.values()) {
 				if (children.length <= 1) continue;

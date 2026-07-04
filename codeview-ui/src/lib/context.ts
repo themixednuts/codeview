@@ -105,14 +105,14 @@ export const parseProgressCtx = new ReactiveContext<ParseProgressConnection | nu
 	'parseProgress',
 );
 
-/** Ancestor IDs from nodeView — tells GraphTree which nodes to expand. */
+/** Ancestor IDs from nodeView — tells the explorer tree which nodes to expand. */
 export type ExpandPath = {
 	ancestors: NodeSummary[];
 } | null;
 export const expandPathCtx = new ReactiveContext<ExpandPath>('expandPath');
 export const setExpandPathCtx = new ReactiveContext<(path: ExpandPath) => void>('setExpandPath');
 
-/** Reactive URL search params singleton for tree state (shared layout ↔ GraphTree). */
+/** Reactive URL search params singleton for tree state (shared by layout and explorer). */
 export const treeParamsCtx = new ReactiveContext<
 	import('svelte/reactivity').SvelteURLSearchParams | null
 >('treeParams');

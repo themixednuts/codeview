@@ -215,7 +215,7 @@
 		};
 	});
 
-	// ── Expand path context (ancestor IDs from nodeView → GraphTree) ──
+	// ── Expand path context (ancestor IDs from nodeView → explorer tree) ──
 	const serverExpandPath: ExpandPath = $derived(
 		data?.nodeView?.ancestors?.length ? { ancestors: data.nodeView.ancestors } : null,
 	);
@@ -226,7 +226,7 @@
 		detailExpandPath = path;
 	});
 
-	// ── Reactive tree params singleton (shared with GraphTree via context) ──
+	// ── Reactive tree params singleton (shared with explorer via context) ──
 	const treeParams = new SvelteURLSearchParams(page.url.search);
 	treeParamsCtx.set(() => treeParams);
 
