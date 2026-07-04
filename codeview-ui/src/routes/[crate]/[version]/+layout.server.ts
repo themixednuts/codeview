@@ -4,6 +4,7 @@ import { initProvider } from '$lib/server/provider';
 import { hyphenateCrateName, normalizeCrateName } from '$lib/crate-names';
 import { resolve } from '$lib/rpc/helpers';
 import { isHosted } from '$lib/platform';
+import { parseExplorerState } from '$lib/url-state';
 
 /** Version aliases that should be resolved to a concrete semver and redirected. */
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
@@ -19,14 +20,8 @@ function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs = LOAD_TIMEO
 	]);
 }
 
-function readExpandedIds(searchParams: URLSearchParams): string[] {
-	const raw = searchParams.get('ex');
-	if (!raw) return [];
-	return raw
-		.split(',')
-		.map((id) => id.trim())
-		.filter(Boolean)
-		.slice(0, MAX_PREFETCH_TREE_CHILDREN);
+function readExpandedIds(url: URL): string[] {
+	return parseExplorerState(url).ex.slice(0, MAX_PREFETCH_TREE_CHILDREN);
 }
 
 export const load: LayoutServerLoad = async (event) => {
@@ -117,7 +112,7 @@ export const load: LayoutServerLoad = async (event) => {
 	if (nodeView?.ancestors) {
 		for (const ancestor of nodeView.ancestors) prefetchIds.add(ancestor.id);
 	}
-	for (const id of readExpandedIds(event.url.searchParams)) prefetchIds.add(id);
+	for (const id of readExpandedIds(event.url)) prefetchIds.add(id);
 
 	const [rootChildrenData, prefetchedTreeChildren] = await Promise.all([
 		rootChildrenPromise,
