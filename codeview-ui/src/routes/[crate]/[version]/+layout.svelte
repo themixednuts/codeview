@@ -25,14 +25,12 @@
 	import { hyphenateCrateName } from '$lib/crate-names';
 	import { onMount } from 'svelte';
 	import CrateParseState from '$lib/components/CrateParseState.svelte';
-	import CrateSidebar from '$lib/components/CrateSidebar.svelte';
+	import LiveExplorer from '$lib/components/design/LiveExplorer.svelte';
 	import { CrateStatusConnection, ParseProgressConnection } from '$lib/realtime';
 	import { perf } from '$lib/perf';
 	import { perfTick } from '$lib/perf.svelte';
 	import { getLogger } from '$lib/log';
 	import { nodeKindOrder } from '$lib/display-names';
-	import { SvelteSet } from 'svelte/reactivity';
-	import type { Snippet } from 'svelte';
 	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 	import { isHosted } from '$lib/platform';
 
@@ -43,7 +41,7 @@
 		prefetchedTreeChildren?: Array<{ id: string; children: TreeNodeDTO[] }>;
 	};
 
-	let { children, data } = $props<{ children: Snippet; data: LayoutData }>();
+	let { data } = $props<{ data: LayoutData }>();
 
 	const params = $derived(page.params);
 	const crateName = $derived(params.crate);
@@ -593,8 +591,8 @@
 	progressEdgeCount={progressConn.edgeCount}
 	progressTotalItems={progressConn.totalItems}
 >
-	<div class="flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
-		<CrateSidebar
+	<div class="flex min-h-0 flex-1 overflow-hidden">
+		<LiveExplorer
 			{crateName}
 			{version}
 			{workspaceCrateCount}
@@ -623,6 +621,8 @@
 			progressNodeCount={progressConn.nodeCount || 0}
 			{showGraphBlanketImpls}
 			{getNodeUrl}
+			nodeView={data?.nodeView ?? null}
+			nodeId={selectedNodeId}
 			onToggleKind={toggleKindFilter}
 			onRetryTree={(reset) => {
 				void refreshRemote(metaProxy);
@@ -630,9 +630,5 @@
 				reset();
 			}}
 		/>
-
-		<div class="relative min-h-0 flex-1 overflow-auto bg-(--bg) p-4 md:p-6">
-			{@render children()}
-		</div>
 	</div>
 </CrateParseState>

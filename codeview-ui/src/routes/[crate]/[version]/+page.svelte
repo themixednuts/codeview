@@ -1,5 +1,1 @@
-<script lang="ts">
-	import CrateNodePage from '$lib/components/CrateNodePage.svelte';
-</script>
-
-<CrateNodePage />
+<!-- The live Explorer shell renders crate-root content from +layout.svelte. -->

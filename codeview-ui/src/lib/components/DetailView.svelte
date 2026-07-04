@@ -45,8 +45,9 @@
 		type ExpandPath,
 	} from '$lib/context';
 
-	let { nodeId } = $props<{
+	let { nodeId, embedded = false } = $props<{
 		nodeId: string;
+		embedded?: boolean;
 	}>();
 
 	const theme = $derived(resolvedThemeCtx.get());
@@ -478,57 +479,59 @@
 			<!-- ── Crate sub-nav ──────────────────────────────────────
 				 doc-classic design: text breadcrumb + kind chip + pub
 				 chip + crate-scoped search + version + View source. -->
-			<div
-				class="sub-nav -mx-4 -mt-4 mb-2 flex flex-wrap items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-6 py-2 md:-mx-6 md:-mt-6"
-			>
-				<svelte:boundary>
-					<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
-					{#snippet failed(error: unknown, _reset: () => void)}
-						{@const _ = log.error`Breadcrumbs boundary error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}" selected="${selected?.id}" ancestors=${ancestors.length}`}
-						<div class="text-xs text-(--danger)">Failed to load breadcrumbs</div>
-					{/snippet}
-				</svelte:boundary>
+			{#if !embedded}
+				<div
+					class="sub-nav -mx-4 -mt-4 mb-2 flex flex-wrap items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-6 py-2 md:-mx-6 md:-mt-6"
+				>
+					<svelte:boundary>
+						<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
+						{#snippet failed(error: unknown, _reset: () => void)}
+							{@const _ = log.error`Breadcrumbs boundary error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}" selected="${selected?.id}" ancestors=${ancestors.length}`}
+							<div class="text-xs text-(--danger)">Failed to load breadcrumbs</div>
+						{/snippet}
+					</svelte:boundary>
 
-				{#if selected.kind && !isOnCrateRoot}
-					<span
-						class="badge badge-sm inline-flex items-center gap-1.5 bg-(--panel-solid) text-(--ink)"
-					>
+					{#if selected.kind && !isOnCrateRoot}
 						<span
-							class="size-1.5 shrink-0 rounded-full"
-							style="background-color: var(--kind-{selected.kind.toLowerCase()})"
-						></span>
-						{kindLabels[selected.kind] ?? selected.kind}
-					</span>
-				{/if}
-				{#if isPublic(selected.visibility)}
-					<span
-						class="badge badge-sm font-mono font-semibold tracking-wider uppercase"
-						style="background: var(--accent-soft); color: var(--accent-strong); border-color: transparent;"
-					>
-						pub
-					</span>
-				{/if}
-
-				<div class="ml-auto flex flex-wrap items-center gap-2">
-					{#if crateVersion}
-						<span
-							class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1 font-mono text-[11.5px] text-(--ink-soft)"
-							title="Crate version"
+							class="badge badge-sm inline-flex items-center gap-1.5 bg-(--panel-solid) text-(--ink)"
 						>
-							v{crateVersion}
+							<span
+								class="size-1.5 shrink-0 rounded-full"
+								style="background-color: var(--kind-{selected.kind.toLowerCase()})"
+							></span>
+							{kindLabels[selected.kind] ?? selected.kind}
 						</span>
 					{/if}
-					{#if selected?.span?.file}
-						<a
-							href={resolveAppPath(getNodeUrl(selected.id))}
-							class="corner-squircle rounded-(--radius-control) px-2.5 py-1 text-[12px] font-medium hover:underline"
-							style="background: var(--accent-soft); color: var(--accent-strong);"
+					{#if isPublic(selected.visibility)}
+						<span
+							class="badge badge-sm font-mono font-semibold tracking-wider uppercase"
+							style="background: var(--accent-soft); color: var(--accent-strong); border-color: transparent;"
 						>
-							View source
-						</a>
+							pub
+						</span>
 					{/if}
+
+					<div class="ml-auto flex flex-wrap items-center gap-2">
+						{#if crateVersion}
+							<span
+								class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1 font-mono text-[11.5px] text-(--ink-soft)"
+								title="Crate version"
+							>
+								v{crateVersion}
+							</span>
+						{/if}
+						{#if selected?.span?.file}
+							<a
+								href={resolveAppPath(getNodeUrl(selected.id))}
+								class="corner-squircle rounded-(--radius-control) px-2.5 py-1 text-[12px] font-medium hover:underline"
+								style="background: var(--accent-soft); color: var(--accent-strong);"
+							>
+								View source
+							</a>
+						{/if}
+					</div>
 				</div>
-			</div>
+			{/if}
 
 			<!-- Crate Overview: unified viz switcher (crate root only) -->
 			{#if isOnCrateRoot}
