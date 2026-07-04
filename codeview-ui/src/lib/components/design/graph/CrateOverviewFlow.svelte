@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { SvelteFlow } from '@xyflow/svelte';
 	import type { Edge as FlowEdge, Node as FlowNode } from '@xyflow/svelte';
+	import { onMount } from 'svelte';
 	import type {
 		CrateMapData,
 		CrateMapModuleEdge,
@@ -51,6 +52,9 @@
 	};
 	type CrateFlowEdge = FlowEdge<CrateFlowEdgeData, 'smoothstep'>;
 
+	const MAX_FLOW_MODULES = 96;
+	const MAX_FLOW_SEMANTIC_EDGES = 180;
+
 	let {
 		data,
 		selectedNodeId = null,
@@ -66,35 +70,67 @@
 	const nodeTypes = { crateModule: CrateModuleNode };
 	let hoveredModuleId = $state<string | null>(null);
 	let containerWidth = $state(960);
+	let flowReady = $state(false);
+
+	onMount(() => {
+		let firstFrame = 0;
+		let secondFrame = 0;
+		firstFrame = requestAnimationFrame(() => {
+			secondFrame = requestAnimationFrame(() => {
+				flowReady = true;
+			});
+		});
+		return () => {
+			cancelAnimationFrame(firstFrame);
+			cancelAnimationFrame(secondFrame);
+		};
+	});
 
 	const highlightedModuleId = $derived(
 		selectedNodeId ? findContainingModule(selectedNodeId, data.moduleNodes) : data.crateId,
 	);
+	const cappedModuleNodes = $derived.by<CrateMapModuleNode[]>(() =>
+		selectModuleNodes(data.moduleNodes, highlightedModuleId, data.crateId, MAX_FLOW_MODULES),
+	);
+	const cappedModuleIds = $derived.by(() => new Set(cappedModuleNodes.map((module) => module.id)));
+	const cappedSemanticEdges = $derived.by<CrateMapModuleEdge[]>(() =>
+		data.moduleEdges
+			.filter(
+				(edge: CrateMapModuleEdge) =>
+					edge.from !== edge.to && cappedModuleIds.has(edge.from) && cappedModuleIds.has(edge.to),
+			)
+			.sort((a: CrateMapModuleEdge, b: CrateMapModuleEdge) => b.total - a.total)
+			.slice(0, MAX_FLOW_SEMANTIC_EDGES),
+	);
+	const isCapped = $derived(
+		cappedModuleNodes.length < data.moduleNodes.length ||
+			cappedSemanticEdges.length < data.visibleSemanticEdgeCount,
+	);
 	const moduleById = $derived.by<Map<string, CrateMapModuleNode>>(() =>
-		new Map(data.moduleNodes.map((module: CrateMapModuleNode) => [module.id, module])),
+		new Map(cappedModuleNodes.map((module: CrateMapModuleNode) => [module.id, module])),
 	);
 	const maxNodeCount = $derived.by(() =>
-		data.moduleNodes.reduce(
+		cappedModuleNodes.reduce(
 			(max: number, module: CrateMapModuleNode) => Math.max(max, module.totalNodeCount),
 			1,
 		),
 	);
-	const statsByModule = $derived.by(() => buildModuleStats(data.moduleEdges));
+	const statsByModule = $derived.by(() => buildModuleStats(cappedSemanticEdges));
 	const connectedIds = $derived.by(() => {
 		const ids = new Set<string>();
 		if (!hoveredModuleId) return ids;
 		ids.add(hoveredModuleId);
-		for (const edge of data.moduleEdges) {
+		for (const edge of cappedSemanticEdges) {
 			if (edge.from === hoveredModuleId) ids.add(edge.to);
 			if (edge.to === hoveredModuleId) ids.add(edge.from);
 		}
-		for (const module of data.moduleNodes) {
+		for (const module of cappedModuleNodes) {
 			if (module.parentId === hoveredModuleId) ids.add(module.id);
 			if (module.id === hoveredModuleId && module.parentId) ids.add(module.parentId);
 		}
 		return ids;
 	});
-	const layout = $derived(layoutModules(data.moduleNodes, containerWidth, height));
+	const layout = $derived(layoutModules(cappedModuleNodes, containerWidth, height));
 	const flowNodes = $derived.by<CrateModuleFlowNode[]>(() =>
 		layout.modules.map(({ module, x, y }) => {
 			const stats: ModuleStats = statsByModule.get(module.id) ?? {
@@ -132,12 +168,12 @@
 		}),
 	);
 	const flowEdges = $derived.by<CrateFlowEdge[]>(() => [
-		...buildHierarchyEdges(data.moduleNodes, moduleById, hoveredModuleId, connectedIds),
-		...buildSemanticEdges(data.moduleEdges, hoveredModuleId, connectedIds),
+		...buildHierarchyEdges(cappedModuleNodes, moduleById, hoveredModuleId, connectedIds),
+		...buildSemanticEdges(cappedSemanticEdges, hoveredModuleId, connectedIds),
 	]);
 	const activeRelations = $derived.by(() => {
 		const relations = new Set<DesignRelation>();
-		for (const edge of data.moduleEdges) {
+		for (const edge of cappedSemanticEdges) {
 			const kind = dominantKind(edge);
 			if (kind) relations.add(edgeKindToRelation(kind).token);
 		}
@@ -146,6 +182,42 @@
 	const hoveredModule = $derived.by<CrateMapModuleNode | null>(() =>
 		hoveredModuleId ? (moduleById.get(hoveredModuleId) ?? null) : null,
 	);
+
+	function selectModuleNodes(
+		modules: CrateMapModuleNode[],
+		highlightedId: string | null,
+		crateId: string,
+		limit: number,
+	): CrateMapModuleNode[] {
+		if (modules.length <= limit) return modules;
+		const byId = new Map(modules.map((module) => [module.id, module]));
+		const selected = new Set<string>();
+
+		function includeWithParents(id: string | null | undefined) {
+			let cursor = id ? byId.get(id) : null;
+			while (cursor && !selected.has(cursor.id)) {
+				selected.add(cursor.id);
+				cursor = cursor.parentId ? (byId.get(cursor.parentId) ?? null) : null;
+			}
+		}
+
+		includeWithParents(crateId);
+		includeWithParents(highlightedId);
+
+		for (const module of modules
+			.filter((module) => !selected.has(module.id))
+			.sort(
+				(a, b) =>
+					b.totalNodeCount - a.totalNodeCount ||
+					a.depth - b.depth ||
+					a.name.localeCompare(b.name),
+			)) {
+			if (selected.size >= limit) break;
+			selected.add(module.id);
+		}
+
+		return hierarchyOrder(modules.filter((module) => selected.has(module.id)));
+	}
 
 	function buildModuleStats(edges: CrateMapModuleEdge[]): Map<string, ModuleStats> {
 		const stats = new Map<string, ModuleStats>();
@@ -344,13 +416,16 @@
 		<div>
 			<h2 class="font-display text-[15px] font-semibold text-(--ink)">Module graph</h2>
 			<p class="mt-0.5 text-xs text-(--muted)">
-				{data.moduleNodes.length.toLocaleString()} modules · {data.visibleSemanticEdgeCount.toLocaleString()}
-				visible semantic edges
+				showing {cappedModuleNodes.length.toLocaleString()} of {data.moduleNodes.length.toLocaleString()}
+				modules · {cappedSemanticEdges.length.toLocaleString()} of {data.visibleSemanticEdgeCount.toLocaleString()}
+				semantic edges
 			</p>
 		</div>
-		{#if data.truncatedHierarchy || data.truncatedMatrix}
+		{#if isCapped || data.truncatedHierarchy || data.truncatedMatrix}
 			<div class="badge badge-sm border-(--accent-ring) bg-(--accent-soft) text-(--accent-strong)">
-				{#if data.truncatedHierarchy}
+				{#if isCapped}
+					render capped
+				{:else if data.truncatedHierarchy}
 					{data.hiddenHierarchyModules.toLocaleString()} hidden modules
 				{:else}
 					semantic edges capped
@@ -371,37 +446,43 @@
 		>
 			<div class="relative" style={`width: ${layout.width}px; height: ${layout.height}px`}>
 				<div class="absolute inset-0 crate-overview-flow__dots" aria-hidden="true"></div>
-				<SvelteFlow
-					nodes={flowNodes}
-					edges={flowEdges}
-					{nodeTypes}
-					width={layout.width}
-					height={layout.height}
-					nodesDraggable={false}
-					nodesConnectable={false}
-					elementsSelectable={false}
-					nodesFocusable={false}
-					edgesFocusable={false}
-					autoPanOnNodeFocus={false}
-					panOnDrag={false}
-					panOnScroll={false}
-					zoomOnScroll={false}
-					zoomOnDoubleClick={false}
-					zoomOnPinch={false}
-					preventScrolling={false}
-					deleteKey={null}
-					selectionKey={null}
-					multiSelectionKey={null}
-					panActivationKey={null}
-					zoomActivationKey={null}
-					onlyRenderVisibleElements={false}
-					minZoom={1}
-					maxZoom={1}
-					viewport={{ x: 0, y: 0, zoom: 1 }}
-					onnodepointerenter={handleNodeEnter}
-					onnodepointerleave={clearHover}
-					onpaneclick={clearHover}
-				/>
+				{#if flowReady}
+					<SvelteFlow
+						nodes={flowNodes}
+						edges={flowEdges}
+						{nodeTypes}
+						width={layout.width}
+						height={layout.height}
+						nodesDraggable={false}
+						nodesConnectable={false}
+						elementsSelectable={false}
+						nodesFocusable={false}
+						edgesFocusable={false}
+						autoPanOnNodeFocus={false}
+						panOnDrag={false}
+						panOnScroll={false}
+						zoomOnScroll={false}
+						zoomOnDoubleClick={false}
+						zoomOnPinch={false}
+						preventScrolling={false}
+						deleteKey={null}
+						selectionKey={null}
+						multiSelectionKey={null}
+						panActivationKey={null}
+						zoomActivationKey={null}
+						onlyRenderVisibleElements={true}
+						minZoom={1}
+						maxZoom={1}
+						viewport={{ x: 0, y: 0, zoom: 1 }}
+						onnodepointerenter={handleNodeEnter}
+						onnodepointerleave={clearHover}
+						onpaneclick={clearHover}
+					/>
+				{:else}
+					<div class="absolute inset-0 flex items-center justify-center text-sm text-(--muted)">
+						Preparing module graph...
+					</div>
+				{/if}
 			</div>
 		</div>
 	{/if}

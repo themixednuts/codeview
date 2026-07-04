@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { SvelteFlow } from '@xyflow/svelte';
+	import { onMount } from 'svelte';
 	import type { Edge, Node, NodeDetail, NodeSummary } from '$lib/schema';
 	import { resolveAppPath } from '$lib/app-paths';
 	import {
@@ -27,6 +28,21 @@
 		type FocusGraphModel,
 	} from './focus-layout';
 
+	type FocusGraphLimits = {
+		maxItemsPerSide: number;
+		maxEdgesPerItem: number;
+	};
+
+	type FocusGraphStats = {
+		relatedNodes: number;
+		edges: number;
+	};
+
+	const MAX_FOCUS_SIDE_ITEMS = 32;
+	const MAX_FOCUS_SIDE_ITEMS_COMPACT = 18;
+	const MAX_FOCUS_EDGES_PER_ITEM = 3;
+	const MAX_FOCUS_EDGES_PER_ITEM_COMPACT = 2;
+
 	let {
 		detail,
 		ancestors = [],
@@ -51,8 +67,33 @@
 	let containerWidth = $state(900);
 	let hoveredNodeId = $state<string | null>(null);
 	let hoveredRel = $state<DesignRelation | null>(null);
+	let flowReady = $state(false);
 
-	const model = $derived.by(() => buildFocusModel(detail, ancestors, getNodeUrl));
+	onMount(() => {
+		let firstFrame = 0;
+		let secondFrame = 0;
+		firstFrame = requestAnimationFrame(() => {
+			secondFrame = requestAnimationFrame(() => {
+				flowReady = true;
+			});
+		});
+		return () => {
+			cancelAnimationFrame(firstFrame);
+			cancelAnimationFrame(secondFrame);
+		};
+	});
+
+	const graphLimits: FocusGraphLimits = $derived({
+		maxItemsPerSide: compact ? MAX_FOCUS_SIDE_ITEMS_COMPACT : MAX_FOCUS_SIDE_ITEMS,
+		maxEdgesPerItem: compact ? MAX_FOCUS_EDGES_PER_ITEM_COMPACT : MAX_FOCUS_EDGES_PER_ITEM,
+	});
+	const model = $derived.by(() => buildFocusModel(detail, ancestors, getNodeUrl, graphLimits));
+	const fullGraphStats = $derived.by(() => summarizeDetailGraph(detail));
+	const shownGraphStats = $derived.by(() => summarizeModelGraph(model));
+	const graphIsCapped = $derived(
+		shownGraphStats.relatedNodes < fullGraphStats.relatedNodes ||
+			shownGraphStats.edges < fullGraphStats.edges,
+	);
 	const graphSize = $derived({
 		width: Math.max(compact ? 560 : 720, containerWidth || 0),
 		height,
@@ -144,6 +185,7 @@
 		currentDetail: NodeDetail,
 		currentAncestors: NodeSummary[],
 		urlForNode: (nodeId: string) => string,
+		limits: FocusGraphLimits,
 	): FocusGraphModel {
 		const nodesById = new Map<string, Node>([
 			[currentDetail.node.id, currentDetail.node],
@@ -163,6 +205,7 @@
 				nodesById,
 				counts,
 				designUrl,
+				limits,
 			),
 			outgoing: buildGroups(
 				currentDetail.edges.filter((edge) => edge.from === currentDetail.node.id),
@@ -171,6 +214,7 @@
 				nodesById,
 				counts,
 				designUrl,
+				limits,
 			),
 		};
 	}
@@ -182,6 +226,7 @@
 		nodesById: Map<string, Node>,
 		counts: Map<string, { incoming: number; outgoing: number }>,
 		urlForNode: (nodeId: string) => string,
+		limits: FocusGraphLimits,
 	): FocusGraphGroup[] {
 		const buckets = new Map<
 			DesignRelation,
@@ -230,19 +275,35 @@
 			buckets.set(relation.token, bucket);
 		}
 
+		const candidates = Array.from(buckets.entries()).flatMap(([rel, bucket]) =>
+			Array.from(bucket.items.entries()).map(([nodeId, item]) => ({
+				key: `${rel}:${nodeId}`,
+				item,
+			})),
+		);
+		const allowed = new Set(
+			candidates
+				.sort((a, b) => compareFocusItem(a.item, b.item))
+				.slice(0, limits.maxItemsPerSide)
+				.map((candidate) => candidate.key),
+		);
+
 		return REL_ORDER.filter((rel) => buckets.has(rel)).map((rel) => {
 			const bucket = buckets.get(rel)!;
+			const items = Array.from(bucket.items.entries())
+				.map(([nodeId, item]) => ({ key: `${rel}:${nodeId}`, item }))
+				.filter(({ key }) => allowed.has(key))
+				.map(({ item }) => ({ ...item, edges: item.edges.slice(0, limits.maxEdgesPerItem) }))
+				.sort(compareFocusItem);
 			return {
 				rel,
 				verb: bucket.verb,
 				label: bucket.label,
 				color: bucket.color,
 				direction,
-				items: Array.from(bucket.items.values()).sort((a, b) =>
-					a.node.label.localeCompare(b.node.label),
-				),
+				items,
 			};
-		});
+		}).filter((group) => group.items.length > 0);
 	}
 
 	function countEdges(edges: Edge[]): Map<string, { incoming: number; outgoing: number }> {
@@ -259,6 +320,42 @@
 			ensure(edge.to).incoming += 1;
 		}
 		return counts;
+	}
+
+	function compareFocusItem(a: FocusGraphItem, b: FocusGraphItem): number {
+		return (
+			b.edges.length - a.edges.length ||
+			b.inCount + b.outCount - (a.inCount + a.outCount) ||
+			a.node.label.localeCompare(b.node.label)
+		);
+	}
+
+	function summarizeDetailGraph(currentDetail: NodeDetail): FocusGraphStats {
+		const relatedIds = new Set(currentDetail.relatedNodes.map((node) => node.id));
+		const shownRelatedIds = new Set<string>();
+		let edgeCount = 0;
+		for (const edge of currentDetail.edges) {
+			if (edge.from === currentDetail.node.id && relatedIds.has(edge.to)) {
+				shownRelatedIds.add(edge.to);
+				edgeCount += 1;
+			} else if (edge.to === currentDetail.node.id && relatedIds.has(edge.from)) {
+				shownRelatedIds.add(edge.from);
+				edgeCount += 1;
+			}
+		}
+		return { relatedNodes: shownRelatedIds.size, edges: edgeCount };
+	}
+
+	function summarizeModelGraph(currentModel: FocusGraphModel): FocusGraphStats {
+		const relatedIds = new Set<string>();
+		let edgeCount = 0;
+		for (const group of [...currentModel.incoming, ...currentModel.outgoing]) {
+			for (const item of group.items) {
+				relatedIds.add(item.node.id);
+				edgeCount += item.edges.length;
+			}
+		}
+		return { relatedNodes: relatedIds.size, edges: edgeCount };
 	}
 
 	function relationLabel(rel: DesignRelation): string {
@@ -303,40 +400,57 @@
 		</div>
 	</div>
 
-	<SvelteFlow
-		nodes={flowNodes}
-		edges={flowEdges}
-		{nodeTypes}
-		{edgeTypes}
-		width={layout.width}
-		height={layout.height}
-		nodesDraggable={false}
-		nodesConnectable={false}
-		elementsSelectable={false}
-		nodesFocusable={false}
-		edgesFocusable={false}
-		autoPanOnNodeFocus={false}
-		panOnDrag={false}
-		panOnScroll={false}
-		zoomOnScroll={false}
-		zoomOnDoubleClick={false}
-		zoomOnPinch={false}
-		preventScrolling={false}
-		deleteKey={null}
-		selectionKey={null}
-		multiSelectionKey={null}
-		panActivationKey={null}
-		zoomActivationKey={null}
-		onlyRenderVisibleElements={false}
-		minZoom={1}
-		maxZoom={1}
-		viewport={{ x: 0, y: 0, zoom: 1 }}
-		onnodepointerenter={handleNodeEnter}
-		onnodepointerleave={handleNodeLeave}
-		onpaneclick={clearPeek}
-	/>
+	{#if graphIsCapped}
+		<div
+			class="pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-2.5 py-1 text-[11px] text-(--muted)"
+			style="top: 42px"
+		>
+			showing {shownGraphStats.relatedNodes.toLocaleString()} of {fullGraphStats.relatedNodes.toLocaleString()}
+			related nodes · {shownGraphStats.edges.toLocaleString()} of {fullGraphStats.edges.toLocaleString()}
+			edges
+		</div>
+	{/if}
 
-	{#each layout.labels as label (label.id)}
+	{#if flowReady}
+		<SvelteFlow
+			nodes={flowNodes}
+			edges={flowEdges}
+			{nodeTypes}
+			{edgeTypes}
+			width={layout.width}
+			height={layout.height}
+			nodesDraggable={false}
+			nodesConnectable={false}
+			elementsSelectable={false}
+			nodesFocusable={false}
+			edgesFocusable={false}
+			autoPanOnNodeFocus={false}
+			panOnDrag={false}
+			panOnScroll={false}
+			zoomOnScroll={false}
+			zoomOnDoubleClick={false}
+			zoomOnPinch={false}
+			preventScrolling={false}
+			deleteKey={null}
+			selectionKey={null}
+			multiSelectionKey={null}
+			panActivationKey={null}
+			zoomActivationKey={null}
+			onlyRenderVisibleElements={true}
+			minZoom={1}
+			maxZoom={1}
+			viewport={{ x: 0, y: 0, zoom: 1 }}
+			onnodepointerenter={handleNodeEnter}
+			onnodepointerleave={handleNodeLeave}
+			onpaneclick={clearPeek}
+		/>
+	{:else}
+		<div class="absolute inset-0 flex items-center justify-center text-sm text-(--muted)">
+			Preparing relationship graph...
+		</div>
+	{/if}
+
+	{#each flowReady ? layout.labels : [] as label (label.id)}
 		<div
 			class="pointer-events-none absolute flex h-5 items-center justify-center rounded-full border bg-(--panel-solid) px-2"
 			style={`left: ${label.x - label.width / 2}px; top: ${label.y - 10}px; width: ${label.width}px; border-color: ${label.color}; color: ${label.color}`}
@@ -346,7 +460,7 @@
 		</div>
 	{/each}
 
-	{#if hoveredNode}
+	{#if flowReady && hoveredNode}
 		{@const pos = peekPosition(layout)}
 		{#if pos}
 			<div
@@ -386,7 +500,7 @@
 		{/if}
 	{/if}
 
-	{#if layout.edges.length === 0}
+	{#if flowReady && layout.edges.length === 0}
 		<div
 			class="mono absolute left-1/2 -translate-x-1/2 text-[12px] text-(--muted-soft)"
 			style={`top: ${layout.centerY + 44}px`}
@@ -395,7 +509,7 @@
 		</div>
 	{/if}
 
-	{#if layout.activeRelations.length > 0}
+	{#if flowReady && layout.activeRelations.length > 0}
 		<div
 			class="absolute bottom-3 left-3 flex items-center gap-0.5 rounded-lg border border-(--panel-border-soft) bg-(--panel-solid) px-1.5 py-1 shadow-(--shadow-soft)"
 			aria-label="Relationship legend"

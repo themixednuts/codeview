@@ -35,6 +35,9 @@
 		type ExpandPath,
 	} from '$lib/context';
 
+	const LARGE_CRATE_GRAPH_DEFAULT_MODULES = 96;
+	const LARGE_CRATE_GRAPH_DEFAULT_NODES = 5_000;
+
 	let { nodeId, embedded = false } = $props<{
 		nodeId: string;
 		embedded?: boolean;
@@ -95,6 +98,7 @@
 	);
 	const crateMapLoading = $derived(crateMapQuery?.loading ?? false);
 	const crateMap = $derived(loadCrateMap ?? crateMapQuery?.current ?? null);
+	const defaultVizMode: VizMode = $derived(isLargeCrateMap(crateMap) ? 'grid' : 'graph');
 
 	// Refresh both queries when parsing completes (first parse only).
 	// On revisit, SSR already returned data → query proxy's initial fetch is sufficient.
@@ -145,12 +149,12 @@
 	const VALID_VIZ_MODES: VizMode[] = ['graph', 'treemap', 'sunburst', 'grid'];
 	const vizParam = $derived(page.url.searchParams.get('viz'));
 	const vizMode: VizMode = $derived(
-		VALID_VIZ_MODES.includes(vizParam as VizMode) ? (vizParam as VizMode) : 'graph',
+		VALID_VIZ_MODES.includes(vizParam as VizMode) ? (vizParam as VizMode) : defaultVizMode,
 	);
 
 	function setVizMode(mode: VizMode) {
 		const url = new URL(page.url);
-		if (mode === 'graph') {
+		if (mode === defaultVizMode) {
 			url.searchParams.delete('viz');
 		} else {
 			url.searchParams.set('viz', mode);
@@ -160,6 +164,14 @@
 			noScroll: true,
 			keepFocus: true,
 		});
+	}
+
+	function isLargeCrateMap(map: CrateMapData | null | undefined): boolean {
+		return Boolean(
+			map &&
+				(map.moduleNodes.length > LARGE_CRATE_GRAPH_DEFAULT_MODULES ||
+					map.totalNodeCount > LARGE_CRATE_GRAPH_DEFAULT_NODES),
+		);
 	}
 
 	// ── Treemap drill state ──
