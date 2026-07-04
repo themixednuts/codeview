@@ -1,6 +1,5 @@
 <script lang="ts">
 	import type { Node, NodeKind } from '$lib/graph';
-	import type { Edge } from '$lib/graph';
 	import type { VizMode } from '$lib/components/VizSwitcher.svelte';
 	import type { GraphRenderMode } from '$lib/components/CrateGraph.svelte';
 	import type { NodeView } from '$lib/schema';
@@ -11,14 +10,9 @@
 	import { resolveAppPath } from '$lib/app-paths';
 	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
 	import { getCrateMap, getStaticCrateMap } from '$lib/rpc/crateMap.remote';
-	import { perf } from '$lib/perf';
 	import { kindLabels, edgeLabels, isPublic } from '$lib/display-names';
+	import { buildDetailDocModel } from '$lib/detail-model';
 	import { isHosted } from '$lib/platform';
-
-	type SelectedEdges = {
-		incoming: Edge[];
-		outgoing: Edge[];
-	};
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import { LoaderCircleIcon } from '@lucide/svelte';
 	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
@@ -204,25 +198,11 @@
 
 	const selected = $derived(detail?.node ?? null);
 	const isOnCrateRoot = $derived(selected?.kind === 'Crate');
-
-	const selectedEdges = $derived.by<SelectedEdges>(() => {
-		if (!detail) return { incoming: [], outgoing: [] };
-		return perf.time(
-			'derived',
-			'selectedEdges',
-			() => ({
-				incoming: detail!.edges.filter((e) => e.to === detail!.node.id),
-				outgoing: detail!.edges.filter((e) => e.from === detail!.node.id),
-			}),
-			{ detail: (r) => `${r.incoming.length}in ${r.outgoing.length}out` },
-		);
-	});
+	const detailModel = $derived(buildDetailDocModel(detail));
+	const selectedEdges = $derived(detailModel.selectedEdges);
 
 	// Pre-built lookup maps — O(1) instead of O(n) per call
-	const relatedNodeMap = $derived.by(() => {
-		if (!detail) return new Map<string, Node>();
-		return new Map(detail.relatedNodes.map((n) => [n.id, n as Node]));
-	});
+	const relatedNodeMap = $derived(detailModel.relatedNodeMap);
 
 	function displayNode(id: string) {
 		return relatedNodeMap.get(id)?.name ?? id.split('::').pop() ?? id;
@@ -236,158 +216,20 @@
 		return relatedNodeMap.get(nodeId);
 	}
 
-
-	function isTraitImpl(node: Node): boolean {
-		if (node.kind !== 'Impl') return false;
-		return (
-			node.impl_type === 'Trait' ||
-			node.impl_category === 'Trait' ||
-			node.impl_category === 'Blanket' ||
-			node.impl_category === 'Negative' ||
-			node.impl_category === 'Synthetic' ||
-			node.name.includes(' for ')
-		);
-	}
-
-	function isInherentImpl(node: Node): boolean {
-		if (node.kind !== 'Impl') return false;
-		return (
-			node.impl_type === 'Inherent' || (!node.name.includes(' for ') && node.impl_type !== 'Trait')
-		);
-	}
-
-	type MethodGroup = { impl: Node; methods: Node[] };
-
-	const implBlocks = $derived.by(() => {
-		if (!detail || !selected) return [] as Node[];
-		return perf.time(
-			'derived',
-			'implBlocks',
-			() => {
-				const blocks: Node[] = [];
-				for (const edge of detail!.edges) {
-					if (edge.kind === 'Defines' && edge.from === selected!.id) {
-						const target = relatedNodeMap.get(edge.to);
-						if (target && isTraitImpl(target)) blocks.push(target);
-					}
-				}
-				return blocks;
-			},
-			{ detail: (r) => `${r.length} impls` },
-		);
-	});
-
 	// Split trait impls into source (user-written) and blanket/auto-trait
-	const sourceImpls = $derived(
-		implBlocks.filter((b) => b.impl_category !== 'Blanket' && b.impl_category !== 'Synthetic'),
-	);
-	const blanketImpls = $derived(
-		implBlocks.filter((b) => b.impl_category === 'Blanket' || b.impl_category === 'Synthetic'),
-	);
-
-	// Build a set of impl block IDs for edge filtering
-	const implBlockIds = $derived(new Set(implBlocks.map((b) => b.id)));
+	const sourceImpls = $derived(detailModel.sourceImpls);
+	const blanketImpls = $derived(detailModel.blanketImpls);
 
 	// Filter out redundant edges: Defines→impl and incoming UsesType←impl
-	const filteredEdges = $derived.by<SelectedEdges>(() => {
-		if (!detail) return { incoming: [], outgoing: [] };
-		const isTypeNode = ['Struct', 'Enum', 'Union', 'Trait', 'TraitAlias', 'TypeAlias'].includes(
-			selected?.kind ?? '',
-		);
-		if (!isTypeNode) return selectedEdges;
-		return perf.time(
-			'derived',
-			'detailFilteredEdges',
-			() => ({
-				outgoing: selectedEdges.outgoing.filter((e) => {
-					if (e.kind === 'Defines' && implBlockIds.has(e.to)) return false;
-					return true;
-				}),
-				incoming: selectedEdges.incoming.filter((e) => {
-					if (e.kind === 'UsesType' && implBlockIds.has(e.from)) return false;
-					return true;
-				}),
-			}),
-			{ detail: (r) => `${r.incoming.length}in ${r.outgoing.length}out` },
-		);
-	});
+	const filteredEdges = $derived(detailModel.filteredEdges);
 
-	const methodGroups = $derived.by(() => {
-		if (!detail || !selected) return [] as MethodGroup[];
-		return perf.time(
-			'derived',
-			'methodGroups',
-			() => {
-				const inherentImpls: Node[] = [];
-				for (const edge of detail!.edges) {
-					if (edge.kind === 'Defines' && edge.from === selected!.id) {
-						const target = relatedNodeMap.get(edge.to);
-						if (target && isInherentImpl(target)) inherentImpls.push(target);
-					}
-				}
-
-				// eslint-disable-next-line svelte/prefer-svelte-reactivity -- local computation in derived
-				const groups = new Map<string, MethodGroup>();
-				for (const impl of inherentImpls) {
-					groups.set(impl.id, { impl, methods: [] });
-				}
-
-				for (const edge of detail!.edges) {
-					if ((edge.kind === 'Contains' || edge.kind === 'Defines') && groups.has(edge.from)) {
-						const target = relatedNodeMap.get(edge.to);
-						if (target && target.kind === 'Function') {
-							groups.get(edge.from)?.methods.push(target);
-						}
-					}
-				}
-
-				return Array.from(groups.values())
-					.filter((g) => g.methods.length > 0)
-					.map((g) => {
-						g.methods.sort((a, b) => a.name.localeCompare(b.name));
-						return g;
-					});
-			},
-			{
-				detail: (r) => `${r.length} groups, ${r.reduce((s, g) => s + g.methods.length, 0)} methods`,
-			},
-		);
-	});
+	const methodGroups = $derived(detailModel.methodGroups);
 
 	// ── Right-pane TOC entries ───────────────────────────────────────────
-	const methodCount = $derived(methodGroups.reduce((sum, g) => sum + g.methods.length, 0));
-	const totalImpls = $derived(sourceImpls.length + blanketImpls.length);
-
-	type TocEntry = { anchor: string; title: string; count: number | null };
-	const tocEntries = $derived.by<TocEntry[]>(() => {
-		if (!selected || !detail) return [];
-		const entries: TocEntry[] = [];
-		if (selected.docs) entries.push({ anchor: 'documentation', title: 'Documentation', count: null });
-		if (methodCount > 0) entries.push({ anchor: 'methods', title: 'Methods', count: methodCount });
-		if (totalImpls > 0)
-			entries.push({ anchor: 'trait-impls', title: 'Trait implementations', count: totalImpls });
-		const relCount = filteredEdges.outgoing.length + filteredEdges.incoming.length;
-		entries.push({ anchor: 'relationships', title: 'Relationships', count: relCount });
-		if (selected.attrs && selected.attrs.length > 0)
-			entries.push({ anchor: 'attributes', title: 'Attributes', count: selected.attrs.length });
-		return entries;
-	});
+	const tocEntries = $derived(detailModel.tocEntries);
 
 	// "Where used" — surface the top incoming-edge sources by node name.
-	const whereUsed = $derived.by(() => {
-		if (!detail || !selected) return [] as { id: string; name: string }[];
-		const seen = new Set<string>();
-		const refs: { id: string; name: string }[] = [];
-		for (const edge of filteredEdges.incoming) {
-			if (edge.from === selected.id || seen.has(edge.from)) continue;
-			seen.add(edge.from);
-			const meta = relatedNodeMap.get(edge.from);
-			const name = meta?.name ?? edge.from.split('::').pop() ?? edge.from;
-			refs.push({ id: edge.from, name });
-			if (refs.length >= 8) break;
-		}
-		return refs;
-	});
+	const whereUsed = $derived(detailModel.whereUsed);
 
 	function focusGraph() {
 		if (!browser) return;

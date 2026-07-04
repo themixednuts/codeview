@@ -13,12 +13,16 @@
 		SettingsIcon,
 		GitBranchIcon,
 		GitForkIcon,
+		BookOpenIcon,
+		PanelRightIcon,
+		Columns2Icon,
 	} from '@lucide/svelte';
 	import type {
 		Theme,
 		AccentMode,
 		DensityMode,
 		VoiceMode,
+		DocLayoutMode,
 		CodeTheme,
 		ExternalLinkMode,
 		SourceProviderMode,
@@ -31,6 +35,7 @@
 		accentMode: AccentMode;
 		densityMode: DensityMode;
 		voiceMode: VoiceMode;
+		docLayout: DocLayoutMode;
 		codeThemeLight: CodeTheme;
 		codeThemeDark: CodeTheme;
 		extLinkMode: ExternalLinkMode;
@@ -40,6 +45,7 @@
 		onAccentChange: (mode: AccentMode) => void;
 		onDensityChange: (mode: DensityMode) => void;
 		onVoiceChange: (mode: VoiceMode) => void;
+		onDocLayoutChange: (mode: DocLayoutMode) => void;
 		onCodeThemeLightChange: (theme: CodeTheme) => void;
 		onCodeThemeDarkChange: (theme: CodeTheme) => void;
 		onExtLinkModeChange: (mode: ExternalLinkMode) => void;
@@ -55,6 +61,7 @@
 		accentMode,
 		densityMode,
 		voiceMode,
+		docLayout,
 		codeThemeLight,
 		codeThemeDark,
 		extLinkMode,
@@ -64,6 +71,7 @@
 		onAccentChange,
 		onDensityChange,
 		onVoiceChange,
+		onDocLayoutChange,
 		onCodeThemeLightChange,
 		onCodeThemeDarkChange,
 		onExtLinkModeChange,
@@ -125,6 +133,17 @@
 		{ id: 'geometric', label: 'Geometric', hint: 'Space Grotesk' },
 	];
 
+	const docLayoutOptions: {
+		id: DocLayoutMode;
+		label: string;
+		hint: string;
+		Icon: typeof BookOpenIcon;
+	}[] = [
+		{ id: 'classic', label: 'Classic', hint: 'Docs + TOC', Icon: PanelRightIcon },
+		{ id: 'reading', label: 'Reading', hint: 'Single column', Icon: BookOpenIcon },
+		{ id: 'split', label: 'Split', hint: 'Docs + source', Icon: Columns2Icon },
+	];
+
 	const lightCodeOptions: { id: CodeTheme; label: string }[] = [
 		{ id: 'solarized-light', label: 'Solarized Light' },
 		{ id: 'catppuccin-latte', label: 'Catppuccin Latte' },
@@ -165,6 +184,11 @@
 		technical: null,
 		geometric: null,
 	});
+	let docLayoutRefs: Record<DocLayoutMode, HTMLButtonElement | null> = $state({
+		classic: null,
+		reading: null,
+		split: null,
+	});
 	let editorRefs: Record<EditorId, HTMLButtonElement | null> = $state({
 		vscode: null,
 		cursor: null,
@@ -194,6 +218,7 @@
 	const themeIndicator = $derived(indicator(themeRefs[theme]));
 	const densityIndicator = $derived(indicator(densityRefs[densityMode]));
 	const voiceIndicator = $derived(indicator(voiceRefs[voiceMode]));
+	const docLayoutIndicator = $derived(indicator(docLayoutRefs[docLayout]));
 	const editorIndicator = $derived(indicator(editorRefs[editor]));
 	const linkIndicator = $derived(indicator(linkRefs[extLinkMode]));
 	const sourceIndicator = $derived(indicator(sourceRefs[sourceProviderMode]));
@@ -443,6 +468,54 @@
 						</div>
 						<div class="text-[11px] text-(--muted)">A quick brown fox jumps over the lazy dog.</div>
 					</div>
+				</div>
+			</section>
+
+			<!-- ════════════════════════════════════════════
+			     DOC LAYOUT
+			     ════════════════════════════════════════════ -->
+			<section class="corner-squircle rounded-(--radius-card) bg-(--panel-solid) p-4">
+				<h3
+					class="font-display mb-3 text-[13px] font-semibold tracking-wide text-(--muted) uppercase"
+				>
+					Doc layout
+				</h3>
+
+				<div class="flex flex-col gap-1">
+					<div
+						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+					>
+						<div
+							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
+							style="left: {docLayoutIndicator.left}px; width: {docLayoutIndicator.width}px"
+						></div>
+						{#each docLayoutOptions as opt (opt.id)}
+							<button
+								type="button"
+								class="relative z-10 inline-flex flex-1 flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {docLayout ===
+								opt.id
+									? 'text-(--on-accent)'
+									: 'text-(--muted) hover:text-(--ink)'}"
+								onclick={() => onDocLayoutChange(opt.id)}
+								{@attach (el) => {
+									docLayoutRefs[opt.id] = el as HTMLButtonElement;
+									return () => {
+										docLayoutRefs[opt.id] = null;
+									};
+								}}
+							>
+								<opt.Icon
+									size={13}
+									class="transition-transform duration-200 {docLayout === opt.id ? 'scale-110' : ''}"
+								/>
+								<span>{opt.label}</span>
+								<span class="font-mono text-[9px] opacity-70">{opt.hint}</span>
+							</button>
+						{/each}
+					</div>
+					<span class="mt-0.5 text-[10px] text-(--muted)">
+						Split falls back to Classic when source is unavailable.
+					</span>
 				</div>
 			</section>
 

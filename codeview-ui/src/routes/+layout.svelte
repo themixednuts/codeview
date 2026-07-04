@@ -13,6 +13,7 @@
 		accentModeCtx,
 		densityModeCtx,
 		voiceModeCtx,
+		docLayoutCtx,
 		codeThemeLightCtx,
 		codeThemeDarkCtx,
 		extLinkModeCtx,
@@ -24,6 +25,7 @@
 		type AccentMode,
 		type DensityMode,
 		type VoiceMode,
+		type DocLayoutMode,
 		type CodeTheme,
 		type ExternalLinkMode,
 		type SourceProviderMode,
@@ -107,6 +109,7 @@
 	const ACCENT_KEY = 'codeview-accent';
 	const DENSITY_KEY = 'codeview-density';
 	const VOICE_KEY = 'codeview-voice';
+	const DOC_LAYOUT_KEY = 'codeview-doc-layout';
 	const CODE_LIGHT_KEY = 'codeview-code-light';
 	const CODE_DARK_KEY = 'codeview-code-dark';
 	const EXT_LINK_KEY = 'codeview-ext-link-mode';
@@ -116,6 +119,7 @@
 	const ACCENT_VALUES: AccentMode[] = ['orange', 'cobalt', 'forest', 'plum', 'char'];
 	const DENSITY_VALUES: DensityMode[] = ['compact', 'comfortable', 'spacious'];
 	const VOICE_VALUES: VoiceMode[] = ['editorial', 'technical', 'geometric'];
+	const DOC_LAYOUT_VALUES: DocLayoutMode[] = ['classic', 'reading', 'split'];
 	const CODE_VALUES: CodeTheme[] = [
 		'solarized-light',
 		'solarized-dark',
@@ -206,6 +210,7 @@
 	let accentMode = $state<AccentMode>('orange');
 	let densityMode = $state<DensityMode>('comfortable');
 	let voiceMode = $state<VoiceMode>('editorial');
+	let docLayout = $state<DocLayoutMode>('classic');
 	let codeThemeLight = $state<CodeTheme>('solarized-light');
 	let codeThemeDark = $state<CodeTheme>('solarized-dark');
 
@@ -214,6 +219,7 @@
 	accentModeCtx.set(() => accentMode);
 	densityModeCtx.set(() => densityMode);
 	voiceModeCtx.set(() => voiceMode);
+	docLayoutCtx.set(() => docLayout);
 	codeThemeLightCtx.set(() => codeThemeLight);
 	codeThemeDarkCtx.set(() => codeThemeDark);
 
@@ -253,6 +259,13 @@
 		localStorage.setItem(VOICE_KEY, next);
 	}
 
+	function setDocLayout(next: DocLayoutMode) {
+		docLayout = next;
+		if (!browser) return;
+		document.documentElement.dataset.docLayout = next;
+		localStorage.setItem(DOC_LAYOUT_KEY, next);
+	}
+
 	function setCodeThemeLight(next: CodeTheme) {
 		codeThemeLight = next;
 		if (!browser) return;
@@ -278,11 +291,13 @@
 		accentMode = readEnum(ACCENT_KEY, ACCENT_VALUES, 'orange');
 		densityMode = readEnum(DENSITY_KEY, DENSITY_VALUES, 'comfortable');
 		voiceMode = readEnum(VOICE_KEY, VOICE_VALUES, 'editorial');
+		docLayout = readEnum(DOC_LAYOUT_KEY, DOC_LAYOUT_VALUES, 'classic');
 		codeThemeLight = readEnum(CODE_LIGHT_KEY, CODE_VALUES, 'solarized-light');
 		codeThemeDark = readEnum(CODE_DARK_KEY, CODE_VALUES, 'solarized-dark');
 		document.documentElement.dataset.accent = accentMode;
 		document.documentElement.dataset.density = densityMode;
 		document.documentElement.dataset.voice = voiceMode;
+		document.documentElement.dataset.docLayout = docLayout;
 		applyCodeTheme();
 
 		// Listen for OS theme changes when in system mode
@@ -440,6 +455,7 @@
 	{accentMode}
 	{densityMode}
 	{voiceMode}
+	{docLayout}
 	{codeThemeLight}
 	{codeThemeDark}
 	{extLinkMode}
@@ -449,6 +465,7 @@
 	onAccentChange={setAccent}
 	onDensityChange={setDensity}
 	onVoiceChange={setVoice}
+	onDocLayoutChange={setDocLayout}
 	onCodeThemeLightChange={setCodeThemeLight}
 	onCodeThemeDarkChange={setCodeThemeDark}
 	onExtLinkModeChange={setExtLinkMode}

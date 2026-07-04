@@ -68,6 +68,9 @@ export type DensityMode = 'compact' | 'comfortable' | 'spacious';
  */
 export type VoiceMode = 'editorial' | 'technical' | 'geometric';
 
+/** Documentation center-pane layout. */
+export type DocLayoutMode = 'classic' | 'reading' | 'split';
+
 /** Code theme — fully specified in app.css via [data-code-theme="..."]. */
 export type CodeTheme =
 	| 'solarized-light'
@@ -85,6 +88,7 @@ export const resolvedThemeCtx = new ReactiveContext<ResolvedTheme>('resolvedThem
 export const accentModeCtx = new ReactiveContext<AccentMode>('accentMode');
 export const densityModeCtx = new ReactiveContext<DensityMode>('densityMode');
 export const voiceModeCtx = new ReactiveContext<VoiceMode>('voiceMode');
+export const docLayoutCtx = new ReactiveContext<DocLayoutMode>('docLayout');
 export const codeThemeLightCtx = new ReactiveContext<CodeTheme>('codeThemeLight');
 export const codeThemeDarkCtx = new ReactiveContext<CodeTheme>('codeThemeDark');
 export const extLinkModeCtx = new ReactiveContext<ExternalLinkMode>('extLinkMode');

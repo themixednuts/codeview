@@ -36,16 +36,18 @@
 						modePref === 'system' ? (prefersDark ? 'dark' : 'light') : modePref;
 					document.documentElement.dataset.theme = mode === 'dark' ? 'dark' : 'light';
 
-					// Tweakable axes (accent / density / voice / code themes)
+					// Tweakable axes (accent / density / voice / doc layout / code themes)
 					var accent = stored('codeview-accent', 'orange');
 					var density = stored('codeview-density', 'comfortable');
 					var voice = stored('codeview-voice', 'editorial');
+					var docLayout = stored('codeview-doc-layout', 'classic');
 					var codeLight = stored('codeview-code-light', 'solarized-light');
 					var codeDark = stored('codeview-code-dark', 'solarized-dark');
 
 					document.documentElement.dataset.accent = accent;
 					document.documentElement.dataset.density = density;
 					document.documentElement.dataset.voice = voice;
+					document.documentElement.dataset.docLayout = docLayout;
 					document.documentElement.dataset.codeTheme =
 						mode === 'dark' ? codeDark : codeLight;
 				} catch (e) {
@@ -53,6 +55,7 @@
 					document.documentElement.dataset.accent = 'orange';
 					document.documentElement.dataset.density = 'comfortable';
 					document.documentElement.dataset.voice = 'editorial';
+					document.documentElement.dataset.docLayout = 'classic';
 					document.documentElement.dataset.codeTheme = 'solarized-light';
 				}
 			})();

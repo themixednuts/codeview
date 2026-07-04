@@ -472,6 +472,21 @@
 	}
 
 	/* ═══════════════════════════════════════════════════════════════
+	   DOC LAYOUT — center-pane documentation shape.
+	   Components read this through Svelte context; the data attribute
+	   keeps the preference available to CSS and pre-hydration markup.
+	   ═══════════════════════════════════════════════════════════════ */
+	:root[data-doc-layout='classic'] {
+		--doc-measure: 1180px;
+	}
+	:root[data-doc-layout='reading'] {
+		--doc-measure: 760px;
+	}
+	:root[data-doc-layout='split'] {
+		--doc-measure: 100%;
+	}
+
+	/* ═══════════════════════════════════════════════════════════════
 	   VOICE — typographic register.
 	   Editorial: serif display + sans body (default).
 	   Technical: sans display + tighter weights, no serif.

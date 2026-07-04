@@ -4,14 +4,24 @@
 	import { SvelteSet } from 'svelte/reactivity';
 	import { onMount } from 'svelte';
 	import { resolveAppPath } from '$lib/app-paths';
-	import { expandPathCtx, treeParamsCtx } from '$lib/context';
+	import {
+		crateVersionsCtx,
+		docLayoutCtx,
+		expandPathCtx,
+		resolvedThemeCtx,
+		treeParamsCtx,
+	} from '$lib/context';
 	import { kindLabels, nodeKindOrder, visibilityLabel } from '$lib/display-names';
 	import { edgeKindToRelation, REL_ORDER, toDesignNode, type DesignRelation } from '$lib/design/live-node';
+	import { buildDetailDocModel } from '$lib/detail-model';
 	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
 	import { isHosted } from '$lib/platform';
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
 	import DetailView from '$lib/components/DetailView.svelte';
 	import SkeletonTree from '$lib/components/SkeletonTree.svelte';
+	import DocClassic from '$lib/components/design/docs/DocClassic.svelte';
+	import DocReading from '$lib/components/design/docs/DocReading.svelte';
+	import DocSplit from '$lib/components/design/docs/DocSplit.svelte';
 	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
@@ -112,6 +122,9 @@
 
 	const expandPath = $derived(expandPathCtx.getOr(null));
 	const treeParams = treeParamsCtx.getOr(null);
+	const docLayout = $derived(docLayoutCtx.getOr('classic'));
+	const theme = $derived(resolvedThemeCtx.getOr('light'));
+	const crateVersions = $derived(crateVersionsCtx.getOr({}));
 
 	if (treeParams) {
 		const ex = treeParams.get('ex');
@@ -123,6 +136,7 @@
 	const detail = $derived(nodeView?.detail ?? null);
 	const selected = $derived(detail?.node ?? null);
 	const ancestors = $derived(nodeView?.ancestors ?? []);
+	const detailModel = $derived(buildDetailDocModel(detail));
 	const selectedDesign = $derived(
 		selected ? toDesignNode(selected, { ancestors, getNodeUrl }) : null,
 	);
@@ -926,6 +940,41 @@
 					{getNodeUrl}
 					height={620}
 				/>
+			{:else if detail && selected && selected.kind !== 'Crate'}
+				{#if docLayout === 'reading'}
+					<DocReading
+						{detail}
+						{ancestors}
+						model={detailModel}
+						{theme}
+						{getNodeUrl}
+						crateName={canonicalCrateName ?? crateName}
+						crateVersion={version}
+						{crateVersions}
+					/>
+				{:else if docLayout === 'split'}
+					<DocSplit
+						{detail}
+						{ancestors}
+						model={detailModel}
+						{theme}
+						{getNodeUrl}
+						crateName={canonicalCrateName ?? crateName}
+						crateVersion={version}
+						{crateVersions}
+					/>
+				{:else}
+					<DocClassic
+						{detail}
+						{ancestors}
+						model={detailModel}
+						{theme}
+						{getNodeUrl}
+						crateName={canonicalCrateName ?? crateName}
+						crateVersion={version}
+						{crateVersions}
+					/>
+				{/if}
 			{:else}
 				<DetailView {nodeId} embedded />
 			{/if}
