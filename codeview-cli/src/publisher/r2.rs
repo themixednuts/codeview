@@ -782,6 +782,9 @@ pub fn artifact_prefix(storage_name: &str, version: &str) -> String {
 /// Path of the global catalog.
 pub const CATALOG_KEY: &str = "rust/catalog.json";
 
+/// Public pointer to the current sharded freshness aggregate.
+pub const INDEX_MANIFEST_KEY: &str = "rust/_index/manifest.json";
+
 /// Helper to read+parse JSON via the trait.
 pub async fn read_json<T: serde::de::DeserializeOwned>(
     r2: &Arc<dyn R2>,
@@ -803,4 +806,19 @@ pub async fn write_json<T: serde::Serialize>(
 ) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     r2.put(key, bytes, "application/json; charset=utf-8").await
+}
+
+/// Path of one aggregate generation shard.
+pub fn index_generation_shard_key(generation: &str, shard_id: &str) -> String {
+    format!("rust/_index/generations/{generation}/shards/{shard_id}.json")
+}
+
+/// Prefix for one run's append-only parse deltas.
+pub fn run_delta_prefix(run_id: &str) -> String {
+    format!("rust/_runs/{run_id}/")
+}
+
+/// Path of the small mutable read-side ref object for one storage name.
+pub fn refs_key(storage_name: &str) -> String {
+    format!("rust/_refs/{storage_name}.json")
 }

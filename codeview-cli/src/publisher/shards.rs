@@ -28,7 +28,7 @@ pub const TREE_CHILDREN_BUCKETS: u32 = 128;
 
 /// FNV-1a 32-bit. Identical to the TS `fnv1a32` so existing artifacts
 /// hash to the same buckets after migration.
-fn fnv1a32(s: &str) -> u32 {
+pub fn fnv1a32(s: &str) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
     for b in s.bytes() {
         hash ^= b as u32;

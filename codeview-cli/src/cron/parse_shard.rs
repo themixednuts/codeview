@@ -81,6 +81,10 @@ pub struct RunDelta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub graph_hash: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_rank: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
@@ -253,6 +257,8 @@ async fn success_delta(
                 nodes: None,
                 edges: None,
                 graph_hash: None,
+                priority_tier: Some(item.priority_tier.clone()),
+                download_rank: item.download_rank,
                 error: Some(format!("read freshness after publish: {err:#}")),
             };
         }
@@ -282,6 +288,8 @@ async fn success_delta(
         nodes,
         edges,
         graph_hash,
+        priority_tier: Some(item.priority_tier.clone()),
+        download_rank: item.download_rank,
         error: None,
     }
 }
@@ -299,6 +307,8 @@ fn error_delta(
         nodes: None,
         edges: None,
         graph_hash: None,
+        priority_tier: Some(item.priority_tier.clone()),
+        download_rank: item.download_rank,
         error: Some(error),
     }
 }
@@ -364,6 +374,8 @@ mod tests {
             nodes: Some(42),
             edges: Some(17),
             graph_hash: Some("abc123".to_string()),
+            priority_tier: Some("top-download-stale".to_string()),
+            download_rank: Some(12),
             error: None,
         };
 
@@ -374,5 +386,7 @@ mod tests {
         assert_eq!(parsed, delta);
         assert!(line.contains("\"outcome\":\"parser-bumped\""));
         assert!(line.contains("\"graph_hash\":\"abc123\""));
+        assert!(line.contains("\"priority_tier\":\"top-download-stale\""));
+        assert!(line.contains("\"download_rank\":12"));
     }
 }

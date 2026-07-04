@@ -15,7 +15,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use super::r2::{R2, freshness_key, read_json, write_json};
+use super::r2::{INDEX_MANIFEST_KEY, R2, freshness_key, read_json, write_json};
 
 /// What we record after every successful parse. JSON-on-the-wire is
 /// stable: the TS UI hits these files for "last parsed at" decorations.
@@ -160,10 +160,20 @@ impl FreshnessRegistry {
         let mut out = Vec::new();
         let keys = self.r2.list_prefix("rust/_index/").await?;
         for key in keys {
+            if !is_per_crate_freshness_key(&key) {
+                continue;
+            }
             if let Some(entry) = read_json::<FreshnessEntry>(&self.r2, &key).await? {
                 out.push(entry);
             }
         }
         Ok(out)
     }
+}
+
+fn is_per_crate_freshness_key(key: &str) -> bool {
+    key.starts_with("rust/_index/")
+        && key.ends_with(".json")
+        && key != INDEX_MANIFEST_KEY
+        && !key.starts_with("rust/_index/generations/")
 }
