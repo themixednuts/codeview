@@ -28,7 +28,7 @@
  *   bun scripts/bulk-put-local.ts \
  *     --binding CRATE_GRAPHS \
  *     --bucket crate-graphs \
- *     --persist-to .wrangler/state/v3
+ *     --persist-to .wrangler/state/v3/r2
  */
 
 import { Miniflare } from 'miniflare';

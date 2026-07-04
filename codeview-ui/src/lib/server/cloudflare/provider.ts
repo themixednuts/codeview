@@ -100,16 +100,51 @@ function uniqueCrateNameVariants(name: string): string[] {
 	return [...new Set(crateNameVariants(name))];
 }
 
-async function resolveArtifactVersion(
+type ArtifactRef = {
+	storageName: string;
+	version: string;
+};
+
+async function artifactManifestExists(
+	r2: R2Bucket,
+	storageName: string,
+	version: string,
+): Promise<boolean> {
+	try {
+		return (await r2.head(`${artifactPrefix(storageName, version)}/manifest.json`)) !== null;
+	} catch (err) {
+		log.warn`R2 head failed for ${artifactPrefix(storageName, version)}/manifest.json: ${String(err)}`;
+		return false;
+	}
+}
+
+async function resolveArtifactRef(
 	r2: R2Bucket,
 	name: string,
 	version: string,
-): Promise<string | null> {
-	if (!VERSION_ALIASES.has(version)) return version;
-	for (const variant of uniqueCrateNameVariants(name)) {
-		const pointer = await readR2Json<{ version: string }>(r2, `rust/${variant}/${version}.json`);
-		if (typeof pointer?.version === 'string' && pointer.version.length > 0) {
-			return pointer.version;
+): Promise<ArtifactRef | null> {
+	const variants = uniqueCrateNameVariants(name);
+
+	if (VERSION_ALIASES.has(version)) {
+		for (const variant of variants) {
+			const pointer = await readR2Json<{ version: string }>(r2, `rust/${variant}/${version}.json`);
+			if (typeof pointer?.version !== 'string' || pointer.version.length === 0) continue;
+			if (await artifactManifestExists(r2, variant, pointer.version)) {
+				return { storageName: variant, version: pointer.version };
+			}
+			for (const fallback of variants) {
+				if (fallback === variant) continue;
+				if (await artifactManifestExists(r2, fallback, pointer.version)) {
+					return { storageName: fallback, version: pointer.version };
+				}
+			}
+		}
+		return null;
+	}
+
+	for (const variant of variants) {
+		if (await artifactManifestExists(r2, variant, version)) {
+			return { storageName: variant, version };
 		}
 	}
 	return null;
@@ -294,17 +329,19 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		return cached as Promise<T | null>;
 	}
 
-	async function resolveVersionForArtifact(name: string, version: string): Promise<string | null> {
-		return resolveArtifactVersion(env.CRATE_GRAPHS, name, version);
+	async function resolveRefForArtifact(name: string, version: string): Promise<ArtifactRef | null> {
+		return resolveArtifactRef(env.CRATE_GRAPHS, name, version);
 	}
 
 	async function loadManifestArtifact(
 		name: string,
 		version: string,
 	): Promise<StaticCrateManifest | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
-		return readJson<StaticCrateManifest>(`${artifactPrefix(name, resolved)}/manifest.json`);
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
+		return readJson<StaticCrateManifest>(
+			`${artifactPrefix(ref.storageName, ref.version)}/manifest.json`,
+		);
 	}
 
 	/**
@@ -326,16 +363,15 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	>();
 
 	async function isShardPopulated(
-		name: string,
-		resolvedVersion: string,
+		ref: ArtifactRef,
 		kind: PopulatedKind,
 		bucket: string,
 	): Promise<boolean> {
-		const cacheKey = `${name}@${resolvedVersion}`;
+		const cacheKey = `${ref.storageName}@${ref.version}`;
 		let entry = populatedShardsCache.get(cacheKey);
 		if (entry === undefined) {
 			const manifest = await readJson<StaticCrateManifest>(
-				`${artifactPrefix(name, resolvedVersion)}/manifest.json`,
+				`${artifactPrefix(ref.storageName, ref.version)}/manifest.json`,
 			);
 			if (!manifest?.populatedShards) {
 				populatedShardsCache.set(cacheKey, null);
@@ -357,12 +393,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		version: string,
 		nodeId: string,
 	): Promise<Node | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
 		const bucket = nodeViewBucket(nodeId);
-		if (!(await isShardPopulated(name, resolved, 'nodes', bucket))) return null;
+		if (!(await isShardPopulated(ref, 'nodes', bucket))) return null;
 		const shard = await readJson<StaticNodeShard>(
-			`${artifactPrefix(name, resolved)}/nodes/${bucket}.json`,
+			`${artifactPrefix(ref.storageName, ref.version)}/nodes/${bucket}.json`,
 		);
 		return shard?.nodes[nodeId] ?? null;
 	}
@@ -382,12 +418,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		name: string,
 		version: string,
 	): Promise<Map<string, string> | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
-		const key = `${name}@${resolved}`;
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
+		const key = `${ref.storageName}@${ref.version}`;
 		if (aliasCache.has(key)) return aliasCache.get(key) ?? null;
 		const map = await readJson<Record<string, string>>(
-			`${artifactPrefix(name, resolved)}/aliases.json`,
+			`${artifactPrefix(ref.storageName, ref.version)}/aliases.json`,
 		);
 		const result = map ? new Map(Object.entries(map)) : null;
 		aliasCache.set(key, result);
@@ -399,12 +435,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		version: string,
 		nodeId: string,
 	): Promise<StaticNodeDetailEntry | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
 		const bucket = nodeViewBucket(nodeId);
-		if (!(await isShardPopulated(name, resolved, 'nodeDetails', bucket))) return null;
+		if (!(await isShardPopulated(ref, 'nodeDetails', bucket))) return null;
 		const shard = await readJson<StaticNodeDetailShard>(
-			`${artifactPrefix(name, resolved)}/node-details/${bucket}.json`,
+			`${artifactPrefix(ref.storageName, ref.version)}/node-details/${bucket}.json`,
 		);
 		return shard?.details[nodeId] ?? null;
 	}
@@ -454,8 +490,8 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			(relatedBuckets.get(bucket) ?? relatedBuckets.set(bucket, []).get(bucket)!).push(id);
 		}
 
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
 		await Effect.runPromise(
 			Effect.forEach(
 				Array.from(relatedBuckets.entries()),
@@ -465,9 +501,9 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 						// bucket has been pruned in older crates (e.g. stripped
 						// items). The populated-shards manifest tells us before we
 						// pay the R2 round-trip.
-						if (!(await isShardPopulated(name, resolved, 'nodes', bucket))) return;
+						if (!(await isShardPopulated(ref, 'nodes', bucket))) return;
 						const shard = await readJson<StaticNodeShard>(
-							`${artifactPrefix(name, resolved)}/nodes/${bucket}.json`,
+							`${artifactPrefix(ref.storageName, ref.version)}/nodes/${bucket}.json`,
 						);
 						if (!shard) return;
 						for (const id of ids) {
@@ -495,9 +531,11 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		name: string,
 		version: string,
 	): Promise<StaticSearchManifest | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
-		return readJson<StaticSearchManifest>(`${artifactPrefix(name, resolved)}/search-manifest.json`);
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
+		return readJson<StaticSearchManifest>(
+			`${artifactPrefix(ref.storageName, ref.version)}/search-manifest.json`,
+		);
 	}
 
 	async function loadSearchShardArtifact(
@@ -505,9 +543,11 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		version: string,
 		prefix: string,
 	): Promise<StaticSearchShard | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
-		return readJson<StaticSearchShard>(`${artifactPrefix(name, resolved)}/search/${prefix}.json`);
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
+		return readJson<StaticSearchShard>(
+			`${artifactPrefix(ref.storageName, ref.version)}/search/${prefix}.json`,
+		);
 	}
 
 	async function loadTreeChildrenArtifact(
@@ -515,12 +555,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		version: string,
 		parentId: string,
 	): Promise<TreeNodeDTO[] | null> {
-		const resolved = await resolveVersionForArtifact(name, version);
-		if (!resolved) return null;
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return null;
 		const bucket = treeChildrenBucket(parentId);
-		if (!(await isShardPopulated(name, resolved, 'treeChildren', bucket))) return null;
+		if (!(await isShardPopulated(ref, 'treeChildren', bucket))) return null;
 		const shard = await readJson<StaticTreeChildrenShard>(
-			`${artifactPrefix(name, resolved)}/tree-children/${bucket}.json`,
+			`${artifactPrefix(ref.storageName, ref.version)}/tree-children/${bucket}.json`,
 		);
 		return shard?.parents[parentId]?.children ?? null;
 	}
@@ -537,8 +577,8 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			? (['stable', 'nightly', 'beta', 'latest'] as const)
 			: (['latest'] as const);
 		for (const alias of aliases) {
-			const resolved = await resolveArtifactVersion(env.CRATE_GRAPHS, name, alias);
-			if (resolved) versions.add(resolved);
+			const ref = await resolveRefForArtifact(name, alias);
+			if (ref) versions.add(ref.version);
 		}
 		for (const variant of uniqueCrateNameVariants(name)) {
 			let cursor: string | undefined;
@@ -564,8 +604,8 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	}
 
 	async function firstPublishedVersion(name: string): Promise<string | null> {
-		const latest = await resolveArtifactVersion(env.CRATE_GRAPHS, name, 'latest');
-		if (latest) return latest;
+		const latest = await resolveRefForArtifact(name, 'latest');
+		if (latest) return latest.version;
 		return (await listPublishedVersions(name, 1))[0] ?? null;
 	}
 
@@ -844,10 +884,10 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			version: string,
 			options?: CrateMapOptions,
 		): Promise<CrateMapData | null> {
-			const resolved = await resolveVersionForArtifact(name, version);
-			if (!resolved) return null;
+			const ref = await resolveRefForArtifact(name, version);
+			if (!ref) return null;
 			const artifact = await readJson<CrateMapData>(
-				`${artifactPrefix(name, resolved)}/crate-map.json`,
+				`${artifactPrefix(ref.storageName, ref.version)}/crate-map.json`,
 			);
 			return artifact ?? null;
 		},
@@ -885,19 +925,21 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				return { status: 'failed' as const, error: 'Invalid crate name or version' };
 			}
-			const resolved = await resolveVersionForArtifact(name, version);
-			if (!resolved) {
+			const ref = await resolveRefForArtifact(name, version);
+			if (!ref) {
 				return {
 					status: 'failed' as const,
 					error: `No static graph is published for ${name}@${version}.`,
 					action: 'docs_unavailable' as const,
 				};
 			}
-			const manifest = await loadManifestArtifact(name, resolved);
+			const manifest = await readJson<StaticCrateManifest>(
+				`${artifactPrefix(ref.storageName, ref.version)}/manifest.json`,
+			);
 			if (manifest?.index) return { status: 'ready' as const };
 			return {
 				status: 'failed' as const,
-				error: `No static graph is published for ${name}@${resolved}. Static graphs are generated offline and uploaded to R2.`,
+				error: `No static graph is published for ${name}@${ref.version}. Static graphs are generated offline and uploaded to R2.`,
 				action: 'docs_unavailable' as const,
 			};
 		},
@@ -959,8 +1001,8 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		},
 
 		async resolveVersion(name: string, version: string): Promise<string> {
-			const resolved = await resolveArtifactVersion(env.CRATE_GRAPHS, name, version);
-			return resolved ?? version;
+			const ref = await resolveRefForArtifact(name, version);
+			return ref?.version ?? version;
 		},
 	};
 }

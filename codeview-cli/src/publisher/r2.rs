@@ -316,7 +316,9 @@ impl R2 for S3Backend {
 /// stable across the wrangler 3 → 4 transition, and we open the DB
 /// read-only so we don't have to track schema changes.
 ///
-/// Sqlite db path:
+/// `persist_to` is the Wrangler persistence root passed to
+/// `wrangler --persist-to`. Wrangler creates the actual v3 local
+/// storage layout underneath it. Sqlite db path:
 ///
 /// ```text
 /// {persist_to}/v3/r2/miniflare-R2BucketObject/{do_id}.sqlite
@@ -445,7 +447,11 @@ impl LocalMiniflareBackend {
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let script_path = cwd.join("scripts").join("bulk-put-local.ts");
-        let persist_to = self.persist_to_arg()?.to_string();
+        let persist_to = self
+            .r2_persist_to()
+            .to_str()
+            .context("R2 persist path is not valid UTF-8")?
+            .to_string();
 
         let mut cmd = tokio::process::Command::new("bun");
         cmd.arg(&script_path)
@@ -570,6 +576,10 @@ impl LocalMiniflareBackend {
         self.persist_to
             .to_str()
             .context("persist_to path is not valid UTF-8")
+    }
+
+    fn r2_persist_to(&self) -> PathBuf {
+        self.persist_to.join("v3").join("r2")
     }
 }
 
@@ -748,7 +758,7 @@ impl Target {
             "remote" => Ok(Target::Remote),
             "local" => {
                 let persist_to = std::env::var("WRANGLER_PERSIST_TO")
-                    .unwrap_or_else(|_| ".wrangler/state/v3".into());
+                    .unwrap_or_else(|_| ".wrangler/state".into());
                 Ok(Target::Local {
                     persist_to: PathBuf::from(persist_to),
                 })
@@ -794,4 +804,3 @@ pub async fn write_json<T: serde::Serialize>(
     let bytes = serde_json::to_vec(value)?;
     r2.put(key, bytes, "application/json; charset=utf-8").await
 }
-
