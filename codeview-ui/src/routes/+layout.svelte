@@ -29,8 +29,9 @@
 		type SourceProviderMode,
 		type VcsMode,
 	} from '$lib/context';
-	import { LoaderCircleIcon, SettingsIcon, SearchIcon, GithubIcon } from '@lucide/svelte';
+	import { LoaderCircleIcon, SettingsIcon } from '@lucide/svelte';
 	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
+	import { Icon } from '$lib/components/design';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
 	import { isHosted } from '$lib/platform';
 
@@ -306,18 +307,23 @@
 </svelte:head>
 
 <div class="flex h-screen flex-col bg-(--bg)">
-	<!-- ── Global TopBar ─────────────────────────────────────────────
-		 doc-classic design: brand (orange-check logo + wordmark) on
-		 the left, primary nav center, global search + GitHub right. -->
 	<header
-		class="flex h-12 items-center justify-between border-b border-(--panel-border) bg-(--panel-solid) px-6 text-sm text-(--muted)"
+		class="grid h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-(--panel-border) bg-(--panel-solid) px-4 text-sm text-(--muted) sm:px-6"
 	>
-		<div class="flex items-center gap-3">
+		<div class="flex min-w-0 items-center gap-3">
 			<a
 				href={resolve('/')}
-				class="flex items-center gap-2 text-(--ink) transition-colors hover:text-(--accent)"
+				class="group flex min-w-0 items-center gap-2 text-(--ink) transition-colors hover:text-(--accent)"
+				aria-label="Codeview home"
 			>
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+				<svg
+					class="shrink-0"
+					width="18"
+					height="18"
+					viewBox="0 0 24 24"
+					fill="none"
+					aria-hidden="true"
+				>
 					<rect x="3" y="3" width="18" height="18" rx="4" fill="var(--accent)" />
 					<path
 						d="M8 12l3 3 5-6"
@@ -328,32 +334,27 @@
 						fill="none"
 					/>
 				</svg>
-				<span class="font-display text-[15.5px] font-semibold tracking-tight">codeview</span>
+				<span class="font-display truncate text-[15.5px] font-semibold tracking-tight">codeview</span>
 			</a>
 		</div>
 
-		<!-- Centred search affordance — clicking jumps to the landing page
-			 where the real search input lives. Visually a wide pill so the
-			 top bar reads as a doc-classic search header rather than empty
-			 space. The old std/core/alloc shortcuts that lived here were
-			 noise — ⌘K + the landing page's crate rails cover that work. -->
 		<a
 			href={resolve('/')}
-			class="corner-squircle hidden min-w-[320px] items-center justify-between gap-2 rounded-md border border-(--panel-border) bg-(--panel) px-3 py-1 font-mono text-[11.5px] text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex"
-			aria-label="Search"
+			class="corner-squircle hidden w-[min(42vw,440px)] items-center justify-between gap-3 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex"
+			aria-label="Search crates and Rust items"
 			title="Global search"
 		>
-			<span class="inline-flex items-center gap-2">
-				<SearchIcon size={12} />
-				<span>Search crates, types, functions…</span>
+			<span class="inline-flex min-w-0 items-center gap-2">
+				<Icon name="search" size={12} />
+				<span class="truncate">Search crates, types, functions...</span>
 			</span>
-			<span class="inline-flex items-center gap-1">
+			<span class="inline-flex shrink-0 items-center gap-1" aria-hidden="true">
 				<span class="kbd">⌘</span>
 				<span class="kbd">K</span>
 			</span>
 		</a>
 
-		<div class="flex items-center gap-2">
+		<div class="flex items-center justify-end gap-2">
 			<a
 				href="https://github.com/jonfontaine/codeview"
 				target="_blank"
@@ -362,13 +363,13 @@
 				aria-label="GitHub"
 				title="View on GitHub"
 			>
-				<GithubIcon size={14} />
+				<Icon name="github" size={14} />
 			</a>
 			{#if processingCount > 0}
 				<div class="relative" onfocusin={openProcessingPopover} onfocusout={handleProcessingBlur}>
 					<button
 						type="button"
-						class="badge badge-sm"
+						class="badge badge-sm inline-flex items-center gap-1.5 border border-(--accent-ring) bg-(--accent-soft) text-(--accent)"
 						title="Background parses running"
 						aria-expanded={showProcessing}
 						aria-haspopup="dialog"
@@ -420,8 +421,9 @@
 			{/if}
 			<button
 				type="button"
-				class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-chip) px-2 py-1 text-xs font-medium text-(--muted) transition hover:bg-(--panel-strong) hover:text-(--ink)"
+				class="grid size-7 place-items-center rounded-md text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 				title="Settings"
+				aria-label="Open settings"
 				onclick={() => (settingsOpen = true)}
 			>
 				<SettingsIcon size={14} />
