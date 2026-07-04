@@ -1,5 +1,5 @@
 import type { WorkspaceOutput } from '$lib/schema';
-import { integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const graphData = sqliteTable('graph_data', {
 	id: integer('id').primaryKey(),
@@ -23,7 +23,10 @@ export const crateStatus = sqliteTable(
 		lastStep: text('last_step'),
 		updatedAt: integer('updated_at').notNull(),
 	},
-	(table) => [primaryKey({ columns: [table.ecosystem, table.name, table.version] })],
+	(table) => [
+		primaryKey({ columns: [table.ecosystem, table.name, table.version] }),
+		index('crate_status_processing_idx').on(table.ecosystem, table.status, table.updatedAt),
+	],
 );
 
 export const crossEdges = sqliteTable(
@@ -50,6 +53,8 @@ export const crossEdges = sqliteTable(
 				table.confidence,
 			],
 		}),
+		index('cross_edges_from_idx').on(table.ecosystem, table.fromId),
+		index('cross_edges_to_idx').on(table.ecosystem, table.toId),
 	],
 );
 
@@ -120,17 +125,38 @@ export const edges = sqliteTable(
 				table.kind,
 			],
 		}),
+		index('edges_from_kind_idx').on(
+			table.ecosystem,
+			table.crateName,
+			table.crateVersion,
+			table.fromId,
+			table.kind,
+			table.toId,
+		),
+		index('edges_to_kind_idx').on(
+			table.ecosystem,
+			table.crateName,
+			table.crateVersion,
+			table.toId,
+			table.kind,
+			table.fromId,
+		),
+		index('edges_to_idx').on(table.ecosystem, table.crateName, table.crateVersion, table.toId),
 	],
 );
 
 /**
  * Node index for search - lightweight fields only.
  */
-export const nodeIndex = sqliteTable('node_index', {
-	nodeId: text('node_id').primaryKey(),
-	name: text('name').notNull(),
-	kind: text('kind').notNull(),
-	visibility: text('visibility').notNull(),
-	isExternal: integer('is_external', { mode: 'boolean' }).notNull(),
-	updatedAt: integer('updated_at').notNull(),
-});
+export const nodeIndex = sqliteTable(
+	'node_index',
+	{
+		nodeId: text('node_id').primaryKey(),
+		name: text('name').notNull(),
+		kind: text('kind').notNull(),
+		visibility: text('visibility').notNull(),
+		isExternal: integer('is_external', { mode: 'boolean' }).notNull(),
+		updatedAt: integer('updated_at').notNull(),
+	},
+	(table) => [index('node_index_name_idx').on(table.name)],
+);
