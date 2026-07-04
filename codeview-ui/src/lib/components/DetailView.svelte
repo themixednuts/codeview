@@ -5,13 +5,14 @@
 	import type { CrateMapData } from '$lib/graph/crate-map';
 	import { browser } from '$app/environment';
 	import { page } from '$app/state';
-	import { goto, replaceState } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { resolveAppPath } from '$lib/app-paths';
 	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
 	import { getCrateMap, getStaticCrateMap } from '$lib/rpc/crateMap.remote';
 	import { kindLabels, edgeLabels, isPublic } from '$lib/display-names';
 	import { buildDetailDocModel } from '$lib/detail-model';
 	import { isHosted } from '$lib/platform';
+	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import { LoaderCircleIcon } from '@lucide/svelte';
 	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
@@ -99,6 +100,7 @@
 	const crateMapLoading = $derived(crateMapQuery?.loading ?? false);
 	const crateMap = $derived(loadCrateMap ?? crateMapQuery?.current ?? null);
 	const defaultVizMode: VizMode = $derived(isLargeCrateMap(crateMap) ? 'grid' : 'graph');
+	const viewState = $derived(parseExplorerState(page.url));
 
 	// Refresh both queries when parsing completes (first parse only).
 	// On revisit, SSR already returned data → query proxy's initial fetch is sufficient.
@@ -146,20 +148,10 @@
 	});
 
 	// ── Viz mode (crate overview — 4 modes: graph, treemap, sunburst, grid) ──
-	const VALID_VIZ_MODES: VizMode[] = ['graph', 'treemap', 'sunburst', 'grid'];
-	const vizParam = $derived(page.url.searchParams.get('viz'));
-	const vizMode: VizMode = $derived(
-		VALID_VIZ_MODES.includes(vizParam as VizMode) ? (vizParam as VizMode) : defaultVizMode,
-	);
+	const vizMode: VizMode = $derived(viewState.viz ?? defaultVizMode);
 
 	function setVizMode(mode: VizMode) {
-		const url = new URL(page.url);
-		if (mode === defaultVizMode) {
-			url.searchParams.delete('viz');
-		} else {
-			url.searchParams.set('viz', mode);
-		}
-		goto(resolveAppPath(url.pathname + url.search), {
+		goto(serializeExplorerState(page.url, { viz: mode === defaultVizMode ? null : mode }), {
 			replaceState: true,
 			noScroll: true,
 			keepFocus: true,
@@ -175,28 +167,26 @@
 	}
 
 	// ── Treemap drill state ──
-	const treemapDrillId = $derived(page.url.searchParams.get('td'));
+	const treemapDrillId = $derived(viewState.td);
 
 	function setTreemapDrill(id: string | null) {
 		updateSearchParam('td', id);
 	}
 
 	// ── Sunburst drill state ──
-	const sunburstDrillId = $derived(page.url.searchParams.get('sd'));
+	const sunburstDrillId = $derived(viewState.sd);
 
 	function setSunburstDrill(id: string | null) {
 		updateSearchParam('sd', id);
 	}
 
-	function updateSearchParam(key: string, value: string | null) {
-		if (!browser) return;
-		const url = new URL(window.location.href);
-		if (value === null) {
-			url.searchParams.delete(key);
-		} else {
-			url.searchParams.set(key, value);
-		}
-		replaceState(url, page.state);
+	function updateSearchParam(key: 'td' | 'sd', value: string | null) {
+		const patch = key === 'td' ? { td: value } : { sd: value };
+		goto(serializeExplorerState(page.url, patch), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
 	}
 
 	const selected = $derived(detail?.node ?? null);

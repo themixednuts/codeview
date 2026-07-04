@@ -3,9 +3,6 @@
 
 declare global {
 	namespace App {
-		interface PageState {
-			sourceSpanKey?: string;
-		}
 		interface Platform {
 			/** Bun server instance for WebSocket upgrades (local mode only) */
 			server?: import('bun').Server;

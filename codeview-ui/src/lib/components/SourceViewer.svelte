@@ -2,11 +2,12 @@
 	import type { Span } from '$lib/graph';
 	import type { Attachment } from 'svelte/attachments';
 	import { LoaderCircleIcon } from '@lucide/svelte';
-	import { pushState, replaceState } from '$app/navigation';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { getSource } from '$lib/rpc/source.remote';
 	import { sourceProviderModeCtx, editorSchemeCtx, vcsModeCtx } from '$lib/context';
+	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import CodeBlock from './CodeBlock.svelte';
 	import X from '@lucide/svelte/icons/x';
 	import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
@@ -35,7 +36,8 @@
 	 *  the raw path so the server's source loader resolves correctly. */
 	const displayFile = $derived(span?.file ? span.file.replace(/\\/g, '/') : '');
 
-	const isOpen = $derived(browser && !!spanKey && page.state?.sourceSpanKey === spanKey);
+	const viewState = $derived(parseExplorerState(page.url));
+	const isOpen = $derived(browser && !!spanKey && viewState.src === spanKey);
 
 	const sourceData = $derived(
 		isOpen && span
@@ -123,14 +125,21 @@
 	});
 
 	function open() {
-		pushState('', { ...page.state, sourceSpanKey: spanKey });
+		if (!spanKey) return;
+		updateSourceParam(spanKey);
 	}
 
 	function clearSourceState() {
 		if (!isOpen) return;
-		const nextState = { ...(page.state ?? {}) } as Record<string, unknown>;
-		delete nextState.sourceSpanKey;
-		replaceState('', nextState);
+		updateSourceParam(null);
+	}
+
+	function updateSourceParam(src: string | null) {
+		void goto(serializeExplorerState(page.url, { src }), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
 	}
 
 	function close() {
