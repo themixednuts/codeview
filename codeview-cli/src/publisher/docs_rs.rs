@@ -207,13 +207,16 @@ fn validate_decoded_json(json: &[u8]) -> Result<(), DocsRsError> {
 ///   `Content-Encoding: gzip` even though the file is gzipped)
 /// - Identifies as `codeview-cron/{version}` so docs.rs maintainers can
 ///   trace traffic to us
-pub fn http_client() -> Result<reqwest::Client, anyhow::Error> {
-    let ua = format!(
+pub fn user_agent() -> String {
+    format!(
         "codeview-cron/{} (https://codeview.dev)",
         env!("CARGO_PKG_VERSION")
-    );
+    )
+}
+
+pub fn http_client() -> Result<reqwest::Client, anyhow::Error> {
     reqwest::Client::builder()
-        .user_agent(ua)
+        .user_agent(user_agent())
         .connect_timeout(std::time::Duration::from_secs(60))
         .timeout(std::time::Duration::from_secs(300))
         .build()

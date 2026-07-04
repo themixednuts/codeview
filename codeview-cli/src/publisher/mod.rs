@@ -14,9 +14,11 @@
 //! | `shards`   | Sharded artifact builders (manifest, nodes, search…).     |
 //! | `docs_rs`  | Fetch + decompress rustdoc JSON for `{name}@{version}`.    |
 //! | `crates_io`| Newest-version + top-N lookups against the registry.       |
+//! | `crates_dump`| Bulk crates.io db-dump snapshot for sweep planning.       |
 //! | `artifacts`| Build + upload one crate's full artifact set.             |
 
 pub mod artifacts;
+pub mod crates_dump;
 pub mod crates_io;
 pub mod docs_rs;
 pub mod freshness;

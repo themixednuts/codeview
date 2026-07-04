@@ -46,6 +46,11 @@ futures = "0.3"
 flate2 = "1.0"
 zstd = "0.13"
 
+# crates.io db-dump snapshot: stream `*.csv` members from `db-dump.tar.gz`
+csv = "1.4"
+semver = "1.0"
+tar = "0.4"
+
 # Local R2 emulation — miniflare SQLite schema mirrored 1:1 via drizzle
 drizzle = { version = "0.1.6", features = ["sqlite", "rusqlite", "serde"] }
 # Pinned to match drizzle's transitive requirement (rusqlite ^0.37 →

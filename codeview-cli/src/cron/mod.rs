@@ -11,12 +11,14 @@
 //! - `parse-one` — fetch one crate's rustdoc JSON from docs.rs, parse,
 //!   build artifacts, upload, record freshness.
 //! - `catalog` — derive `rust/catalog.json` from the freshness index.
+//! - `metadata` — build/publish a compact crates.io db-dump snapshot.
 //! - `seed-std` — populate R2 with std/core/alloc/proc_macro/test from
 //!   a rustup-installed `rust-docs-json` component (nightly-only).
 //! - `mimic` — dev-time loop: sweep + parse-one over a small set,
 //!   against local R2.
 
 pub mod catalog;
+pub mod metadata;
 pub mod mimic;
 pub mod parse_one;
 pub mod seed_std;
@@ -39,6 +41,8 @@ pub enum CronCommand {
     ParseOne(parse_one::ParseOne),
     /// Rebuild `rust/catalog.json` from the freshness index
     Catalog(catalog::Catalog),
+    /// Build or publish a bulk crates.io metadata snapshot
+    Metadata(metadata::Metadata),
     /// Seed std/core/alloc/proc_macro/test from a rust-docs-json toolchain
     SeedStd(seed_std::SeedStd),
     /// Local dev: sweep + parse a small set against local R2
@@ -56,6 +60,7 @@ pub async fn dispatch(args: CronArgs) -> Result<()> {
         CronCommand::Sweep(s) => sweep::run(s).await,
         CronCommand::ParseOne(s) => parse_one::run(s).await,
         CronCommand::Catalog(s) => catalog::run(s).await,
+        CronCommand::Metadata(s) => metadata::run(s).await,
         CronCommand::SeedStd(s) => seed_std::run(s).await,
         CronCommand::Mimic(s) => mimic::run(s).await,
     }
