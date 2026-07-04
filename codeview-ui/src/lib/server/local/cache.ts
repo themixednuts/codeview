@@ -261,7 +261,7 @@ export class LocalCache {
 	 */
 	getEdgesForNode(name: string, version: string, nodeId: string): Edge[] {
 		const n = this.norm(name);
-		const edgeRows = this.db
+		const outgoingRows = this.db
 			.select({
 				fromId: edges.fromId,
 				toId: edges.toId,
@@ -275,10 +275,43 @@ export class LocalCache {
 					eq(edges.ecosystem, 'rust'),
 					eq(edges.crateName, n),
 					eq(edges.crateVersion, version),
-					or(eq(edges.fromId, nodeId), eq(edges.toId, nodeId)),
+					eq(edges.fromId, nodeId),
 				),
 			)
 			.all();
+
+		const incomingRows = this.db
+			.select({
+				fromId: edges.fromId,
+				toId: edges.toId,
+				kind: edges.kind,
+				confidence: edges.confidence,
+				isGlob: edges.isGlob,
+			})
+			.from(edges)
+			.where(
+				and(
+					eq(edges.ecosystem, 'rust'),
+					eq(edges.crateName, n),
+					eq(edges.crateVersion, version),
+					eq(edges.toId, nodeId),
+				),
+			)
+			.all();
+
+		const rowsByKey = new Map<string, (typeof outgoingRows)[number]>();
+		for (const row of [...outgoingRows, ...incomingRows]) {
+			rowsByKey.set(
+				`${row.fromId}\u0000${row.toId}\u0000${row.kind}\u0000${row.confidence}\u0000${String(row.isGlob)}`,
+				row,
+			);
+		}
+		const edgeRows = Array.from(rowsByKey.values()).sort((a, b) => {
+			if (a.fromId !== b.fromId) return a.fromId < b.fromId ? -1 : 1;
+			if (a.toId !== b.toId) return a.toId < b.toId ? -1 : 1;
+			if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
+			return 0;
+		});
 
 		return edgeRows.map((row) => ({
 			from: row.fromId,
@@ -840,26 +873,36 @@ export class LocalCache {
 			)
 			.all();
 
-		const children: { node: Node; hasChildren: boolean }[] = [];
-		for (const row of childEdges) {
-			const node = this.getNodeById(name, version, row.toId);
-			if (!node || node.is_external) continue;
-			// Check if this child has children of its own
-			const hasKids = this.db
-				.select({ id: edges.fromId })
+		if (childEdges.length === 0) return [];
+
+		const childIds = Array.from(new Set(childEdges.map((row) => row.toId)));
+		const childIdsWithChildren = new Set<string>();
+		const QUERY_BATCH = 500;
+		for (let i = 0; i < childIds.length; i += QUERY_BATCH) {
+			const batch = childIds.slice(i, i + QUERY_BATCH);
+			const childParentRows = this.db
+				.select({ fromId: edges.fromId })
 				.from(edges)
 				.where(
 					and(
 						eq(edges.ecosystem, eco),
 						eq(edges.crateName, n),
 						eq(edges.crateVersion, version),
-						eq(edges.fromId, row.toId),
+						inArray(edges.fromId, batch),
 						inArray(edges.kind, structuralKinds),
 					),
 				)
-				.limit(1)
-				.get();
-			children.push({ node, hasChildren: !!hasKids });
+				.all();
+			for (const row of childParentRows) {
+				childIdsWithChildren.add(row.fromId);
+			}
+		}
+
+		const children: { node: Node; hasChildren: boolean }[] = [];
+		for (const row of childEdges) {
+			const node = this.getNodeById(name, version, row.toId);
+			if (!node || node.is_external) continue;
+			children.push({ node, hasChildren: childIdsWithChildren.has(row.toId) });
 		}
 		return children;
 	}
