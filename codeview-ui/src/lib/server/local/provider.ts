@@ -96,6 +96,35 @@ type CrateIndexEntry = {
 	is_external?: boolean;
 };
 
+type WorkspaceCrate = Workspace['crates'][number];
+
+function sameCrateName(left: string, right: string): boolean {
+	return normalizeCrateName(left) === normalizeCrateName(right);
+}
+
+function findWorkspaceCrate(
+	workspace: Workspace | null,
+	name: string,
+	version?: string,
+): WorkspaceCrate | null {
+	if (!workspace) return null;
+	return (
+		workspace.crates.find((crate) => {
+			const nameMatches = sameCrateName(crate.id, name) || sameCrateName(crate.name, name);
+			const versionMatches =
+				version === undefined || version === 'latest' || crate.version === version;
+			return nameMatches && versionMatches;
+		}) ?? null
+	);
+}
+
+function findCrateIndexEntry(crates: CrateIndexEntry[], name: string): CrateIndexEntry | null {
+	return (
+		crates.find((crate) => sameCrateName(crate.id, name) || sameCrateName(crate.name, name)) ??
+		null
+	);
+}
+
 async function mapWithConcurrency<T, R>(
 	items: T[],
 	limit: number,
@@ -217,6 +246,24 @@ export function createLocalProvider(): DataProvider {
 
 		const count = lc.getProcessingCount('rust');
 		emit.processing('rust', { type: 'processing', count });
+	}
+
+	async function emitWorkspaceReady(
+		requestedName: string,
+		requestedVersion: string,
+		workspaceCrate: WorkspaceCrate,
+	): Promise<void> {
+		const emitted = new Set<string>();
+		const emitOnce = async (name: string, version: string) => {
+			const key = `${name}:${version}`;
+			if (emitted.has(key)) return;
+			emitted.add(key);
+			await emitStatus(name, version, { status: 'ready' });
+		};
+
+		await emitOnce(requestedName, requestedVersion);
+		await emitOnce(workspaceCrate.name, workspaceCrate.version);
+		await emitOnce(workspaceCrate.id, workspaceCrate.version);
 	}
 
 	function emitEdgeUpdate(nodeId: string): void {
@@ -819,29 +866,37 @@ export function createLocalProvider(): DataProvider {
 
 	let loadingPromise: Promise<Workspace | null> | null = null;
 
+	async function loadWorkspace(): Promise<Workspace | null> {
+		if (cached) return cached;
+		if (loadingPromise) return loadingPromise;
+		loadingPromise = (async () => {
+			const graphPath = process.env.CODEVIEW_GRAPH;
+			if (!graphPath) return null;
+			const readResult = await Result.tryPromise(() => readFile(graphPath, 'utf-8'));
+			if (readResult.isErr()) {
+				log.error`Failed to read workspace file: ${readResult.error}`;
+				return null;
+			}
+			const parseResult = Result.try(() => JSON.parse(readResult.value));
+			if (parseResult.isErr()) {
+				log.error`Failed to parse workspace JSON`;
+				return null;
+			}
+			cached = parseWorkspace(parseResult.value) as Workspace;
+			return cached;
+		})().finally(() => {
+			loadingPromise = null;
+		});
+		return loadingPromise;
+	}
+
+	async function getWorkspaceCrate(name: string, version?: string) {
+		return findWorkspaceCrate(await loadWorkspace(), name, version);
+	}
+
 	const provider: DataProvider = {
 		async loadWorkspace() {
-			if (cached) return cached;
-			if (loadingPromise) return loadingPromise;
-			loadingPromise = (async () => {
-				const graphPath = process.env.CODEVIEW_GRAPH;
-				if (!graphPath) return null;
-				const readResult = await Result.tryPromise(() => readFile(graphPath, 'utf-8'));
-				if (readResult.isErr()) {
-					log.error`Failed to read workspace file: ${readResult.error}`;
-					return null;
-				}
-				const parseResult = Result.try(() => JSON.parse(readResult.value));
-				if (parseResult.isErr()) {
-					log.error`Failed to parse workspace JSON`;
-					return null;
-				}
-				cached = parseWorkspace(parseResult.value) as Workspace;
-				return cached;
-			})().finally(() => {
-				loadingPromise = null;
-			});
-			return loadingPromise;
+			return loadWorkspace();
 		},
 
 		async loadSourceFile(
@@ -989,14 +1044,8 @@ export function createLocalProvider(): DataProvider {
 		async loadCrateGraph(name: string, _version: string) {
 			// Check workspace first
 			const ws = await this.loadWorkspace();
-			if (ws) {
-				const normalized = normalizeCrateName(name);
-				const found = ws.crates.find(
-					(c) =>
-						normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized,
-				);
-				if (found) return found;
-			}
+			const found = findWorkspaceCrate(ws, name, _version);
+			if (found) return found;
 
 			// Check local cache for external crates
 			const lc = await getCache();
@@ -1024,13 +1073,8 @@ export function createLocalProvider(): DataProvider {
 			const ws = await this.loadWorkspace();
 			if (ws) {
 				// Check if crate is in workspace
-				const normalizedName = normalizeCrateName(name);
-				const inWorkspace = ws.crates.some(
-					(c) =>
-						normalizeCrateName(c.id) === normalizedName ||
-						normalizeCrateName(c.name) === normalizedName,
-				);
-				if (inWorkspace) {
+				const workspaceCrate = findWorkspaceCrate(ws, name, version);
+				if (workspaceCrate) {
 					const crates: Array<{
 						id: string;
 						name: string;
@@ -1050,14 +1094,14 @@ export function createLocalProvider(): DataProvider {
 							is_external: true,
 						});
 					}
-					const current = crates.find((c) => c.id === name || c.name === name);
+					const current = findCrateIndexEntry(crates, name);
 
 					// Fire-and-forget: auto-trigger std crate parsing for available sysroot JSON
 					void autoTriggerStdCrates(crates);
 
 					return {
-						name: current?.name ?? name,
-						version: current?.version ?? version,
+						name: current?.name ?? workspaceCrate.name,
+						version: current?.version ?? workspaceCrate.version,
 						crates,
 					};
 				}
@@ -1216,6 +1260,16 @@ export function createLocalProvider(): DataProvider {
 				}
 			}
 
+			const workspaceCrate = await getWorkspaceCrate(name, version);
+			if (workspaceCrate) {
+				try {
+					await emitWorkspaceReady(name, version, workspaceCrate);
+				} catch {
+					/* status cache is best-effort for workspace graph data */
+				}
+				return { status: 'ready' };
+			}
+
 			// Check SQLite status first
 			try {
 				const lc = await getCache();
@@ -1231,17 +1285,6 @@ export function createLocalProvider(): DataProvider {
 					return { status: 'ready' };
 				}
 			} catch {}
-
-			// Check workspace (normalize to underscores: URL uses hyphens, workspace uses underscores)
-			const ws = await this.loadWorkspace();
-			if (ws) {
-				const normalized = normalizeCrateName(name);
-				const found = ws.crates.some(
-					(c) =>
-						normalizeCrateName(c.name) === normalized || normalizeCrateName(c.id) === normalized,
-				);
-				if (found) return { status: 'ready' };
-			}
 
 			// Auto-trigger parse for unknown external crates (mirrors Cloudflare behavior)
 			if (isValidCrateName(name) && isValidVersion(version)) {
@@ -1275,6 +1318,12 @@ export function createLocalProvider(): DataProvider {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
 
+			const workspaceCrate = await getWorkspaceCrate(name, version);
+			if (workspaceCrate) {
+				await emitWorkspaceReady(name, version, workspaceCrate);
+				return Result.ok(undefined);
+			}
+
 			const lc = await getCache();
 
 			if (force) {
@@ -1301,6 +1350,12 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async ensureParsed(name: string, version: string): Promise<void> {
+			const workspaceCrate = await getWorkspaceCrate(name, version);
+			if (workspaceCrate) {
+				await emitWorkspaceReady(name, version, workspaceCrate);
+				return;
+			}
+
 			const lc = await getCache();
 			// Already finalized?
 			if (lc.hasCrate(name, version)) return;
@@ -1363,13 +1418,7 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
-			const ws = await this.loadWorkspace();
-			const normalizedName = normalizeCrateName(name);
-			const localVersion = ws?.crates.find(
-				(c) =>
-					normalizeCrateName(c.id) === normalizedName ||
-					normalizeCrateName(c.name) === normalizedName,
-			)?.version;
+			const localVersion = (await getWorkspaceCrate(name))?.version;
 			// Try both hyphen and underscore variants for registry lookup
 			let registryVersions: string[] = [];
 			for (const variant of crateNameVariants(name)) {

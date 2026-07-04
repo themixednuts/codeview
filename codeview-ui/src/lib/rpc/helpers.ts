@@ -311,7 +311,11 @@ export class Resolver {
 				const crateNameForProvider = hyphenateCrateName(cratePrefix);
 
 				if (workspace) {
-					const crate = workspace.crates.find((c) => c.id === cratePrefix);
+					const crate = workspace.crates.find(
+						(c) =>
+							normalizeCrateName(c.id) === normalizeCrateName(cratePrefix) ||
+							normalizeCrateName(c.name) === normalizeCrateName(cratePrefix),
+					);
 					if (crate) {
 						const allNodes = getAllNodes(workspace);
 						const node = allNodes.get(nodeId);
@@ -421,7 +425,13 @@ export class Resolver {
 			let crateTree: CrateTree | null = null;
 
 			// Workspace path
-			const wsCrate = ws?.crates.find((c) => c.id === name) ?? null;
+			const normalizedName = normalizeCrateName(name);
+			const wsCrate =
+				ws?.crates.find(
+					(c) =>
+						normalizeCrateName(c.id) === normalizedName ||
+						normalizeCrateName(c.name) === normalizedName,
+				) ?? null;
 			if (wsCrate) {
 				const internalNodes = wsCrate.nodes.filter((n) => !n.is_external);
 				const internalIds = new Set(internalNodes.map((n) => n.id));

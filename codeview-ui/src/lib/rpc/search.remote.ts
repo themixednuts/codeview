@@ -1,5 +1,6 @@
 import { query } from '$app/server';
 import { type NodeSummary } from '$lib/schema';
+import { normalizeCrateName } from '$lib/crate-names';
 import { sanitizeSearchQuery } from '$lib/server/validation';
 import { loader, getAllNodes, summarizeNode } from './helpers';
 import { assertCrateRef } from './remote-utils';
@@ -19,11 +20,24 @@ export const searchNodes = query(
 
 		if (ws) {
 			// If scoped to a specific crate that isn't in the workspace, fall through
-			const isWorkspaceCrate = !crateId || ws.crates.some((c) => c.id === crateId);
+			const normalizedCrateId = crateId ? normalizeCrateName(crateId) : null;
+			const isWorkspaceCrate =
+				!normalizedCrateId ||
+				ws.crates.some(
+					(c) =>
+						normalizeCrateName(c.id) === normalizedCrateId ||
+						normalizeCrateName(c.name) === normalizedCrateId,
+				);
 			if (isWorkspaceCrate) {
 				const results: NodeSummary[] = [];
 				for (const c of ws.crates) {
-					if (crateId && c.id !== crateId) continue;
+					if (
+						normalizedCrateId &&
+						normalizeCrateName(c.id) !== normalizedCrateId &&
+						normalizeCrateName(c.name) !== normalizedCrateId
+					) {
+						continue;
+					}
 					for (const n of c.nodes) {
 						if (
 							!n.is_external &&
