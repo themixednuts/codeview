@@ -15,6 +15,7 @@
 //! - `plan` — build a runner-agnostic sharded work plan.
 //! - `parse-shard` — process one deterministic shard from a work plan.
 //! - `freshness-merge` — single-writer finalizer for run deltas.
+//! - `publish-run` — local in-process plan → all shards → finalizer driver.
 //! - `seed-std` — populate R2 with std/core/alloc/proc_macro/test from
 //!   a rustup-installed `rust-docs-json` component (nightly-only).
 //! - `mimic` — dev-time loop: sweep + parse-one over a small set,
@@ -24,9 +25,10 @@ pub mod catalog;
 pub mod freshness_merge;
 pub mod metadata;
 pub mod mimic;
-pub mod parse_shard;
 pub mod parse_one;
+pub mod parse_shard;
 pub mod plan;
+pub mod publish_run;
 pub mod seed_std;
 pub mod sweep;
 
@@ -55,6 +57,8 @@ pub enum CronCommand {
     ParseShard(parse_shard::ParseShard),
     /// Merge parse run deltas into the aggregate freshness index
     FreshnessMerge(freshness_merge::FreshnessMerge),
+    /// Local in-process driver: plan, drain every shard, then finalize
+    PublishRun(publish_run::PublishRun),
     /// Seed std/core/alloc/proc_macro/test from a rust-docs-json toolchain
     SeedStd(seed_std::SeedStd),
     /// Local dev: sweep + parse a small set against local R2
@@ -76,6 +80,7 @@ pub async fn dispatch(args: CronArgs) -> Result<()> {
         CronCommand::Plan(s) => plan::run(s).await,
         CronCommand::ParseShard(s) => parse_shard::run(s).await,
         CronCommand::FreshnessMerge(s) => freshness_merge::run(s).await,
+        CronCommand::PublishRun(s) => publish_run::run(s).await,
         CronCommand::SeedStd(s) => seed_std::run(s).await,
         CronCommand::Mimic(s) => mimic::run(s).await,
     }

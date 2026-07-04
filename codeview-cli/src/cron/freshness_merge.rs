@@ -83,26 +83,26 @@ pub struct FreshnessMerge {
 
 pub async fn run(args: FreshnessMerge) -> Result<()> {
     let ctx = CronContext::build(&args.bucket).await?;
-    let config = FreshnessMergeConfig {
-        run_id: args.run_id.clone(),
-        delta_prefix: args
-            .delta_prefix
-            .clone()
-            .unwrap_or_else(|| run_delta_prefix(&args.run_id)),
-        index_shards: args.index_shards,
-        write_catalog: args.write_catalog,
-        write_refs: args.write_refs && !args.no_write_refs,
-        bootstrap: args.bootstrap,
-        generation: args.generation.clone().unwrap_or(args.run_id),
-        generated_at: args
-            .generated_at
-            .clone()
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-        parser_revision: ctx.parser_revision.clone(),
-        graph_schema_version: codeview_core::SCHEMA_VERSION,
-    };
-
-    let report = merge(ctx.r2.clone(), &ctx.freshness, config).await?;
+    let report = finalize(
+        &ctx,
+        FinalizeConfig {
+            run_id: args.run_id.clone(),
+            delta_prefix: args
+                .delta_prefix
+                .clone()
+                .unwrap_or_else(|| run_delta_prefix(&args.run_id)),
+            index_shards: args.index_shards,
+            write_catalog: args.write_catalog,
+            write_refs: args.write_refs && !args.no_write_refs,
+            bootstrap: args.bootstrap,
+            generation: args.generation.clone().unwrap_or(args.run_id),
+            generated_at: args
+                .generated_at
+                .clone()
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        },
+    )
+    .await?;
     eprintln!(
         "[freshness-merge] run={} deltas={} entries={} changed_shards={} catalog={} refs={} manifest={}",
         report.run_id,
@@ -114,6 +114,37 @@ pub async fn run(args: FreshnessMerge) -> Result<()> {
         INDEX_MANIFEST_KEY,
     );
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FinalizeConfig {
+    pub(crate) run_id: String,
+    pub(crate) delta_prefix: String,
+    pub(crate) index_shards: usize,
+    pub(crate) write_catalog: bool,
+    pub(crate) write_refs: bool,
+    pub(crate) bootstrap: bool,
+    pub(crate) generation: String,
+    pub(crate) generated_at: String,
+}
+
+pub(crate) async fn finalize(
+    ctx: &CronContext,
+    config: FinalizeConfig,
+) -> Result<FreshnessMergeReport> {
+    let config = FreshnessMergeConfig {
+        run_id: config.run_id,
+        delta_prefix: config.delta_prefix,
+        index_shards: config.index_shards,
+        write_catalog: config.write_catalog,
+        write_refs: config.write_refs,
+        bootstrap: config.bootstrap,
+        generation: config.generation,
+        generated_at: config.generated_at,
+        parser_revision: ctx.parser_revision.clone(),
+        graph_schema_version: codeview_core::SCHEMA_VERSION,
+    };
+    merge(ctx.r2.clone(), &ctx.freshness, config).await
 }
 
 #[derive(Debug, Clone)]

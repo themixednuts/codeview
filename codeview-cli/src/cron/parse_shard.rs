@@ -9,10 +9,10 @@ use clap::Args;
 use serde::{Deserialize, Serialize};
 
 use crate::publisher::artifacts::{
-    CrateSource, Outcome, PublishError, PublishOptions, hyphenate_crate_name,
-    normalise_crate_name, publish_one,
+    CrateSource, Outcome, PublishError, PublishOptions, hyphenate_crate_name, normalise_crate_name,
+    publish_one,
 };
-use crate::publisher::r2::{read_json, R2};
+use crate::publisher::r2::{R2, read_json};
 use crate::publisher::shards;
 
 use super::CronContext;
@@ -104,6 +104,27 @@ enum PlanSource {
     R2(String),
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ShardDrainConfig {
+    pub(crate) run_id: String,
+    pub(crate) shard_index: usize,
+    pub(crate) shard_count: usize,
+    pub(crate) max_items: Option<usize>,
+    pub(crate) max_duration_minutes: Option<u64>,
+    pub(crate) docsrs_min_delay_ms: u64,
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShardDrainReport {
+    pub(crate) shard_index: usize,
+    pub(crate) selected: usize,
+    pub(crate) processed: usize,
+    pub(crate) published: usize,
+    pub(crate) fresh: usize,
+    pub(crate) failed: usize,
+}
+
 pub async fn run(args: ParseShard) -> Result<()> {
     if args.shard_count == 0 {
         anyhow::bail!("--shard-count must be greater than zero");
@@ -126,34 +147,79 @@ pub async fn run(args: ParseShard) -> Result<()> {
         );
     }
     let run_id = args.run_id.clone().unwrap_or_else(|| plan.run_id.clone());
-    let deadline = args.max_duration_minutes.map(|minutes| {
-        Instant::now() + Duration::from_secs(minutes.saturating_mul(60))
-    });
-    let delay = Duration::from_millis(args.docsrs_min_delay_ms);
+    drain_shard(
+        &ctx,
+        &plan,
+        ShardDrainConfig {
+            run_id,
+            shard_index: args.shard_index,
+            shard_count: args.shard_count,
+            max_items: args.max_items,
+            max_duration_minutes: args.max_duration_minutes,
+            docsrs_min_delay_ms: args.docsrs_min_delay_ms,
+            force: args.force,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn drain_shard(
+    ctx: &CronContext,
+    plan: &WorkPlan,
+    config: ShardDrainConfig,
+) -> Result<ShardDrainReport> {
+    if config.shard_count == 0 {
+        anyhow::bail!("shard_count must be greater than zero");
+    }
+    if config.shard_index >= config.shard_count {
+        anyhow::bail!(
+            "shard_index {} must be less than shard_count {}",
+            config.shard_index,
+            config.shard_count
+        );
+    }
+    if plan.shard_count != config.shard_count {
+        anyhow::bail!(
+            "plan shard_count {} does not match shard_count {}",
+            plan.shard_count,
+            config.shard_count
+        );
+    }
+
+    let deadline = config
+        .max_duration_minutes
+        .map(|minutes| Instant::now() + Duration::from_secs(minutes.saturating_mul(60)));
+    let delay = Duration::from_millis(config.docsrs_min_delay_ms);
 
     let shard_work: Vec<_> = plan
         .work
-        .into_iter()
-        .filter(|item| shards::work_bucket(&item.work_id, args.shard_count) == args.shard_index)
+        .iter()
+        .filter(|item| shards::work_bucket(&item.work_id, config.shard_count) == config.shard_index)
+        .cloned()
         .collect();
 
     eprintln!(
         "[parse-shard] run={} shard={}/{} selected={} parser={} schema=v{}",
-        run_id,
-        args.shard_index,
-        args.shard_count,
+        config.run_id,
+        config.shard_index,
+        config.shard_count,
         shard_work.len(),
         ctx.parser_revision_short(),
         codeview_core::SCHEMA_VERSION,
     );
 
-    let mut processed = 0usize;
-    let mut published = 0usize;
-    let mut fresh = 0usize;
-    let mut failed = 0usize;
+    let mut report = ShardDrainReport {
+        shard_index: config.shard_index,
+        selected: shard_work.len(),
+        processed: 0,
+        published: 0,
+        fresh: 0,
+        failed: 0,
+    };
     for item in shard_work {
-        if let Some(max_items) = args.max_items
-            && processed >= max_items
+        if let Some(max_items) = config.max_items
+            && report.processed >= max_items
         {
             break;
         }
@@ -164,19 +230,21 @@ pub async fn run(args: ParseShard) -> Result<()> {
             break;
         }
 
-        let delta = process_item(&ctx, &item, args.force).await;
+        let delta = process_item(ctx, &item, config.force).await;
         match &delta.outcome {
-            RunDeltaOutcome::Published | RunDeltaOutcome::ParserBumped => published += 1,
-            RunDeltaOutcome::Fresh => fresh += 1,
+            RunDeltaOutcome::Published | RunDeltaOutcome::ParserBumped => report.published += 1,
+            RunDeltaOutcome::Fresh => report.fresh += 1,
             RunDeltaOutcome::Transient
             | RunDeltaOutcome::Permanent
-            | RunDeltaOutcome::Quarantine => failed += 1,
+            | RunDeltaOutcome::Quarantine => report.failed += 1,
         }
-        append_run_delta(&ctx, &run_id, args.shard_index, &delta).await?;
-        processed += 1;
+        append_run_delta(ctx, &config.run_id, config.shard_index, &delta).await?;
+        report.processed += 1;
 
         if delay > Duration::ZERO
-            && args.max_items.is_none_or(|max_items| processed < max_items)
+            && config
+                .max_items
+                .is_none_or(|max_items| report.processed < max_items)
         {
             if let Some(deadline) = deadline
                 && Instant::now() + delay >= deadline
@@ -189,9 +257,22 @@ pub async fn run(args: ParseShard) -> Result<()> {
 
     eprintln!(
         "[parse-shard] done processed={} published_or_bumped={} fresh={} failed={}",
-        processed, published, fresh, failed
+        report.processed, report.published, report.fresh, report.failed
     );
-    Ok(())
+    Ok(report)
+}
+
+pub(crate) fn shard_work_count(plan: &WorkPlan, shard_index: usize, shard_count: usize) -> usize {
+    plan.work
+        .iter()
+        .filter(|item| shards::work_bucket(&item.work_id, shard_count) == shard_index)
+        .count()
+}
+
+pub(crate) fn shard_work_counts(plan: &WorkPlan, shard_count: usize) -> Vec<usize> {
+    (0..shard_count)
+        .map(|shard_index| shard_work_count(plan, shard_index, shard_count))
+        .collect()
 }
 
 async fn process_item(ctx: &CronContext, item: &super::plan::WorkItem, force: bool) -> RunDelta {
@@ -266,9 +347,7 @@ async fn success_delta(
     let (outcome, published_counts) = match outcome {
         Outcome::AlreadyFresh => (RunDeltaOutcome::Fresh, None),
         Outcome::ParserBumpedSameOutput => (RunDeltaOutcome::ParserBumped, None),
-        Outcome::Published { nodes, edges } => {
-            (RunDeltaOutcome::Published, Some((nodes, edges)))
-        }
+        Outcome::Published { nodes, edges } => (RunDeltaOutcome::Published, Some((nodes, edges))),
     };
     let nodes = latest
         .as_ref()
@@ -294,11 +373,7 @@ async fn success_delta(
     }
 }
 
-fn error_delta(
-    item: &super::plan::WorkItem,
-    outcome: RunDeltaOutcome,
-    error: String,
-) -> RunDelta {
+fn error_delta(item: &super::plan::WorkItem, outcome: RunDeltaOutcome, error: String) -> RunDelta {
     RunDelta {
         work_id: item.work_id.clone(),
         name: item.name.clone(),

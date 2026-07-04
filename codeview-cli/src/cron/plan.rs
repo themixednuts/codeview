@@ -197,6 +197,59 @@ struct PlanAssembly {
     max_per_shard: Option<usize>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PlanBuildConfig {
+    pub(crate) mode: PlanMode,
+    pub(crate) corpus: String,
+    pub(crate) tier: Option<CorpusTier>,
+    pub(crate) shard_count: usize,
+    pub(crate) max_total: Option<usize>,
+    pub(crate) max_per_shard: Option<usize>,
+    pub(crate) include_retries: bool,
+    pub(crate) force_names: HashSet<String>,
+    pub(crate) force_all: bool,
+    pub(crate) include_prerelease: bool,
+    pub(crate) plan_out: Option<String>,
+    pub(crate) run_id: Option<String>,
+    pub(crate) generated_at: Option<String>,
+    pub(crate) metadata_source: MetadataSource,
+    pub(crate) db_dump_url: String,
+    pub(crate) db_dump_path: PathBuf,
+    pub(crate) metadata_max_age_hours: u64,
+    pub(crate) quiet: bool,
+}
+
+impl PlanBuildConfig {
+    fn from_args(args: &Plan) -> Self {
+        Self {
+            mode: args.mode,
+            corpus: args.corpus.clone(),
+            tier: args.tier,
+            shard_count: args.shard_count,
+            max_total: args.max_total,
+            max_per_shard: args.max_per_shard,
+            include_retries: args.include_retries,
+            force_names: parse_force(&args.force),
+            force_all: false,
+            include_prerelease: args.include_prerelease,
+            plan_out: Some(args.plan_out.clone()),
+            run_id: args.run_id.clone(),
+            generated_at: args.generated_at.clone(),
+            metadata_source: args.metadata_source,
+            db_dump_url: args.db_dump_url.clone(),
+            db_dump_path: args.db_dump_path.clone(),
+            metadata_max_age_hours: args.metadata_max_age_hours,
+            quiet: args.quiet,
+        }
+    }
+
+    fn log(&self, message: impl AsRef<str>) {
+        if !self.quiet {
+            eprintln!("{}", message.as_ref());
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PriorityTier {
     Forced,
@@ -240,80 +293,92 @@ enum PlanDestination {
 }
 
 pub async fn run(args: Plan) -> Result<()> {
-    let log = |s: &str| {
-        if !args.quiet {
-            eprintln!("{s}");
-        }
-    };
-    if args.shard_count == 0 {
+    let ctx = CronContext::build(&args.bucket).await?;
+    let matrix_out = args.matrix_out.clone();
+    let plan = build_plan(&ctx, PlanBuildConfig::from_args(&args)).await?;
+    let matrix = shard_matrix(plan.shard_count);
+    write_matrix(matrix_out.as_deref(), &matrix, &plan)?;
+    Ok(())
+}
+
+pub(crate) async fn build_plan(ctx: &CronContext, config: PlanBuildConfig) -> Result<WorkPlan> {
+    if config.shard_count == 0 {
         anyhow::bail!("--shard-count must be greater than zero");
     }
-    if args.metadata_source != MetadataSource::DbDump {
+    if config.metadata_source != MetadataSource::DbDump {
         anyhow::bail!(
             "--metadata-source {:?} is accepted by the CLI but only db-dump snapshots are implemented for plan",
-            args.metadata_source
+            config.metadata_source
         );
     }
-    if matches!(args.tier, Some(CorpusTier::Std)) {
-        log("[plan] --tier std is accepted but std parsing is still handled by seed-std");
+    if matches!(config.tier, Some(CorpusTier::Std)) {
+        config.log("[plan] --tier std is accepted but std parsing is still handled by seed-std");
     }
-    if args.include_retries {
-        log("[plan] --include-retries is accepted; retry index support lands with freshness-merge");
+    if config.include_retries {
+        config.log(
+            "[plan] --include-retries is accepted; retry index support lands with freshness-merge",
+        );
     }
 
-    let generated_at = args
+    let generated_at = config
         .generated_at
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-    let run_id = args
+    let run_id = config
         .run_id
         .clone()
         .or_else(|| std::env::var("GITHUB_RUN_ID").ok())
         .unwrap_or_else(|| format!("local-{}", sanitise_run_id_timestamp(&generated_at)));
 
-    let ctx = CronContext::build(&args.bucket).await?;
-    log(&format!(
+    config.log(format!(
         "[plan] parser={} schema=v{} mode={:?} shards={}",
         ctx.parser_revision_short(),
         codeview_core::SCHEMA_VERSION,
-        args.mode,
-        args.shard_count,
+        config.mode,
+        config.shard_count,
     ));
 
     let metadata_http = crates_dump::http_client()?;
-    let snapshot_path = crates_dump::snapshot_path_for_dump(&args.db_dump_path);
+    let snapshot_path = crates_dump::snapshot_path_for_dump(&config.db_dump_path);
     let snapshot_options = SnapshotBuildOptions {
-        include_prerelease: args.include_prerelease,
+        include_prerelease: config.include_prerelease,
     };
     let (snapshot, load) = crates_dump::load_or_refresh_snapshot(
         &metadata_http,
-        &args.db_dump_url,
-        &args.db_dump_path,
+        &config.db_dump_url,
+        &config.db_dump_path,
         &snapshot_path,
         snapshot_options,
-        crates_dump::max_age_duration(args.metadata_max_age_hours),
+        crates_dump::max_age_duration(config.metadata_max_age_hours),
     )
     .await?;
     match load {
         SnapshotLoad::ReusedSnapshot => {
-            log(&format!("[plan] metadata reused {}", snapshot_path.display()));
+            config.log(format!(
+                "[plan] metadata reused {}",
+                snapshot_path.display()
+            ));
         }
         SnapshotLoad::BuiltFromDump => {
-            log(&format!(
+            config.log(format!(
                 "[plan] metadata built {} crates from {}",
                 snapshot.crates.len(),
-                args.db_dump_path.display()
+                config.db_dump_path.display()
             ));
         }
     }
 
-    let corpus_names = resolve_corpus_names(&args, &ctx, &snapshot).await?;
-    let force = parse_force(&args.force);
-    let selected = selected_candidates(&snapshot, &corpus_names, &force);
+    let corpus_names = resolve_corpus_names(&config, ctx, &snapshot).await?;
+    let selected = selected_candidates(
+        &snapshot,
+        &corpus_names,
+        &config.force_names,
+        config.force_all,
+    );
     let mut evaluated = Vec::with_capacity(selected.len());
     for item in selected {
         let Some(version) = item.candidate.newest_non_yanked.clone() else {
-            log(&format!(
+            config.log(format!(
                 "[plan] snapshot has no non-yanked version: {}",
                 item.candidate.name
             ));
@@ -340,32 +405,34 @@ pub async fn run(args: Plan) -> Result<()> {
         PlanAssembly {
             run_id,
             generated_at,
-            mode: args.mode,
-            shard_count: args.shard_count,
-            max_total: args.max_total,
-            max_per_shard: args.max_per_shard,
+            mode: config.mode,
+            shard_count: config.shard_count,
+            max_total: config.max_total,
+            max_per_shard: config.max_per_shard,
         },
         evaluated,
     )?;
-    let matrix = shard_matrix(plan.shard_count);
 
-    write_plan(&ctx, &args.plan_out, &plan).await?;
-    write_matrix(args.matrix_out.as_deref(), &matrix, &plan)?;
+    let wrote_plan = config.plan_out.is_some();
+    if let Some(plan_out) = config.plan_out.as_deref() {
+        write_plan(ctx, plan_out, &plan).await?;
+    }
 
-    log(&format!(
-        "[plan] wrote {} work items across {} shards",
+    config.log(format!(
+        "[plan] {} {} work items across {} shards",
+        if wrote_plan { "wrote" } else { "built" },
         plan.work.len(),
         plan.shard_count
     ));
-    Ok(())
+    Ok(plan)
 }
 
 async fn resolve_corpus_names(
-    args: &Plan,
+    config: &PlanBuildConfig,
     ctx: &CronContext,
     snapshot: &CrateCatalogSnapshot,
 ) -> Result<Vec<String>> {
-    if let Some(tier) = args.tier {
+    if let Some(tier) = config.tier {
         return match tier {
             CorpusTier::Std => Ok(Vec::new()),
             CorpusTier::Top500 => Ok(snapshot
@@ -388,20 +455,20 @@ async fn resolve_corpus_names(
         };
     }
 
-    if args.corpus == "catalog" {
+    if config.corpus == "catalog" {
         let Some(catalog) = read_json::<CatalogFile>(&ctx.r2, r2::CATALOG_KEY).await? else {
             return Ok(Vec::new());
         };
         return Ok(catalog.crates.into_iter().map(|entry| entry.name).collect());
     }
-    if args.corpus == "all" {
+    if config.corpus == "all" {
         return Ok(snapshot
             .crates
             .iter()
             .map(|candidate| candidate.name.clone())
             .collect());
     }
-    if let Some(n_str) = args.corpus.strip_prefix("top:") {
+    if let Some(n_str) = config.corpus.strip_prefix("top:") {
         let n: usize = n_str.parse().context("parse --corpus top:N")?;
         return Ok(snapshot
             .crates
@@ -410,10 +477,10 @@ async fn resolve_corpus_names(
             .map(|candidate| candidate.name.clone())
             .collect());
     }
-    let path = args
+    let path = config
         .corpus
         .strip_prefix("file:")
-        .unwrap_or(args.corpus.as_str());
+        .unwrap_or(config.corpus.as_str());
     read_name_file(path)
 }
 
@@ -421,6 +488,7 @@ fn selected_candidates(
     snapshot: &CrateCatalogSnapshot,
     corpus_names: &[String],
     force_names: &HashSet<String>,
+    force_all: bool,
 ) -> Vec<SelectedCandidate> {
     let by_name: HashMap<String, &CrateCandidate> = snapshot
         .crates
@@ -438,7 +506,7 @@ fn selected_candidates(
         if let Some(candidate) = by_name.get(&lookup) {
             selected.push(SelectedCandidate {
                 candidate: (*candidate).clone(),
-                forced: force_names.contains(&lookup),
+                forced: force_all || force_names.contains(&lookup),
             });
         }
     }
@@ -582,7 +650,8 @@ async fn write_plan(ctx: &CronContext, raw: &str, plan: &WorkPlan) -> Result<()>
             if let Some(parent) = path.parent()
                 && !parent.as_os_str().is_empty()
             {
-                fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+                fs::create_dir_all(parent)
+                    .with_context(|| format!("create {}", parent.display()))?;
             }
             let bytes = serde_json::to_vec_pretty(plan)?;
             fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
@@ -671,9 +740,7 @@ fn sanitise_run_id_timestamp(generated_at: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::publisher::crates_dump::{
-        CrateCatalogSource, MetadataSource, RankMode,
-    };
+    use crate::publisher::crates_dump::{CrateCatalogSource, MetadataSource, RankMode};
 
     fn candidate(name: &str, version: &str, downloads: u64, rank: u32) -> CrateCandidate {
         CrateCandidate {
@@ -722,7 +789,7 @@ mod tests {
             "epsilon".to_string(),
         ];
         let force = parse_force("alpha");
-        let selected = selected_candidates(&snapshot, &corpus, &force);
+        let selected = selected_candidates(&snapshot, &corpus, &force, false);
         let freshness = HashMap::from([
             ("alpha", Staleness::Fresh),
             (
