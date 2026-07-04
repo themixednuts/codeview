@@ -916,6 +916,15 @@
 	}
 }
 
+@keyframes fadeIn {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
 @keyframes shimmer {
 	from {
 		opacity: 0.6;
