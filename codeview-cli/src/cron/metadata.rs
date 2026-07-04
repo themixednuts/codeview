@@ -7,7 +7,7 @@ use clap::Args;
 
 use crate::publisher::crates_dump::{
     self, DEFAULT_DB_DUMP_PATH, DEFAULT_DB_DUMP_URL, DEFAULT_SNAPSHOT_KEY, MetadataSource,
-    RankMode, SnapshotLoad,
+    RankMode, SnapshotBuildOptions, SnapshotLoad,
 };
 use crate::publisher::r2::write_json;
 
@@ -39,6 +39,11 @@ pub struct Metadata {
     /// write to R2; other values are local paths.
     #[arg(long, default_value = DEFAULT_SNAPSHOT_KEY)]
     pub out: String,
+
+    /// Include prerelease versions when selecting each crate's newest
+    /// non-yanked version.
+    #[arg(long)]
+    pub include_prerelease: bool,
 
     /// R2 bucket used when `--out` names an R2 key.
     #[arg(long, default_value = "crate-graphs")]
@@ -81,6 +86,9 @@ pub async fn run(args: Metadata) -> Result<()> {
         &args.db_dump_url,
         &args.db_dump_path,
         &snapshot_cache_path,
+        SnapshotBuildOptions {
+            include_prerelease: args.include_prerelease,
+        },
         crates_dump::max_age_duration(args.metadata_max_age_hours),
     )
     .await?;

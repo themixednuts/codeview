@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::publisher::crates_dump::{
     self, CrateCandidate, CrateCatalogSnapshot, DEFAULT_DB_DUMP_PATH, DEFAULT_DB_DUMP_URL,
-    MetadataSource, SnapshotLoad,
+    MetadataSource, SnapshotBuildOptions, SnapshotLoad,
 };
 use crate::publisher::crates_io::{self, CrateInfo};
 use crate::publisher::r2::{self, read_json};
@@ -193,6 +193,7 @@ pub async fn run(args: Sweep) -> Result<()> {
             &args.db_dump_url,
             &args.db_dump_path,
             &snapshot_path,
+            SnapshotBuildOptions::default(),
             crates_dump::max_age_duration(args.metadata_max_age_hours),
         )
         .await?;

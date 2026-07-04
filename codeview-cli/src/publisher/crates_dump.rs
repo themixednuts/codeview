@@ -64,6 +64,8 @@ impl fmt::Display for RankMode {
 pub struct CrateCatalogSnapshot {
     pub schema_version: u32,
     pub generated_at: String,
+    #[serde(default)]
+    pub include_prerelease: bool,
     pub source: CrateCatalogSource,
     pub rank: RankMode,
     pub crates: Vec<CrateCandidate>,
@@ -80,6 +82,10 @@ impl CrateCatalogSnapshot {
         let age =
             chrono::Utc::now().signed_duration_since(generated_at.with_timezone(&chrono::Utc));
         age.num_seconds() >= 0 && age.num_seconds() as u64 <= max_age.as_secs()
+    }
+
+    pub fn matches_build_options(&self, options: SnapshotBuildOptions) -> bool {
+        self.include_prerelease == options.include_prerelease
     }
 }
 
@@ -109,6 +115,11 @@ pub struct CrateCandidate {
     pub recent_downloads: Option<u64>,
     pub all_time_rank: Option<u32>,
     pub recent_rank: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SnapshotBuildOptions {
+    pub include_prerelease: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,10 +175,12 @@ pub async fn load_or_refresh_snapshot(
     url: &str,
     db_dump_path: &Path,
     snapshot_path: &Path,
+    options: SnapshotBuildOptions,
     max_age: Duration,
 ) -> Result<(CrateCatalogSnapshot, SnapshotLoad)> {
     if let Some(snapshot) = read_snapshot_file(snapshot_path)?
         && snapshot.is_fresh(max_age)
+        && snapshot.matches_build_options(options)
     {
         return Ok((snapshot, SnapshotLoad::ReusedSnapshot));
     }
@@ -183,7 +196,7 @@ pub async fn load_or_refresh_snapshot(
     };
     let db_dump_path = db_dump_path.to_path_buf();
     let snapshot = tokio::task::spawn_blocking(move || {
-        build_snapshot_from_db_dump_path(&db_dump_path, source)
+        build_snapshot_from_db_dump_path(&db_dump_path, source, options)
     })
     .await??;
     write_snapshot_file(snapshot_path, &snapshot)?;
@@ -302,15 +315,16 @@ pub fn write_snapshot_file(path: &Path, snapshot: &CrateCatalogSnapshot) -> Resu
 pub fn build_snapshot_from_db_dump_path(
     db_dump_path: &Path,
     source: CrateCatalogSource,
+    options: SnapshotBuildOptions,
 ) -> Result<CrateCatalogSnapshot> {
     let mut crates = HashMap::<u64, CrateAccumulator>::new();
     stream_csv_member(db_dump_path, "crates.csv", |reader| {
         read_crates_csv(reader, &mut crates)
     })?;
     stream_csv_member(db_dump_path, "versions.csv", |reader| {
-        read_versions_csv(reader, &mut crates)
+        read_versions_csv(reader, &mut crates, options)
     })?;
-    Ok(snapshot_from_accumulators(crates, source))
+    Ok(snapshot_from_accumulators(crates, source, options))
 }
 
 #[cfg(test)]
@@ -318,11 +332,12 @@ fn build_snapshot_from_csv_readers(
     crates_csv: impl Read,
     versions_csv: impl Read,
     source: CrateCatalogSource,
+    options: SnapshotBuildOptions,
 ) -> Result<CrateCatalogSnapshot> {
     let mut crates = HashMap::<u64, CrateAccumulator>::new();
     read_crates_csv(crates_csv, &mut crates)?;
-    read_versions_csv(versions_csv, &mut crates)?;
-    Ok(snapshot_from_accumulators(crates, source))
+    read_versions_csv(versions_csv, &mut crates, options)?;
+    Ok(snapshot_from_accumulators(crates, source, options))
 }
 
 fn stream_csv_member(
@@ -376,7 +391,11 @@ fn read_crates_csv(reader: impl Read, crates: &mut HashMap<u64, CrateAccumulator
     Ok(())
 }
 
-fn read_versions_csv(reader: impl Read, crates: &mut HashMap<u64, CrateAccumulator>) -> Result<()> {
+fn read_versions_csv(
+    reader: impl Read,
+    crates: &mut HashMap<u64, CrateAccumulator>,
+    options: SnapshotBuildOptions,
+) -> Result<()> {
     let mut csv = csv::ReaderBuilder::new().flexible(true).from_reader(reader);
     let headers = csv.headers().context("read versions.csv headers")?.clone();
     let crate_id_idx = required_header(&headers, "crate_id")?;
@@ -407,10 +426,11 @@ fn read_versions_csv(reader: impl Read, crates: &mut HashMap<u64, CrateAccumulat
             .and_then(|idx| record.get(idx))
             .filter(|value| !value.is_empty())
             .map(ToString::to_string);
-        let replace = accumulator
-            .newest
-            .as_ref()
-            .is_none_or(|current| parsed > current.parsed);
+        let replace = should_replace_newest(
+            accumulator.newest.as_ref(),
+            &parsed,
+            options.include_prerelease,
+        );
         if replace {
             accumulator.newest = Some(VersionChoice {
                 parsed,
@@ -425,6 +445,7 @@ fn read_versions_csv(reader: impl Read, crates: &mut HashMap<u64, CrateAccumulat
 fn snapshot_from_accumulators(
     crates: HashMap<u64, CrateAccumulator>,
     source: CrateCatalogSource,
+    options: SnapshotBuildOptions,
 ) -> CrateCatalogSnapshot {
     let mut candidates: Vec<CrateCandidate> = crates
         .into_values()
@@ -457,9 +478,33 @@ fn snapshot_from_accumulators(
     CrateCatalogSnapshot {
         schema_version: 1,
         generated_at: chrono::Utc::now().to_rfc3339(),
+        include_prerelease: options.include_prerelease,
         source,
         rank: RankMode::AllTime,
         crates: candidates,
+    }
+}
+
+fn should_replace_newest(
+    current: Option<&VersionChoice>,
+    candidate: &Version,
+    include_prerelease: bool,
+) -> bool {
+    if include_prerelease {
+        return current.is_none_or(|current| candidate > &current.parsed);
+    }
+
+    match current {
+        None => true,
+        Some(current) => {
+            let candidate_stable = candidate.pre.is_empty();
+            let current_stable = current.parsed.pre.is_empty();
+            match (candidate_stable, current_stable) {
+                (true, false) => true,
+                (false, true) => false,
+                _ => candidate > &current.parsed,
+            }
+        }
     }
 }
 
@@ -581,6 +626,7 @@ id,crate_id,num,yanked,created_at
             Cursor::new(crates),
             Cursor::new(versions),
             test_source(),
+            SnapshotBuildOptions::default(),
         )
         .unwrap();
 
@@ -602,7 +648,7 @@ id,crate_id,num,yanked,created_at
     }
 
     #[test]
-    fn csv_snapshot_uses_semver_prerelease_ordering() {
+    fn csv_snapshot_prefers_highest_stable_over_newer_prerelease_by_default() {
         let crates = "\
 id,name,downloads
 1,delta,1
@@ -618,6 +664,62 @@ id,crate_id,num,yanked,created_at
             Cursor::new(crates),
             Cursor::new(versions),
             test_source(),
+            SnapshotBuildOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            snapshot.crates[0].newest_non_yanked.as_deref(),
+            Some("1.0.0")
+        );
+        assert!(!snapshot.include_prerelease);
+    }
+
+    #[test]
+    fn csv_snapshot_uses_prerelease_when_no_stable_exists() {
+        let crates = "\
+id,name,downloads
+1,epsilon,1
+";
+        let versions = "\
+id,crate_id,num,yanked,created_at
+10,1,1.0.0-alpha.1,false,2024-01-01 00:00:00
+11,1,1.0.0-beta.1,false,2024-02-01 00:00:00
+";
+
+        let snapshot = build_snapshot_from_csv_readers(
+            Cursor::new(crates),
+            Cursor::new(versions),
+            test_source(),
+            SnapshotBuildOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            snapshot.crates[0].newest_non_yanked.as_deref(),
+            Some("1.0.0-beta.1")
+        );
+    }
+
+    #[test]
+    fn csv_snapshot_include_prerelease_picks_newer_prerelease() {
+        let crates = "\
+id,name,downloads
+1,zeta,1
+";
+        let versions = "\
+id,crate_id,num,yanked,created_at
+10,1,1.0.0,false,2024-01-01 00:00:00
+11,1,1.1.0-alpha.1,false,2024-02-01 00:00:00
+";
+
+        let snapshot = build_snapshot_from_csv_readers(
+            Cursor::new(crates),
+            Cursor::new(versions),
+            test_source(),
+            SnapshotBuildOptions {
+                include_prerelease: true,
+            },
         )
         .unwrap();
 
@@ -625,5 +727,6 @@ id,crate_id,num,yanked,created_at
             snapshot.crates[0].newest_non_yanked.as_deref(),
             Some("1.1.0-alpha.1")
         );
+        assert!(snapshot.include_prerelease);
     }
 }
