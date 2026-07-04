@@ -1,23 +1,29 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { Icon, KindBadge } from '$lib/components/design';
 	import { searchRegistry } from '$lib/rpc/crate.remote';
 	import type { CrateSearchResult, CrateSummary } from '$lib/schema';
+	import {
+		parseHomeState,
+		serializeHomeState,
+		type HomeTab,
+		type HomeViewState,
+	} from '$lib/url-state';
 	import { Debounced } from 'runed';
 	import type { PageProps } from './$types';
 
 	type CrateListItem = CrateSearchResult | CrateSummary;
-	type SectionId = 'workspace' | 'popular';
 
 	let { data }: PageProps = $props();
 
 	const workspaceCrates = $derived(data.workspaceCrates);
 	const topCratesPromise = $derived(data.topCrates);
 
-	let selectedSection = $state<SectionId>('workspace');
-	let searchInput = $state('');
-
-	const searchTerm = $derived(searchInput.trim());
+	const homeState = $derived(parseHomeState(page.url));
+	const selectedSection = $derived(homeState.tab);
+	const searchTerm = $derived(homeState.q);
 	const debouncedSearch = new Debounced(() => searchTerm, 250);
 	const debouncedTerm = $derived(debouncedSearch.current);
 	const isDebouncing = $derived(searchTerm.length >= 2 && searchTerm !== debouncedTerm);
@@ -49,6 +55,22 @@
 	function crateKey(crate: CrateListItem) {
 		return `${crate.id ?? crate.name}:${crate.version}`;
 	}
+
+	function updateHomeState(patch: Partial<HomeViewState>) {
+		void goto(serializeHomeState(page.url, patch), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
+	}
+
+	function setSearchInput(value: string) {
+		updateHomeState({ q: value });
+	}
+
+	function setSelectedSection(tab: HomeTab) {
+		updateHomeState({ tab });
+	}
 </script>
 
 <div class="flex flex-1 overflow-auto">
@@ -69,7 +91,8 @@
 						type="search"
 						aria-label="Search registry crates"
 						placeholder="Search registry crates..."
-						bind:value={searchInput}
+						value={homeState.q}
+						oninput={(event) => setSearchInput(event.currentTarget.value)}
 						class="w-full bg-transparent py-2.5 pr-20 pl-10 font-mono text-[13px] text-(--ink) outline-none placeholder:text-(--muted-soft)"
 					/>
 					<div
@@ -138,7 +161,7 @@
 										: 'text-(--ink)'
 								}`}
 								aria-current={visibleSection === section.id ? 'true' : undefined}
-								onclick={() => (selectedSection = section.id)}
+								onclick={() => setSelectedSection(section.id)}
 							>
 								<span
 									class={`grid w-5 place-items-center ${

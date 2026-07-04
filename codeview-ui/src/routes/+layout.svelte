@@ -1,12 +1,14 @@
 <script lang="ts">
 	import '../app.css';
 	import { browser } from '$app/environment';
-	import { afterNavigate, onNavigate } from '$app/navigation';
+	import { afterNavigate, goto, onNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import { getProcessingCrates } from '$lib/rpc/crate.remote';
 	import { ProcessingStatusConnection } from '$lib/realtime';
 	import { onMount } from 'svelte';
 	import { perf } from '$lib/perf';
+	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import {
 		themeCtx,
 		resolvedThemeCtx,
@@ -213,13 +215,16 @@
 	let docLayout = $state<DocLayoutMode>('classic');
 	let codeThemeLight = $state<CodeTheme>('solarized-light');
 	let codeThemeDark = $state<CodeTheme>('solarized-dark');
+	const explorerViewState = $derived(parseExplorerState(page.url));
+	const activeDocLayout = $derived(explorerViewState.layout ?? docLayout);
+	const isExplorerRoute = $derived(Boolean(page.params.crate && page.params.version));
 
 	themeCtx.set(() => theme);
 	resolvedThemeCtx.set(() => resolved);
 	accentModeCtx.set(() => accentMode);
 	densityModeCtx.set(() => densityMode);
 	voiceModeCtx.set(() => voiceMode);
-	docLayoutCtx.set(() => docLayout);
+	docLayoutCtx.set(() => activeDocLayout);
 	codeThemeLightCtx.set(() => codeThemeLight);
 	codeThemeDarkCtx.set(() => codeThemeDark);
 
@@ -262,8 +267,15 @@
 	function setDocLayout(next: DocLayoutMode) {
 		docLayout = next;
 		if (!browser) return;
-		document.documentElement.dataset.docLayout = next;
 		localStorage.setItem(DOC_LAYOUT_KEY, next);
+		document.documentElement.dataset.docLayout = next;
+		if (isExplorerRoute) {
+			void goto(serializeExplorerState(page.url, { layout: next }), {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true,
+			});
+		}
 	}
 
 	function setCodeThemeLight(next: CodeTheme) {
@@ -297,7 +309,7 @@
 		document.documentElement.dataset.accent = accentMode;
 		document.documentElement.dataset.density = densityMode;
 		document.documentElement.dataset.voice = voiceMode;
-		document.documentElement.dataset.docLayout = docLayout;
+		document.documentElement.dataset.docLayout = activeDocLayout;
 		applyCodeTheme();
 
 		// Listen for OS theme changes when in system mode
@@ -311,6 +323,11 @@
 		};
 		mql.addEventListener('change', onSystemChange);
 		return () => mql.removeEventListener('change', onSystemChange);
+	});
+
+	$effect(() => {
+		if (!browser) return;
+		document.documentElement.dataset.docLayout = activeDocLayout;
 	});
 
 	// ── Settings drawer ──
