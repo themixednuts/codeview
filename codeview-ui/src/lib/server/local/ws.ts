@@ -98,10 +98,10 @@ export function broadcastProgress(
  * Subset of local provider state needed by the WS handler for initial-state dispatch.
  */
 export interface LocalProviderInternals {
-	getCache(): {
+	getCache(): Promise<{
 		getStatus(ecosystem: string, name: string, version: string): CrateStatus;
 		getProcessingCount(ecosystem: string): number;
-	};
+	}>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
 }
 
@@ -182,7 +182,7 @@ export async function sendInitialState(
 				const parts = tag.split(':');
 				if (parts.length === 2) {
 					const ecosystem = parts[1];
-					const cache = internals.getCache();
+					const cache = await internals.getCache();
 					const count = cache.getProcessingCount(ecosystem);
 					ws.send(JSON.stringify({ tag, data: { type: 'processing', count } }));
 				}

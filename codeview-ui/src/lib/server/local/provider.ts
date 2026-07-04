@@ -160,9 +160,20 @@ export function createLocalProvider(): DataProvider {
 
 	// Lazy-init cache to avoid bun:sqlite import at module level on CF
 	let cache: LocalCache | null = null;
-	function getCache(): LocalCache {
-		if (!cache) cache = new LocalCache();
-		return cache;
+	let cachePromise: Promise<LocalCache> | null = null;
+	async function getCache(): Promise<LocalCache> {
+		if (cache) return cache;
+		if (!cachePromise) {
+			cachePromise = LocalCache.create()
+				.then((created) => {
+					cache = created;
+					return created;
+				})
+				.finally(() => {
+					cachePromise = null;
+				});
+		}
+		return cachePromise;
 	}
 
 	// In-flight parse deduplication
@@ -181,8 +192,13 @@ export function createLocalProvider(): DataProvider {
 		inFlight.set(key, promise);
 	}
 
-	function emitStatus(name: string, version: string, status: CrateStatus, step?: string): void {
-		const lc = getCache();
+	async function emitStatus(
+		name: string,
+		version: string,
+		status: CrateStatus,
+		step?: string,
+	): Promise<void> {
+		const lc = await getCache();
 		lc.setStatus(
 			'rust',
 			name,
@@ -221,17 +237,17 @@ export function createLocalProvider(): DataProvider {
 
 			// check-existing: bail early if already cached
 			const cached = await step.do('check-existing', async () => {
-				const lc = getCache();
+				const lc = await getCache();
 				return lc.hasCrate(name, version);
 			});
 			if (cached) {
-				emitStatus(name, version, { status: 'ready' });
+				await emitStatus(name, version, { status: 'ready' });
 				return;
 			}
 
 			// set-status-resolving
 			await step.do('set-status-resolving', async () => {
-				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				await emitStatus(name, version, { status: 'processing' }, 'resolving');
 			});
 
 			// resolve-metadata: registry lookup
@@ -252,7 +268,7 @@ export function createLocalProvider(): DataProvider {
 			// set-status-fetching
 			await step.do('set-status-fetching', async () => {
 				log.info`Fetching rustdoc for ${name}@${version}`;
-				emitStatus(name, version, { status: 'processing' }, 'fetching');
+				await emitStatus(name, version, { status: 'processing' }, 'fetching');
 			});
 
 			// fetch-artifact: download + decompress
@@ -306,7 +322,7 @@ export function createLocalProvider(): DataProvider {
 				{ retries: { limit: 1, delayMs: 1000, backoff: 'linear' } },
 				async () => {
 					log.info`Parsing rustdoc for ${name}@${version}`;
-					emitStatus(name, version, { status: 'processing' }, 'parsing');
+					await emitStatus(name, version, { status: 'processing' }, 'parsing');
 					const t0 = performance.now();
 
 					// Fetch sources in parallel with parsing to avoid blocking progress.
@@ -329,7 +345,7 @@ export function createLocalProvider(): DataProvider {
 						return null;
 					});
 
-					const lc = getCache();
+					const lc = await getCache();
 					const crateName = normalizeCrateName(name);
 
 					// Initialize crate entry (will be finalized after parsing)
@@ -381,12 +397,12 @@ export function createLocalProvider(): DataProvider {
 								broadcastProgress('rust', name, version, progress);
 							},
 							onFinalizingStart: () => {
-								emitStatus(name, version, { status: 'processing' }, 'finalizing');
+								void emitStatus(name, version, { status: 'processing' }, 'finalizing');
 							},
 						},
 					);
 
-					emitStatus(name, version, { status: 'processing' }, 'storing');
+					await emitStatus(name, version, { status: 'processing' }, 'storing');
 
 					// Finalize crate with tree (orphan-filtered by adapter)
 					log.info`Finalize tree ${name}@${version}: ${result.tree.nodes.length}n ${result.tree.edges.length}e`;
@@ -415,7 +431,7 @@ export function createLocalProvider(): DataProvider {
 
 			// set-status-indexing
 			await step.do('set-status-indexing', async () => {
-				emitStatus(name, version, { status: 'processing' }, 'indexing');
+				await emitStatus(name, version, { status: 'processing' }, 'indexing');
 			});
 
 			// index-cross-edges: resolve external crate versions
@@ -483,8 +499,8 @@ export function createLocalProvider(): DataProvider {
 				'store-graph',
 				{ retries: { limit: 2, delayMs: 1000, backoff: 'linear' } },
 				async () => {
-					emitStatus(name, version, { status: 'processing' }, 'storing');
-					const lc = getCache();
+					await emitStatus(name, version, { status: 'processing' }, 'storing');
+					const lc = await getCache();
 
 					// Update index only — nodes/edges were already stored during progressive parsing.
 					// Do NOT call initCrate() here: it deletes all nodes/edges.
@@ -523,7 +539,7 @@ export function createLocalProvider(): DataProvider {
 
 			// set-status-ready
 			await step.do('set-status-ready', async () => {
-				emitStatus(name, version, { status: 'ready' });
+				await emitStatus(name, version, { status: 'ready' });
 			});
 		}
 	}
@@ -550,7 +566,7 @@ export function createLocalProvider(): DataProvider {
 				err.failedStep === 'fetch-artifact' && /\b404\b/.test(err.message)
 					? ('docs_unavailable' as const)
 					: undefined;
-			emitStatus(
+			await emitStatus(
 				name,
 				version,
 				{ status: 'failed', error: err.message, ...(action ? { action } : {}) },
@@ -574,17 +590,17 @@ export function createLocalProvider(): DataProvider {
 
 			// check-existing
 			const cached = await step.do('check-existing', async () => {
-				const lc = getCache();
+				const lc = await getCache();
 				return lc.hasCrate(name, version);
 			});
 			if (cached) {
-				emitStatus(name, version, { status: 'ready' });
+				await emitStatus(name, version, { status: 'ready' });
 				return;
 			}
 
 			// set-status-resolving
 			await step.do('set-status-resolving', async () => {
-				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				await emitStatus(name, version, { status: 'processing' }, 'resolving');
 			});
 
 			// detect-sysroot: find JSON path
@@ -595,7 +611,7 @@ export function createLocalProvider(): DataProvider {
 			// If not available and we have install consent, install the component
 			if (!stdInfo.available && installConsent) {
 				await step.do('install-component', async () => {
-					emitStatus(name, version, { status: 'processing' }, 'fetching');
+					await emitStatus(name, version, { status: 'processing' }, 'fetching');
 					const toolchain = versionToToolchainForInstall(version);
 					await installStdDocs(toolchain);
 				});
@@ -624,7 +640,7 @@ export function createLocalProvider(): DataProvider {
 
 			// read-json
 			const artifactInfo = await step.do('read-json', async () => {
-				emitStatus(name, version, { status: 'processing' }, 'fetching');
+				await emitStatus(name, version, { status: 'processing' }, 'fetching');
 				const file = Bun.file(stdInfo.jsonPath!);
 				const sizeLabel = `${(file.size / 1024 / 1024).toFixed(1)} MB`;
 				const contentId = `${file.size}:${file.lastModified ?? 0}`;
@@ -635,10 +651,10 @@ export function createLocalProvider(): DataProvider {
 			// parse-rustdoc
 			const parseResult = await step.do('parse-rustdoc', async () => {
 				log.info`Parsing rustdoc for std crate ${name}@${version}`;
-				emitStatus(name, version, { status: 'processing' }, 'parsing');
+				await emitStatus(name, version, { status: 'processing' }, 'parsing');
 				const t0 = performance.now();
 
-				const lc = getCache();
+				const lc = await getCache();
 				const tempIndex: CrateIndex = { name, version, crates: [] };
 				lc.initCrate(name, version, tempIndex);
 				const result = await perf.timeAsync('parser', `parse ${name}@${version}`, () =>
@@ -680,7 +696,7 @@ export function createLocalProvider(): DataProvider {
 								broadcastProgress('rust', name, version, progress);
 							},
 							onFinalizingStart: () => {
-								emitStatus(name, version, { status: 'processing' }, 'finalizing');
+								void emitStatus(name, version, { status: 'processing' }, 'finalizing');
 							},
 						},
 					),
@@ -692,8 +708,8 @@ export function createLocalProvider(): DataProvider {
 
 			// store-graph
 			await step.do('store-graph', async () => {
-				emitStatus(name, version, { status: 'processing' }, 'storing');
-				const lc = getCache();
+				await emitStatus(name, version, { status: 'processing' }, 'storing');
+				const lc = await getCache();
 				const index: CrateIndex = {
 					name,
 					version,
@@ -731,7 +747,7 @@ export function createLocalProvider(): DataProvider {
 			// set-status-ready
 			await step.do('set-status-ready', async () => {
 				log.info`Parsed and cached std crate ${name}@${version}`;
-				emitStatus(name, version, { status: 'ready' });
+				await emitStatus(name, version, { status: 'ready' });
 			});
 		}
 	}
@@ -774,14 +790,14 @@ export function createLocalProvider(): DataProvider {
 		if (result.isErr()) {
 			const err = result.error;
 			log.error`Failed to parse std ${name}@${version}: ${err.message} (step: ${err.failedStep})`;
-			emitStatus(name, version, { status: 'failed', error: err.message }, err.failedStep);
+			await emitStatus(name, version, { status: 'failed', error: err.message }, err.failedStep);
 		}
 	}
 
-	function autoTriggerStdCrates(
+	async function autoTriggerStdCrates(
 		crates: Array<{ name: string; version: string; is_external?: boolean }>,
-	): void {
-		const lc = getCache();
+	): Promise<void> {
+		const lc = await getCache();
 		for (const c of crates) {
 			if (!isStdCrate(c.name) || !STD_JSON_CRATES.includes(c.name)) continue;
 			if (lc.hasCrate(c.name, c.version)) continue;
@@ -983,7 +999,7 @@ export function createLocalProvider(): DataProvider {
 			}
 
 			// Check local cache for external crates
-			const lc = getCache();
+			const lc = await getCache();
 			return lc.getGraph(name, _version);
 		},
 
@@ -998,7 +1014,7 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async loadCrateTree(name: string, _version: string) {
-			const lc = getCache();
+			const lc = await getCache();
 			const tree = lc.getTree(name, _version);
 			log.info`loadCrateTree(local) name=${name} version=${_version} hit=${tree ? 'yes' : 'no'}${tree ? ` nodes=${tree.nodes.length} edges=${tree.edges.length}` : ''}`;
 			return tree;
@@ -1037,7 +1053,7 @@ export function createLocalProvider(): DataProvider {
 					const current = crates.find((c) => c.id === name || c.name === name);
 
 					// Fire-and-forget: auto-trigger std crate parsing for available sysroot JSON
-					autoTriggerStdCrates(crates);
+					void autoTriggerStdCrates(crates);
 
 					return {
 						name: current?.name ?? name,
@@ -1048,7 +1064,7 @@ export function createLocalProvider(): DataProvider {
 			}
 
 			// Check local cache for external crates
-			const lc = getCache();
+			const lc = await getCache();
 			return lc.getIndex(name, version);
 		},
 
@@ -1057,7 +1073,7 @@ export function createLocalProvider(): DataProvider {
 			version: string,
 			nodeId: string,
 		): Promise<NodeDetail | null> {
-			const lc = getCache();
+			const lc = await getCache();
 
 			// Load node and its edges
 			const node = lc.getNodeById(name, version, nodeId);
@@ -1119,7 +1135,7 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async loadTreeRootsDirect(name: string, version: string): Promise<TreeNodeDTO[] | null> {
-			const lc = getCache();
+			const lc = await getCache();
 			const results = lc.getTreeRootsDirect(name, version);
 			return results.map(({ node, hasChildren }) => ({
 				node: nodeToSummary(node),
@@ -1132,7 +1148,7 @@ export function createLocalProvider(): DataProvider {
 			version: string,
 			parentId: string,
 		): Promise<TreeNodeDTO[] | null> {
-			const lc = getCache();
+			const lc = await getCache();
 			const results = lc.getTreeChildrenDirect(name, version, parentId);
 			return results.map(({ node, hasChildren }) => ({
 				node: nodeToSummary(node),
@@ -1145,13 +1161,13 @@ export function createLocalProvider(): DataProvider {
 			version: string,
 			nodeId: string,
 		): Promise<NodeSummary[] | null> {
-			const lc = getCache();
+			const lc = await getCache();
 			const nodes = lc.getTreeAncestorsDirect(name, version, nodeId);
 			return nodes.map(nodeToSummary);
 		},
 
 		async getCrossEdgeData(nodeId: string): Promise<CrossEdgeData> {
-			const lc = getCache();
+			const lc = await getCache();
 			const result = lc.getCrossEdgeData('rust', nodeId);
 			return {
 				edges: result.edges.map((edge) => ({
@@ -1172,9 +1188,9 @@ export function createLocalProvider(): DataProvider {
 		async getCrateStatus(name: string, version: string): Promise<CrateStatus> {
 			if (isStdCrate(name)) {
 				// Check cache first
-				const lc = getCache();
+				const lc = await getCache();
 				if (lc.hasCrate(name, version)) {
-					emitStatus(name, version, { status: 'ready' });
+					await emitStatus(name, version, { status: 'ready' });
 					return { status: 'ready' };
 				}
 				const dbStatus = lc.getStatus('rust', name, version);
@@ -1202,7 +1218,7 @@ export function createLocalProvider(): DataProvider {
 
 			// Check SQLite status first
 			try {
-				const lc = getCache();
+				const lc = await getCache();
 				const dbStatus = lc.getStatus('rust', name, version);
 				if (dbStatus.status !== 'unknown') {
 					const action = statusAction.classify(dbStatus);
@@ -1211,7 +1227,7 @@ export function createLocalProvider(): DataProvider {
 
 				// Check if graph exists in cache
 				if (lc.hasCrate(name, version)) {
-					emitStatus(name, version, { status: 'ready' });
+					await emitStatus(name, version, { status: 'ready' });
 					return { status: 'ready' };
 				}
 			} catch {}
@@ -1229,7 +1245,7 @@ export function createLocalProvider(): DataProvider {
 
 			// Auto-trigger parse for unknown external crates (mirrors Cloudflare behavior)
 			if (isValidCrateName(name) && isValidVersion(version)) {
-				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				await emitStatus(name, version, { status: 'processing' }, 'resolving');
 				startParse(name, version);
 				return { status: 'processing' };
 			}
@@ -1246,12 +1262,12 @@ export function createLocalProvider(): DataProvider {
 						new NotAvailableError({ message: `${name}@${version} not available in sysroot` }),
 					);
 				}
-				const lc = getCache();
+				const lc = await getCache();
 				if (!force && lc.hasCrate(name, version)) {
-					emitStatus(name, version, { status: 'ready' });
+					await emitStatus(name, version, { status: 'ready' });
 					return Result.ok(undefined);
 				}
-				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				await emitStatus(name, version, { status: 'processing' }, 'resolving');
 				startStdParse(name, version, false);
 				return Result.ok(undefined);
 			}
@@ -1259,7 +1275,7 @@ export function createLocalProvider(): DataProvider {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
 
-			const lc = getCache();
+			const lc = await getCache();
 
 			if (force) {
 				// Clear in-flight promise so a fresh parse runs
@@ -1273,19 +1289,19 @@ export function createLocalProvider(): DataProvider {
 
 				// Also check graph cache
 				if (lc.hasCrate(name, version)) {
-					emitStatus(name, version, { status: 'ready' });
+					await emitStatus(name, version, { status: 'ready' });
 					return Result.ok(undefined);
 				}
 			}
 
 			// Set status atomically BEFORE starting the parse
-			emitStatus(name, version, { status: 'processing' }, 'resolving');
+			await emitStatus(name, version, { status: 'processing' }, 'resolving');
 			startParse(name, version);
 			return Result.ok(undefined);
 		},
 
 		async ensureParsed(name: string, version: string): Promise<void> {
-			const lc = getCache();
+			const lc = await getCache();
 			// Already finalized?
 			if (lc.hasCrate(name, version)) return;
 
@@ -1296,7 +1312,7 @@ export function createLocalProvider(): DataProvider {
 			if (!promise) {
 				// Not in flight and not parsed — trigger if valid
 				if (!isValidCrateName(name) || !isValidVersion(version)) return;
-				emitStatus(name, version, { status: 'processing' }, 'resolving');
+				await emitStatus(name, version, { status: 'processing' }, 'resolving');
 				startParse(name, version);
 				promise = inFlight.get(key);
 			}
@@ -1313,12 +1329,12 @@ export function createLocalProvider(): DataProvider {
 					new ValidationError({ message: `${name} is not a standard library crate` }),
 				);
 			}
-			const lc = getCache();
+			const lc = await getCache();
 			if (lc.hasCrate(name, version)) {
-				emitStatus(name, version, { status: 'ready' });
+				await emitStatus(name, version, { status: 'ready' });
 				return Result.ok(undefined);
 			}
-			emitStatus(name, version, { status: 'processing' }, 'resolving');
+			await emitStatus(name, version, { status: 'processing' }, 'resolving');
 			startStdParse(name, version, true);
 			return Result.ok(undefined);
 		},
@@ -1342,7 +1358,7 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async getProcessingCrates(limit = 20): Promise<CrateSummaryResult[]> {
-			const lc = getCache();
+			const lc = await getCache();
 			return lc.getProcessingCrates('rust', limit);
 		},
 

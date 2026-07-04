@@ -8,7 +8,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
 import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from '../db/schema';
 import { normalizeCrateName } from '../validation';
 import type { CrateGraph, Node, Edge, Visibility } from '$lib/graph';
@@ -19,18 +18,18 @@ import { visibilityKey, parseVisibilityKey } from '$lib/display-names';
 const log = getLogger('cache');
 
 /**
- * `bun:sqlite` is a Bun-only module — fatal to mention at the workerd
- * module-init phase. Lazily resolve `createRequire` so cf:dev hot-reload
- * accidentally bundling this file (PUBLIC_CODEVIEW_PLATFORM lost across
- * a wrangler --live-reload rebuild) doesn't crash the worker at startup.
- * The function is only invoked from the local-mode code paths.
+ * `bun:sqlite` is a Bun-only module — fatal to import at the workerd
+ * module-init phase. Keep this loader lazy and local-only: the static dynamic
+ * import lets Bun --compile bundle the drizzle Bun driver without hoisting it
+ * into Cloudflare/workerd module initialization.
  */
-function loadBunSqlite() {
-	const require = createRequire(import.meta.url);
+async function loadBunSqlite() {
 	const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-	const { drizzle } = require('drizzle-orm/bun-sqlite') as typeof import('drizzle-orm/bun-sqlite');
+	const { drizzle } = await import('drizzle-orm/bun-sqlite');
 	return { Database, drizzle };
 }
+
+type BunSqliteModules = Awaited<ReturnType<typeof loadBunSqlite>>;
 
 const sqlModules = import.meta.glob('../db/migrations/*/migration.sql', {
 	query: '?raw',
@@ -91,12 +90,15 @@ export class LocalCache {
 	private db;
 	private stepMap = new Map<string, string>();
 
+	static async create(): Promise<LocalCache> {
+		return new LocalCache(await loadBunSqlite());
+	}
+
 	private norm(name: string): string {
 		return normalizeCrateName(name);
 	}
 
-	constructor() {
-		const { Database, drizzle } = loadBunSqlite();
+	private constructor({ Database, drizzle }: BunSqliteModules) {
 		mkdirSync(CACHE_DIR, { recursive: true });
 		const client = new Database(CACHE_DB);
 		client.exec('PRAGMA journal_mode = WAL;');
