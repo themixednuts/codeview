@@ -37,6 +37,29 @@ fn fnv1a32(s: &str) -> u32 {
     hash
 }
 
+/// FNV-1a 64-bit for scheduler work sharding.
+///
+/// This is intentionally separate from the 32-bit artifact bucket hash:
+/// parse workers shard stable work ids, while artifact buckets preserve
+/// the historical frontend shard layout.
+pub fn fnv1a64(s: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in s.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+pub fn work_id(kind: &str, name: &str, version: &str, channel_or_target: &str) -> String {
+    format!("{kind}:{name}:{version}:{channel_or_target}")
+}
+
+pub fn work_bucket(work_id: &str, shard_count: usize) -> usize {
+    debug_assert!(shard_count > 0);
+    (fnv1a64(work_id) % shard_count as u64) as usize
+}
+
 pub fn node_view_bucket(node_id: &str, count: u32) -> String {
     let bucket = fnv1a32(node_id) % count;
     let width = std::cmp::max(3, ((count - 1) as f64).log(16.0).ceil() as usize);
@@ -669,5 +692,42 @@ fn canonical_hash<H: sha2::Digest>(value: &serde_json::Value, h: &mut H) {
             }
             h.update(b"}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fnv1a64_matches_known_vector() {
+        assert_eq!(fnv1a64(""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a64("hello"), 0xa430_d846_80aa_bd0b);
+    }
+
+    #[test]
+    fn work_id_uses_stable_shape() {
+        assert_eq!(
+            work_id("crate", "serde", "1.0.228", "default"),
+            "crate:serde:1.0.228:default"
+        );
+    }
+
+    #[test]
+    fn work_bucket_is_deterministic_and_evenish() {
+        let shard_count = 16;
+        let first = work_bucket("crate:serde:1.0.228:default", shard_count);
+        let second = work_bucket("crate:serde:1.0.228:default", shard_count);
+        assert_eq!(first, second);
+
+        let mut buckets = vec![0usize; shard_count];
+        for i in 0..4096 {
+            let id = work_id("crate", &format!("crate-{i}"), "1.0.0", "default");
+            buckets[work_bucket(&id, shard_count)] += 1;
+        }
+        let min = buckets.iter().copied().min().unwrap_or_default();
+        let max = buckets.iter().copied().max().unwrap_or_default();
+        assert!(min > 200, "bucket distribution too sparse: {buckets:?}");
+        assert!(max < 320, "bucket distribution too concentrated: {buckets:?}");
     }
 }
