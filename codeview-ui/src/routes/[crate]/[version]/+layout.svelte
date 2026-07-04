@@ -16,6 +16,7 @@
 	import { afterNavigate, beforeNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/environment';
+	import type { Snippet } from 'svelte';
 	import { SvelteURLSearchParams } from 'svelte/reactivity';
 	import { getCrates } from '$lib/rpc/crate.remote';
 	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
@@ -41,7 +42,7 @@
 		prefetchedTreeChildren?: Array<{ id: string; children: TreeNodeDTO[] }>;
 	};
 
-	let { data } = $props<{ data: LayoutData }>();
+	let { data, children } = $props<{ data: LayoutData; children: Snippet }>();
 
 	const params = $derived(page.params);
 	const crateName = $derived(params.crate);
@@ -630,5 +631,6 @@
 				reset();
 			}}
 		/>
+		{@render children()}
 	</div>
 </CrateParseState>
