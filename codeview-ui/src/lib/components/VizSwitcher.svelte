@@ -14,7 +14,7 @@
 		{
 			id: 'graph',
 			label: 'Graph',
-			description: 'Force-directed module dependency graph — see coupling between modules',
+			description: 'Read-only module graph — see hierarchy and semantic coupling',
 		},
 		{
 			id: 'treemap',

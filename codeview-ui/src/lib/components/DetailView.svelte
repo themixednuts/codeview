@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { Node, NodeKind } from '$lib/graph';
 	import type { VizMode } from '$lib/components/VizSwitcher.svelte';
-	import type { GraphRenderMode } from '$lib/components/CrateGraph.svelte';
 	import type { NodeView } from '$lib/schema';
 	import type { CrateMapData } from '$lib/graph/crate-map';
 	import { browser } from '$app/environment';
@@ -16,11 +15,11 @@
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import { LoaderCircleIcon } from '@lucide/svelte';
 	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
+	import CrateOverviewFlow from '$lib/components/design/graph/CrateOverviewFlow.svelte';
 	import VizSwitcher from '$lib/components/VizSwitcher.svelte';
 	import CrateTreemap from '$lib/components/CrateTreemap.svelte';
 	import CrateSunburst from '$lib/components/CrateSunburst.svelte';
 	import CrateGrid from '$lib/components/CrateGrid.svelte';
-	import CrateGraph from '$lib/components/CrateGraph.svelte';
 	import NodeDetails from '$lib/components/NodeDetails.svelte';
 	import DocToc from '$lib/components/DocToc.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
@@ -146,12 +145,12 @@
 	const VALID_VIZ_MODES: VizMode[] = ['graph', 'treemap', 'sunburst', 'grid'];
 	const vizParam = $derived(page.url.searchParams.get('viz'));
 	const vizMode: VizMode = $derived(
-		VALID_VIZ_MODES.includes(vizParam as VizMode) ? (vizParam as VizMode) : 'treemap',
+		VALID_VIZ_MODES.includes(vizParam as VizMode) ? (vizParam as VizMode) : 'graph',
 	);
 
 	function setVizMode(mode: VizMode) {
 		const url = new URL(page.url);
-		if (mode === 'treemap') {
+		if (mode === 'graph') {
 			url.searchParams.delete('viz');
 		} else {
 			url.searchParams.set('viz', mode);
@@ -161,14 +160,6 @@
 			noScroll: true,
 			keepFocus: true,
 		});
-	}
-
-	// ── Graph render mode (module graph viz) ──
-	const graphModeParam = $derived(page.url.searchParams.get('gm'));
-	const graphRenderMode: GraphRenderMode = $derived(graphModeParam === 'dots' ? 'dots' : 'normal');
-
-	function setGraphRenderMode(mode: GraphRenderMode) {
-		updateSearchParam('gm', mode === 'normal' ? null : mode);
 	}
 
 	// ── Treemap drill state ──
@@ -307,13 +298,7 @@
 								<VizSwitcher mode={vizMode} onModeChange={setVizMode} />
 							</div>
 							{#if vizMode === 'graph'}
-								<CrateGraph
-									data={crateMap}
-									selectedNodeId={nodeId}
-									{getNodeUrl}
-									renderMode={graphRenderMode}
-									onRenderModeChange={setGraphRenderMode}
-								/>
+								<CrateOverviewFlow data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
 							{:else if vizMode === 'treemap'}
 								<CrateTreemap
 									data={crateMap}
