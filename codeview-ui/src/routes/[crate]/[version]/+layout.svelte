@@ -8,22 +8,21 @@
 		parseProgressCtx,
 		expandPathCtx,
 		setExpandPathCtx,
-		treeParamsCtx,
 		type CrateStatusValue,
 		type ExpandPath,
 	} from '$lib/context';
 	import { page } from '$app/state';
-	import { afterNavigate, beforeNavigate, goto, invalidate, replaceState } from '$app/navigation';
+	import { afterNavigate, beforeNavigate, goto, invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/environment';
 	import type { Snippet } from 'svelte';
-	import { SvelteURLSearchParams } from 'svelte/reactivity';
 	import { getCrates } from '$lib/rpc/crate.remote';
 	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
 	import { getStaticTreeRoots, getTreeRoots } from '$lib/rpc/roots.remote';
 	import { searchNodes } from '$lib/rpc/search.remote';
 	import { nodeIdFromPath, nodeUrl } from '$lib/url';
 	import { hyphenateCrateName } from '$lib/crate-names';
+	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import { onMount } from 'svelte';
 	import CrateParseState from '$lib/components/CrateParseState.svelte';
 	import LiveExplorer from '$lib/components/design/LiveExplorer.svelte';
@@ -51,6 +50,7 @@
 	const hasValidCrateParam = $derived(isValidCrateNameParam(canonicalCrateName));
 	const hasValidVersionParam = $derived(isValidVersionParam(version));
 	const canQueryCrate = $derived(hasValidCrateParam && hasValidVersionParam);
+	const viewState = $derived(parseExplorerState(page.url));
 
 	// --- SSE connections for status and parse progress ---
 	const statusConn = new CrateStatusConnection();
@@ -198,14 +198,6 @@
 		afterNavigate(() => {
 			connectStatusForCurrentRoute();
 			connectProgressForCurrentRoute();
-			syncKindSelection(page.url.searchParams);
-			// Seed treeParams from incoming URL on each navigation
-			const urlEx = page.url.searchParams.get('ex') ?? '';
-			const currentEx = treeParams.get('ex') ?? '';
-			if (urlEx !== currentEx) {
-				if (urlEx) treeParams.set('ex', urlEx);
-				else treeParams.delete('ex');
-			}
 		});
 		return () => {
 			stopMonitor?.();
@@ -224,24 +216,6 @@
 	expandPathCtx.set(() => currentExpandPath);
 	setExpandPathCtx.set(() => (path: ExpandPath) => {
 		detailExpandPath = path;
-	});
-
-	// ── Reactive tree params singleton (shared with explorer via context) ──
-	const treeParams = new SvelteURLSearchParams(page.url.search);
-	treeParamsCtx.set(() => treeParams);
-
-	// Sync treeParams → browser URL bar (genuine side effect)
-	$effect(() => {
-		if (!browser) return;
-		const ex = treeParams.get('ex');
-		// Use window.location to get the real browser URL (page.url may have SSR origin)
-		const url = new URL(window.location.href);
-		const currentEx = url.searchParams.get('ex') ?? '';
-		const newEx = ex ?? '';
-		if (newEx === currentEx) return;
-		if (newEx) url.searchParams.set('ex', newEx);
-		else url.searchParams.delete('ex');
-		replaceState(url, page.state);
 	});
 
 	// ── Context setup (must be before any $derived(await …) async boundary) ──
@@ -386,80 +360,52 @@
 
 	function getNodeUrl(id: string): string {
 		const base = nodeUrl(id, crateVersions);
-		const params = new URLSearchParams();
-		// Preserve params we care about from the current URL
-		for (const key of ['layout', 'structural', 'semantic', 'q', 'raw', 'gbi']) {
-			const val = page.url.searchParams.get(key);
-			if (val) params.set(key, val);
-		}
-		for (const kind of kindParamList) {
-			params.append('k', kind);
-		}
-		// Include current tree state from reactive singleton
-		const ex = treeParams.get('ex');
-		if (ex) params.set('ex', ex);
-		const qs = params.toString();
-		return qs ? `${base}?${qs}` : base;
+		const target = new URL(base, page.url);
+		const currentCratePrefix = `/${canonicalCrateName}/${version}`;
+		const sameCrateRoute =
+			target.pathname === currentCratePrefix ||
+			target.pathname.startsWith(`${currentCratePrefix}/`);
+		const next = serializeExplorerState(target, {
+			view: viewState.view,
+			layout: viewState.layout,
+			q: viewState.q,
+			k: viewState.k,
+			ex: sameCrateRoute ? viewState.ex : [],
+			gbi: viewState.gbi,
+			viz: viewState.viz,
+			td: viewState.td,
+			sd: viewState.sd,
+			peek: viewState.peek,
+			rel: viewState.rel,
+		});
+		return next.pathname + next.search + next.hash;
 	}
 
 	// Search / filter state from URL
-	const filter = $derived(page.url.searchParams.get('q') ?? '');
-	const showGraphBlanketImpls = $derived(page.url.searchParams.get('gbi') === '1');
+	const filter = $derived(viewState.q);
+	const showGraphBlanketImpls = $derived(viewState.gbi);
 	// Server-side search when there's a query
 	const searchQuery = $derived(
 		filter ? searchNodes({ crate: crateName, version, q: filter }) : null,
 	);
 
-	let selectedKinds = $state<NodeKind[]>([]);
-	const activeKinds = $derived.by(() => new Set<NodeKind>(selectedKinds));
+	const activeKinds = $derived.by(() => new Set<NodeKind>(viewState.k));
 	const kindFilter = $derived(activeKinds);
-	const kindParamList = $derived.by<NodeKind[]>(() => selectedKinds.slice());
+	const kindParamList = $derived.by<NodeKind[]>(() => viewState.k);
 
-	function parseKindParams(params: URLSearchParams): Set<NodeKind> {
-		const set = new Set<NodeKind>();
-		const rawKinds = params.getAll('k');
-		if (!rawKinds.length) return set;
-		for (const raw of rawKinds) {
-			const match = nodeKindOrder.find((kind) => kind.toLowerCase() === raw.toLowerCase());
-			if (match) set.add(match);
-		}
-		return set;
-	}
-
-	function syncKindSelection(params: URLSearchParams) {
-		const next = Array.from(parseKindParams(params));
-		if (next.length === selectedKinds.length) {
-			let matches = true;
-			for (const kind of next) {
-				if (!selectedKinds.includes(kind)) {
-					matches = false;
-					break;
-				}
-			}
-			if (matches) return;
-		}
-		selectedKinds = next;
-	}
-
-	syncKindSelection(page.url.searchParams);
-
-	function updateKindParams(nextKinds: Set<NodeKind>) {
-		if (!browser) return;
-		const url = new URL(window.location.href);
-		url.searchParams.delete('k');
-		for (const kind of nodeKindOrder) {
-			if (nextKinds.has(kind)) url.searchParams.append('k', kind);
-		}
-		replaceState(url, page.state);
+	function updateExplorerState(patch: Parameters<typeof serializeExplorerState>[1]) {
+		void goto(serializeExplorerState(page.url, patch), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
 	}
 
 	function toggleKindFilter(kind: NodeKind) {
-		const next = selectedKinds.slice();
-		const idx = next.indexOf(kind);
-		if (idx >= 0) next.splice(idx, 1);
-		else next.push(kind);
-		selectedKinds = next;
-		updateKindParams(new Set<NodeKind>(next));
+		const next = new Set<NodeKind>(viewState.k);
+		if (next.has(kind)) next.delete(kind);
+		else next.add(kind);
+		updateExplorerState({ k: nodeKindOrder.filter((candidate) => next.has(candidate)) });
 	}
 
 	// Derive selected node ID from the current path

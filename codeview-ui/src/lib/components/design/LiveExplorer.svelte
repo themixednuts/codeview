@@ -1,4 +1,7 @@
 <script lang="ts">
+	import { browser } from '$app/environment';
+	import { goto, replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import type { Node, NodeKind, NodeSummary, NodeView, TreeNodeDTO } from '$lib/schema';
 	import type { CrateStatusValue } from '$lib/context';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -9,7 +12,6 @@
 		docLayoutCtx,
 		expandPathCtx,
 		resolvedThemeCtx,
-		treeParamsCtx,
 	} from '$lib/context';
 	import { kindLabels, nodeKindOrder, visibilityLabel } from '$lib/display-names';
 	import { edgeKindToRelation, REL_ORDER, toDesignNode, type DesignRelation } from '$lib/design/live-node';
@@ -17,6 +19,7 @@
 	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
 	import { isHosted } from '$lib/platform';
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
+	import { parseExplorerState, serializeExplorerState, type ExplorerViewState } from '$lib/url-state';
 	import DetailView from '$lib/components/DetailView.svelte';
 	import SkeletonTree from '$lib/components/SkeletonTree.svelte';
 	import DocClassic from '$lib/components/design/docs/DocClassic.svelte';
@@ -104,7 +107,6 @@
 	} = $props();
 
 	let hydrated = $state(false);
-	let mode = $state<'graph' | 'docs'>('docs');
 	const expandedIds = new SvelteSet<string>();
 	const collapsedIds = new SvelteSet<string>();
 	const childrenCache = new Map<string, TreeNodeDTO[]>();
@@ -120,18 +122,13 @@
 		hydrated = true;
 	});
 
+	const viewState = $derived(parseExplorerState(page.url));
+	const mode = $derived(viewState.view);
 	const expandPath = $derived(expandPathCtx.getOr(null));
-	const treeParams = treeParamsCtx.getOr(null);
-	const docLayout = $derived(docLayoutCtx.getOr('classic'));
+	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
+	const docLayout = $derived(viewState.layout ?? preferredDocLayout);
 	const theme = $derived(resolvedThemeCtx.getOr('light'));
 	const crateVersions = $derived(crateVersionsCtx.getOr({}));
-
-	if (treeParams) {
-		const ex = treeParams.get('ex');
-		if (ex) {
-			for (const id of ex.split(',').filter(Boolean)) expandedIds.add(id);
-		}
-	}
 
 	const detail = $derived(nodeView?.detail ?? null);
 	const selected = $derived(detail?.node ?? null);
@@ -295,32 +292,18 @@
 	const selectedAncestorSet = $derived(new Set(selectedAncestorIds));
 	const expandedIdsForRender = $derived.by(() => {
 		const result = new Set<string>();
-		for (const id of expandedIds) result.add(id);
+		for (const id of viewState.ex) {
+			if (!collapsedIds.has(id)) result.add(id);
+		}
+		for (const id of expandedIds) {
+			if (!collapsedIds.has(id)) result.add(id);
+		}
 		for (const id of selectedAncestorIds) {
 			if (!collapsedIds.has(id)) result.add(id);
 		}
 		return result;
 	});
-	const extraExpandedIds = $derived.by(() => {
-		const ancestorSet = new Set(selectedAncestorIds);
-		if (expandPath) {
-			for (const ancestor of expandPath.ancestors) ancestorSet.add(ancestor.id);
-		}
-		const extra: string[] = [];
-		for (const id of expandedIds) {
-			if (id !== selectedNodeId && !ancestorSet.has(id)) extra.push(id);
-		}
-		extra.sort();
-		return extra;
-	});
 	const flatTree = $derived.by(() => flattenTree(tree, expandedIdsForRender));
-
-	$effect(() => {
-		if (!treeParams) return;
-		const val = extraExpandedIds.join(',');
-		if (val) treeParams.set('ex', val);
-		else treeParams.delete('ex');
-	});
 
 	$effect(() => {
 		const key = `${canonicalCrateName ?? crateName ?? ''}@${version ?? ''}`;
@@ -331,7 +314,6 @@
 			collapsedIds.clear();
 			lastExpandKey = null;
 			cacheVersion += 1;
-			treeParams?.delete('ex');
 		}
 		observedNonReady = status !== 'ready';
 		lastReadyKey = status === 'ready' ? key : '';
@@ -450,7 +432,7 @@
 	}
 
 	async function fetchAndExpand(pathIds: string[], crate: string, ver: string) {
-		const allIds = [...new Set([...pathIds, ...expandedIds])];
+		const allIds = [...new Set([...pathIds, ...viewState.ex, ...expandedIds])];
 		const idsToFetch = allIds.filter((id) => !childrenCache.has(id));
 		if (idsToFetch.length > 0) {
 			try {
@@ -485,12 +467,19 @@
 		cacheVersion += 1;
 	}
 
+	async function expandAndFetchPersisted(id: string) {
+		await expandAndFetch(id);
+		if (expandedIds.has(id)) writeExpandedIdsToUrl();
+	}
+
 	function toggleExpand(id: string) {
 		if (expandedIdsForRender.has(id)) {
 			expandedIds.delete(id);
 			collapsedIds.add(id);
+			cacheVersion += 1;
+			writeExpandedIdsToUrl();
 		} else {
-			void expandAndFetch(id);
+			void expandAndFetchPersisted(id);
 		}
 	}
 
@@ -498,6 +487,7 @@
 		expandedIds.clear();
 		collapsedIds.clear();
 		cacheVersion += 1;
+		writeExpandedIdsToUrl();
 	}
 
 	function expandLoaded() {
@@ -508,6 +498,47 @@
 			}
 		}
 		cacheVersion += 1;
+		writeExpandedIdsToUrl();
+	}
+
+	function updateExplorerState(patch: Partial<ExplorerViewState>) {
+		void goto(serializeExplorerState(page.url, patch), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
+	}
+
+	function replaceExplorerState(patch: Partial<ExplorerViewState>) {
+		if (!browser) return;
+		replaceState(serializeExplorerState(page.url, patch), page.state);
+	}
+
+	function currentExtraExpandedIds(): string[] {
+		const ancestorSet = new Set(selectedAncestorIds);
+		if (expandPath) {
+			for (const ancestor of expandPath.ancestors) ancestorSet.add(ancestor.id);
+		}
+		const expanded = new Set([...viewState.ex, ...expandedIds]);
+		const extra: string[] = [];
+		for (const id of expanded) {
+			if (collapsedIds.has(id)) continue;
+			if (id !== selectedNodeId && !ancestorSet.has(id)) extra.push(id);
+		}
+		extra.sort();
+		return extra;
+	}
+
+	function writeExpandedIdsToUrl() {
+		replaceExplorerState({ ex: currentExtraExpandedIds() });
+	}
+
+	function submitFilter(event: SubmitEvent) {
+		event.preventDefault();
+		const form = event.currentTarget;
+		if (!(form instanceof HTMLFormElement)) return;
+		const raw = new FormData(form).get('q');
+		updateExplorerState({ q: typeof raw === 'string' ? raw : '' });
 	}
 
 	function buildRelationshipGroups(
@@ -559,7 +590,7 @@
 			? 'bg-(--panel-solid) text-(--ink) shadow-(--shadow-soft)'
 			: 'text-(--muted)'}"
 		aria-pressed={mode === nextMode}
-		onclick={() => (mode = nextMode)}
+		onclick={() => updateExplorerState({ view: nextMode })}
 	>
 		<Icon name={icon} size={11} />
 		{label}
@@ -792,6 +823,7 @@
 					data-sveltekit-replacestate
 					data-sveltekit-keepfocus
 					data-sveltekit-noscroll
+					onsubmit={submitFilter}
 				>
 					<input
 						type="search"
@@ -1046,7 +1078,7 @@
 					<button
 						type="button"
 						class="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-(--accent) py-1.5 text-[12px] font-medium text-(--on-accent)"
-						onclick={() => (mode = 'docs')}
+						onclick={() => updateExplorerState({ view: 'docs' })}
 					>
 						Open docs
 						<Icon name="arrow-right" size={11} />

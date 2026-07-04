@@ -111,8 +111,3 @@ export type ExpandPath = {
 } | null;
 export const expandPathCtx = new ReactiveContext<ExpandPath>('expandPath');
 export const setExpandPathCtx = new ReactiveContext<(path: ExpandPath) => void>('setExpandPath');
-
-/** Reactive URL search params singleton for tree state (shared by layout and explorer). */
-export const treeParamsCtx = new ReactiveContext<
-	import('svelte/reactivity').SvelteURLSearchParams | null
->('treeParams');
