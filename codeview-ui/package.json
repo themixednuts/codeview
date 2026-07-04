@@ -103,6 +103,7 @@
 		"@lucide/svelte": "^0.561.0",
 		"@shikijs/transformers": "^3.22.0",
 		"@streamparser/json-whatwg": "^0.0.22",
+		"@xyflow/svelte": "^1.6.1",
 		"better-result": "^2.7.0",
 		"d3-force": "^3.0.0",
 		"drizzle-orm": "^1.0.0-beta.9-e89174b",

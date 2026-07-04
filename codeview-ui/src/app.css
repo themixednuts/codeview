@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import '@xyflow/svelte/dist/base.css';
 @import '$lib/shadcn/theme.css';
 
 /* ═══════════════════════════════════════════════════════════════

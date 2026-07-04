@@ -12,6 +12,7 @@
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
 	import DetailView from '$lib/components/DetailView.svelte';
 	import SkeletonTree from '$lib/components/SkeletonTree.svelte';
+	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import Signature from './Signature.svelte';
@@ -915,8 +916,19 @@
 			{/if}
 		</aside>
 
-		<section class="relative min-h-0 overflow-auto bg-(--bg)" aria-label="Node documentation">
-			<DetailView {nodeId} embedded />
+		<section class="relative min-h-0 overflow-auto bg-(--bg)" aria-label="Node content">
+			{#if mode === 'graph' && detail}
+				<FocusGraphFlow
+					{detail}
+					{ancestors}
+					crateName={canonicalCrateName ?? crateName ?? ''}
+					crateVersion={version ?? ''}
+					{getNodeUrl}
+					height={620}
+				/>
+			{:else}
+				<DetailView {nodeId} embedded />
+			{/if}
 		</section>
 
 		<aside

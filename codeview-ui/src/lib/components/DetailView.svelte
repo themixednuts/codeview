@@ -1,7 +1,6 @@
 <script lang="ts">
-	import type { Node, NodeKind, Graph } from '$lib/graph';
+	import type { Node, NodeKind } from '$lib/graph';
 	import type { Edge } from '$lib/graph';
-	import type { LayoutMode } from '$lib/components/LayoutSwitcher.svelte';
 	import type { VizMode } from '$lib/components/VizSwitcher.svelte';
 	import type { GraphRenderMode } from '$lib/components/CrateGraph.svelte';
 	import type { NodeView } from '$lib/schema';
@@ -12,7 +11,6 @@
 	import { resolveAppPath } from '$lib/app-paths';
 	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
 	import { getCrateMap, getStaticCrateMap } from '$lib/rpc/crateMap.remote';
-	import { Memo } from '$lib/reactivity.svelte';
 	import { perf } from '$lib/perf';
 	import { kindLabels, edgeLabels, isPublic } from '$lib/display-names';
 	import { isHosted } from '$lib/platform';
@@ -23,13 +21,12 @@
 	};
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import { LoaderCircleIcon } from '@lucide/svelte';
-	import RelationshipGraph from '$lib/components/RelationshipGraph.svelte';
+	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
 	import VizSwitcher from '$lib/components/VizSwitcher.svelte';
 	import CrateTreemap from '$lib/components/CrateTreemap.svelte';
 	import CrateSunburst from '$lib/components/CrateSunburst.svelte';
 	import CrateGrid from '$lib/components/CrateGrid.svelte';
 	import CrateGraph from '$lib/components/CrateGraph.svelte';
-	import LayoutSwitcher from '$lib/components/LayoutSwitcher.svelte';
 	import NodeDetails from '$lib/components/NodeDetails.svelte';
 	import DocToc from '$lib/components/DocToc.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
@@ -194,35 +191,6 @@
 		updateSearchParam('sd', id);
 	}
 
-	// ── Layout mode (relationship graph) ──
-	const VALID_LAYOUTS: LayoutMode[] = ['ego', 'force', 'hierarchical', 'radial'];
-	const layoutParam = $derived(page.url.searchParams.get('layout'));
-	const layoutMode: LayoutMode = $derived(
-		VALID_LAYOUTS.includes(layoutParam as LayoutMode) ? (layoutParam as LayoutMode) : 'ego',
-	);
-
-	function setLayoutMode(mode: LayoutMode) {
-		const url = new URL(page.url);
-		if (mode === 'ego') {
-			url.searchParams.delete('layout');
-		} else {
-			url.searchParams.set('layout', mode);
-		}
-		goto(resolveAppPath(url.pathname + url.search), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
-		});
-	}
-
-	// Edge filter toggles — default: structural=off, semantic=on
-	const showStructural = $derived(page.url.searchParams.get('structural') === '1');
-	const showSemantic = $derived(page.url.searchParams.get('semantic') !== '0');
-	const showGraphBlanketImpls = $derived(page.url.searchParams.get('gbi') === '1');
-
-	// Internal: bypass projection to show raw graph for side-by-side comparison
-	const bypassProjection = $derived(page.url.searchParams.get('raw') === '1');
-
 	function updateSearchParam(key: string, value: string | null) {
 		if (!browser) return;
 		const url = new URL(window.location.href);
@@ -232,18 +200,6 @@
 			url.searchParams.set(key, value);
 		}
 		replaceState(url, page.state);
-	}
-
-	function toggleStructural() {
-		updateSearchParam('structural', showStructural ? null : '1');
-	}
-
-	function toggleSemantic() {
-		updateSearchParam('semantic', showSemantic ? '0' : null);
-	}
-
-	function toggleGraphBlanketImpls() {
-		updateSearchParam('gbi', showGraphBlanketImpls ? null : '1');
 	}
 
 	const selected = $derived(detail?.node ?? null);
@@ -280,39 +236,6 @@
 		return relatedNodeMap.get(nodeId);
 	}
 
-	// Build a mini-graph for the relationship graph visualization
-	const relationshipGraphMemo = new Memo(
-		() => {
-			if (!detail) return null;
-			return perf.time(
-				'derived',
-				'relationshipGraph',
-				() => {
-					const allNodes: Node[] = [detail!.node];
-					for (const n of relatedNodeMap.values()) {
-						allNodes.push({
-							...n,
-							span: undefined,
-							attrs: [],
-							fields: undefined,
-							variants: undefined,
-							signature: undefined,
-							generics: undefined,
-							docs: undefined,
-						} as Node);
-					}
-					return { nodes: allNodes, edges: detail!.edges } as Graph;
-				},
-				{
-					detail: (r) => `${r.nodes.length}n ${r.edges.length}e`,
-				},
-			);
-		},
-		(a, b) =>
-			a === b ||
-			(a != null && b != null && a.nodes.length === b.nodes.length && a.edges === b.edges),
-	);
-	const relationshipGraph = $derived(relationshipGraphMemo.current);
 
 	function isTraitImpl(node: Node): boolean {
 		if (node.kind !== 'Impl') return false;
@@ -650,41 +573,32 @@
 									 below the title block so the visual context appears
 									 ahead of the doc prose. -->
 								{#snippet belowTitle()}
-									{#if relationshipGraph}
+									{#if detail}
 										<div class="mt-5 mb-6">
-											<div class="mb-2 flex items-center justify-end">
-												<LayoutSwitcher mode={layoutMode} onModeChange={setLayoutMode} />
-											</div>
-											<div class="relationship-graph-cap">
-												<svelte:boundary>
-													<RelationshipGraph
-														graph={relationshipGraph}
-														{selected}
-														{getNodeUrl}
-														{layoutMode}
-														{showStructural}
-														{showSemantic}
-														showBlanketImpls={showGraphBlanketImpls}
-														{bypassProjection}
-														onToggleStructural={toggleStructural}
-														onToggleSemantic={toggleSemantic}
-														onToggleBlanketImpls={toggleGraphBlanketImpls}
-													/>
-													{#snippet failed(error: unknown, reset: () => void)}
-														{@const _ = log.error`RelationshipGraph boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
-														<div
-															class="corner-squircle rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-4 text-sm text-(--danger)"
+											<svelte:boundary>
+												<FocusGraphFlow
+													{detail}
+													{ancestors}
+													crateName={crateName ?? ''}
+													crateVersion={crateVersion ?? ''}
+													{getNodeUrl}
+													height={360}
+													compact
+												/>
+												{#snippet failed(error: unknown, reset: () => void)}
+													{@const _ = log.error`FocusGraphFlow boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
+													<div
+														class="corner-squircle rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-4 text-sm text-(--danger)"
+													>
+														<p class="font-medium">Failed to render relationship graph</p>
+														<button
+															type="button"
+															class="mt-2 text-(--accent) hover:underline"
+															onclick={reset}>Try again</button
 														>
-															<p class="font-medium">Failed to render relationship graph</p>
-															<button
-																type="button"
-																class="mt-2 text-(--accent) hover:underline"
-																onclick={reset}>Try again</button
-															>
-														</div>
-													{/snippet}
-												</svelte:boundary>
-											</div>
+													</div>
+												{/snippet}
+											</svelte:boundary>
 										</div>
 									{/if}
 								{/snippet}
@@ -767,13 +681,3 @@
 		</div>
 	{/snippet}
 </svelte:boundary>
-
-<style>
-	/* Cap the relationship-graph card so it doesn't dominate the doc page.
-	   Targets the inner graph container with !important so it overrides
-	   the component's own min-h utility. */
-	.relationship-graph-cap :global(.graph-container) {
-		height: 360px !important;
-		min-height: 0 !important;
-	}
-</style>
