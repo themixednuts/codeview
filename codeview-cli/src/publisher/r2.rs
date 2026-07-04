@@ -783,7 +783,7 @@ pub fn artifact_prefix(storage_name: &str, version: &str) -> String {
 pub const CATALOG_KEY: &str = "rust/catalog.json";
 
 /// Public pointer to the current sharded freshness aggregate.
-pub const INDEX_MANIFEST_KEY: &str = "rust/_index/manifest.json";
+pub const INDEX_MANIFEST_KEY: &str = "rust/_index/_manifest.json";
 
 /// Helper to read+parse JSON via the trait.
 pub async fn read_json<T: serde::de::DeserializeOwned>(
@@ -810,7 +810,7 @@ pub async fn write_json<T: serde::Serialize>(
 
 /// Path of one aggregate generation shard.
 pub fn index_generation_shard_key(generation: &str, shard_id: &str) -> String {
-    format!("rust/_index/generations/{generation}/shards/{shard_id}.json")
+    format!("rust/_index/_generations/{generation}/shards/{shard_id}.json")
 }
 
 /// Prefix for one run's append-only parse deltas.

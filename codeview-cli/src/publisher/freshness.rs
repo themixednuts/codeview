@@ -175,5 +175,20 @@ fn is_per_crate_freshness_key(key: &str) -> bool {
     key.starts_with("rust/_index/")
         && key.ends_with(".json")
         && key != INDEX_MANIFEST_KEY
-        && !key.starts_with("rust/_index/generations/")
+        && !key.starts_with("rust/_index/_generations/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_crate_freshness_key_does_not_collide_with_aggregate_manifest() {
+        assert_eq!(freshness_key("manifest"), "rust/_index/manifest.json");
+        assert!(is_per_crate_freshness_key(&freshness_key("manifest")));
+        assert!(!is_per_crate_freshness_key(INDEX_MANIFEST_KEY));
+        assert!(!is_per_crate_freshness_key(
+            "rust/_index/_generations/gen/shards/00.json"
+        ));
+    }
 }

@@ -4,7 +4,7 @@
 //! This command runs once after all workers finish. It reads the previous
 //! aggregate, applies this run's deltas in memory, writes changed shard
 //! objects, emits read-side catalog/ref files, and writes
-//! `rust/_index/manifest.json` last. There is intentionally no locking:
+//! `rust/_index/_manifest.json` last. There is intentionally no locking:
 //! the driver/workflow owns the single-writer guarantee.
 //!
 //! Aggregate shard assignment uses the existing FNV-1a 32-bit hash family:
@@ -1099,7 +1099,7 @@ mod tests {
         assert!(puts.contains(&changed_key));
         assert_eq!(
             puts.iter()
-                .filter(|key| key.starts_with("rust/_index/generations/gen-2/shards/"))
+                .filter(|key| key.starts_with("rust/_index/_generations/gen-2/shards/"))
                 .count(),
             1
         );
@@ -1260,7 +1260,7 @@ mod tests {
             shard_count: 4,
             shards: vec![AggregateManifestShard {
                 id: "00".to_string(),
-                key: "rust/_index/generations/gen/shards/00.json".to_string(),
+                key: "rust/_index/_generations/gen/shards/00.json".to_string(),
                 sha256: "abc".to_string(),
                 count: 1,
             }],
