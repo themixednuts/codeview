@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { NodeDetail, NodeSummary } from '$lib/schema';
-	import type { DetailDocModel } from '$lib/detail-model';
+	import type { MaterializedDetailDocModel } from '$lib/detail-model';
 	import { getSource } from '$lib/rpc/source.remote';
 	import { sourceProviderModeCtx } from '$lib/context';
 	import CodeBlock from '$lib/components/design/CodeBlock.svelte';
@@ -20,7 +20,7 @@
 	} = $props<{
 		detail: NodeDetail;
 		ancestors: NodeSummary[];
-		model: DetailDocModel;
+		model: MaterializedDetailDocModel;
 		theme?: 'dark' | 'light';
 		getNodeUrl: (id: string) => string;
 		crateName?: string;

@@ -10,7 +10,7 @@
 	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
 	import { getCrateMap, getStaticCrateMap } from '$lib/rpc/crateMap.remote';
 	import { kindLabels, edgeLabels, isPublic } from '$lib/display-names';
-	import { buildDetailDocModel } from '$lib/detail-model';
+	import { materializeDetailDocModel } from '$lib/detail-model';
 	import { isHosted } from '$lib/platform';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
@@ -191,7 +191,7 @@
 
 	const selected = $derived(detail?.node ?? null);
 	const isOnCrateRoot = $derived(selected?.kind === 'Crate');
-	const detailModel = $derived(buildDetailDocModel(detail));
+	const detailModel = $derived(materializeDetailDocModel(nodeView?.docModel, detail));
 	const selectedEdges = $derived(detailModel.selectedEdges);
 
 	// Pre-built lookup maps — O(1) instead of O(n) per call

@@ -2,7 +2,15 @@
 	import { browser } from '$app/environment';
 	import { goto, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
-	import type { Node, NodeKind, NodeSummary, NodeView, TreeNodeDTO } from '$lib/schema';
+	import type {
+		KindFacet,
+		Node,
+		NodeKind,
+		NodeSummary,
+		NodeView,
+		RelationshipGroup,
+		TreeNodeDTO,
+	} from '$lib/schema';
 	import type { CrateStatusValue } from '$lib/context';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { onMount } from 'svelte';
@@ -13,9 +21,9 @@
 		expandPathCtx,
 		resolvedThemeCtx,
 	} from '$lib/context';
-	import { kindLabels, nodeKindOrder, visibilityLabel } from '$lib/display-names';
-	import { edgeKindToRelation, REL_ORDER, toDesignNode, type DesignRelation } from '$lib/design/live-node';
-	import { buildDetailDocModel } from '$lib/detail-model';
+	import { visibilityLabel } from '$lib/display-names';
+	import { toDesignNode } from '$lib/design/live-node';
+	import { materializeDetailDocModel } from '$lib/detail-model';
 	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
 	import { isHosted } from '$lib/platform';
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
@@ -29,13 +37,6 @@
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import Signature from './Signature.svelte';
-
-	type RelationshipGroup = {
-		rel: DesignRelation;
-		label: string;
-		color: string;
-		items: Array<{ node: Node; count: number; href: string }>;
-	};
 
 	type FlatTreeNode = {
 		treeNode: TreeNode;
@@ -60,7 +61,7 @@
 		selectedNodeId,
 		treeRoots,
 		canonicalCrateName,
-		kindCountMap,
+		kindFacets,
 		activeKinds,
 		kindFilter,
 		rootChildren = null,
@@ -91,7 +92,7 @@
 		selectedNodeId: string;
 		treeRoots: TreeNodeDTO[] | null;
 		canonicalCrateName: string | undefined;
-		kindCountMap: Map<NodeKind, number>;
+		kindFacets: KindFacet[];
 		activeKinds: Set<NodeKind>;
 		kindFilter: Set<NodeKind>;
 		rootChildren?: { id: string; children: TreeNodeDTO[] } | null;
@@ -133,40 +134,25 @@
 	const detail = $derived(nodeView?.detail ?? null);
 	const selected = $derived(detail?.node ?? null);
 	const ancestors = $derived(nodeView?.ancestors ?? []);
-	const detailModel = $derived(buildDetailDocModel(detail));
+	const detailModel = $derived(materializeDetailDocModel(nodeView?.docModel, detail));
 	const selectedDesign = $derived(
 		selected ? toDesignNode(selected, { ancestors, getNodeUrl }) : null,
 	);
 	const selectedPath = $derived(selectedDesign?.path ?? selected?.id ?? selectedNodeId);
-	const orderedKinds = $derived.by(() => Array.from(new Set(nodeKindOrder)));
 	const totalItems = $derived.by(() => {
-		let total = 0;
-		for (const count of kindCountMap.values()) total += count;
-		return total;
+		return kindFacets.reduce((total, facet) => total + facet.count, 0);
 	});
 	const populatedKinds = $derived(
-		orderedKinds.filter((kind) => (kindCountMap.get(kind) ?? 0) > 0 || activeKinds.has(kind)),
+		kindFacets.filter((facet) => facet.count > 0 || activeKinds.has(facet.kind)),
 	);
-	const selectedEdges = $derived.by(() => {
-		if (!detail) return { incoming: [], outgoing: [] };
-		const selectedId = detail.node.id;
-		return {
-			incoming: detail.edges.filter((edge) => edge.to === selectedId),
-			outgoing: detail.edges.filter((edge) => edge.from === selectedId),
-		};
-	});
+	const selectedEdges = $derived(detailModel.selectedEdges);
 	const relationshipTotal = $derived(selectedEdges.incoming.length + selectedEdges.outgoing.length);
-	const relatedNodeMap = $derived.by(() => {
-		if (!detail) return new Map<string, Node>();
-		return new Map([[detail.node.id, detail.node], ...detail.relatedNodes.map((node) => [node.id, node] as const)]);
-	});
-	const relationshipGroups = $derived.by(() => {
-		if (!detail) return { incoming: [] as RelationshipGroup[], outgoing: [] as RelationshipGroup[] };
-		return {
-			incoming: buildRelationshipGroups(selectedEdges.incoming, 'incoming'),
-			outgoing: buildRelationshipGroups(selectedEdges.outgoing, 'outgoing'),
-		};
-	});
+	const relationshipGroups = $derived(
+		nodeView?.relationshipGroups ?? {
+			incoming: [] as RelationshipGroup[],
+			outgoing: [] as RelationshipGroup[],
+		},
+	);
 	const docSummary = $derived(docsSummary(selected?.docs));
 
 	function loadTreeChildren(input: { name: string; version?: string; nodeId: string }) {
@@ -541,35 +527,6 @@
 		updateExplorerState({ q: typeof raw === 'string' ? raw : '' });
 	}
 
-	function buildRelationshipGroups(
-		edges: NonNullable<typeof detail>['edges'],
-		direction: 'incoming' | 'outgoing',
-	): RelationshipGroup[] {
-		const groups = new Map<DesignRelation, Map<string, { node: Node; count: number; href: string }>>();
-		for (const edge of edges) {
-			const relation = edgeKindToRelation(edge.kind);
-			const otherId = direction === 'incoming' ? edge.from : edge.to;
-			const other = relatedNodeMap.get(otherId);
-			if (!other) continue;
-			const bucket = groups.get(relation.token) ?? new Map();
-			const existing = bucket.get(otherId);
-			if (existing) existing.count += 1;
-			else bucket.set(otherId, { node: other, count: 1, href: resolveAppPath(getNodeUrl(otherId)) });
-			groups.set(relation.token, bucket);
-		}
-		return REL_ORDER.filter((rel) => groups.has(rel)).map((rel) => {
-			const info = groups.get(rel)!;
-			const firstEdge = edges.find((edge) => edgeKindToRelation(edge.kind).token === rel);
-			const relation = firstEdge ? edgeKindToRelation(firstEdge.kind) : null;
-			return {
-				rel,
-				label: relation ? (direction === 'incoming' ? relation.in : relation.out) : rel,
-				color: relation?.color ?? 'var(--edge-default)',
-				items: Array.from(info.values()).sort((a, b) => a.node.name.localeCompare(b.node.name)),
-			};
-		});
-	}
-
 	function docsSummary(docs: string | null | undefined): string | null {
 		if (!docs) return null;
 		const first = docs
@@ -709,7 +666,7 @@
 						<div class="space-y-px">
 							{#each group.items.slice(0, 8) as item (item.node.id)}
 								<a
-									href={item.href}
+									href={resolveAppPath(getNodeUrl(item.node.id))}
 									data-sveltekit-noscroll
 									class="flex items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-(--panel-muted)"
 								>
@@ -844,16 +801,16 @@
 				</form>
 				{#if populatedKinds.length > 0}
 					<div class="mt-2 flex flex-wrap gap-1">
-						{#each populatedKinds as kind (kind)}
-							{@const isActive = activeKinds.has(kind)}
+						{#each populatedKinds as facet (facet.kind)}
+							{@const isActive = activeKinds.has(facet.kind)}
 							<button
 								type="button"
 								class="badge badge-sm transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 								class:badge-accent={isActive}
 								aria-pressed={isActive}
-								onclick={() => onToggleKind(kind)}
+								onclick={() => onToggleKind(facet.kind)}
 							>
-								{kindLabels[kind] ?? kind}
+								{facet.label}
 							</button>
 						{/each}
 					</div>

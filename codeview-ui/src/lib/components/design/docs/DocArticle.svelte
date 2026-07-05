@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Node, NodeDetail, NodeSummary } from '$lib/schema';
-	import type { DetailDocModel } from '$lib/detail-model';
+	import type { MaterializedDetailDocModel } from '$lib/detail-model';
 	import { edgeLabels, kindLabels } from '$lib/display-names';
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import NodeDetails from '$lib/components/NodeDetails.svelte';
@@ -19,7 +19,7 @@
 	} = $props<{
 		detail: NodeDetail;
 		ancestors: NodeSummary[];
-		model: DetailDocModel;
+		model: MaterializedDetailDocModel;
 		theme?: 'dark' | 'light';
 		getNodeUrl: (id: string) => string;
 		crateName?: string;

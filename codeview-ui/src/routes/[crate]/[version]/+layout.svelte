@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Node, NodeKind } from '$lib/graph';
-	import type { TreeNodeDTO } from '$lib/schema';
+	import type { NodeKind } from '$lib/graph';
+	import type { KindFacet, TreeNodeDTO } from '$lib/schema';
 	import {
 		getNodeUrlCtx,
 		crateVersionsCtx,
@@ -425,17 +425,6 @@
 
 	const showPerfDebug = $derived(browser ? page.url.searchParams.has('perf') : false);
 
-	function buildKindCountMap(kindCounts: Record<string, number> | null): Map<NodeKind, number> {
-		const counts = new Map<NodeKind, number>();
-		for (const kind of nodeKindOrder) counts.set(kind, 0);
-		if (kindCounts) {
-			for (const [kind, count] of Object.entries(kindCounts)) {
-				counts.set(kind as NodeKind, count);
-			}
-		}
-		return counts;
-	}
-
 	function buildWorkspaceCrates(
 		workspace: Array<{ id: string; name?: string; version: string }> | null,
 		index: {
@@ -485,9 +474,8 @@
 	);
 	const indexFromQuery = $derived(meta?.index ?? null);
 	const versionsFromQuery = $derived(meta?.versions ?? []);
-	const kindCountsFromMeta = $derived(meta?.kindCounts ?? null);
 	const hasTreeData = $derived(treeRoots != null && treeRoots.length > 0);
-	const kindCountMap = $derived(buildKindCountMap(kindCountsFromMeta));
+	const kindFacets = $derived((meta?.kindFacets ?? []) as KindFacet[]);
 	const workspaceCrateCount = $derived(buildWorkspaceCount(workspaceCrates, indexFromQuery));
 	const workspaceCratesList = $derived(
 		buildWorkspaceCrates(workspaceCrates, indexFromQuery, crateName),
@@ -559,7 +547,7 @@
 			{selectedNodeId}
 			{treeRoots}
 			{canonicalCrateName}
-			{kindCountMap}
+			{kindFacets}
 			{activeKinds}
 			{kindFilter}
 			{rootChildren}
