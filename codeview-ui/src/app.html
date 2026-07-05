@@ -1,5 +1,13 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html
+	lang="en"
+	data-theme="light"
+	data-accent="orange"
+	data-density="comfortable"
+	data-voice="editorial"
+	data-doc-layout="classic"
+	data-code-theme="solarized-light"
+>
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -23,26 +31,85 @@
 		<script>
 			(function () {
 				try {
-					var stored = function (k, fallback) {
-						var v = localStorage.getItem(k);
-						return v === null ? fallback : v;
+					var readCookie = function (k) {
+						var prefix = k + '=';
+						var parts = document.cookie ? document.cookie.split(';') : [];
+						for (var i = 0; i < parts.length; i += 1) {
+							var part = parts[i].trim();
+							if (part.indexOf(prefix) !== 0) continue;
+							var raw = part.slice(prefix.length);
+							try {
+								return decodeURIComponent(raw);
+							} catch (e) {
+								return raw;
+							}
+						}
+						return null;
+					};
+					var stored = function (k, fallback, allowed) {
+						var v = readCookie(k);
+						if (v === null) {
+							try {
+								v = localStorage.getItem(k);
+							} catch (e) {
+								v = null;
+							}
+						}
+						if (v === null) return fallback;
+						return allowed && allowed.indexOf(v) === -1 ? fallback : v;
 					};
 					var prefersDark =
 						window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
 
 					// UI mode
-					var modePref = stored('codeview-theme', 'system');
+					var modePref = stored('codeview-theme', 'system', ['light', 'dark', 'system']);
 					var mode =
 						modePref === 'system' ? (prefersDark ? 'dark' : 'light') : modePref;
 					document.documentElement.dataset.theme = mode === 'dark' ? 'dark' : 'light';
 
 					// Tweakable axes (accent / density / voice / doc layout / code themes)
-					var accent = stored('codeview-accent', 'orange');
-					var density = stored('codeview-density', 'comfortable');
-					var voice = stored('codeview-voice', 'editorial');
-					var docLayout = stored('codeview-doc-layout', 'classic');
-					var codeLight = stored('codeview-code-light', 'solarized-light');
-					var codeDark = stored('codeview-code-dark', 'solarized-dark');
+					var accent = stored('codeview-accent', 'orange', [
+						'orange',
+						'cobalt',
+						'forest',
+						'plum',
+						'char',
+					]);
+					var density = stored('codeview-density', 'comfortable', [
+						'compact',
+						'comfortable',
+						'spacious',
+					]);
+					var voice = stored('codeview-voice', 'editorial', [
+						'editorial',
+						'technical',
+						'geometric',
+					]);
+					var docLayout = stored('codeview-doc-layout', 'classic', [
+						'classic',
+						'reading',
+						'split',
+					]);
+					var codeLight = stored('codeview-code-light', 'solarized-light', [
+						'solarized-light',
+						'solarized-dark',
+						'catppuccin-latte',
+						'catppuccin-mocha',
+						'one-light',
+						'one-dark',
+						'github-light',
+						'github-dark',
+					]);
+					var codeDark = stored('codeview-code-dark', 'solarized-dark', [
+						'solarized-light',
+						'solarized-dark',
+						'catppuccin-latte',
+						'catppuccin-mocha',
+						'one-light',
+						'one-dark',
+						'github-light',
+						'github-dark',
+					]);
 
 					document.documentElement.dataset.accent = accent;
 					document.documentElement.dataset.density = density;
