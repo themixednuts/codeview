@@ -7,7 +7,7 @@ import type {
 	CrateTree,
 	NodeDetail,
 	NodeSummary,
-	NodeView,
+	NodeViewBase,
 	StaticCrateCatalog,
 	StaticCrateManifest,
 	StaticNodeDetailEntry,
@@ -737,7 +737,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		name: string,
 		version: string,
 		nodeId: string,
-	): Promise<NodeView | null> {
+	): Promise<NodeViewBase | null> {
 		let resolvedId = nodeId;
 		let [entry, node] = await Effect.runPromise(
 			Effect.all(
@@ -1152,7 +1152,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			name: string,
 			version: string,
 			nodeId: string,
-		): Promise<NodeView | null> {
+		): Promise<NodeViewBase | null> {
 			return loadNodeViewArtifact(name, version, nodeId);
 		},
 

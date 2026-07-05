@@ -1,38 +1,39 @@
-import type { Edge, Node, NodeDetail } from '$lib/schema';
+import type {
+	DetailDocModel,
+	DetailMethodGroup,
+	Edge,
+	Node,
+	NodeDetail,
+	TocEntry,
+	WhereUsedRef,
+} from '$lib/schema';
 
 export type SelectedEdges = {
 	incoming: Edge[];
 	outgoing: Edge[];
 };
 
-export type MethodGroup = {
+export type {
+	DetailDocModel,
+	DetailMethodGroup,
+	TocEntry,
+	WhereUsedRef,
+} from '$lib/schema';
+
+export type MaterializedMethodGroup = {
 	impl: Node;
 	methods: Node[];
 };
 
-export type TocEntry = {
-	anchor: string;
-	title: string;
-	count: number | null;
-};
-
-export type WhereUsedRef = {
-	id: string;
-	name: string;
-};
-
-export type DetailDocModel = {
-	selectedEdges: SelectedEdges;
-	filteredEdges: SelectedEdges;
+export type MaterializedDetailDocModel = Omit<
+	DetailDocModel,
+	'methodGroups' | 'relatedNodeIds' | 'implBlockIds' | 'sourceImplIds' | 'blanketImplIds'
+> & {
 	relatedNodeMap: Map<string, Node>;
 	implBlocks: Node[];
 	sourceImpls: Node[];
 	blanketImpls: Node[];
-	methodGroups: MethodGroup[];
-	methodCount: number;
-	totalImpls: number;
-	tocEntries: TocEntry[];
-	whereUsed: WhereUsedRef[];
+	methodGroups: MaterializedMethodGroup[];
 };
 
 function isTraitImpl(node: Node): boolean {
@@ -65,10 +66,10 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 		return {
 			selectedEdges: { incoming: [], outgoing: [] },
 			filteredEdges: { incoming: [], outgoing: [] },
-			relatedNodeMap: new Map(),
-			implBlocks: [],
-			sourceImpls: [],
-			blanketImpls: [],
+			relatedNodeIds: [],
+			implBlockIds: [],
+			sourceImplIds: [],
+			blanketImplIds: [],
 			methodGroups: [],
 			methodCount: 0,
 			totalImpls: 0,
@@ -78,10 +79,7 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 	}
 
 	const selected = detail.node;
-	const relatedNodeMap = new Map<string, Node>([
-		[selected.id, selected],
-		...detail.relatedNodes.map((node) => [node.id, node] as const),
-	]);
+	const relatedNodeMap = buildRelatedNodeMap(detail);
 	const selectedEdges = {
 		incoming: detail.edges.filter((edge) => edge.to === selected.id),
 		outgoing: detail.edges.filter((edge) => edge.from === selected.id),
@@ -120,7 +118,7 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 		if (target && isInherentImpl(target)) inherentImpls.push(target);
 	}
 
-	const methodBuckets = new Map<string, MethodGroup>();
+	const methodBuckets = new Map<string, MaterializedMethodGroup>();
 	for (const impl of inherentImpls) methodBuckets.set(impl.id, { impl, methods: [] });
 
 	for (const edge of detail.edges) {
@@ -165,14 +163,59 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 	return {
 		selectedEdges,
 		filteredEdges,
-		relatedNodeMap,
-		implBlocks,
-		sourceImpls,
-		blanketImpls,
-		methodGroups,
+		relatedNodeIds: Array.from(relatedNodeMap.keys()),
+		implBlockIds: implBlocks.map((node) => node.id),
+		sourceImplIds: sourceImpls.map((node) => node.id),
+		blanketImplIds: blanketImpls.map((node) => node.id),
+		methodGroups: methodGroups.map((group) => ({
+			implId: group.impl.id,
+			methodIds: group.methods.map((method) => method.id),
+		})),
 		methodCount,
 		totalImpls,
 		tocEntries,
 		whereUsed,
+	};
+}
+
+export function buildRelatedNodeMap(detail: NodeDetail | null | undefined): Map<string, Node> {
+	if (!detail) return new Map();
+	return new Map<string, Node>([
+		[detail.node.id, detail.node],
+		...detail.relatedNodes.map((node) => [node.id, node] as const),
+	]);
+}
+
+function nodeList(ids: string[], relatedNodeMap: Map<string, Node>): Node[] {
+	const nodes: Node[] = [];
+	for (const id of ids) {
+		const node = relatedNodeMap.get(id);
+		if (node) nodes.push(node);
+	}
+	return nodes;
+}
+
+export function materializeDetailDocModel(
+	model: DetailDocModel | null | undefined,
+	detail: NodeDetail | null | undefined,
+): MaterializedDetailDocModel {
+	const resolvedModel = model ?? buildDetailDocModel(null);
+	const relatedNodeMap = buildRelatedNodeMap(detail);
+	return {
+		...resolvedModel,
+		relatedNodeMap,
+		implBlocks: nodeList(resolvedModel.implBlockIds, relatedNodeMap),
+		sourceImpls: nodeList(resolvedModel.sourceImplIds, relatedNodeMap),
+		blanketImpls: nodeList(resolvedModel.blanketImplIds, relatedNodeMap),
+		methodGroups: resolvedModel.methodGroups
+			.map((group) => {
+				const impl = relatedNodeMap.get(group.implId);
+				if (!impl) return null;
+				return {
+					impl,
+					methods: nodeList(group.methodIds, relatedNodeMap),
+				};
+			})
+			.filter((group): group is MaterializedMethodGroup => Boolean(group)),
 	};
 }

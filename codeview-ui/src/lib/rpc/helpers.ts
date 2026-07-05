@@ -11,10 +11,16 @@ import type {
 	CrateTree,
 	NodeDetail,
 	CrateMeta,
+	KindFacet,
 	TreeNodeDTO,
 	NodeView,
+	NodeViewBase,
 } from '$lib/schema';
+import { kindLabels, nodeKindOrder } from '$lib/display-names';
+import { buildDetailDocModel } from '$lib/detail-model';
+import { buildNodeRelationshipGroups } from '$lib/design/relationship-groups';
 import { getLogger } from '$lib/log';
+import { summarizeNode } from '$lib/node-summary';
 import type { NodeViewInput } from './schemas';
 
 const log = getLogger('rpc.helpers');
@@ -158,6 +164,24 @@ export const tree = {
 	},
 } satisfies TreeOps;
 
+function buildKindFacets(kindCounts: Record<string, number>): KindFacet[] {
+	return nodeKindOrder.map((kind) => ({
+		kind,
+		label: kindLabels[kind],
+		count: kindCounts[kind] ?? 0,
+	}));
+}
+
+function composeNodeView({ detail, ancestors }: NodeViewBase): NodeView {
+	const docModel = buildDetailDocModel(detail);
+	return {
+		detail,
+		ancestors,
+		docModel,
+		relationshipGroups: buildNodeRelationshipGroups(detail, docModel.selectedEdges),
+	};
+}
+
 // ── Loader class ──────────────────────────────────────────────────────
 
 export class Loader {
@@ -245,24 +269,6 @@ function getCrateEdgeIndex(crate: { edges: Edge[] }): Map<string, Edge[]> {
 	_crateEdgeIndex = index;
 	_crateEdgeCrateRef = crate;
 	return index;
-}
-
-export function summarizeNode(n: Node): NodeSummary {
-	return {
-		id: n.id,
-		name: n.name,
-		kind: n.kind,
-		visibility: n.visibility,
-		is_external: n.is_external,
-		is_deprecated: n.is_deprecated,
-		...(n.kind === 'Impl'
-			? {
-					impl_trait: n.impl_trait,
-					impl_category: n.impl_category,
-					generics: n.generics,
-				}
-			: {}),
-	};
 }
 
 function nodeFromSummary(summary: NodeSummary): Node {
@@ -504,10 +510,17 @@ export class Resolver {
 				{ concurrency: 3 },
 			),
 		);
-		if (treeMeta) return { index, versions, kindCounts: treeMeta.kindCounts };
+		if (treeMeta) {
+			return {
+				index,
+				versions,
+				kindCounts: treeMeta.kindCounts,
+				kindFacets: buildKindFacets(treeMeta.kindCounts),
+			};
+		}
 		const treeIdx = await this.treeIndex(name, version, provider);
 		const kindCounts = treeIdx ? tree.kindCounts(treeIdx) : {};
-		return { index, versions, kindCounts };
+		return { index, versions, kindCounts, kindFacets: buildKindFacets(kindCounts) };
 	}
 
 	async treeRoots(name: string, version: string): Promise<TreeNodeDTO[]> {
@@ -537,7 +550,8 @@ export class Resolver {
 		const provider = await this.#loader.provider();
 		const resolvedVersion = version ?? 'latest';
 		if (isHosted && provider.loadNodeViewDirect) {
-			return provider.loadNodeViewDirect(name, resolvedVersion, nodeId);
+			const direct = await provider.loadNodeViewDirect(name, resolvedVersion, nodeId);
+			return direct ? composeNodeView(direct) : null;
 		}
 		const ws = await this.#loader.workspace(provider);
 		if (isHosted) {
@@ -556,7 +570,7 @@ export class Resolver {
 					{ concurrency: 2 },
 				),
 			);
-			if (detail) return { detail, ancestors: ancestors ?? [] };
+			if (detail) return composeNodeView({ detail, ancestors: ancestors ?? [] });
 		}
 		const [detail, idx] = await Effect.runPromise(
 			Effect.all(
@@ -600,7 +614,7 @@ export class Resolver {
 				(await provider.loadTreeAncestorsDirect(name, resolvedVersion, resolvedNodeId)) ?? [];
 		}
 
-		return { detail: resolvedDetail, ancestors };
+		return composeNodeView({ detail: resolvedDetail, ancestors });
 	}
 
 	/**

@@ -500,6 +500,69 @@ export const NodeDetailSchema = v.object({
 	relatedNodes: v.array(NodeSchema),
 });
 
+export const SelectedEdgesSchema = v.object({
+	incoming: v.array(EdgeSchema),
+	outgoing: v.array(EdgeSchema),
+});
+
+export const DetailMethodGroupSchema = v.object({
+	implId: v.string(),
+	methodIds: v.array(v.string()),
+});
+
+export const TocEntrySchema = v.object({
+	anchor: v.string(),
+	title: v.string(),
+	count: v.nullable(v.number()),
+});
+
+export const WhereUsedRefSchema = v.object({
+	id: v.string(),
+	name: v.string(),
+});
+
+export const DetailDocModelSchema = v.object({
+	selectedEdges: SelectedEdgesSchema,
+	filteredEdges: SelectedEdgesSchema,
+	relatedNodeIds: v.array(v.string()),
+	implBlockIds: v.array(v.string()),
+	sourceImplIds: v.array(v.string()),
+	blanketImplIds: v.array(v.string()),
+	methodGroups: v.array(DetailMethodGroupSchema),
+	methodCount: v.number(),
+	totalImpls: v.number(),
+	tocEntries: v.array(TocEntrySchema),
+	whereUsed: v.array(WhereUsedRefSchema),
+});
+
+export const DesignRelationSchema = v.picklist([
+	'contains',
+	'reexports',
+	'defines',
+	'implements',
+	'uses',
+	'calls',
+	'calls-runtime',
+	'derives',
+]);
+
+export const RelationshipGroupItemSchema = v.object({
+	node: NodeSummarySchema,
+	count: v.number(),
+});
+
+export const RelationshipGroupSchema = v.object({
+	rel: DesignRelationSchema,
+	label: v.string(),
+	color: v.string(),
+	items: v.array(RelationshipGroupItemSchema),
+});
+
+export const RelationshipGroupsSchema = v.object({
+	incoming: v.array(RelationshipGroupSchema),
+	outgoing: v.array(RelationshipGroupSchema),
+});
+
 /** getSource response */
 export const SourceResultSchema = v.object({
 	error: v.nullable(v.string()),
@@ -637,6 +700,15 @@ export type NodeDetail = {
 	edges: Edge[];
 	relatedNodes: Node[];
 };
+export type SelectedEdges = v.InferOutput<typeof SelectedEdgesSchema>;
+export type DetailMethodGroup = v.InferOutput<typeof DetailMethodGroupSchema>;
+export type TocEntry = v.InferOutput<typeof TocEntrySchema>;
+export type WhereUsedRef = v.InferOutput<typeof WhereUsedRefSchema>;
+export type DetailDocModel = v.InferOutput<typeof DetailDocModelSchema>;
+export type DesignRelation = v.InferOutput<typeof DesignRelationSchema>;
+export type RelationshipGroupItem = v.InferOutput<typeof RelationshipGroupItemSchema>;
+export type RelationshipGroup = v.InferOutput<typeof RelationshipGroupSchema>;
+export type RelationshipGroups = v.InferOutput<typeof RelationshipGroupsSchema>;
 export type SourceResult = v.InferOutput<typeof SourceResultSchema>;
 export type CrateStatus = v.InferOutput<typeof CrateStatusSchema>;
 export type CrateSearchResult = v.InferOutput<typeof CrateSearchResultSchema>;
@@ -733,17 +805,34 @@ export const StaticSearchManifestSchema = v.object({
 export type StaticSearchManifest = v.InferOutput<typeof StaticSearchManifestSchema>;
 
 /** Lightweight crate metadata: index + versions + kind counts (no tree nodes). */
+export const KindFacetSchema = v.object({
+	kind: NodeKindSchema,
+	label: v.string(),
+	count: v.number(),
+});
+export type KindFacet = v.InferOutput<typeof KindFacetSchema>;
+
 export const CrateMetaSchema = v.object({
 	index: v.nullable(CrateIndexSchema),
 	versions: v.array(v.string()),
 	kindCounts: v.record(NodeKindSchema, v.number()),
+	kindFacets: v.array(KindFacetSchema),
 });
 export type CrateMeta = v.InferOutput<typeof CrateMetaSchema>;
 
-/** Combined per-node response: detail + ancestors. */
+/** Base per-node response as stored in hosted artifacts. */
+export const NodeViewBaseSchema = v.object({
+	detail: NodeDetailSchema,
+	ancestors: v.array(NodeSummarySchema),
+});
+export type NodeViewBase = v.InferOutput<typeof NodeViewBaseSchema>;
+
+/** Combined per-node response: detail + ancestors + server-composed render DTOs. */
 export const NodeViewSchema = v.object({
 	detail: NodeDetailSchema,
 	ancestors: v.array(NodeSummarySchema),
+	docModel: DetailDocModelSchema,
+	relationshipGroups: RelationshipGroupsSchema,
 });
 export type NodeView = v.InferOutput<typeof NodeViewSchema>;
 

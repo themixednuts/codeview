@@ -2,7 +2,8 @@ import { query } from '$app/server';
 import { type NodeSummary } from '$lib/schema';
 import { normalizeCrateName } from '$lib/crate-names';
 import { sanitizeSearchQuery } from '$lib/server/validation';
-import { loader, getAllNodes, summarizeNode } from './helpers';
+import { summarizeNode } from '$lib/node-summary';
+import { loader, getAllNodes } from './helpers';
 import { assertCrateRef } from './remote-utils';
 import { NodeIdsSchema, SearchNodesInputSchema, type SearchNodesInput } from './schemas';
 

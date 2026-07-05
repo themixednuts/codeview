@@ -1,6 +1,13 @@
 import type { Result } from 'better-result';
 import type { Edge, Node, Workspace, CrateGraph } from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeSummary, NodeDetail, TreeNodeDTO } from '$lib/schema';
+import type {
+	CrateIndex,
+	CrateTree,
+	NodeSummary,
+	NodeDetail,
+	NodeViewBase,
+	TreeNodeDTO,
+} from '$lib/schema';
 import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
 import type { SourceProviderMode } from './provider-utils';
@@ -52,7 +59,7 @@ export interface DataProvider {
 		name: string,
 		version: string,
 		nodeId: string,
-	): Promise<import('$lib/schema').NodeView | null>;
+	): Promise<NodeViewBase | null>;
 	loadTreeMeta?(
 		name: string,
 		version: string,

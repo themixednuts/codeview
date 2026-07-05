@@ -8,7 +8,8 @@ import {
 	type CrateStatus,
 	type CrateSearchResult,
 } from '$lib/schema';
-import { loader, summarizeNode } from './helpers';
+import { summarizeNode } from '$lib/node-summary';
+import { loader } from './helpers';
 import { assertCrateName, assertCrateRef, throwIfProviderErr } from './remote-utils';
 import {
 	CrateRefSchema,

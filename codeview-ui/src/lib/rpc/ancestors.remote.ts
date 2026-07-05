@@ -3,7 +3,8 @@ import { getLogger } from '$lib/log';
 import { perf } from '$lib/perf';
 import { isHosted } from '$lib/platform';
 import type { NodeSummary } from '$lib/schema';
-import { loader, resolve, summarizeNode } from './helpers';
+import { summarizeNode } from '$lib/node-summary';
+import { loader, resolve } from './helpers';
 import { assertCrateRef } from './remote-utils';
 import { TreeNodeInputSchema } from './schemas';
 
