@@ -2,6 +2,15 @@
 	import { browser } from '$app/environment';
 	import * as Sheet from '$lib/shadcn/ui/sheet/index.js';
 	import {
+		CUSTOM_EDITOR_KEY,
+		EDITOR_KEY,
+		EDITOR_VALUES,
+		readClientPref,
+		readStoredPref,
+		type EditorId,
+		writePref,
+	} from '$lib/preferences';
+	import {
 		SunIcon,
 		MoonIcon,
 		MonitorIcon,
@@ -82,11 +91,7 @@
 	}: Props = $props();
 
 	// ── Editor + ligatures (kept from previous drawer) ──
-	const EDITOR_KEY = 'codeview-editor';
-	const CUSTOM_EDITOR_KEY = 'codeview-editor-custom';
 	const LIGATURES_KEY = 'codeview-ligatures';
-
-	type EditorId = 'vscode' | 'cursor' | 'zed' | 'neovim' | 'custom';
 
 	const editors: { id: EditorId; label: string; scheme: string }[] = [
 		{ id: 'vscode', label: 'VS Code', scheme: 'vscode://file/{path}:{line}' },
@@ -227,11 +232,8 @@
 	// ── Persistence (editor + ligatures only — tweak axes persisted in +layout) ──
 	function loadSettings() {
 		if (!browser) return;
-		const storedEditor = localStorage.getItem(EDITOR_KEY);
-		if (storedEditor && editors.some((e) => e.id === storedEditor)) {
-			editor = storedEditor as EditorId;
-		}
-		customScheme = localStorage.getItem(CUSTOM_EDITOR_KEY) ?? '';
+		editor = readStoredPref(EDITOR_KEY, EDITOR_VALUES, 'vscode');
+		customScheme = readClientPref(CUSTOM_EDITOR_KEY, '');
 
 		const storedLigatures = localStorage.getItem(LIGATURES_KEY);
 		if (storedLigatures !== null) {
@@ -242,12 +244,12 @@
 
 	function setEditor(id: EditorId) {
 		editor = id;
-		if (browser) localStorage.setItem(EDITOR_KEY, id);
+		if (browser) writePref(EDITOR_KEY, id);
 	}
 
 	function setCustomScheme(value: string) {
 		customScheme = value;
-		if (browser) localStorage.setItem(CUSTOM_EDITOR_KEY, value);
+		if (browser) writePref(CUSTOM_EDITOR_KEY, value);
 	}
 
 	function setLigatures(value: boolean) {

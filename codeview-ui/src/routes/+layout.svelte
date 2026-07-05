@@ -10,6 +10,29 @@
 	import { perf } from '$lib/perf';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import {
+		ACCENT_KEY,
+		ACCENT_VALUES,
+		CODE_DARK_KEY,
+		CODE_LIGHT_KEY,
+		CODE_VALUES,
+		DENSITY_KEY,
+		DENSITY_VALUES,
+		DOC_LAYOUT_KEY,
+		DOC_LAYOUT_VALUES,
+		EXT_LINK_KEY,
+		EXT_LINK_VALUES,
+		SOURCE_PROVIDER_KEY,
+		SOURCE_PROVIDER_VALUES,
+		THEME_KEY,
+		THEME_VALUES,
+		VCS_KEY,
+		VCS_VALUES,
+		VOICE_KEY,
+		VOICE_VALUES,
+		readStoredPref,
+		writePref,
+	} from '$lib/preferences';
+	import {
 		themeCtx,
 		resolvedThemeCtx,
 		accentModeCtx,
@@ -107,43 +130,9 @@
 		};
 	});
 
-	const THEME_KEY = 'codeview-theme';
-	const ACCENT_KEY = 'codeview-accent';
-	const DENSITY_KEY = 'codeview-density';
-	const VOICE_KEY = 'codeview-voice';
-	const DOC_LAYOUT_KEY = 'codeview-doc-layout';
-	const CODE_LIGHT_KEY = 'codeview-code-light';
-	const CODE_DARK_KEY = 'codeview-code-dark';
-	const EXT_LINK_KEY = 'codeview-ext-link-mode';
-	const SOURCE_PROVIDER_KEY = 'codeview-source-provider-mode';
-	const VCS_KEY = 'codeview-vcs';
-
-	const ACCENT_VALUES: AccentMode[] = ['orange', 'cobalt', 'forest', 'plum', 'char'];
-	const DENSITY_VALUES: DensityMode[] = ['compact', 'comfortable', 'spacious'];
-	const VOICE_VALUES: VoiceMode[] = ['editorial', 'technical', 'geometric'];
-	const DOC_LAYOUT_VALUES: DocLayoutMode[] = ['classic', 'reading', 'split'];
-	const CODE_VALUES: CodeTheme[] = [
-		'solarized-light',
-		'solarized-dark',
-		'catppuccin-latte',
-		'catppuccin-mocha',
-		'one-light',
-		'one-dark',
-		'github-light',
-		'github-dark',
-	];
-
-	function readEnum<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
-		if (!browser) return fallback;
-		const stored = localStorage.getItem(key);
-		return stored && (allowed as readonly string[]).includes(stored) ? (stored as T) : fallback;
-	}
-
 	function getInitialExtLinkMode(): ExternalLinkMode {
 		if (!browser) return 'codeview';
-		const stored = localStorage.getItem(EXT_LINK_KEY);
-		if (stored === 'codeview' || stored === 'docs') return stored;
-		return 'codeview';
+		return readStoredPref(EXT_LINK_KEY, EXT_LINK_VALUES, 'codeview');
 	}
 
 	let extLinkMode = $state<ExternalLinkMode>('codeview');
@@ -158,31 +147,27 @@
 
 	function setExtLinkMode(mode: ExternalLinkMode) {
 		extLinkMode = mode;
-		if (browser) localStorage.setItem(EXT_LINK_KEY, mode);
+		if (browser) writePref(EXT_LINK_KEY, mode);
 	}
 
 	function getInitialSourceProviderMode(): SourceProviderMode {
 		if (!browser) return 'auto';
-		const stored = localStorage.getItem(SOURCE_PROVIDER_KEY);
-		if (stored === 'auto' || stored === 'crates-io' || stored === 'github') return stored;
-		return 'auto';
+		return readStoredPref(SOURCE_PROVIDER_KEY, SOURCE_PROVIDER_VALUES, 'auto');
 	}
 
 	function setSourceProviderMode(mode: SourceProviderMode) {
 		sourceProviderMode = mode;
-		if (browser) localStorage.setItem(SOURCE_PROVIDER_KEY, mode);
+		if (browser) writePref(SOURCE_PROVIDER_KEY, mode);
 	}
 
 	function getInitialVcsMode(): VcsMode {
 		if (!browser) return 'git';
-		const stored = localStorage.getItem(VCS_KEY);
-		if (stored === 'git' || stored === 'jj') return stored;
-		return 'git';
+		return readStoredPref(VCS_KEY, VCS_VALUES, 'git');
 	}
 
 	function setVcsMode(mode: VcsMode) {
 		vcsMode = mode;
-		if (browser) localStorage.setItem(VCS_KEY, mode);
+		if (browser) writePref(VCS_KEY, mode);
 	}
 
 	function setEditorScheme(scheme: string) {
@@ -200,9 +185,7 @@
 
 	function getInitialTheme(): Theme {
 		if (!browser) return 'light';
-		const stored = localStorage.getItem(THEME_KEY);
-		if (stored === 'light' || stored === 'dark' || stored === 'system') return stored;
-		return 'system';
+		return readStoredPref(THEME_KEY, THEME_VALUES, 'system');
 	}
 
 	let theme = $state<Theme>('light');
@@ -239,7 +222,7 @@
 		if (!browser) return;
 		resolved = resolveTheme(next);
 		document.documentElement.dataset.theme = resolved;
-		localStorage.setItem(THEME_KEY, next);
+		writePref(THEME_KEY, next);
 		applyCodeTheme();
 	}
 
@@ -247,27 +230,27 @@
 		accentMode = next;
 		if (!browser) return;
 		document.documentElement.dataset.accent = next;
-		localStorage.setItem(ACCENT_KEY, next);
+		writePref(ACCENT_KEY, next);
 	}
 
 	function setDensity(next: DensityMode) {
 		densityMode = next;
 		if (!browser) return;
 		document.documentElement.dataset.density = next;
-		localStorage.setItem(DENSITY_KEY, next);
+		writePref(DENSITY_KEY, next);
 	}
 
 	function setVoice(next: VoiceMode) {
 		voiceMode = next;
 		if (!browser) return;
 		document.documentElement.dataset.voice = next;
-		localStorage.setItem(VOICE_KEY, next);
+		writePref(VOICE_KEY, next);
 	}
 
 	function setDocLayout(next: DocLayoutMode) {
 		docLayout = next;
 		if (!browser) return;
-		localStorage.setItem(DOC_LAYOUT_KEY, next);
+		writePref(DOC_LAYOUT_KEY, next);
 		document.documentElement.dataset.docLayout = next;
 		if (isExplorerRoute) {
 			void goto(serializeExplorerState(page.url, { layout: next }), {
@@ -281,14 +264,14 @@
 	function setCodeThemeLight(next: CodeTheme) {
 		codeThemeLight = next;
 		if (!browser) return;
-		localStorage.setItem(CODE_LIGHT_KEY, next);
+		writePref(CODE_LIGHT_KEY, next);
 		applyCodeTheme();
 	}
 
 	function setCodeThemeDark(next: CodeTheme) {
 		codeThemeDark = next;
 		if (!browser) return;
-		localStorage.setItem(CODE_DARK_KEY, next);
+		writePref(CODE_DARK_KEY, next);
 		applyCodeTheme();
 	}
 
@@ -298,14 +281,14 @@
 		sourceProviderMode = getInitialSourceProviderMode();
 		vcsMode = getInitialVcsMode();
 
-		// Restore tweak axes from localStorage (app.html's inline script set
-		// the initial dataset values; we sync our reactive state here).
-		accentMode = readEnum(ACCENT_KEY, ACCENT_VALUES, 'orange');
-		densityMode = readEnum(DENSITY_KEY, DENSITY_VALUES, 'comfortable');
-		voiceMode = readEnum(VOICE_KEY, VOICE_VALUES, 'editorial');
-		docLayout = readEnum(DOC_LAYOUT_KEY, DOC_LAYOUT_VALUES, 'classic');
-		codeThemeLight = readEnum(CODE_LIGHT_KEY, CODE_VALUES, 'solarized-light');
-		codeThemeDark = readEnum(CODE_DARK_KEY, CODE_VALUES, 'solarized-dark');
+		// Restore tweak axes from cookies/localStorage (app.html's inline script
+		// set the initial dataset values; we sync our reactive state here).
+		accentMode = readStoredPref(ACCENT_KEY, ACCENT_VALUES, 'orange');
+		densityMode = readStoredPref(DENSITY_KEY, DENSITY_VALUES, 'comfortable');
+		voiceMode = readStoredPref(VOICE_KEY, VOICE_VALUES, 'editorial');
+		docLayout = readStoredPref(DOC_LAYOUT_KEY, DOC_LAYOUT_VALUES, 'classic');
+		codeThemeLight = readStoredPref(CODE_LIGHT_KEY, CODE_VALUES, 'solarized-light');
+		codeThemeDark = readStoredPref(CODE_DARK_KEY, CODE_VALUES, 'solarized-dark');
 		document.documentElement.dataset.accent = accentMode;
 		document.documentElement.dataset.density = densityMode;
 		document.documentElement.dataset.voice = voiceMode;
