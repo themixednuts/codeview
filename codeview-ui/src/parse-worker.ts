@@ -40,6 +40,7 @@ type ParseWorkerEnv = Env & {
 	PLAN_DRAIN_ACTIVE_TARGET?: string;
 	PLAN_DRAIN_BATCH_SIZE?: string;
 	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
+	GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES?: string;
 };
 
 type WebSocketAttachment = {
@@ -49,6 +50,7 @@ type WebSocketAttachment = {
 
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
+const GITHUB_API_VERSION = '2026-03-10';
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
 const MAX_WS_MESSAGE_CHARS = 4096;
 const MAX_WS_TAGS_PER_MESSAGE = 20;
@@ -69,9 +71,7 @@ type RateBucketState = RateBucketConfig & {
 	tokens: number;
 };
 
-type LeaseResult =
-	| { leased: true }
-	| { leased: false; retryAfterSeconds: number };
+type LeaseResult = { leased: true } | { leased: false; retryAfterSeconds: number };
 
 type WorkPlanArtifact = {
 	run_id?: string;
@@ -117,8 +117,17 @@ type GitHubRepositoryResponse = {
 	};
 };
 
-type GitHubActionsBillingResponse = {
-	included_minutes?: number;
+type GitHubBillingUsageItem = {
+	product?: string;
+	sku?: string;
+	unitType?: string;
+	grossQuantity?: number;
+	quantity?: number;
+	netQuantity?: number;
+};
+
+type GitHubBillingUsageSummaryResponse = {
+	usageItems?: GitHubBillingUsageItem[];
 };
 
 function json(value: unknown, init?: ResponseInit): Response {
@@ -145,10 +154,7 @@ function statusRowToObject(row: Record<string, unknown>): StoredParseStatus {
 		status: row.status as StoredParseStatus['status'],
 		step: typeof row.step === 'string' && row.step ? row.step : undefined,
 		error: typeof row.error === 'string' && row.error ? row.error : undefined,
-		action:
-			action === 'install_std_docs' || action === 'docs_unavailable'
-				? action
-				: undefined,
+		action: action === 'install_std_docs' || action === 'docs_unavailable' ? action : undefined,
 		requestId: typeof row.request_id === 'string' && row.request_id ? row.request_id : undefined,
 		workflowId:
 			typeof row.workflow_id === 'string' && row.workflow_id ? row.workflow_id : undefined,
@@ -202,6 +208,12 @@ function parsePositiveNumber(value: string | undefined, fallback: number): numbe
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseOptionalPositiveNumber(value: string | undefined): number | null {
+	if (value === undefined || value.trim() === '') return null;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? '', 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -209,6 +221,28 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 
 function finiteNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function githubUsageQuantity(item: GitHubBillingUsageItem): number {
+	return (
+		finiteNumber(item.grossQuantity) ??
+		finiteNumber(item.quantity) ??
+		finiteNumber(item.netQuantity) ??
+		0
+	);
+}
+
+function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
+	const product = (item.product ?? '').toLowerCase();
+	const sku = (item.sku ?? '').toLowerCase();
+	const unitType = (item.unitType ?? '').toLowerCase();
+	return (product.includes('actions') || sku.includes('actions')) && unitType.includes('minute');
+}
+
+function totalActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
+	return (body.usageItems ?? [])
+		.filter(isActionsMinuteUsage)
+		.reduce((total, item) => total + githubUsageQuantity(item), 0);
 }
 
 function monthStartIso(now = new Date()): string {
@@ -359,7 +393,7 @@ function githubApiHeaders(env: ParseWorkerEnv): HeadersInit {
 		authorization: `Bearer ${env.GITHUB_TOKEN}`,
 		'content-type': 'application/json',
 		'user-agent': 'codeview-parse-worker',
-		'x-github-api-version': '2022-11-28',
+		'x-github-api-version': GITHUB_API_VERSION,
 	};
 }
 
@@ -380,7 +414,11 @@ function githubDispatchBody(env: ParseWorkerEnv, params: ParseWorkflowParams, wo
 	};
 }
 
-async function dispatchGitHubParse(env: ParseWorkerEnv, params: ParseWorkflowParams, workflowId: string) {
+async function dispatchGitHubParse(
+	env: ParseWorkerEnv,
+	params: ParseWorkflowParams,
+	workflowId: string,
+) {
 	const repo = env.GITHUB_REPO;
 	if (!repo) throw new Error('GITHUB_REPO is not configured');
 	const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
@@ -397,7 +435,10 @@ async function dispatchGitHubParse(env: ParseWorkerEnv, params: ParseWorkflowPar
 	return { dispatchedAt: databaseNow(), workflowFile };
 }
 
-async function updateStatus(env: ParseWorkerEnv, event: ParseStatusEvent): Promise<StoredParseStatus> {
+async function updateStatus(
+	env: ParseWorkerEnv,
+	event: ParseStatusEvent,
+): Promise<StoredParseStatus> {
 	const response = await parseStatusObject(env.PARSE_STATUS).fetch('https://status/event', {
 		method: 'POST',
 		headers: JSON_HEADERS,
@@ -433,7 +474,7 @@ function githubReadHeaders(env: ParseWorkerEnv): HeadersInit {
 	const headers: Record<string, string> = {
 		accept: 'application/vnd.github+json',
 		'user-agent': 'codeview-parse-worker',
-		'x-github-api-version': '2022-11-28',
+		'x-github-api-version': GITHUB_API_VERSION,
 	};
 	if (env.GITHUB_TOKEN) headers.authorization = `Bearer ${env.GITHUB_TOKEN}`;
 	return headers;
@@ -477,7 +518,7 @@ async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubReposito
 	return (await response.json()) as GitHubRepositoryResponse;
 }
 
-async function loadGitHubIncludedActionsMinutes(
+async function loadGitHubRepoActionsUsageMinutes(
 	env: ParseWorkerEnv,
 	repository: GitHubRepositoryResponse,
 ): Promise<number | null> {
@@ -486,14 +527,17 @@ async function loadGitHubIncludedActionsMinutes(
 	const ownerType = repository.owner?.type;
 	const path =
 		ownerType === 'Organization'
-			? `/orgs/${owner}/settings/billing/actions`
-			: `/users/${owner}/settings/billing/actions`;
-	const response = await fetch(`https://api.github.com${path}`, {
+			? `/organizations/${owner}/settings/billing/usage/summary`
+			: `/users/${owner}/settings/billing/usage/summary`;
+	const url = new URL(`https://api.github.com${path}`);
+	url.searchParams.set('product', 'Actions');
+	if (env.GITHUB_REPO) url.searchParams.set('repository', env.GITHUB_REPO);
+	const response = await fetch(url, {
 		headers: githubReadHeaders(env),
 	});
 	if (!response.ok) return null;
-	const body = (await response.json()) as GitHubActionsBillingResponse;
-	return finiteNumber(body.included_minutes);
+	const body = (await response.json()) as GitHubBillingUsageSummaryResponse;
+	return totalActionsMinutes(body);
 }
 
 async function estimateParseWorkflowMinutesThisMonth(env: ParseWorkerEnv): Promise<number | null> {
@@ -531,10 +575,12 @@ async function plannedDrainBudgetAllowance(env: ParseWorkerEnv): Promise<{
 	const repository = await loadGitHubRepository(env).catch(() => null);
 	if (repository?.private !== true) return { allowed: true };
 
-	const [includedMinutes, estimatedRepoMinutesThisMonth] = await Promise.all([
-		loadGitHubIncludedActionsMinutes(env, repository).catch(() => null),
-		estimateParseWorkflowMinutesThisMonth(env).catch(() => null),
-	]);
+	const includedMinutes = parseOptionalPositiveNumber(env.GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES);
+	const repoActionsUsageMinutes = await loadGitHubRepoActionsUsageMinutes(env, repository).catch(
+		() => null,
+	);
+	const estimatedRepoMinutesThisMonth =
+		repoActionsUsageMinutes ?? (await estimateParseWorkflowMinutesThisMonth(env).catch(() => null));
 	if (includedMinutes === null || estimatedRepoMinutesThisMonth === null) {
 		return { allowed: true, reason: 'budget-unavailable' };
 	}
@@ -588,8 +634,7 @@ async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 2000): Promise<PlanCa
 		cursor = page.truncated ? page.cursor : undefined;
 	} while (cursor && candidates.length < maxKeys);
 	return candidates.sort(
-		(a, b) =>
-			(b.uploaded ?? '').localeCompare(a.uploaded ?? '') || b.key.localeCompare(a.key),
+		(a, b) => (b.uploaded ?? '').localeCompare(a.uploaded ?? '') || b.key.localeCompare(a.key),
 	);
 }
 
@@ -614,7 +659,9 @@ async function loadLatestPlan(env: ParseWorkerEnv): Promise<WorkPlanArtifact | n
 	);
 }
 
-function plannedParseItem(value: NonNullable<WorkPlanArtifact['work']>[number]): PlannedParseItem | null {
+function plannedParseItem(
+	value: NonNullable<WorkPlanArtifact['work']>[number],
+): PlannedParseItem | null {
 	const name = value.name ?? '';
 	const version = value.version ?? '';
 	if (!isSafeCrateName(name) || !isSafeVersion(version)) return null;
@@ -747,13 +794,16 @@ async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: strin
 	const target = VERSION_ALIASES.has(version)
 		? parsed.aliases?.[version]
 		: parsed.versions?.find((entry) => entry.version === version);
-	if (!target?.version || !target.graphHash) throw new Error(`R2 refs do not include ${name}@${version}`);
+	if (!target?.version || !target.graphHash)
+		throw new Error(`R2 refs do not include ${name}@${version}`);
 	const storageName = parsed.storageName || hyphenateCrateName(name);
 	const meta = await env.CRATE_GRAPHS.get(`rust/${storageName}/${target.version}/site/meta.json`);
 	if (!meta) throw new Error(`missing hosted metadata for ${name}@${version}`);
 }
 
-async function reconcileFinalizingParses(env: ParseWorkerEnv): Promise<{ ready: number; failed: number }> {
+async function reconcileFinalizingParses(
+	env: ParseWorkerEnv,
+): Promise<{ ready: number; failed: number }> {
 	const url = new URL('https://status/queue');
 	url.searchParams.set('limit', '100');
 	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
@@ -972,37 +1022,45 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 	}
 
 	private getStatus(name: string, version: string): StoredParseStatus | null {
-		const row = this.ctx.storage.sql.exec(
-			`SELECT * FROM statuses WHERE ecosystem = ? AND name = ? AND version = ? LIMIT 1`,
-			'rust',
-			name,
-			version,
-		).toArray()[0] as Record<string, unknown> | undefined;
+		const row = this.ctx.storage.sql
+			.exec(
+				`SELECT * FROM statuses WHERE ecosystem = ? AND name = ? AND version = ? LIMIT 1`,
+				'rust',
+				name,
+				version,
+			)
+			.toArray()[0] as Record<string, unknown> | undefined;
 		return row ? statusRowToObject(row) : null;
 	}
 
 	private processing(limit: number): StoredParseStatus[] {
-		return this.ctx.storage.sql.exec(
-			`SELECT * FROM statuses
+		return this.ctx.storage.sql
+			.exec(
+				`SELECT * FROM statuses
 			 WHERE ecosystem = ? AND status = ?
 			 ORDER BY updated_at DESC
 			 LIMIT ?`,
-			'rust',
-			'processing',
-			Math.max(1, Math.min(limit, 100)),
-		).toArray().map((row) => statusRowToObject(row as Record<string, unknown>));
+				'rust',
+				'processing',
+				Math.max(1, Math.min(limit, 100)),
+			)
+			.toArray()
+			.map((row) => statusRowToObject(row as Record<string, unknown>));
 	}
 
 	private recent(limit: number): StoredParseStatus[] {
-		return this.ctx.storage.sql.exec(
-			`SELECT * FROM statuses
+		return this.ctx.storage.sql
+			.exec(
+				`SELECT * FROM statuses
 			 WHERE ecosystem = ? AND status != ?
 			 ORDER BY updated_at DESC
 			 LIMIT ?`,
-			'rust',
-			'processing',
-			Math.max(1, Math.min(limit, 100)),
-		).toArray().map((row) => statusRowToObject(row as Record<string, unknown>));
+				'rust',
+				'processing',
+				Math.max(1, Math.min(limit, 100)),
+			)
+			.toArray()
+			.map((row) => statusRowToObject(row as Record<string, unknown>));
 	}
 
 	private queueSnapshot(limit: number): ParseQueueSnapshot {
@@ -1013,10 +1071,9 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 	}
 
 	private readBucket(config: RateBucketConfig, nowMs: number): RateBucketState {
-		const row = this.ctx.storage.sql.exec(
-			`SELECT * FROM rate_buckets WHERE name = ? LIMIT 1`,
-			config.name,
-		).toArray()[0] as Record<string, unknown> | undefined;
+		const row = this.ctx.storage.sql
+			.exec(`SELECT * FROM rate_buckets WHERE name = ? LIMIT 1`, config.name)
+			.toArray()[0] as Record<string, unknown> | undefined;
 		if (!row) return { ...config, tokens: config.capacity };
 
 		const previousTokens = Number(row.tokens);
@@ -1058,7 +1115,8 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			return { leased: false, retryAfterSeconds: Math.min(Math.max(1, retryAfterSeconds), 900) };
 		}
 
-		for (const state of states) this.writeBucket({ ...state, tokens: state.tokens - state.cost }, nowMs);
+		for (const state of states)
+			this.writeBucket({ ...state, tokens: state.tokens - state.cost }, nowMs);
 		return { leased: true };
 	}
 

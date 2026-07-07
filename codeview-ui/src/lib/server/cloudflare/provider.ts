@@ -90,6 +90,7 @@ type AppEnv = Env & {
 	PLAN_DRAIN_ACTIVE_TARGET?: string;
 	PLAN_DRAIN_BATCH_SIZE?: string;
 	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
+	GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES?: string;
 };
 
 type SearchEntry = NodeSummary & { score?: number };
@@ -100,6 +101,7 @@ const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
 const DEFAULT_PLAN_DRAIN_ACTIVE_TARGET = 4;
 const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 2;
 const DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT = 35;
+const GITHUB_API_VERSION = '2026-03-10';
 const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
 
 type GitHubWorkflowRun = {
@@ -127,11 +129,17 @@ type GitHubRepositoryResponse = {
 	};
 };
 
-type GitHubActionsBillingResponse = {
-	total_minutes_used?: number;
-	total_paid_minutes_used?: number;
-	included_minutes?: number;
-	minutes_used_breakdown?: Record<string, number>;
+type GitHubBillingUsageItem = {
+	product?: string;
+	sku?: string;
+	unitType?: string;
+	grossQuantity?: number;
+	quantity?: number;
+	netQuantity?: number;
+};
+
+type GitHubBillingUsageSummaryResponse = {
+	usageItems?: GitHubBillingUsageItem[];
 };
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
@@ -146,12 +154,40 @@ function parsePositiveNumber(value: string | undefined, fallback: number): numbe
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseOptionalPositiveNumber(value: string | undefined): number | null {
+	if (value === undefined || value.trim() === '') return null;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
 function monthStartIso(now = new Date()): string {
 	return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
 
 function finiteNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function githubUsageQuantity(item: GitHubBillingUsageItem): number {
+	return (
+		finiteNumber(item.grossQuantity) ??
+		finiteNumber(item.quantity) ??
+		finiteNumber(item.netQuantity) ??
+		0
+	);
+}
+
+function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
+	const product = (item.product ?? '').toLowerCase();
+	const sku = (item.sku ?? '').toLowerCase();
+	const unitType = (item.unitType ?? '').toLowerCase();
+	return (product.includes('actions') || sku.includes('actions')) && unitType.includes('minute');
+}
+
+function totalActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
+	return (body.usageItems ?? [])
+		.filter(isActionsMinuteUsage)
+		.reduce((total, item) => total + githubUsageQuantity(item), 0);
 }
 
 function registrySummary(result: PackageMetadata): CrateSummaryResult {
@@ -883,7 +919,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	type PopulatedKind = 'nodes' | 'nodeDetails' | 'treeChildren';
 	const populatedShardsCache = new Map<string, Map<PopulatedKind, Set<string>> | null>();
 
-	async function populatedShardMap(ref: ArtifactRef): Promise<Map<PopulatedKind, Set<string>> | null> {
+	async function populatedShardMap(
+		ref: ArtifactRef,
+	): Promise<Map<PopulatedKind, Set<string>> | null> {
 		const cacheKey = `${ref.storageName}@${ref.version}`;
 		let entry = populatedShardsCache.get(cacheKey);
 		if (entry === undefined) {
@@ -1199,7 +1237,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		const headers: Record<string, string> = {
 			accept: 'application/vnd.github+json',
 			'user-agent': USER_AGENT,
-			'x-github-api-version': '2022-11-28',
+			'x-github-api-version': GITHUB_API_VERSION,
 		};
 		if (env.GITHUB_TOKEN) headers.authorization = `Bearer ${env.GITHUB_TOKEN}`;
 		return headers;
@@ -1251,7 +1289,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	async function loadGitHubRepository(): Promise<GitHubRepositoryResponse | null> {
 		const repo = env.GITHUB_REPO;
 		if (!repo) return null;
-		const response = await fetch(`https://api.github.com/repos/${repo}`, { headers: githubHeaders() });
+		const response = await fetch(`https://api.github.com/repos/${repo}`, {
+			headers: githubHeaders(),
+		});
 		if (!response.ok) {
 			log.warn`GitHub repository lookup failed code=${String(response.status)}`;
 			return null;
@@ -1275,6 +1315,34 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
+	function unmeteredBillingSummary(
+		owner: string,
+		accountType: GitHubActionsBillingSummary['accountType'],
+	): GitHubActionsBillingSummary {
+		return {
+			available: true,
+			owner,
+			accountType,
+			includedMinutes: null,
+			totalMinutesUsed: null,
+			totalPaidMinutesUsed: null,
+		};
+	}
+
+	function actionsBillingUsageUrl(
+		owner: string,
+		accountType: GitHubActionsBillingSummary['accountType'],
+	): string {
+		const path =
+			accountType === 'Organization'
+				? `/organizations/${owner}/settings/billing/usage/summary`
+				: `/users/${owner}/settings/billing/usage/summary`;
+		const url = new URL(`https://api.github.com${path}`);
+		url.searchParams.set('product', 'Actions');
+		if (env.GITHUB_REPO) url.searchParams.set('repository', env.GITHUB_REPO);
+		return url.toString();
+	}
+
 	async function loadGitHubActionsBilling(
 		repository: GitHubRepositoryResponse | null,
 	): Promise<GitHubActionsBillingSummary> {
@@ -1286,29 +1354,27 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					? 'User'
 					: 'unknown';
 		if (!owner) return emptyBillingSummary('', 'unknown', 'GITHUB_REPO is not configured');
-		if (!env.GITHUB_TOKEN) return emptyBillingSummary(owner, ownerType, 'GITHUB_TOKEN is not configured');
+		if (!env.GITHUB_TOKEN)
+			return emptyBillingSummary(owner, ownerType, 'GITHUB_TOKEN is not configured');
 
-		const path =
-			ownerType === 'Organization'
-				? `/orgs/${owner}/settings/billing/actions`
-				: `/users/${owner}/settings/billing/actions`;
-		const response = await fetch(`https://api.github.com${path}`, { headers: githubHeaders() });
+		const response = await fetch(actionsBillingUsageUrl(owner, ownerType), {
+			headers: githubHeaders(),
+		});
 		if (!response.ok) {
 			return emptyBillingSummary(
 				owner,
 				ownerType,
-				`GitHub billing unavailable: ${response.status} ${response.statusText}`,
+				`GitHub billing usage unavailable: ${response.status} ${response.statusText}`,
 			);
 		}
-		const body = (await response.json()) as GitHubActionsBillingResponse;
+		const body = (await response.json()) as GitHubBillingUsageSummaryResponse;
 		return {
 			available: true,
 			owner,
 			accountType: ownerType,
-			includedMinutes: finiteNumber(body.included_minutes),
-			totalMinutesUsed: finiteNumber(body.total_minutes_used),
-			totalPaidMinutesUsed: finiteNumber(body.total_paid_minutes_used),
-			minutesUsedBreakdown: body.minutes_used_breakdown,
+			includedMinutes: parseOptionalPositiveNumber(env.GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES),
+			totalMinutesUsed: totalActionsMinutes(body),
+			totalPaidMinutesUsed: null,
 		};
 	}
 
@@ -1361,10 +1427,12 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				return [];
 			}),
 		]);
-		const planned = await loadLatestPlannedRun(boundedLimit, queueStatusKeys(queue)).catch((err) => {
-			log.warn`planned parse run load failed: ${String(err)}`;
-			return null;
-		});
+		const planned = await loadLatestPlannedRun(boundedLimit, queueStatusKeys(queue)).catch(
+			(err) => {
+				log.warn`planned parse run load failed: ${String(err)}`;
+				return null;
+			},
+		);
 		return {
 			active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
 			activeRuns,
@@ -1394,19 +1462,29 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			loadGitHubRepository().catch(() => null),
 			estimateParseWorkflowMinutesThisMonth().catch(() => null),
 		]);
-		const billing = await loadGitHubActionsBilling(repository).catch((err) =>
-			emptyBillingSummary(
-				repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
-				repository?.owner?.type === 'Organization'
-					? 'Organization'
-					: repository?.owner?.type === 'User'
-						? 'User'
-						: 'unknown',
-				errorMessage(err),
-			),
-		);
 		const repoPrivate = typeof repository?.private === 'boolean' ? repository.private : null;
 		const standardRunnerMinutesMetered = repoPrivate === null ? null : repoPrivate;
+		const billing =
+			standardRunnerMinutesMetered === false
+				? unmeteredBillingSummary(
+						repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
+						repository?.owner?.type === 'Organization'
+							? 'Organization'
+							: repository?.owner?.type === 'User'
+								? 'User'
+								: 'unknown',
+					)
+				: await loadGitHubActionsBilling(repository).catch((err) =>
+						emptyBillingSummary(
+							repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
+							repository?.owner?.type === 'Organization'
+								? 'Organization'
+								: repository?.owner?.type === 'User'
+									? 'User'
+									: 'unknown',
+							errorMessage(err),
+						),
+					);
 		const repoBudgetMinutes =
 			standardRunnerMinutesMetered && billing.includedMinutes !== null
 				? billing.includedMinutes * (repoUsageTargetPercent / 100)
@@ -1448,10 +1526,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		}
 	}
 
-	function storedStatusToQueueEntry(
-		stored: StoredParseStatus,
-		position?: number,
-	): ParseQueueEntry {
+	function storedStatusToQueueEntry(stored: StoredParseStatus, position?: number): ParseQueueEntry {
 		return {
 			kind: stored.kind,
 			name: stored.name,
@@ -1482,7 +1557,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return keys;
 	}
 
-	function planItemFromArtifact(item: NonNullable<WorkPlanArtifact['work']>[number]): PlannedParseItem | null {
+	function planItemFromArtifact(
+		item: NonNullable<WorkPlanArtifact['work']>[number],
+	): PlannedParseItem | null {
 		if (!item.name || !item.version) return null;
 		const kind = item.kind === 'std' || item.kind === 'sysroot' ? 'sysroot' : 'crate';
 		return {
@@ -1541,8 +1618,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			cursor = page.truncated ? page.cursor : undefined;
 		} while (cursor && candidates.length < maxKeys);
 		return candidates.sort(
-			(a, b) =>
-				(b.uploaded ?? '').localeCompare(a.uploaded ?? '') || b.key.localeCompare(a.key),
+			(a, b) => (b.uploaded ?? '').localeCompare(a.uploaded ?? '') || b.key.localeCompare(a.key),
 		);
 	}
 
@@ -1556,9 +1632,11 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				return raw ? planFromArtifact(raw, limit, excludedKeys) : null;
 			}),
 		);
-		return plans
-			.filter((plan): plan is PlannedParseRun => plan !== null)
-			.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))[0] ?? null;
+		return (
+			plans
+				.filter((plan): plan is PlannedParseRun => plan !== null)
+				.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))[0] ?? null
+		);
 	}
 
 	let publishedCratesCache: Promise<CrateSummaryResult[]> | null = null;
@@ -1994,7 +2072,8 @@ export function createProvider(event: RequestEvent): DataProvider {
 
 /** Hosted mode uses the parser status Durable Object for realtime parse/status events. */
 export function handleWsUpgrade(event?: RequestEvent): Response | Promise<Response> {
-	if (!event) return new Response('Hosted realtime status requires a request event', { status: 500 });
+	if (!event)
+		return new Response('Hosted realtime status requires a request event', { status: 500 });
 	const env = (event?.platform as { env?: AppEnv } | undefined)?.env;
 	if (!env?.PARSE_STATUS) {
 		return new Response('Hosted realtime status is not configured', { status: 503 });

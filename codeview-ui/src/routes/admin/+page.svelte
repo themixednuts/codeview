@@ -172,11 +172,15 @@
 				</div>
 
 				{#if !auth.isAdmin}
-					<div class="rounded-md border border-(--danger) bg-(--panel) px-4 py-3 text-sm text-(--danger)">
+					<div
+						class="rounded-md border border-(--danger) bg-(--panel) px-4 py-3 text-sm text-(--danger)"
+					>
 						Admin access is required.
 					</div>
 				{:else if data.loadError}
-					<div class="rounded-md border border-(--danger) bg-(--panel) px-4 py-3 text-sm text-(--danger)">
+					<div
+						class="rounded-md border border-(--danger) bg-(--panel) px-4 py-3 text-sm text-(--danger)"
+					>
 						{data.loadError}
 					</div>
 				{:else if dashboard && allowance}
@@ -202,10 +206,14 @@
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 							<div class="text-[10px] tracking-wider text-(--muted) uppercase">Repo budget</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">
-								{fmtPercent(allowance.repoBudgetUsedPercent)}
+								{allowance.standardRunnerMinutesMetered === false
+									? 'Free'
+									: fmtPercent(allowance.repoBudgetUsedPercent)}
 							</div>
 							<div class="mt-1 text-[11px] text-(--muted-soft)">
-								{fmtMinutes(allowance.estimatedRepoMinutesThisMonth)} of {fmtMinutes(allowance.repoBudgetMinutes)}
+								{allowance.standardRunnerMinutesMetered === false
+									? 'Public standard runners'
+									: `${fmtMinutes(allowance.estimatedRepoMinutesThisMonth)} of ${fmtMinutes(allowance.repoBudgetMinutes)}`}
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
@@ -218,7 +226,9 @@
 					</div>
 
 					<div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-						<section class="min-w-0 rounded-md border border-(--panel-border-soft) bg-(--panel) p-4">
+						<section
+							class="min-w-0 rounded-md border border-(--panel-border-soft) bg-(--panel) p-4"
+						>
 							<div class="mb-3 flex items-center gap-2">
 								<Icon name="trending" size={13} class="text-(--accent)" />
 								<h2 class="font-display text-[18px] font-semibold text-(--ink)">Allowance</h2>
@@ -237,44 +247,58 @@
 									</div>
 								</div>
 								<div>
-									<div class="text-[10px] tracking-wider text-(--muted) uppercase">Tracked active</div>
+									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
+										Tracked active
+									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
 										{allowance.trackedActiveCount}
 									</div>
 								</div>
 								<div>
-									<div class="text-[10px] tracking-wider text-(--muted) uppercase">GitHub active</div>
+									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
+										GitHub active
+									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
 										{allowance.githubActiveRunCount}
 									</div>
 								</div>
 								<div>
-									<div class="text-[10px] tracking-wider text-(--muted) uppercase">Monthly target</div>
+									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
+										Monthly target
+									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
 										{fmtPercent(allowance.repoUsageTargetPercent)}
 									</div>
 								</div>
 								<div>
-									<div class="text-[10px] tracking-wider text-(--muted) uppercase">Month starts</div>
+									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
+										Month starts
+									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
 										{absoluteTime(allowance.monthStartedAt)}
 									</div>
 								</div>
 								<div>
-									<div class="text-[10px] tracking-wider text-(--muted) uppercase">Included minutes</div>
+									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
+										Configured pool
+									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
 										{fmtMinutes(allowance.billing.includedMinutes)}
 									</div>
 								</div>
 								<div>
-									<div class="text-[10px] tracking-wider text-(--muted) uppercase">Account used</div>
+									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
+										Repo Actions used
+									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
 										{fmtMinutes(allowance.billing.totalMinutesUsed)}
 									</div>
 								</div>
 							</div>
 							{#if !allowance.billing.available}
-								<div class="mt-3 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2 text-xs text-(--muted)">
+								<div
+									class="mt-3 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2 text-xs text-(--muted)"
+								>
 									{allowance.billing.error ?? 'GitHub billing is unavailable for this token.'}
 								</div>
 							{/if}
@@ -328,7 +352,9 @@
 												<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
 													{row.run.title}
 												</span>
-												<span class="badge badge-sm text-(--accent)">{runStatusLabel(row.run.status)}</span>
+												<span class="badge badge-sm text-(--accent)">
+													{runStatusLabel(row.run.status)}
+												</span>
 											</div>
 											<div class="mt-1 text-[12px] text-(--muted)">{row.run.event}</div>
 										</div>
@@ -372,7 +398,10 @@
 						{#if activeRows.length > PAGE_SIZE}
 							<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
 								<div class="font-mono text-[11px] text-(--muted-soft)">
-									Showing {pageStart(activePage, activeRows.length)}-{pageEnd(activePage, activeRows.length)}
+									Showing {pageStart(activePage, activeRows.length)}-{pageEnd(
+										activePage,
+										activeRows.length,
+									)}
 									of {activeRows.length}
 								</div>
 								<div class="flex items-center gap-2">
@@ -401,7 +430,9 @@
 							</div>
 						{/if}
 					{:else}
-						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center">
+						<div
+							class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"
+						>
 							<p class="text-sm font-medium text-(--ink)">No active parses</p>
 						</div>
 					{/if}
@@ -456,7 +487,10 @@
 						{#if plannedItems.length > PAGE_SIZE}
 							<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
 								<div class="font-mono text-[11px] text-(--muted-soft)">
-									Showing {pageStart(plannedPage, plannedItems.length)}-{pageEnd(plannedPage, plannedItems.length)}
+									Showing {pageStart(plannedPage, plannedItems.length)}-{pageEnd(
+										plannedPage,
+										plannedItems.length,
+									)}
 									of {plannedItems.length}
 								</div>
 								<div class="flex items-center gap-2">
@@ -485,7 +519,9 @@
 							</div>
 						{/if}
 					{:else}
-						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center">
+						<div
+							class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"
+						>
 							<p class="text-sm font-medium text-(--ink)">No planned batch available</p>
 						</div>
 					{/if}

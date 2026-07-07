@@ -337,7 +337,9 @@ describe('createCloudflareProvider', () => {
 			CRATE_GRAPHS: fakeBucket(objects),
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.searchNodesDirect?.('demo', '1.0.0', '', 10, ['Struct'])).resolves.toEqual([
+		await expect(
+			provider.searchNodesDirect?.('demo', '1.0.0', '', 10, ['Struct']),
+		).resolves.toEqual([
 			{
 				id: nestedNodeId,
 				name: 'Widget',
@@ -451,12 +453,25 @@ describe('createCloudflareProvider', () => {
 						{ status: 200, headers: { 'content-type': 'application/json' } },
 					);
 				}
-				if (url.pathname === '/users/themixednuts/settings/billing/actions') {
+				if (url.pathname === '/users/themixednuts/settings/billing/usage/summary') {
+					expect(url.searchParams.get('product')).toBe('Actions');
+					expect(url.searchParams.get('repository')).toBe('themixednuts/codeview');
 					return new Response(
 						JSON.stringify({
-							included_minutes: 2000,
-							total_minutes_used: 125,
-							total_paid_minutes_used: 0,
+							usageItems: [
+								{
+									product: 'Actions',
+									sku: 'actions_linux',
+									unitType: 'minutes',
+									grossQuantity: 125,
+								},
+								{
+									product: 'Codespaces',
+									sku: 'codespaces_compute',
+									unitType: 'hours',
+									grossQuantity: 10,
+								},
+							],
 						}),
 						{ status: 200, headers: { 'content-type': 'application/json' } },
 					);
@@ -510,6 +525,7 @@ describe('createCloudflareProvider', () => {
 			PLAN_DRAIN_ACTIVE_TARGET: '4',
 			PLAN_DRAIN_BATCH_SIZE: '2',
 			GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: '35',
+			GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES: '2000',
 		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
 		const dashboard = await provider.getAdminDashboard?.(10);
