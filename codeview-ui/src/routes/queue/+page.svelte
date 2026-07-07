@@ -5,7 +5,13 @@
 	import { stepLabels } from '$lib/realtime/constants';
 	import type { PageProps } from './$types';
 
+	const PAGE_SIZE = 10;
+
 	let { data, form }: PageProps = $props();
+
+	type ActiveQueueRow =
+		| { type: 'run'; run: PageProps['data']['snapshot']['activeRuns'][number] }
+		| { type: 'entry'; entry: PageProps['data']['snapshot']['active'][number] };
 
 	const snapshot = $derived(data.snapshot);
 	const auth = $derived(data.auth);
@@ -13,6 +19,11 @@
 	const activeRuns = $derived(snapshot.activeRuns);
 	const recent = $derived(snapshot.recent);
 	const planned = $derived(snapshot.planned);
+	const activeRows = $derived<ActiveQueueRow[]>([
+		...activeRuns.map((run) => ({ type: 'run' as const, run })),
+		...active.map((entry) => ({ type: 'entry' as const, entry })),
+	]);
+	const plannedItems = $derived(planned?.items ?? []);
 	const activeCount = $derived(active.length);
 	const activeRunCount = $derived(activeRuns.length);
 	const totalActiveCount = $derived(activeCount + activeRunCount);
@@ -22,6 +33,23 @@
 	const actionOk = $derived(form?.ok === true);
 	let authPending = $state(false);
 	let authError = $state<string | null>(null);
+	let activePage = $state(1);
+	let plannedPage = $state(1);
+	const activePageCount = $derived(Math.max(1, Math.ceil(activeRows.length / PAGE_SIZE)));
+	const plannedPageCount = $derived(Math.max(1, Math.ceil(plannedItems.length / PAGE_SIZE)));
+	const visibleActiveRows = $derived(
+		activeRows.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
+	);
+	const visiblePlannedItems = $derived(
+		plannedItems.slice((plannedPage - 1) * PAGE_SIZE, plannedPage * PAGE_SIZE),
+	);
+
+	$effect(() => {
+		if (activePage > activePageCount) activePage = activePageCount;
+		if (activePage < 1) activePage = 1;
+		if (plannedPage > plannedPageCount) plannedPage = plannedPageCount;
+		if (plannedPage < 1) plannedPage = 1;
+	});
 
 	function itemHref(name: string, version: string): string {
 		return resolve(`/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
@@ -47,6 +75,14 @@
 
 	function shortId(value: string | undefined): string {
 		return value ? value.slice(0, 8) : '';
+	}
+
+	function pageStart(page: number, total: number): number {
+		return total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+	}
+
+	function pageEnd(page: number, total: number): number {
+		return Math.min(page * PAGE_SIZE, total);
 	}
 
 	function runStatusLabel(status: string): string {
@@ -269,85 +305,112 @@
 					<span class="font-mono text-[11px] text-(--muted-soft)">{totalActiveCount} running</span>
 				</div>
 
-				{#if activeRuns.length > 0}
-					<div class="mb-3 overflow-hidden rounded-md border border-(--panel-border-soft)">
-						{#each activeRuns as run (run.id)}
-							<a
-								href={run.url}
-								target="_blank"
-								rel="noreferrer"
-								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[96px_minmax(0,1fr)_220px]"
-							>
-								<div class="font-mono text-[11px] text-(--muted-soft)">#{run.id}</div>
-								<div class="min-w-0">
-									<div class="flex min-w-0 flex-wrap items-center gap-2">
-										<span class="badge badge-sm">batch</span>
-										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-											{run.title}
-										</span>
-										<span class="badge badge-sm text-(--accent)">{runStatusLabel(run.status)}</span>
-										{#if run.branch}
-											<span class="font-mono text-[10.5px] text-(--muted-soft)">{run.branch}</span>
-										{/if}
-									</div>
-									<div class="mt-1 text-[12px] text-(--muted)">{run.event}</div>
-								</div>
-								<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
-									<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
-										{absoluteTime(run.updatedAt)}
-									</span>
-									<span class="badge badge-sm text-(--accent)">GitHub</span>
-								</div>
-							</a>
-						{/each}
-					</div>
-				{/if}
-
-				{#if active.length > 0}
+				{#if visibleActiveRows.length > 0}
 					<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
-						{#each active as item (`${item.name}@${item.version}:${item.requestId}`)}
-							<a
-								href={itemHref(item.name, item.version)}
-								data-sveltekit-preload-data="off"
-								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
-							>
-								<div class="font-mono text-[11px] text-(--muted-soft)">
-									#{item.position ?? '-'}
-								</div>
-								<div class="min-w-0">
-									<div class="flex min-w-0 flex-wrap items-center gap-2">
-										<span class="badge badge-sm">{kindLabel(item.kind)}</span>
-										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-											{item.name}
-										</span>
-										<span class="font-mono text-[10.5px] text-(--muted-soft)">
-											{item.version}
-										</span>
-										{#if item.requestId}
-											<span class="font-mono text-[10px] text-(--muted-soft)">
-												{shortId(item.requestId)}
+						{#each visibleActiveRows as row (`${row.type}:${row.type === 'run' ? row.run.id : `${row.entry.name}@${row.entry.version}:${row.entry.requestId}`}`)}
+							{#if row.type === 'run'}
+								<a
+									href={row.run.url}
+									target="_blank"
+									rel="noreferrer"
+									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[96px_minmax(0,1fr)_220px]"
+								>
+									<div class="font-mono text-[11px] text-(--muted-soft)">#{row.run.id}</div>
+									<div class="min-w-0">
+										<div class="flex min-w-0 flex-wrap items-center gap-2">
+											<span class="badge badge-sm">batch</span>
+											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+												{row.run.title}
 											</span>
-										{/if}
-										{#if item.requestedBy}
-											<span class="badge badge-sm">{actorLabel(item.requestedBy)}</span>
-										{/if}
+											<span class="badge badge-sm text-(--accent)">{runStatusLabel(row.run.status)}</span>
+											{#if row.run.branch}
+												<span class="font-mono text-[10.5px] text-(--muted-soft)">{row.run.branch}</span>
+											{/if}
+										</div>
+										<div class="mt-1 text-[12px] text-(--muted)">{row.run.event}</div>
 									</div>
-									<div class="mt-1 text-[12px] text-(--muted)">
-										{statusLabel(item.status, item.step)}
-									</div>
-								</div>
-								<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
-									<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
-										{absoluteTime(item.updatedAt)}
-									</span>
-									{#if item.githubRunUrl}
+									<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
+										<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
+											{absoluteTime(row.run.updatedAt)}
+										</span>
 										<span class="badge badge-sm text-(--accent)">GitHub</span>
-									{/if}
-								</div>
-							</a>
+									</div>
+								</a>
+							{:else}
+								<a
+									href={itemHref(row.entry.name, row.entry.version)}
+									data-sveltekit-preload-data="off"
+									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
+								>
+									<div class="font-mono text-[11px] text-(--muted-soft)">
+										#{row.entry.position ?? '-'}
+									</div>
+									<div class="min-w-0">
+										<div class="flex min-w-0 flex-wrap items-center gap-2">
+											<span class="badge badge-sm">{kindLabel(row.entry.kind)}</span>
+											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+												{row.entry.name}
+											</span>
+											<span class="font-mono text-[10.5px] text-(--muted-soft)">
+												{row.entry.version}
+											</span>
+											{#if row.entry.requestId}
+												<span class="font-mono text-[10px] text-(--muted-soft)">
+													{shortId(row.entry.requestId)}
+												</span>
+											{/if}
+											{#if row.entry.requestedBy}
+												<span class="badge badge-sm">{actorLabel(row.entry.requestedBy)}</span>
+											{/if}
+										</div>
+										<div class="mt-1 text-[12px] text-(--muted)">
+											{statusLabel(row.entry.status, row.entry.step)}
+										</div>
+									</div>
+									<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
+										<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
+											{absoluteTime(row.entry.updatedAt)}
+										</span>
+										{#if row.entry.githubRunUrl}
+											<span class="badge badge-sm text-(--accent)">GitHub</span>
+										{/if}
+									</div>
+								</a>
+							{/if}
 						{/each}
 					</div>
-				{:else if activeRuns.length === 0}
+					{#if activeRows.length > PAGE_SIZE}
+						<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+							<div class="font-mono text-[11px] text-(--muted-soft)">
+								Showing {pageStart(activePage, activeRows.length)}-{pageEnd(activePage, activeRows.length)}
+								of {activeRows.length}
+							</div>
+							<div class="flex items-center gap-2">
+								<button
+									type="button"
+									disabled={activePage <= 1}
+									onclick={() => (activePage -= 1)}
+									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+								>
+									<Icon name="chevron-left" size={12} />
+									Prev
+								</button>
+								<span class="font-mono text-[11px] text-(--muted-soft)">
+									{activePage}/{activePageCount}
+								</span>
+								<button
+									type="button"
+									disabled={activePage >= activePageCount}
+									onclick={() => (activePage += 1)}
+									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+								>
+									Next
+									<Icon name="chevron-right" size={12} />
+								</button>
+							</div>
+						</div>
+					{/if}
+				{:else}
 					<div
 						class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"
 					>
@@ -369,9 +432,9 @@
 					{/if}
 				</div>
 
-				{#if planned && planned.items.length > 0}
+				{#if planned && plannedItems.length > 0}
 					<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
-						{#each planned.items as item (item.workId)}
+						{#each visiblePlannedItems as item (item.workId)}
 							<a
 								href={itemHref(item.name, item.version)}
 								data-sveltekit-preload-data="off"
@@ -405,11 +468,39 @@
 							</a>
 						{/each}
 					</div>
-					{#if planned.total > planned.items.length}
-						<div class="mt-2 font-mono text-[11px] text-(--muted-soft)">
-							Showing {planned.items.length} of {planned.total}
+					<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+						<div class="font-mono text-[11px] text-(--muted-soft)">
+							Showing {pageStart(plannedPage, plannedItems.length)}-{pageEnd(plannedPage, plannedItems.length)}
+							of {plannedItems.length}{planned.total > plannedItems.length
+								? ` loaded (${planned.total} planned)`
+								: ''}
 						</div>
-					{/if}
+						{#if plannedItems.length > PAGE_SIZE}
+							<div class="flex items-center gap-2">
+								<button
+									type="button"
+									disabled={plannedPage <= 1}
+									onclick={() => (plannedPage -= 1)}
+									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+								>
+									<Icon name="chevron-left" size={12} />
+									Prev
+								</button>
+								<span class="font-mono text-[11px] text-(--muted-soft)">
+									{plannedPage}/{plannedPageCount}
+								</span>
+								<button
+									type="button"
+									disabled={plannedPage >= plannedPageCount}
+									onclick={() => (plannedPage += 1)}
+									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+								>
+									Next
+									<Icon name="chevron-right" size={12} />
+								</button>
+							</div>
+						{/if}
+					</div>
 				{:else}
 					<div
 						class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"
