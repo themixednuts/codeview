@@ -1,9 +1,11 @@
 import * as v from 'valibot';
+import { NodeKindSchema } from '$lib/schema';
 
 export const SearchNodesInputSchema = v.object({
 	crate: v.optional(v.string()),
 	version: v.optional(v.string()),
-	q: v.string(),
+	q: v.optional(v.string()),
+	kinds: v.optional(v.array(NodeKindSchema)),
 });
 
 export type SearchNodesInput = v.InferOutput<typeof SearchNodesInputSchema>;

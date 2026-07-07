@@ -276,6 +276,79 @@ describe('createCloudflareProvider', () => {
 		});
 	});
 
+	test('filters hosted nodes by kind from node shards without loaded tree children', async () => {
+		const prefix = 'rust/demo/1.0.0';
+		const crateNodeId = 'demo';
+		const nestedNodeId = 'demo::hidden::Widget';
+		const crateBucket = nodeViewBucket(crateNodeId);
+		const nestedBucket = nodeViewBucket(nestedNodeId);
+		const objects = new Map<string, unknown>([
+			['rust/_refs/demo.json', crateRefs()],
+			[`${prefix}/site/meta.json`, hostedMeta(128)],
+			[
+				`${prefix}/manifest.json`,
+				{
+					schema_version: 1,
+					name: 'demo',
+					version: '1.0.0',
+					index: { name: 'demo', version: '1.0.0', crates: [] },
+					nodeCount: 2,
+					edgeCount: 0,
+					kindCounts: { Crate: 1, Struct: 1 },
+					roots: [],
+					rootChildren: {},
+					populatedShards: {
+						nodes: [...new Set([crateBucket, nestedBucket])],
+						nodeDetails: [],
+						treeChildren: [],
+					},
+				},
+			],
+			[
+				`${prefix}/nodes/${crateBucket}.json`,
+				{
+					nodes: {
+						[crateNodeId]: {
+							id: crateNodeId,
+							name: 'demo',
+							kind: 'Crate',
+							visibility: { kind: 'Public' },
+							attrs: [],
+						},
+					},
+				},
+			],
+			[
+				`${prefix}/nodes/${nestedBucket}.json`,
+				{
+					nodes: {
+						[nestedNodeId]: {
+							id: nestedNodeId,
+							name: 'Widget',
+							kind: 'Struct',
+							visibility: { kind: 'Public' },
+							attrs: [],
+						},
+					},
+				},
+			],
+		]);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.searchNodesDirect?.('demo', '1.0.0', '', 10, ['Struct'])).resolves.toEqual([
+			{
+				id: nestedNodeId,
+				name: 'Widget',
+				kind: 'Struct',
+				visibility: { kind: 'Public' },
+				is_external: undefined,
+				is_deprecated: undefined,
+			},
+		]);
+	});
+
 	test('uses live crates.io metadata for top crates', async () => {
 		vi.stubGlobal(
 			'fetch',

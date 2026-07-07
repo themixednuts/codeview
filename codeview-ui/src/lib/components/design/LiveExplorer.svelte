@@ -134,6 +134,9 @@
 	let localDocLayoutOverride = $state<ExplorerDocLayout | null>(null);
 	let localOverrideRouteKey = $state<string | null>(null);
 	let treeNavigationTimer: ReturnType<typeof setTimeout> | null = null;
+	let filterInputTimer: ReturnType<typeof setTimeout> | null = null;
+	let filterDraft = $state('');
+	let pendingFilter = $state<string | null>(null);
 
 	const attachTreeFilterInput: Attachment<HTMLInputElement> = (node) => {
 		treeFilterInput = node;
@@ -168,6 +171,7 @@
 
 	onDestroy(() => {
 		clearTreeNavigationTimer();
+		clearFilterInputTimer();
 	});
 
 	const viewState = $derived(parseExplorerState(page.url));
@@ -201,6 +205,16 @@
 		},
 	);
 	const docSummary = $derived(docsSummary(selected?.docs));
+	const hasActiveTreeFilter = $derived(Boolean(filter) || kindFilter.size > 0);
+	const emptySearchMessage = $derived(
+		filter ? `No results for "${filter}"` : 'No items match these filters',
+	);
+
+	$effect(() => {
+		if (pendingFilter !== null && filter !== pendingFilter) return;
+		pendingFilter = null;
+		filterDraft = filter;
+	});
 
 	$effect(() => {
 		const key = `${canonicalCrateName ?? crateName ?? ''}:${version ?? ''}:${selectedNodeId}`;
@@ -580,6 +594,12 @@
 		treeNavigationTimer = null;
 	}
 
+	function clearFilterInputTimer() {
+		if (!filterInputTimer) return;
+		clearTimeout(filterInputTimer);
+		filterInputTimer = null;
+	}
+
 	function handleTreeRowLinkClick(row: FlatTreeNode, href: string, event: MouseEvent) {
 		if (!row.hasChildren) return;
 		if (event.defaultPrevented || event.button !== 0) return;
@@ -653,12 +673,41 @@
 		replaceExplorerState({ ex: currentExtraExpandedIds() });
 	}
 
+	function commitFilter(nextFilter: string) {
+		clearFilterInputTimer();
+		if (nextFilter === filter) {
+			pendingFilter = null;
+			return;
+		}
+		pendingFilter = nextFilter;
+		updateExplorerState({ q: nextFilter });
+	}
+
+	function scheduleFilterUpdate(nextFilter: string) {
+		clearFilterInputTimer();
+		filterInputTimer = setTimeout(() => {
+			filterInputTimer = null;
+			commitFilter(nextFilter);
+		}, 180);
+	}
+
+	function handleFilterInput(event: Event) {
+		const input = event.currentTarget;
+		if (!(input instanceof HTMLInputElement)) return;
+		filterDraft = input.value;
+		pendingFilter = input.value;
+		scheduleFilterUpdate(input.value);
+	}
+
 	function submitFilter(event: SubmitEvent) {
 		event.preventDefault();
 		const form = event.currentTarget;
 		if (!(form instanceof HTMLFormElement)) return;
 		const raw = new FormData(form).get('q');
-		updateExplorerState({ q: typeof raw === 'string' ? raw : '' });
+		const nextFilter = typeof raw === 'string' ? raw : '';
+		filterDraft = nextFilter;
+		pendingFilter = nextFilter;
+		commitFilter(nextFilter);
 	}
 
 	function docsSummary(docs: string | null | undefined): string | null {
@@ -949,8 +998,9 @@
 					type="search"
 					name="q"
 					placeholder="Filter items..."
-					value={filter}
+					value={filterDraft}
 					class="mono w-full rounded-md border border-(--panel-border) bg-(--panel-solid) py-1.5 pr-12 pl-7 text-[11.5px] text-(--ink) outline-none focus:border-(--accent) focus:ring-1 focus:ring-(--accent)"
+					oninput={handleFilterInput}
 				/>
 				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
 					<Icon name="search" size={12} />
@@ -988,7 +1038,7 @@
 		</div>
 
 		<div class="flex min-h-0 flex-1 flex-col">
-			{#if filter && searchQuery}
+			{#if hasActiveTreeFilter && searchQuery}
 				<svelte:boundary>
 					{@const results = await searchQuery}
 					<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
@@ -998,7 +1048,7 @@
 						{#each results as node (node.id)}
 							{@render searchResultRow(node)}
 						{:else}
-							<p class="px-2 py-3 text-sm text-(--muted)">No results for "{filter}"</p>
+							<p class="px-2 py-3 text-sm text-(--muted)">{emptySearchMessage}</p>
 						{/each}
 					</div>
 					{#snippet pending()}
@@ -1030,7 +1080,7 @@
 						class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
 						onclick={expandLoaded}
 					>
-						Expand loaded
+						Expand
 					</button>
 				</div>
 				<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3" role="tree" aria-label="Crate modules">

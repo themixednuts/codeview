@@ -1,7 +1,7 @@
 import { Result } from 'better-result';
 import { Data, Effect } from 'effect';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { CrateGraph, Node } from '$lib/graph';
+import type { CrateGraph, Node, NodeKind } from '$lib/graph';
 import type {
 	CrateIndex,
 	CrateTree,
@@ -42,6 +42,7 @@ import {
 	normalizeCrateName,
 } from '../validation';
 import { getLogger } from '$lib/log';
+import { summarizeNode } from '$lib/node-summary';
 import { actorFromUser, getAuthStateFromRequest } from '../auth';
 import {
 	makeParseRequest,
@@ -368,10 +369,16 @@ function searchPrefix(value: string): string {
 	return normalized.slice(0, 2);
 }
 
-function searchSummaries(entries: NodeSummary[], queryText: string, limit: number): NodeSummary[] {
+function searchSummaries(
+	entries: NodeSummary[],
+	queryText: string,
+	limit: number,
+	kinds: Set<NodeKind> = new Set(),
+): NodeSummary[] {
 	const needle = queryText.trim().toLowerCase();
 	if (!needle) return [];
 	return entries
+		.filter((entry) => kinds.size === 0 || kinds.has(entry.kind))
 		.map((entry): SearchEntry | null => {
 			const name = entry.name.toLowerCase();
 			const id = entry.id.toLowerCase();
@@ -831,18 +838,14 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	type PopulatedKind = 'nodes' | 'nodeDetails' | 'treeChildren';
 	const populatedShardsCache = new Map<string, Map<PopulatedKind, Set<string>> | null>();
 
-	async function isShardPopulated(
-		ref: ArtifactRef,
-		kind: PopulatedKind,
-		bucket: string,
-	): Promise<boolean> {
+	async function populatedShardMap(ref: ArtifactRef): Promise<Map<PopulatedKind, Set<string>> | null> {
 		const cacheKey = `${ref.storageName}@${ref.version}`;
 		let entry = populatedShardsCache.get(cacheKey);
 		if (entry === undefined) {
 			const manifest = await readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
 			if (!manifest?.populatedShards) {
 				populatedShardsCache.set(cacheKey, null);
-				return false;
+				return null;
 			}
 			entry = new Map<PopulatedKind, Set<string>>([
 				['nodes', new Set(manifest.populatedShards.nodes)],
@@ -851,8 +854,19 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			]);
 			populatedShardsCache.set(cacheKey, entry);
 		}
-		if (entry === null) return false;
-		return entry.get(kind)?.has(bucket) ?? false;
+		return entry;
+	}
+
+	async function populatedShardBuckets(ref: ArtifactRef, kind: PopulatedKind): Promise<string[]> {
+		return Array.from((await populatedShardMap(ref))?.get(kind) ?? []);
+	}
+
+	async function isShardPopulated(
+		ref: ArtifactRef,
+		kind: PopulatedKind,
+		bucket: string,
+	): Promise<boolean> {
+		return (await populatedShardMap(ref))?.get(kind)?.has(bucket) ?? false;
 	}
 
 	async function loadNodeFromRef(ref: ArtifactRef, nodeId: string): Promise<Node | null> {
@@ -860,6 +874,24 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		if (!(await isShardPopulated(ref, 'nodes', bucket))) return null;
 		const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
 		return shard?.nodes[nodeId] ?? null;
+	}
+
+	async function filterNodesFromShards(
+		ref: ArtifactRef,
+		kinds: Set<NodeKind>,
+		limit: number,
+	): Promise<NodeSummary[]> {
+		if (kinds.size === 0) return [];
+		const entries: NodeSummary[] = [];
+		for (const bucket of await populatedShardBuckets(ref, 'nodes')) {
+			const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
+			if (!shard) continue;
+			for (const node of Object.values(shard.nodes)) {
+				if (node.is_external || !kinds.has(node.kind)) continue;
+				entries.push(summarizeNode(node));
+			}
+		}
+		return entries.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
 	}
 
 	async function loadHostedAlias(
@@ -1531,13 +1563,15 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			crateVersion: string,
 			queryText: string,
 			limit = 200,
+			kinds: NodeKind[] = [],
 		): Promise<NodeSummary[] | null> {
 			const context = await loadHostedContext(crateName, crateVersion);
 			if (!context) return [];
+			const kindSet = new Set<NodeKind>(kinds);
+			const needle = queryText.trim().toLowerCase();
+			if (!needle) return filterNodesFromShards(context.ref, kindSet, limit);
 			const manifest = await loadHostedSearchManifestFromRef(context.ref);
 			if (!manifest) return [];
-			const needle = queryText.trim().toLowerCase();
-			if (!needle) return [];
 			const queryP = searchPrefix(needle);
 			const prefixes = manifest.prefixes.filter((prefix) => prefix.startsWith(queryP));
 			const entries: NodeSummary[] = [];
@@ -1545,7 +1579,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				const shard = await loadHostedSearchShardFromRef(context.ref, prefix);
 				if (shard) entries.push(...shard.entries);
 			}
-			return searchSummaries(entries, queryText, limit);
+			return searchSummaries(entries, queryText, limit, kindSet);
 		},
 
 		async getCrateStatus(name: string, version: string) {

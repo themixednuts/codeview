@@ -383,14 +383,15 @@
 	// Search / filter state from URL
 	const filter = $derived(viewState.q);
 	const showGraphBlanketImpls = $derived(viewState.gbi);
-	// Server-side search when there's a query
-	const searchQuery = $derived(
-		filter ? searchNodes({ crate: crateName, version, q: filter }) : null,
-	);
-
 	const activeKinds = $derived.by(() => new Set<NodeKind>(viewState.k));
 	const kindFilter = $derived(activeKinds);
 	const kindParamList = $derived.by<NodeKind[]>(() => viewState.k);
+	// Server-side search when there's a query
+	const searchQuery = $derived(
+		filter || kindParamList.length > 0
+			? searchNodes({ crate: crateName, version, q: filter, kinds: kindParamList })
+			: null,
+	);
 
 	function updateExplorerState(patch: Parameters<typeof serializeExplorerState>[1]) {
 		void goto(serializeExplorerState(page.url, patch), {

@@ -1,5 +1,5 @@
 import type { Result } from 'better-result';
-import type { Edge, Node, Workspace, CrateGraph } from '$lib/graph';
+import type { Edge, Node, NodeKind, Workspace, CrateGraph } from '$lib/graph';
 import type {
 	CrateIndex,
 	CrateTree,
@@ -146,6 +146,7 @@ export interface DataProvider {
 		version: string,
 		query: string,
 		limit?: number,
+		kinds?: NodeKind[],
 	): Promise<NodeSummary[] | null>;
 	getCrossEdgeData(nodeId: string): Promise<CrossEdgeData>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
