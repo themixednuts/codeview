@@ -833,15 +833,71 @@
 					</button>
 				{/if}
 			{/if}
-			<a
-				href={resolve('/queue')}
-				class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
-				aria-label="Parse queue"
-				title="Parse queue"
+			<div
+				class="relative"
+				role="group"
+				aria-label="Parse queue status"
+				onmouseenter={openProcessingPopover}
+				onmouseleave={closeProcessingPopover}
+				onfocusin={openProcessingPopover}
+				onfocusout={handleProcessingBlur}
 			>
-				<Icon name="clock" size={13} />
-				<span class="hidden sm:inline">Queue</span>
-			</a>
+				<a
+					href={resolve('/queue')}
+					class={`inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors ${
+						visibleProcessingCount > 0
+							? 'border border-(--accent-ring) bg-(--accent-soft) text-(--accent) hover:bg-(--panel-strong) hover:text-(--ink)'
+							: 'text-(--muted) hover:bg-(--panel-strong) hover:text-(--ink)'
+					}`}
+					aria-label={visibleProcessingCount > 0
+						? `Parse queue, ${visibleProcessingCount} active`
+						: 'Parse queue'}
+					aria-describedby={showProcessing && visibleProcessingCount > 0
+						? 'parse-queue-popover'
+						: undefined}
+					title="Parse queue"
+				>
+					{#if visibleProcessingCount > 0}
+						<LoaderCircleIcon class="animate-spin" size={13} />
+						<span class="hidden sm:inline">Parsing</span>
+						<span class="font-mono tabular-nums">{visibleProcessingCount}</span>
+					{:else}
+						<Icon name="clock" size={13} />
+						<span class="hidden sm:inline">Queue</span>
+					{/if}
+				</a>
+				{#if showProcessing && visibleProcessingCount > 0}
+					<div
+						id="parse-queue-popover"
+						class="corner-squircle absolute right-0 z-20 mt-2 w-64 rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-2 shadow-(--shadow-soft)"
+						role="tooltip"
+						aria-label="Background parses"
+					>
+						<div class="px-2 pb-1 text-[10px] tracking-wider text-(--muted) uppercase">
+							Active parses
+						</div>
+						{#if processingCrates.length > 0}
+							<div class="space-y-1">
+								{#each processingCrates as crate (`${processingCrateName(crate)}@${crate.version}`)}
+									<div
+										class="corner-squircle flex items-center justify-between gap-2 rounded-(--radius-chip) bg-(--panel) px-2 py-1"
+									>
+										<span class="truncate text-xs font-medium text-(--ink)">
+											{processingCrateName(crate)}
+										</span>
+										<span class="badge badge-sm">{crate.version}</span>
+									</div>
+								{/each}
+							</div>
+						{:else}
+							<div class="flex items-center gap-2 p-2">
+								<LoaderCircleIcon class="animate-spin" size={12} />
+								<span class="text-xs text-(--muted)">Loading...</span>
+							</div>
+						{/if}
+					</div>
+				{/if}
+			</div>
 			<a
 				href="https://github.com/themixednuts/codeview"
 				target="_blank"
@@ -852,52 +908,6 @@
 			>
 				<Icon name="github" size={14} />
 			</a>
-			{#if visibleProcessingCount > 0}
-				<div class="relative" onfocusin={openProcessingPopover} onfocusout={handleProcessingBlur}>
-					<button
-						type="button"
-						class="badge badge-sm inline-flex items-center gap-1.5 border border-(--accent-ring) bg-(--accent-soft) text-(--accent)"
-						title="Background parses running"
-						aria-expanded={showProcessing}
-						aria-haspopup="dialog"
-						onclick={() => (showProcessing = !showProcessing)}
-					>
-						Parsing {visibleProcessingCount}
-					</button>
-					{#if showProcessing}
-						<div
-							class="corner-squircle absolute right-0 z-20 mt-2 w-64 rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-2 shadow-(--shadow-soft)"
-							role="dialog"
-							aria-label="Background parses"
-						>
-							<div class="px-2 pb-1 text-[10px] tracking-wider text-(--muted) uppercase">
-								Background parses
-							</div>
-							{#if processingCrates.length > 0}
-								<div class="space-y-1">
-									{#each processingCrates as crate (`${processingCrateName(crate)}@${crate.version}`)}
-										<div
-											class="corner-squircle flex items-center justify-between gap-2 rounded-(--radius-chip) bg-(--panel) px-2 py-1"
-										>
-											<span class="truncate text-xs font-medium text-(--ink)">
-												{processingCrateName(crate)}
-											</span>
-											<span class="badge badge-sm">{crate.version}</span>
-										</div>
-									{/each}
-								</div>
-							{:else if visibleProcessingCount > 0}
-								<div class="flex items-center gap-2 p-2">
-									<LoaderCircleIcon class="animate-spin" size={12} />
-									<span class="text-xs text-(--muted)">Loading...</span>
-								</div>
-							{:else}
-								<div class="p-2 text-xs text-(--muted)">No active parses</div>
-							{/if}
-						</div>
-					{/if}
-				</div>
-			{/if}
 			<button
 				type="button"
 				class="grid size-7 place-items-center rounded-md text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
