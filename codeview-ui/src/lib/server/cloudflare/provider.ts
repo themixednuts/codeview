@@ -102,6 +102,7 @@ const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 2;
 const DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT = 35;
 const GITHUB_API_VERSION = '2026-03-10';
 const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
+const HOSTED_ARTIFACT_CACHE_NAMESPACE = 'hosted-kind-index-1';
 
 type GitHubWorkflowRun = {
 	id?: number;
@@ -648,7 +649,7 @@ function artifactCacheUrl(ref: ArtifactRef, path: string): string | null {
 	if (!ref.graphHash) return null;
 	return `https://codeview.internal/artifacts/${encodeURIComponent(ref.storageName)}/${encodeURIComponent(
 		ref.version,
-	)}/${encodeURIComponent(ref.graphHash)}/${encodePath(path)}`;
+	)}/${encodeURIComponent(ref.graphHash)}/${HOSTED_ARTIFACT_CACHE_NAMESPACE}/${encodePath(path)}`;
 }
 
 function getDefaultWorkerCache(): Cache | null {
