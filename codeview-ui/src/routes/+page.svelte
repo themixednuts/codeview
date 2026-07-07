@@ -133,30 +133,6 @@
 					{/each}
 				</ul>
 
-				<div
-					class="corner-squircle mt-7 rounded-(--radius-card) border border-(--panel-border-soft) bg-(--panel) p-4"
-				>
-					<div
-						class="mb-2 text-[10.5px] font-semibold tracking-[0.22em] text-(--ink-soft) uppercase"
-					>
-						Data sources
-					</div>
-					<div class="space-y-2 text-[12px] text-(--muted)">
-						<div class="flex items-center justify-between gap-3">
-							{#if hasLocalWorkspace}
-								<span>Workspace</span>
-								<span class="font-mono text-(--ink-soft)">{localCrates.length}</span>
-							{:else}
-								<span>Graphs</span>
-								<span class="font-mono text-(--ink-soft)">hosted</span>
-							{/if}
-						</div>
-						<div class="flex items-center justify-between gap-3">
-							<span>Registry</span>
-							<span class="font-mono text-(--ink-soft)">search + top</span>
-						</div>
-					</div>
-				</div>
 			</aside>
 
 			<section class="min-w-0">
