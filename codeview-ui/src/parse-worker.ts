@@ -156,6 +156,22 @@ function databaseNow(): string {
 	return new Date().toISOString();
 }
 
+function errorMessage(cause: unknown): string {
+	return cause instanceof Error ? cause.message : String(cause);
+}
+
+function normalizeCrateName(name: string): string {
+	return name.replace(/-/g, '_');
+}
+
+function hyphenateCrateName(name: string): string {
+	return name.replace(/_/g, '-');
+}
+
+function crateNameVariants(name: string): string[] {
+	return [...new Set([name, hyphenateCrateName(name), normalizeCrateName(name)])];
+}
+
 function parsePositiveNumber(value: string | undefined, fallback: number): number {
 	const parsed = Number(value);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -485,21 +501,77 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{ queued: number
 	return { queued, skipped };
 }
 
+type CrateRefs = {
+	storageName?: string;
+	aliases?: Record<string, { version?: string; graphHash?: string } | undefined>;
+	versions?: Array<{ version?: string; graphHash?: string }>;
+};
+
+async function readCrateRefs(env: ParseWorkerEnv, name: string): Promise<CrateRefs> {
+	const tried: string[] = [];
+	for (const variant of crateNameVariants(name)) {
+		const key = `rust/_refs/${variant}.json`;
+		tried.push(key);
+		const refs = await env.CRATE_GRAPHS.get(key);
+		if (refs) return (await refs.json()) as CrateRefs;
+	}
+	throw new Error(`missing R2 refs for ${name} (tried ${tried.join(', ')})`);
+}
+
 async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: string): Promise<void> {
-	const refs = await env.CRATE_GRAPHS.get(`rust/_refs/${name}.json`);
-	if (!refs) throw new Error(`missing R2 refs for ${name}`);
-	const parsed = (await refs.json()) as {
-		storageName?: string;
-		aliases?: Record<string, { version?: string; graphHash?: string } | undefined>;
-		versions?: Array<{ version?: string; graphHash?: string }>;
-	};
+	const parsed = await readCrateRefs(env, name);
 	const target = VERSION_ALIASES.has(version)
 		? parsed.aliases?.[version]
 		: parsed.versions?.find((entry) => entry.version === version);
 	if (!target?.version || !target.graphHash) throw new Error(`R2 refs do not include ${name}@${version}`);
-	const storageName = parsed.storageName || name;
+	const storageName = parsed.storageName || hyphenateCrateName(name);
 	const meta = await env.CRATE_GRAPHS.get(`rust/${storageName}/${target.version}/site/meta.json`);
 	if (!meta) throw new Error(`missing hosted metadata for ${name}@${version}`);
+}
+
+async function reconcileFinalizingParses(env: ParseWorkerEnv): Promise<{ ready: number; failed: number }> {
+	const url = new URL('https://status/queue');
+	url.searchParams.set('limit', '100');
+	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+	if (!response.ok) return { ready: 0, failed: 0 };
+	const snapshot = (await response.json()) as ParseQueueSnapshot;
+	let ready = 0;
+	let failed = 0;
+	for (const status of snapshot.active) {
+		if (status.step !== 'finalizing') continue;
+		try {
+			await verifyArtifacts(env, status.name, status.version);
+			await updateStatus(env, {
+				kind: status.kind,
+				name: status.name,
+				version: status.version,
+				status: 'ready',
+				requestId: status.requestId,
+				workflowId: status.workflowId,
+				githubRunId: status.githubRunId,
+				githubRunUrl: status.githubRunUrl,
+			});
+			ready += 1;
+		} catch (err) {
+			const updatedAtMs = Date.parse(status.updatedAt);
+			const ageMs = Number.isFinite(updatedAtMs) ? Date.now() - updatedAtMs : 0;
+			if (ageMs < 15 * 60 * 1000) continue;
+			await updateStatus(env, {
+				kind: status.kind,
+				name: status.name,
+				version: status.version,
+				status: 'failed',
+				step: 'artifact-verify',
+				error: errorMessage(err),
+				requestId: status.requestId,
+				workflowId: status.workflowId,
+				githubRunId: status.githubRunId,
+				githubRunUrl: status.githubRunUrl,
+			});
+			failed += 1;
+		}
+	}
+	return { ready, failed };
 }
 
 export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
@@ -956,10 +1028,27 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 			return dispatch;
 		});
 
-		const completion = await step.waitForEvent<ParseCompletionPayload>('wait for github', {
-			type: 'github-complete',
-			timeout: '6 hours',
-		});
+		let completion: { payload: ParseCompletionPayload };
+		try {
+			completion = await step.waitForEvent<ParseCompletionPayload>('wait for github', {
+				type: 'github-complete',
+				timeout: '6 hours',
+			});
+		} catch (err) {
+			await step.do('mark github wait failed', async () => {
+				await updateStatus(this.env, {
+					kind: params.kind,
+					name: params.name,
+					version: params.version,
+					status: 'failed',
+					step: 'github-timeout',
+					error: errorMessage(err),
+					requestId: params.requestId,
+					workflowId,
+				});
+			});
+			return { ok: false };
+		}
 		const payload = completion.payload;
 		if (!payload?.ok) {
 			await step.do('mark failed', async () => {
@@ -979,11 +1068,29 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 			return { ok: false };
 		}
 
-		await step.do(
-			'verify r2 artifacts',
-			{ retries: { limit: 5, delay: '20 seconds', backoff: 'linear' }, timeout: '2 minutes' },
-			async () => verifyArtifacts(this.env, params.name, params.version),
-		);
+		try {
+			await step.do(
+				'verify r2 artifacts',
+				{ retries: { limit: 5, delay: '20 seconds', backoff: 'linear' }, timeout: '2 minutes' },
+				async () => verifyArtifacts(this.env, params.name, params.version),
+			);
+		} catch (err) {
+			await step.do('mark artifact verification failed', async () => {
+				await updateStatus(this.env, {
+					kind: params.kind,
+					name: params.name,
+					version: params.version,
+					status: 'failed',
+					step: 'artifact-verify',
+					error: errorMessage(err),
+					requestId: params.requestId,
+					workflowId,
+					githubRunId: payload.runId,
+					githubRunUrl: payload.runUrl,
+				});
+			});
+			return { ok: false };
+		}
 
 		await step.do('mark ready', async () => {
 			await updateStatus(this.env, {
@@ -1092,13 +1199,42 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 		githubRunId: payload.runId,
 		githubRunUrl: payload.runUrl,
 	});
-	const instance = await env.PARSE_WORKFLOW.get(payload.workflowId);
-	await instance.sendEvent({ type: 'github-complete', payload });
-	return json({ ok: true });
+	let eventDelivered = true;
+	try {
+		const instance = await env.PARSE_WORKFLOW.get(payload.workflowId);
+		await instance.sendEvent({ type: 'github-complete', payload });
+	} catch (err) {
+		eventDelivered = false;
+		console.warn(`workflow event delivery failed for ${payload.workflowId}: ${errorMessage(err)}`);
+	}
+	if (payload.ok) {
+		try {
+			await verifyArtifacts(env, payload.name, payload.version);
+			await updateStatus(env, {
+				kind: payload.kind,
+				name: payload.name,
+				version: payload.version,
+				status: 'ready',
+				requestId: payload.requestId,
+				workflowId: payload.workflowId,
+				githubRunId: payload.runId,
+				githubRunUrl: payload.runUrl,
+			});
+		} catch (err) {
+			if (!eventDelivered) throw err;
+		}
+	}
+	return json({ ok: true, eventDelivered });
 }
 
 export default {
 	async scheduled(_controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
+		const reconciled = await reconcileFinalizingParses(env);
+		if (reconciled.ready > 0 || reconciled.failed > 0) {
+			console.log(
+				`reconciled finalizing parses ready=${reconciled.ready} failed=${reconciled.failed}`,
+			);
+		}
 		const result = await drainPlannedParses(env);
 		if (result.queued > 0) {
 			console.log(
