@@ -93,10 +93,8 @@ export interface GitHubActionsBillingSummary {
 	available: boolean;
 	owner: string;
 	accountType: 'User' | 'Organization' | 'unknown';
-	includedMinutes: number | null;
 	totalMinutesUsed: number | null;
 	totalPaidMinutesUsed: number | null;
-	minutesUsedBreakdown?: Record<string, number>;
 	error?: string;
 }
 
@@ -114,8 +112,6 @@ export interface ParseQueueAllowance {
 	standardRunnerMinutesMetered: boolean | null;
 	monthStartedAt: string;
 	estimatedRepoMinutesThisMonth: number | null;
-	repoBudgetMinutes: number | null;
-	repoBudgetUsedPercent: number | null;
 	billing: GitHubActionsBillingSummary;
 }
 
@@ -148,11 +144,7 @@ export interface DataProvider {
 	loadCrateIndex(name: string, version: string): Promise<CrateIndex | null>;
 	/** Load a single node with its edges and related nodes (progressive loading) */
 	loadNodeDetail?(name: string, version: string, nodeId: string): Promise<NodeDetail | null>;
-	loadNodeViewDirect?(
-		name: string,
-		version: string,
-		nodeId: string,
-	): Promise<NodeViewBase | null>;
+	loadNodeViewDirect?(name: string, version: string, nodeId: string): Promise<NodeViewBase | null>;
 	loadTreeMeta?(
 		name: string,
 		version: string,
@@ -218,7 +210,9 @@ export interface LocalWorkspaceProvider {
 	loadWorkspace(): Promise<Workspace | null>;
 }
 
-export function hasLocalWorkspace(provider: DataProvider): provider is DataProvider & LocalWorkspaceProvider {
+export function hasLocalWorkspace(
+	provider: DataProvider,
+): provider is DataProvider & LocalWorkspaceProvider {
 	return typeof (provider as Partial<LocalWorkspaceProvider>).loadWorkspace === 'function';
 }
 

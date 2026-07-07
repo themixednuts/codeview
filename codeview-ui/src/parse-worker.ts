@@ -39,8 +39,6 @@ type ParseWorkerEnv = Env & {
 	SYSROOT_PARSE_REFILL_SECONDS?: string;
 	PLAN_DRAIN_ACTIVE_TARGET?: string;
 	PLAN_DRAIN_BATCH_SIZE?: string;
-	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
-	GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES?: string;
 };
 
 type WebSocketAttachment = {
@@ -122,8 +120,12 @@ type GitHubBillingUsageItem = {
 	sku?: string;
 	unitType?: string;
 	grossQuantity?: number;
+	discountQuantity?: number;
 	quantity?: number;
 	netQuantity?: number;
+	grossAmount?: number;
+	discountAmount?: number;
+	netAmount?: number;
 };
 
 type GitHubBillingUsageSummaryResponse = {
@@ -208,12 +210,6 @@ function parsePositiveNumber(value: string | undefined, fallback: number): numbe
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function parseOptionalPositiveNumber(value: string | undefined): number | null {
-	if (value === undefined || value.trim() === '') return null;
-	const parsed = Number(value);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? '', 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -223,13 +219,8 @@ function finiteNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function githubUsageQuantity(item: GitHubBillingUsageItem): number {
-	return (
-		finiteNumber(item.grossQuantity) ??
-		finiteNumber(item.quantity) ??
-		finiteNumber(item.netQuantity) ??
-		0
-	);
+function githubNetUsageQuantity(item: GitHubBillingUsageItem): number {
+	return finiteNumber(item.netQuantity) ?? 0;
 }
 
 function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
@@ -239,10 +230,10 @@ function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
 	return (product.includes('actions') || sku.includes('actions')) && unitType.includes('minute');
 }
 
-function totalActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
+function totalBillableActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
 	return (body.usageItems ?? [])
 		.filter(isActionsMinuteUsage)
-		.reduce((total, item) => total + githubUsageQuantity(item), 0);
+		.reduce((total, item) => total + githubNetUsageQuantity(item), 0);
 }
 
 function monthStartIso(now = new Date()): string {
@@ -518,7 +509,7 @@ async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubReposito
 	return (await response.json()) as GitHubRepositoryResponse;
 }
 
-async function loadGitHubRepoActionsUsageMinutes(
+async function loadGitHubRepoBillableActionsMinutes(
 	env: ParseWorkerEnv,
 	repository: GitHubRepositoryResponse,
 ): Promise<number | null> {
@@ -537,7 +528,7 @@ async function loadGitHubRepoActionsUsageMinutes(
 	});
 	if (!response.ok) return null;
 	const body = (await response.json()) as GitHubBillingUsageSummaryResponse;
-	return totalActionsMinutes(body);
+	return totalBillableActionsMinutes(body);
 }
 
 async function estimateParseWorkflowMinutesThisMonth(env: ParseWorkerEnv): Promise<number | null> {
@@ -570,31 +561,25 @@ async function plannedDrainBudgetAllowance(env: ParseWorkerEnv): Promise<{
 	allowed: boolean;
 	reason?: string;
 	estimatedRepoMinutesThisMonth?: number;
-	repoBudgetMinutes?: number;
 }> {
 	const repository = await loadGitHubRepository(env).catch(() => null);
 	if (repository?.private !== true) return { allowed: true };
 
-	const includedMinutes = parseOptionalPositiveNumber(env.GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES);
-	const repoActionsUsageMinutes = await loadGitHubRepoActionsUsageMinutes(env, repository).catch(
+	const repoActionsUsageMinutes = await loadGitHubRepoBillableActionsMinutes(env, repository).catch(
 		() => null,
 	);
 	const estimatedRepoMinutesThisMonth =
 		repoActionsUsageMinutes ?? (await estimateParseWorkflowMinutesThisMonth(env).catch(() => null));
-	if (includedMinutes === null || estimatedRepoMinutesThisMonth === null) {
-		return { allowed: true, reason: 'budget-unavailable' };
-	}
-	const targetPercent = parsePositiveNumber(env.GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT, 35);
-	const repoBudgetMinutes = includedMinutes * (targetPercent / 100);
-	if (repoBudgetMinutes <= 0 || estimatedRepoMinutesThisMonth < repoBudgetMinutes) {
-		return { allowed: true, estimatedRepoMinutesThisMonth, repoBudgetMinutes };
-	}
-	return {
-		allowed: false,
-		reason: 'repo-budget-exhausted',
-		estimatedRepoMinutesThisMonth,
-		repoBudgetMinutes,
-	};
+	return estimatedRepoMinutesThisMonth === null
+		? {
+				allowed: true,
+				reason: 'budget-unavailable',
+			}
+		: {
+				allowed: true,
+				reason: 'budget-unavailable',
+				estimatedRepoMinutesThisMonth,
+			};
 }
 
 async function readDrainPressure(env: ParseWorkerEnv): Promise<{

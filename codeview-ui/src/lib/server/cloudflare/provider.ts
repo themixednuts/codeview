@@ -90,7 +90,6 @@ type AppEnv = Env & {
 	PLAN_DRAIN_ACTIVE_TARGET?: string;
 	PLAN_DRAIN_BATCH_SIZE?: string;
 	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
-	GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES?: string;
 };
 
 type SearchEntry = NodeSummary & { score?: number };
@@ -134,8 +133,12 @@ type GitHubBillingUsageItem = {
 	sku?: string;
 	unitType?: string;
 	grossQuantity?: number;
+	discountQuantity?: number;
 	quantity?: number;
 	netQuantity?: number;
+	grossAmount?: number;
+	discountAmount?: number;
+	netAmount?: number;
 };
 
 type GitHubBillingUsageSummaryResponse = {
@@ -154,12 +157,6 @@ function parsePositiveNumber(value: string | undefined, fallback: number): numbe
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function parseOptionalPositiveNumber(value: string | undefined): number | null {
-	if (value === undefined || value.trim() === '') return null;
-	const parsed = Number(value);
-	return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
 function monthStartIso(now = new Date()): string {
 	return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
@@ -168,13 +165,12 @@ function finiteNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-function githubUsageQuantity(item: GitHubBillingUsageItem): number {
-	return (
-		finiteNumber(item.grossQuantity) ??
-		finiteNumber(item.quantity) ??
-		finiteNumber(item.netQuantity) ??
-		0
-	);
+function githubGrossUsageQuantity(item: GitHubBillingUsageItem): number {
+	return finiteNumber(item.grossQuantity) ?? finiteNumber(item.quantity) ?? 0;
+}
+
+function githubNetUsageQuantity(item: GitHubBillingUsageItem): number {
+	return finiteNumber(item.netQuantity) ?? 0;
 }
 
 function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
@@ -184,10 +180,16 @@ function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
 	return (product.includes('actions') || sku.includes('actions')) && unitType.includes('minute');
 }
 
-function totalActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
+function totalGrossActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
 	return (body.usageItems ?? [])
 		.filter(isActionsMinuteUsage)
-		.reduce((total, item) => total + githubUsageQuantity(item), 0);
+		.reduce((total, item) => total + githubGrossUsageQuantity(item), 0);
+}
+
+function totalBillableActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
+	return (body.usageItems ?? [])
+		.filter(isActionsMinuteUsage)
+		.reduce((total, item) => total + githubNetUsageQuantity(item), 0);
 }
 
 function registrySummary(result: PackageMetadata): CrateSummaryResult {
@@ -1308,7 +1310,6 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			available: false,
 			owner,
 			accountType,
-			includedMinutes: null,
 			totalMinutesUsed: null,
 			totalPaidMinutesUsed: null,
 			error,
@@ -1323,7 +1324,6 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			available: true,
 			owner,
 			accountType,
-			includedMinutes: null,
 			totalMinutesUsed: null,
 			totalPaidMinutesUsed: null,
 		};
@@ -1372,9 +1372,8 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			available: true,
 			owner,
 			accountType: ownerType,
-			includedMinutes: parseOptionalPositiveNumber(env.GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES),
-			totalMinutesUsed: totalActionsMinutes(body),
-			totalPaidMinutesUsed: null,
+			totalMinutesUsed: totalGrossActionsMinutes(body),
+			totalPaidMinutesUsed: totalBillableActionsMinutes(body),
 		};
 	}
 
@@ -1464,8 +1463,19 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		]);
 		const repoPrivate = typeof repository?.private === 'boolean' ? repository.private : null;
 		const standardRunnerMinutesMetered = repoPrivate === null ? null : repoPrivate;
+		const loadedBilling = await loadGitHubActionsBilling(repository).catch((err) =>
+			emptyBillingSummary(
+				repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
+				repository?.owner?.type === 'Organization'
+					? 'Organization'
+					: repository?.owner?.type === 'User'
+						? 'User'
+						: 'unknown',
+				errorMessage(err),
+			),
+		);
 		const billing =
-			standardRunnerMinutesMetered === false
+			standardRunnerMinutesMetered === false && !loadedBilling.available
 				? unmeteredBillingSummary(
 						repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
 						repository?.owner?.type === 'Organization'
@@ -1474,26 +1484,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 								? 'User'
 								: 'unknown',
 					)
-				: await loadGitHubActionsBilling(repository).catch((err) =>
-						emptyBillingSummary(
-							repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
-							repository?.owner?.type === 'Organization'
-								? 'Organization'
-								: repository?.owner?.type === 'User'
-									? 'User'
-									: 'unknown',
-							errorMessage(err),
-						),
-					);
-		const repoBudgetMinutes =
-			standardRunnerMinutesMetered && billing.includedMinutes !== null
-				? billing.includedMinutes * (repoUsageTargetPercent / 100)
-				: null;
-		const repoBudgetUsedPercent =
-			repoBudgetMinutes && estimatedRepoMinutesThisMonth !== null && repoBudgetMinutes > 0
-				? (estimatedRepoMinutesThisMonth / repoBudgetMinutes) * 100
-				: null;
-
+				: loadedBilling;
 		return {
 			repo: repository?.full_name ?? env.GITHUB_REPO ?? null,
 			workflowFile: env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE,
@@ -1508,8 +1499,6 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			standardRunnerMinutesMetered,
 			monthStartedAt: monthStartIso(),
 			estimatedRepoMinutesThisMonth,
-			repoBudgetMinutes,
-			repoBudgetUsedPercent,
 			billing,
 		};
 	}

@@ -204,16 +204,16 @@
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-							<div class="text-[10px] tracking-wider text-(--muted) uppercase">Repo budget</div>
+							<div class="text-[10px] tracking-wider text-(--muted) uppercase">Billing</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">
 								{allowance.standardRunnerMinutesMetered === false
 									? 'Free'
-									: fmtPercent(allowance.repoBudgetUsedPercent)}
+									: fmtMinutes(allowance.billing.totalPaidMinutesUsed)}
 							</div>
 							<div class="mt-1 text-[11px] text-(--muted-soft)">
 								{allowance.standardRunnerMinutesMetered === false
 									? 'Public standard runners'
-									: `${fmtMinutes(allowance.estimatedRepoMinutesThisMonth)} of ${fmtMinutes(allowance.repoBudgetMinutes)}`}
+									: `${fmtMinutes(allowance.billing.totalMinutesUsed)} gross`}
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
@@ -280,18 +280,18 @@
 								</div>
 								<div>
 									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
-										Configured pool
+										Gross Actions
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
-										{fmtMinutes(allowance.billing.includedMinutes)}
+										{fmtMinutes(allowance.billing.totalMinutesUsed)}
 									</div>
 								</div>
 								<div>
 									<div class="text-[10px] tracking-wider text-(--muted) uppercase">
-										Repo Actions used
+										Billable Actions
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
-										{fmtMinutes(allowance.billing.totalMinutesUsed)}
+										{fmtMinutes(allowance.billing.totalPaidMinutesUsed)}
 									</div>
 								</div>
 							</div>

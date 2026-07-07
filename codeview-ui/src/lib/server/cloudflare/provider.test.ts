@@ -464,6 +464,7 @@ describe('createCloudflareProvider', () => {
 									sku: 'actions_linux',
 									unitType: 'minutes',
 									grossQuantity: 125,
+									netQuantity: 12,
 								},
 								{
 									product: 'Codespaces',
@@ -525,7 +526,6 @@ describe('createCloudflareProvider', () => {
 			PLAN_DRAIN_ACTIVE_TARGET: '4',
 			PLAN_DRAIN_BATCH_SIZE: '2',
 			GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: '35',
-			GITHUB_ACTIONS_MONTHLY_INCLUDED_MINUTES: '2000',
 		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
 		const dashboard = await provider.getAdminDashboard?.(10);
@@ -542,11 +542,10 @@ describe('createCloudflareProvider', () => {
 			repoPrivate: true,
 			standardRunnerMinutesMetered: true,
 			estimatedRepoMinutesThisMonth: 30,
-			repoBudgetMinutes: 700,
 			billing: {
 				available: true,
-				includedMinutes: 2000,
 				totalMinutesUsed: 125,
+				totalPaidMinutesUsed: 12,
 			},
 		});
 	});
