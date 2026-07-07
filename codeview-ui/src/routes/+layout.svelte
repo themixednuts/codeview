@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { browser } from '$app/environment';
-	import { afterNavigate, goto, onNavigate, replaceState } from '$app/navigation';
+	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
 	import { authClient } from '$lib/auth-client';
@@ -64,6 +64,7 @@
 	import { LoaderCircleIcon, SettingsIcon } from '@lucide/svelte';
 	import type { LayoutProps } from './$types';
 	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
+	import GlobalCrateCommand from '$lib/components/GlobalCrateCommand.svelte';
 	import { Icon } from '$lib/components/design';
 	import ParseToastContent from '$lib/components/ParseToastContent.svelte';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
@@ -700,6 +701,7 @@
 
 	// ── Settings drawer ──
 	let settingsOpen = $state(false);
+	let commandOpen = $state(false);
 	let shortcutModLabel = $state('Ctrl');
 	const globalShortcutOptions = { capture: true };
 
@@ -715,23 +717,6 @@
 		);
 	}
 
-	function focusHomeSearch(): boolean {
-		const input = document.getElementById('home-library-search');
-		if (!(input instanceof HTMLInputElement)) return false;
-		input.focus();
-		input.select();
-		return true;
-	}
-
-	async function openGlobalSearch() {
-		if (focusHomeSearch()) return;
-		await goto(resolve('/'), {
-			noScroll: true,
-			keepFocus: false,
-		});
-		requestAnimationFrame(() => focusHomeSearch());
-	}
-
 	function handleGlobalShortcut(event: KeyboardEvent) {
 		const isModified = event.metaKey || event.ctrlKey;
 		const key = event.key.toLowerCase();
@@ -739,7 +724,7 @@
 		if (isEditableTarget(event.target) && key !== 'k') return;
 		if (key === 'k') {
 			event.preventDefault();
-			void openGlobalSearch();
+			commandOpen = true;
 			return;
 		}
 		if (event.key === ',') {
@@ -791,21 +776,22 @@
 			</a>
 		</div>
 
-		<a
-			href={resolve('/')}
+		<button
+			type="button"
 			class="corner-squircle hidden w-[min(42vw,440px)] items-center justify-between gap-3 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex"
 			aria-label="Search crates and Rust items"
 			title="Global search"
+			onclick={() => (commandOpen = true)}
 		>
 			<span class="inline-flex min-w-0 items-center gap-2">
 				<Icon name="search" size={12} />
-				<span class="truncate">Search crates, types, functions...</span>
+				<span class="truncate">Search crates...</span>
 			</span>
 			<span class="inline-flex shrink-0 items-center gap-1" aria-hidden="true">
 				<span class="kbd">{shortcutModLabel}</span>
 				<span class="kbd">K</span>
 			</span>
-		</a>
+		</button>
 
 		<div class="flex items-center justify-end gap-2">
 			{#if auth.authConfigured}
@@ -932,6 +918,8 @@
 
 	{@render children()}
 </div>
+
+<GlobalCrateCommand bind:open={commandOpen} />
 
 <SettingsDrawer
 	bind:open={settingsOpen}

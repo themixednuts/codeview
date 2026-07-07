@@ -2,6 +2,7 @@
 	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { Icon } from '$lib/components/design';
+	import AdminForceParseForm from '$lib/components/AdminForceParseForm.svelte';
 	import { stepLabels } from '$lib/realtime/constants';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
@@ -284,33 +285,7 @@
 								<Icon name="sparkle" size={13} class="text-(--accent)" />
 								<h2 class="font-display text-[18px] font-semibold text-(--ink)">Force parse</h2>
 							</div>
-							<form method="POST" action="?/forceParse" class="grid gap-2">
-								<label class="sr-only" for="force-name">Crate name</label>
-								<input
-									id="force-name"
-									name="name"
-									autocomplete="off"
-									placeholder="crate name"
-									required
-									class="corner-squircle min-w-0 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2 font-mono text-sm text-(--ink) outline-none transition-colors placeholder:text-(--muted-soft) focus:border-(--accent-ring)"
-								/>
-								<label class="sr-only" for="force-version">Version</label>
-								<input
-									id="force-version"
-									name="version"
-									autocomplete="off"
-									placeholder="latest"
-									value="latest"
-									class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2 font-mono text-sm text-(--ink) outline-none transition-colors placeholder:text-(--muted-soft) focus:border-(--accent-ring)"
-								/>
-								<button
-									type="submit"
-									class="corner-squircle inline-flex items-center justify-center gap-2 rounded-(--radius-control) border border-(--accent-ring) bg-(--accent) px-3 py-2 text-sm font-semibold text-(--on-accent) transition-colors hover:bg-(--accent-strong)"
-								>
-									<Icon name="sparkle" size={13} />
-									Force parse
-								</button>
-							</form>
+							<AdminForceParseForm />
 							{#if actionMessage}
 								<div
 									class="mt-3 rounded-md border px-3 py-2 text-sm {actionOk
