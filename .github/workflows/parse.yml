@@ -48,6 +48,10 @@ on:
         description: 'Comma-separated crate names to reparse'
         required: false
         default: ''
+      bootstrap:
+        description: 'Initialize the aggregate index from per-version freshness records'
+        required: false
+        default: 'false'
 
 env:
   R2_BUCKET: crate-graphs
@@ -161,9 +165,14 @@ jobs:
 
       - name: Merge deltas and publish catalog
         run: |
+          BOOTSTRAP_FLAG=""
+          if [[ "${{ inputs.bootstrap || 'false' }}" == "true" ]]; then
+            BOOTSTRAP_FLAG="--bootstrap"
+          fi
           target/release/codeview cron freshness-merge \
             --run-id "${{ needs.plan.outputs.run_id }}" \
             --write-catalog \
+            $BOOTSTRAP_FLAG \
             --bucket "$R2_BUCKET"
 
   summary:
