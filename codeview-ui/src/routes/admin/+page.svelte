@@ -15,31 +15,18 @@
 	let activePage = $state(1);
 	let plannedPage = $state(1);
 
-	type Dashboard = NonNullable<PageProps['data']['dashboard']>;
-	type Queue = Dashboard['queue'];
-	type ActiveQueueRow =
-		| { type: 'run'; run: Queue['activeRuns'][number] }
-		| { type: 'entry'; entry: Queue['active'][number] };
-
 	const auth = $derived(data.auth);
 	const dashboard = $derived(data.dashboard);
 	const queue = $derived(dashboard?.queue ?? null);
 	const allowance = $derived(dashboard?.allowance ?? null);
-	const activeRows = $derived<ActiveQueueRow[]>(
-		queue
-			? [
-					...queue.activeRuns.map((run) => ({ type: 'run' as const, run })),
-					...queue.active.map((entry) => ({ type: 'entry' as const, entry })),
-				]
-			: [],
-	);
+	const activeEntries = $derived(queue?.active ?? []);
 	const recent = $derived(queue?.recent ?? []);
 	const plannedItems = $derived(queue?.planned?.items ?? []);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
-	const activePageCount = $derived(Math.max(1, Math.ceil(activeRows.length / PAGE_SIZE)));
+	const activePageCount = $derived(Math.max(1, Math.ceil(activeEntries.length / PAGE_SIZE)));
 	const plannedPageCount = $derived(Math.max(1, Math.ceil(plannedItems.length / PAGE_SIZE)));
-	const visibleActiveRows = $derived(
-		activeRows.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
+	const visibleActiveEntries = $derived(
+		activeEntries.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
 	);
 	const visiblePlannedItems = $derived(
 		plannedItems.slice((plannedPage - 1) * PAGE_SIZE, plannedPage * PAGE_SIZE),
@@ -63,14 +50,6 @@
 		if (step) return step;
 		if (status === 'ready') return 'Ready';
 		if (status === 'failed') return 'Failed';
-		return status;
-	}
-
-	function runStatusLabel(status: string): string {
-		if (status === 'in_progress') return 'Running';
-		if (status === 'queued') return 'Queued';
-		if (status === 'waiting') return 'Waiting';
-		if (status === 'requested') return 'Requested';
 		return status;
 	}
 
@@ -333,76 +312,52 @@
 							<Icon name="clock" size={13} class="text-(--accent)" />
 							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Active</h2>
 						</div>
-						<span class="font-mono text-[11px] text-(--muted-soft)">{activeRows.length} rows</span>
+						<span class="font-mono text-[11px] text-(--muted-soft)">
+							{activeEntries.length} rows
+						</span>
 					</div>
-					{#if visibleActiveRows.length > 0}
+					{#if visibleActiveEntries.length > 0}
 						<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
-							{#each visibleActiveRows as row (`${row.type}:${row.type === 'run' ? row.run.id : `${row.entry.name}@${row.entry.version}:${row.entry.requestId}`}`)}
-								{#if row.type === 'run'}
-									<a
-										href={row.run.url}
-										target="_blank"
-										rel="noreferrer"
-										class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[96px_minmax(0,1fr)_220px]"
-									>
-										<div class="font-mono text-[11px] text-(--muted-soft)">#{row.run.id}</div>
-										<div class="min-w-0">
-											<div class="flex min-w-0 flex-wrap items-center gap-2">
-												<span class="badge badge-sm">workflow</span>
-												<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-													{row.run.title}
-												</span>
-												<span class="badge badge-sm text-(--accent)">
-													{runStatusLabel(row.run.status)}
-												</span>
-											</div>
-											<div class="mt-1 text-[12px] text-(--muted)">{row.run.event}</div>
+							{#each visibleActiveEntries as entry (`${entry.name}@${entry.version}:${entry.requestId}`)}
+								<a
+									href={itemHref(entry.name, entry.version)}
+									data-sveltekit-preload-data="off"
+									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
+								>
+									<div class="font-mono text-[11px] text-(--muted-soft)">
+										#{entry.position ?? '-'}
+									</div>
+									<div class="min-w-0">
+										<div class="flex min-w-0 flex-wrap items-center gap-2">
+											<span class="badge badge-sm">{kindLabel(entry.kind)}</span>
+											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+												{entry.name}
+											</span>
+											<span class="font-mono text-[10.5px] text-(--muted-soft)">
+												{entry.version}
+											</span>
+											{#if entry.requestedBy}
+												<span class="badge badge-sm">{actorLabel(entry.requestedBy)}</span>
+											{/if}
 										</div>
-										<div class="truncate text-right font-mono text-[10.5px] text-(--muted-soft)">
-											{absoluteTime(row.run.updatedAt)}
+										<div class="mt-1 text-[12px] text-(--muted)">
+											{statusLabel(entry.status, entry.step)}
 										</div>
-									</a>
-								{:else}
-									<a
-										href={itemHref(row.entry.name, row.entry.version)}
-										data-sveltekit-preload-data="off"
-										class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
-									>
-										<div class="font-mono text-[11px] text-(--muted-soft)">
-											#{row.entry.position ?? '-'}
-										</div>
-										<div class="min-w-0">
-											<div class="flex min-w-0 flex-wrap items-center gap-2">
-												<span class="badge badge-sm">{kindLabel(row.entry.kind)}</span>
-												<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-													{row.entry.name}
-												</span>
-												<span class="font-mono text-[10.5px] text-(--muted-soft)">
-													{row.entry.version}
-												</span>
-												{#if row.entry.requestedBy}
-													<span class="badge badge-sm">{actorLabel(row.entry.requestedBy)}</span>
-												{/if}
-											</div>
-											<div class="mt-1 text-[12px] text-(--muted)">
-												{statusLabel(row.entry.status, row.entry.step)}
-											</div>
-										</div>
-										<div class="truncate text-right font-mono text-[10.5px] text-(--muted-soft)">
-											{absoluteTime(row.entry.updatedAt)}
-										</div>
-									</a>
-								{/if}
+									</div>
+									<div class="truncate text-right font-mono text-[10.5px] text-(--muted-soft)">
+										{absoluteTime(entry.updatedAt)}
+									</div>
+								</a>
 							{/each}
 						</div>
-						{#if activeRows.length > PAGE_SIZE}
+						{#if activeEntries.length > PAGE_SIZE}
 							<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
 								<div class="font-mono text-[11px] text-(--muted-soft)">
-									Showing {pageStart(activePage, activeRows.length)}-{pageEnd(
+									Showing {pageStart(activePage, activeEntries.length)}-{pageEnd(
 										activePage,
-										activeRows.length,
+										activeEntries.length,
 									)}
-									of {activeRows.length}
+									of {activeEntries.length}
 								</div>
 								<div class="flex items-center gap-2">
 									<button
