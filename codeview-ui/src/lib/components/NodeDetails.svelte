@@ -661,7 +661,7 @@
 			<div class="space-y-3">
 				{#each groups as group (group.rel)}
 					<section
-						class="overflow-hidden rounded-(--radius-card) border border-(--panel-border-soft) bg-(--panel)"
+						class="overflow-hidden rounded-(--radius-card) border border-(--panel-border-soft) bg-(--panel) [contain-intrinsic-size:auto_520px] [content-visibility:auto]"
 					>
 						<div
 							class="flex items-center gap-2 border-b border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2"
@@ -684,7 +684,7 @@
 						<div class="divide-y divide-(--panel-border-soft)">
 							{#each group.edges as row}
 								<div
-									class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-(--panel-muted)"
+									class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 transition-colors [contain-intrinsic-size:auto_32px] [content-visibility:auto] hover:bg-(--panel-muted)"
 								>
 									<span class="flex min-w-0 items-center gap-2">
 										{#if row.target}

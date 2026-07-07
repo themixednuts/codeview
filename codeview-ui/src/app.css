@@ -914,6 +914,11 @@
 		background-color: var(--panel-muted);
 	}
 
+	.doc-section {
+		content-visibility: auto;
+		contain-intrinsic-size: auto 640px;
+	}
+
 	.codeview-resizable-group {
 		min-height: 0;
 		height: 100%;

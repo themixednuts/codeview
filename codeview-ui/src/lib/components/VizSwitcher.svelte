@@ -33,18 +33,10 @@
 		},
 	];
 
-	let buttonRefs: Record<VizMode, HTMLButtonElement | null> = $state({
-		graph: null,
-		treemap: null,
-		sunburst: null,
-		grid: null,
-	});
-
-	const indicatorStyle = $derived.by(() => {
-		const btn = buttonRefs[mode];
-		if (!btn) return { left: 0, width: 0, ready: false };
-		return { left: btn.offsetLeft, width: btn.offsetWidth, ready: true };
-	});
+	const modeIndex = $derived(Math.max(0, vizModes.findIndex((viz) => viz.id === mode)));
+	const indicatorStyle = $derived(
+		`left: calc(0.25rem + ${modeIndex} * ((100% - 0.5rem) / ${vizModes.length})); width: calc((100% - 0.5rem) / ${vizModes.length}); view-transition-name: viz-indicator;`,
+	);
 
 	function handleModeChange(newMode: VizMode) {
 		if (newMode === mode) return;
@@ -60,13 +52,11 @@
 </script>
 
 <div
-	class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) p-1"
+	class="corner-squircle relative grid grid-cols-4 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) p-1"
 >
 	<div
 		class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-150 ease-out"
-		style="left: {indicatorStyle.left}px; width: {indicatorStyle.width}px; opacity: {indicatorStyle.ready
-			? 1
-			: 0}; view-transition-name: viz-indicator"
+		style={indicatorStyle}
 	></div>
 
 	{#each vizModes as viz (viz.id)}
@@ -78,12 +68,6 @@
 				: 'text-(--muted) hover:text-(--ink)'}"
 			onclick={() => handleModeChange(viz.id)}
 			{@attach tooltip(viz.description)}
-			{@attach (el) => {
-				buttonRefs[viz.id] = el as HTMLButtonElement;
-				return () => {
-					buttonRefs[viz.id] = null;
-				};
-			}}
 		>
 			{viz.label}
 		</button>

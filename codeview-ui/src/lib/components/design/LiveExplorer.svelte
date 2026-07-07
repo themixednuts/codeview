@@ -789,7 +789,7 @@
 		aria-expanded={row.hasChildren ? row.isExpanded : undefined}
 		data-tree-node-id={node.id}
 		tabindex="-1"
-		class="group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors hover:bg-(--panel-muted) {isSelected
+		class="group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors [contain-intrinsic-size:auto_32px] [content-visibility:auto] hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
 		style={`padding-left: ${8 + row.depth * 14}px`}
