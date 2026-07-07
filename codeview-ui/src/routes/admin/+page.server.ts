@@ -1,4 +1,4 @@
-import { fail } from '@sveltejs/kit';
+import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { getAuthState } from '$lib/server/auth';
 import { initProvider } from '$lib/server/provider';
@@ -8,11 +8,7 @@ export const load: PageServerLoad = async (event) => {
 	event.depends('codeview:admin-dashboard');
 	const auth = event.locals.auth ?? (await getAuthState(event));
 	if (!auth.isAdmin) {
-		return {
-			auth,
-			dashboard: null,
-			loadError: null,
-		};
+		throw redirect(303, '/');
 	}
 
 	const provider = await initProvider(event);
@@ -40,11 +36,7 @@ export const actions: Actions = {
 	forceParse: async (event) => {
 		const auth = event.locals.auth ?? (await getAuthState(event));
 		if (!auth.isAdmin) {
-			return fail(403, {
-				type: 'forceParse',
-				ok: false,
-				message: 'Admin access is required to force a parse.',
-			});
+			throw redirect(303, '/');
 		}
 
 		const form = await event.request.formData();
