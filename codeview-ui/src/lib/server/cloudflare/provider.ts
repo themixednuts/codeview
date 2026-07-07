@@ -655,19 +655,32 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return `parse:anon:${ip}`;
 	}
 
-	async function resolveParseRequestContext() {
+	async function resolveParseRequestContext({ rateLimit }: { rateLimit: boolean }) {
 		const auth = request ? await getAuthStateFromRequest(request, env) : null;
 		const actor = actorFromUser(auth?.user ?? null);
+		if (!rateLimit) return { auth, actor, rateLimitError: null, configError: null };
+
 		const limiter = actor
 			? (env.RATE_LIMIT_PARSE_AUTH ?? env.RATE_LIMIT_API_AUTH ?? env.RATE_LIMIT_API)
 			: (env.RATE_LIMIT_PARSE_ANON ?? env.RATE_LIMIT_API_ANON ?? env.RATE_LIMIT_API);
-		if (!limiter) return { actor, rateLimitError: null };
+		if (!limiter) {
+			return {
+				auth,
+				actor,
+				rateLimitError: null,
+				configError: new NotAvailableError({
+					message: 'Hosted parse rate limiting is not configured',
+				}),
+			};
+		}
 
 		const key = actor ? `parse:user:${actor.id}` : anonymousParseRateLimitKey();
 		const outcome = await limiter.limit({ key });
-		if (outcome.success) return { actor, rateLimitError: null };
+		if (outcome.success) return { auth, actor, rateLimitError: null, configError: null };
 		return {
+			auth,
 			actor,
+			configError: null,
 			rateLimitError: new RateLimitError({
 				message: actor
 					? 'Too many signed-in parse requests. Try again shortly.'
@@ -1538,6 +1551,16 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
 			const requestKind = isStdCrate(normalizeCrateName(name)) ? 'sysroot' : 'crate';
+			if (force) {
+				const authContext = await resolveParseRequestContext({ rateLimit: false });
+				if (!authContext.auth?.isAdmin) {
+					return Result.err(
+						new NotAvailableError({
+							message: 'Force parse requires admin access',
+						}),
+					);
+				}
+			}
 			if (!force) {
 				const ref = await resolveRefForArtifact(name, version);
 				if (ref) {
@@ -1545,7 +1568,8 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
 				}
 			}
-			const parseContext = await resolveParseRequestContext();
+			const parseContext = await resolveParseRequestContext({ rateLimit: true });
+			if (parseContext.configError) return Result.err(parseContext.configError);
 			if (parseContext.rateLimitError) return Result.err(parseContext.rateLimitError);
 			if (!env.PARSE_REQUESTS) {
 				return Result.err(

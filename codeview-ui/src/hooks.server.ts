@@ -36,7 +36,9 @@ export const handle: Handle = async ({ event, resolve }) => {
 	event.locals.session = event.locals.auth.session;
 
 	if (event.url.pathname === '/api/auth' || event.url.pathname.startsWith('/api/auth/')) {
-		return withDynamicCachePolicy(event.url.pathname, await handleAuthRequest(event));
+		return withSecurityHeaders(
+			withDynamicCachePolicy(event.url.pathname, await handleAuthRequest(event)),
+		);
 	}
 
 	const htmlAttributes = getHtmlDataAttributes(event.cookies);
@@ -51,7 +53,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 			return nextHtml;
 		},
 	});
-	return withDynamicCachePolicy(event.url.pathname, response);
+	return withSecurityHeaders(withDynamicCachePolicy(event.url.pathname, response));
 };
 
 function withDynamicCachePolicy(pathname: string, response: Response): Response {
@@ -66,6 +68,20 @@ function withDynamicCachePolicy(pathname: string, response: Response): Response 
 function withCacheControl(response: Response, value: string): Response {
 	const headers = new Headers(response.headers);
 	headers.set('Cache-Control', value);
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
+}
+
+function withSecurityHeaders(response: Response): Response {
+	const headers = new Headers(response.headers);
+	headers.set('X-Content-Type-Options', 'nosniff');
+	headers.set('X-Frame-Options', 'DENY');
+	headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+	headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
+	headers.set('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
 	return new Response(response.body, {
 		status: response.status,
 		statusText: response.statusText,

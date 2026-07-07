@@ -78,20 +78,20 @@ export const getCrateStatus = query(
 /** Trigger parsing of a crate (cloud mode). */
 export const triggerCrateParse = command(
 	TriggerParseInputSchema,
-	async ({ name, version, force }): Promise<void> => {
+	async ({ name, version }): Promise<void> => {
 		assertCrateRef(name, version);
 		const provider = await loader.provider();
-		const result = await provider.triggerParse(name, version, !!force);
+		const result = await provider.triggerParse(name, version, false);
 		throwIfProviderErr(result, { RateLimitError: 429 });
 	},
 );
 
 export const triggerCrateParseForm = form(
 	TriggerParseInputSchema,
-	async ({ name, version, force }): Promise<void> => {
+	async ({ name, version }): Promise<void> => {
 		assertCrateRef(name, version);
 		const provider = await loader.provider();
-		const result = await provider.triggerParse(name, version, !!force);
+		const result = await provider.triggerParse(name, version, false);
 		throwIfProviderErr(result, { RateLimitError: 429 });
 	},
 );

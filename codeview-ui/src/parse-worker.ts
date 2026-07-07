@@ -46,6 +46,12 @@ type WebSocketAttachment = {
 const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
+const MAX_WS_MESSAGE_CHARS = 4096;
+const MAX_WS_TAGS_PER_MESSAGE = 20;
+const MAX_WS_TAGS_PER_SOCKET = 100;
+const SAFE_CRATE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+const SAFE_VERSION_PATTERN = /^(?:stable|beta|nightly|[0-9A-Za-z][0-9A-Za-z.+_-]{0,127})$/;
+const SAFE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,160}$/;
 
 type RateBucketConfig = {
 	name: string;
@@ -125,6 +131,97 @@ function databaseNow(): string {
 function parsePositiveNumber(value: string | undefined, fallback: number): number {
 	const parsed = Number(value);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function isSafeCrateName(value: string): boolean {
+	return SAFE_CRATE_NAME_PATTERN.test(value);
+}
+
+function isSafeVersion(value: string): boolean {
+	return SAFE_VERSION_PATTERN.test(value);
+}
+
+function isSafeId(value: string): boolean {
+	return SAFE_ID_PATTERN.test(value);
+}
+
+function isValidSubscriptionTag(tag: string): boolean {
+	if (tag === 'processing:rust') return true;
+	const parts = tag.split(':');
+	return (
+		parts.length === 3 &&
+		parts[0] === 'rust' &&
+		isSafeCrateName(parts[1]) &&
+		isSafeVersion(parts[2])
+	);
+}
+
+function normalizeSubscriptionTags(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	return [
+		...new Set(
+			value
+				.filter((tag): tag is string => typeof tag === 'string')
+				.filter(isValidSubscriptionTag)
+				.slice(0, MAX_WS_TAGS_PER_MESSAGE),
+		),
+	];
+}
+
+function constantTimeEqual(a: string, b: string): boolean {
+	const encoder = new TextEncoder();
+	const left = encoder.encode(a);
+	const right = encoder.encode(b);
+	let diff = left.length ^ right.length;
+	const length = Math.max(left.length, right.length);
+	for (let i = 0; i < length; i += 1) {
+		diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+	}
+	return diff === 0;
+}
+
+function callbackSecretsFromRequest(request: Request): string[] {
+	const auth = request.headers.get('authorization') ?? '';
+	const bearer = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+	const headerSecret = request.headers.get('x-codeview-callback-secret') ?? '';
+	return [bearer, headerSecret].filter((value) => value.length > 0);
+}
+
+function parseCompletionPayload(value: unknown): ParseCompletionPayload | null {
+	if (typeof value !== 'object' || value === null) return null;
+	const raw = value as Record<string, unknown>;
+	if (
+		raw.schemaVersion !== 1 ||
+		typeof raw.workflowId !== 'string' ||
+		!isSafeId(raw.workflowId) ||
+		typeof raw.requestId !== 'string' ||
+		!isSafeId(raw.requestId) ||
+		typeof raw.name !== 'string' ||
+		!isSafeCrateName(raw.name) ||
+		typeof raw.version !== 'string' ||
+		!isSafeVersion(raw.version) ||
+		typeof raw.ok !== 'boolean' ||
+		typeof raw.completedAt !== 'string'
+	) {
+		return null;
+	}
+	const kind = raw.kind === 'sysroot' || raw.kind === 'crate' ? raw.kind : undefined;
+	const runId = typeof raw.runId === 'string' && isSafeId(raw.runId) ? raw.runId : undefined;
+	const runUrl = typeof raw.runUrl === 'string' ? raw.runUrl : undefined;
+	const error = typeof raw.error === 'string' ? raw.error.slice(0, 4000) : undefined;
+	return {
+		schemaVersion: 1,
+		kind,
+		workflowId: raw.workflowId,
+		requestId: raw.requestId,
+		name: raw.name,
+		version: raw.version,
+		ok: raw.ok,
+		runId,
+		runUrl,
+		error,
+		completedAt: raw.completedAt,
+	};
 }
 
 function schedulerBuckets(env: ParseWorkerEnv, message: ParseRequestMessage): RateBucketConfig[] {
@@ -308,6 +405,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 
 	webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void | Promise<void> {
 		const raw = typeof message === 'string' ? message : new TextDecoder().decode(message);
+		if (raw.length > MAX_WS_MESSAGE_CHARS) {
+			ws.close(1009, 'Message too large');
+			return;
+		}
 		let parsed: { action?: string; tags?: string[] };
 		try {
 			parsed = JSON.parse(raw) as { action?: string; tags?: string[] };
@@ -320,15 +421,19 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		}
 
 		const attachment = this.attachmentFor(ws);
-		if (parsed.action === 'subscribe' && parsed.tags?.length) {
+		const requestedTags = normalizeSubscriptionTags(parsed.tags);
+		if (parsed.action === 'subscribe' && requestedTags.length) {
 			const tags = new Set(attachment.tags);
-			for (const tag of parsed.tags) tags.add(tag);
+			for (const tag of requestedTags) {
+				if (tags.size >= MAX_WS_TAGS_PER_SOCKET) break;
+				tags.add(tag);
+			}
 			this.setAttachment(ws, { ...attachment, tags: [...tags] });
-			for (const tag of parsed.tags) this.sendInitial(ws, tag);
+			for (const tag of requestedTags) this.sendInitial(ws, tag);
 			return;
 		}
-		if (parsed.action === 'unsubscribe' && parsed.tags?.length) {
-			const remove = new Set(parsed.tags);
+		if (parsed.action === 'unsubscribe' && requestedTags.length) {
+			const remove = new Set(requestedTags);
 			this.setAttachment(ws, {
 				...attachment,
 				tags: attachment.tags.filter((tag) => !remove.has(tag)),
@@ -364,6 +469,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 	}
 
 	private sendInitial(ws: WebSocket, tag: string): void {
+		if (!isValidSubscriptionTag(tag)) return;
 		if (tag.startsWith('rust:')) {
 			const [, name, version] = tag.split(':');
 			if (!name || !version) return;
@@ -790,16 +896,17 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 }
 
 async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Response> {
-	if (env.PARSE_CALLBACK_SECRET) {
-		const auth = request.headers.get('authorization') ?? '';
-		const headerSecret = request.headers.get('x-codeview-callback-secret') ?? '';
-		const bearer = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
-		if (bearer !== env.PARSE_CALLBACK_SECRET && headerSecret !== env.PARSE_CALLBACK_SECRET) {
-			return json({ error: 'unauthorized' }, { status: 401 });
-		}
+	if (!env.PARSE_CALLBACK_SECRET) {
+		return json({ error: 'parse callback secret is not configured' }, { status: 503 });
 	}
-	const payload = await readJson<ParseCompletionPayload>(request);
-	if (!payload.workflowId || !payload.requestId || !payload.name || !payload.version) {
+	const authorized = callbackSecretsFromRequest(request).some((candidate) =>
+		constantTimeEqual(candidate, env.PARSE_CALLBACK_SECRET!),
+	);
+	if (!authorized) {
+		return json({ error: 'unauthorized' }, { status: 401 });
+	}
+	const payload = parseCompletionPayload(await readJson<unknown>(request));
+	if (!payload) {
 		return json({ error: 'invalid callback payload' }, { status: 400 });
 	}
 	await updateStatus(env, {

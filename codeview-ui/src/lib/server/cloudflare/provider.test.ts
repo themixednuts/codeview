@@ -49,6 +49,14 @@ function fakeQueue(sent: unknown[]): Queue {
 	} as unknown as Queue;
 }
 
+function fakeRateLimit(success = true): RateLimit {
+	return {
+		async limit() {
+			return { success };
+		},
+	} as unknown as RateLimit;
+}
+
 function fnv1a32(value: string): number {
 	let hash = 0x811c9dc5;
 	for (let i = 0; i < value.length; i += 1) {
@@ -361,6 +369,7 @@ describe('createCloudflareProvider', () => {
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
 			PARSE_REQUESTS: fakeQueue(sent),
+			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
 		const result = await provider.triggerParse('serde', '1.0.228');
@@ -384,12 +393,44 @@ describe('createCloudflareProvider', () => {
 		await expect(provider.getProcessingCrates(5)).resolves.toEqual([]);
 	});
 
+	test('fails closed when hosted parse rate limiting is missing', async () => {
+		const sent: unknown[] = [];
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+			PARSE_REQUESTS: fakeQueue(sent),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const result = await provider.triggerParse('serde', '1.0.228');
+		expect(result.isErr()).toBe(true);
+		if (!result.isErr()) throw new Error('expected parse request to fail');
+		expect(result.error._tag).toBe('NotAvailableError');
+		expect(result.error.message).toBe('Hosted parse rate limiting is not configured');
+		expect(sent).toHaveLength(0);
+	});
+
+	test('requires admin auth for forced hosted parses', async () => {
+		const sent: unknown[] = [];
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+			PARSE_REQUESTS: fakeQueue(sent),
+			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const result = await provider.triggerParse('serde', '1.0.228', true);
+		expect(result.isErr()).toBe(true);
+		if (!result.isErr()) throw new Error('expected force parse request to fail');
+		expect(result.error._tag).toBe('NotAvailableError');
+		expect(result.error.message).toBe('Force parse requires admin access');
+		expect(sent).toHaveLength(0);
+	});
+
 	test('enqueues hosted sysroot parse requests for std crates', async () => {
 		const objects = new Map<string, unknown>();
 		const sent: unknown[] = [];
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
 			PARSE_REQUESTS: fakeQueue(sent),
+			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
 		const result = await provider.triggerParse('std', 'nightly');
