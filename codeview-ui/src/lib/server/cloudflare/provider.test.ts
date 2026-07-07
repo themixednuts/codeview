@@ -72,13 +72,18 @@ function nodeViewBucket(nodeId: string, bucketCount = 128): string {
 	return bucket.toString(16).padStart(width, '0');
 }
 
-function hostedMeta(nodeViewBucketCount: number, version = '1.0.0') {
+function hostedMeta(
+	nodeViewBucketCount: number,
+	version = '1.0.0',
+	artifacts: Record<string, unknown> = {},
+	name = 'demo',
+) {
 	return {
 		schema_version: 1,
-		name: 'demo',
+		name,
 		version,
 		index: {
-			name: 'demo',
+			name,
 			version,
 			crates: [],
 		},
@@ -91,16 +96,17 @@ function hostedMeta(nodeViewBucketCount: number, version = '1.0.0') {
 			nodeViewBucketCount,
 			treeChildrenBucketCount: 128,
 			aliasBucketCount: 128,
+			...artifacts,
 		},
 	};
 }
 
-function crateRefs(version = '1.0.0') {
+function crateRefs(version = '1.0.0', storageName = 'demo') {
 	const versions = [...new Set([version, '1.0.0', '1.0.1'])];
 	return {
 		schemaVersion: 1,
-		storageName: 'demo',
-		displayName: 'demo',
+		storageName,
+		displayName: storageName,
 		aliases: {
 			latest: {
 				version,
@@ -276,22 +282,66 @@ describe('createCloudflareProvider', () => {
 		});
 	});
 
-	test('filters hosted nodes by kind from node shards without loaded tree children', async () => {
-		const prefix = 'rust/demo/1.0.0';
-		const crateNodeId = 'demo';
-		const nestedNodeId = 'demo::hidden::Widget';
+	test('filters hosted nodes by kind from hosted kind index', async () => {
+		const crateName = 'kinddemo';
+		const version = '1.0.0';
+		const prefix = `rust/${crateName}/${version}`;
+		const nestedNodeId = `${crateName}::hidden::Widget`;
+		const objects = new Map<string, unknown>([
+			[`rust/_refs/${crateName}.json`, crateRefs(version, crateName)],
+			[`${prefix}/site/meta.json`, hostedMeta(128, version, { kindIndex: true }, crateName)],
+			[
+				`${prefix}/site/kinds/Struct.json`,
+				{
+					schema_version: 1,
+					name: crateName,
+					version,
+					kind: 'Struct',
+					entries: [
+						{
+							id: nestedNodeId,
+							name: 'Widget',
+							kind: 'Struct',
+							visibility: { kind: 'Public' },
+						},
+					],
+				},
+			],
+		]);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(
+			provider.searchNodesDirect?.(crateName, version, '', 10, ['Struct']),
+		).resolves.toEqual([
+			{
+				id: nestedNodeId,
+				name: 'Widget',
+				kind: 'Struct',
+				visibility: { kind: 'Public' },
+			},
+		]);
+	});
+
+	test('falls back to filtering hosted nodes by kind from node shards', async () => {
+		const crateName = 'fallbackdemo';
+		const version = '1.0.0';
+		const prefix = `rust/${crateName}/${version}`;
+		const crateNodeId = crateName;
+		const nestedNodeId = `${crateName}::hidden::Widget`;
 		const crateBucket = nodeViewBucket(crateNodeId);
 		const nestedBucket = nodeViewBucket(nestedNodeId);
 		const objects = new Map<string, unknown>([
-			['rust/_refs/demo.json', crateRefs()],
-			[`${prefix}/site/meta.json`, hostedMeta(128)],
+			[`rust/_refs/${crateName}.json`, crateRefs(version, crateName)],
+			[`${prefix}/site/meta.json`, hostedMeta(128, version, {}, crateName)],
 			[
 				`${prefix}/manifest.json`,
 				{
 					schema_version: 1,
-					name: 'demo',
-					version: '1.0.0',
-					index: { name: 'demo', version: '1.0.0', crates: [] },
+					name: crateName,
+					version,
+					index: { name: crateName, version, crates: [] },
 					nodeCount: 2,
 					edgeCount: 0,
 					kindCounts: { Crate: 1, Struct: 1 },
@@ -310,7 +360,7 @@ describe('createCloudflareProvider', () => {
 					nodes: {
 						[crateNodeId]: {
 							id: crateNodeId,
-							name: 'demo',
+							name: crateName,
 							kind: 'Crate',
 							visibility: { kind: 'Public' },
 							attrs: [],
@@ -338,7 +388,7 @@ describe('createCloudflareProvider', () => {
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
 		await expect(
-			provider.searchNodesDirect?.('demo', '1.0.0', '', 10, ['Struct']),
+			provider.searchNodesDirect?.(crateName, version, '', 10, ['Struct']),
 		).resolves.toEqual([
 			{
 				id: nestedNodeId,

@@ -85,6 +85,10 @@ pub struct HostedBuildReport {
     pub alias_bucket_count: u32,
     #[serde(rename = "searchPrefixCount")]
     pub search_prefix_count: usize,
+    #[serde(rename = "kindIndexKindCount")]
+    pub kind_index_kind_count: usize,
+    #[serde(rename = "kindIndexEntryCount")]
+    pub kind_index_entry_count: usize,
     #[serde(rename = "artifactTotalRawBytes")]
     pub artifact_total_raw_bytes: usize,
 }
@@ -122,6 +126,8 @@ pub struct HostedArtifactInfo {
     pub search_prefix_length: u32,
     #[serde(rename = "nodeViewEntryLimit")]
     pub node_view_entry_limit: usize,
+    #[serde(rename = "kindIndex")]
+    pub kind_index: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,6 +190,15 @@ pub struct HostedTreeChildrenShard {
     #[serde(rename = "bucketCount")]
     pub bucket_count: u32,
     pub parents: BTreeMap<String, HostedTreeChildrenParentEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostedKindShard {
+    pub schema_version: u32,
+    pub name: String,
+    pub version: String,
+    pub kind: NodeKind,
+    pub entries: Vec<NodeSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -273,6 +288,7 @@ pub fn build_with_config(
         &nodes_by_id,
     );
     let (search_manifest, search_shards) = build_search_shards(graph, storage_name);
+    let kind_shards = build_kind_shards(graph, storage_name);
     let alias_shards = build_alias_shards(graph, storage_name, config.alias_buckets);
 
     let mut artifacts = Vec::new();
@@ -301,6 +317,15 @@ pub fn build_with_config(
         push_json(
             &mut artifacts,
             format!("{prefix}/search/{prefix_key}.json"),
+            &shard,
+        )?;
+    }
+    let kind_index_entry_count: usize = kind_shards.values().map(|shard| shard.entries.len()).sum();
+    let kind_index_kind_count = kind_shards.len();
+    for (kind_key, shard) in kind_shards {
+        push_json(
+            &mut artifacts,
+            format!("{prefix}/kinds/{kind_key}.json"),
             &shard,
         )?;
     }
@@ -335,6 +360,8 @@ pub fn build_with_config(
         alias_count: graph.aliases.len(),
         alias_bucket_count: config.alias_buckets,
         search_prefix_count: search_manifest.prefixes.len(),
+        kind_index_kind_count,
+        kind_index_entry_count,
         artifact_total_raw_bytes: base_artifact_total_raw_bytes,
     };
     let report_body = loop {
@@ -495,6 +522,28 @@ fn build_tree_shards(
     shards
 }
 
+fn build_kind_shards(graph: &CrateGraph, storage_name: &str) -> BTreeMap<String, HostedKindShard> {
+    let mut shards: BTreeMap<String, HostedKindShard> = BTreeMap::new();
+    for node in graph.nodes.iter().filter(|node| is_local_page_node(node)) {
+        let kind_key = format!("{:?}", node.kind);
+        let shard = shards
+            .entry(kind_key.clone())
+            .or_insert_with(|| HostedKindShard {
+                schema_version: SCHEMA_VERSION,
+                name: storage_name.to_string(),
+                version: graph.version.clone(),
+                kind: node.kind,
+                entries: Vec::new(),
+            });
+        shard.entries.push(summarise_node(node));
+    }
+
+    for shard in shards.values_mut() {
+        shard.entries.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    shards
+}
+
 fn build_meta(
     graph: &CrateGraph,
     storage_name: &str,
@@ -577,6 +626,7 @@ fn build_meta(
             target_raw_shard_bytes: config.target_raw_shard_bytes,
             search_prefix_length: 2,
             node_view_entry_limit: config.node_view_entry_limit,
+            kind_index: true,
         },
     }
 }
@@ -802,6 +852,46 @@ mod tests {
         assert!(search_ids.contains(&"demo::Thing".to_string()));
         assert!(!search_ids.contains(&"demo::impl-1".to_string()));
         assert!(!search_ids.contains(&"core::clone::Clone".to_string()));
+    }
+
+    #[test]
+    fn hosted_kind_index_groups_local_nodes_by_kind() {
+        let mut graph = graph();
+        graph
+            .nodes
+            .push(node("demo::impl-1", "impl Clone for Thing", NodeKind::Impl));
+        graph.nodes.push(external_node(
+            "core::clone::Clone",
+            "Clone",
+            NodeKind::Trait,
+        ));
+
+        let set = build_all(&graph, "demo").expect("build hosted artifacts");
+        let struct_artifact = set
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.key == "rust/demo/1.0.0/site/kinds/Struct.json")
+            .expect("struct kind shard");
+        let struct_shard: HostedKindShard =
+            serde_json::from_slice(&struct_artifact.body).expect("deserialize kind shard");
+        assert_eq!(struct_shard.kind, NodeKind::Struct);
+        assert_eq!(struct_shard.entries[0].id, "demo::Thing");
+
+        let impl_artifact = set
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.key == "rust/demo/1.0.0/site/kinds/Impl.json")
+            .expect("impl kind shard");
+        let impl_shard: HostedKindShard =
+            serde_json::from_slice(&impl_artifact.body).expect("deserialize impl shard");
+        assert_eq!(impl_shard.entries[0].id, "demo::impl-1");
+
+        assert!(
+            set.artifacts
+                .iter()
+                .all(|artifact| artifact.key != "rust/demo/1.0.0/site/kinds/Trait.json")
+        );
+        assert_eq!(set.report.kind_index_entry_count, 4);
     }
 
     #[test]

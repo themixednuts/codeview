@@ -485,6 +485,7 @@ type HostedArtifactInfo = {
 	targetRawShardBytes?: number;
 	searchPrefixLength?: number;
 	nodeViewEntryLimit?: number;
+	kindIndex?: boolean;
 };
 
 type HostedMetaArtifact = {
@@ -545,6 +546,14 @@ type HostedTreeChildrenShard = {
 
 type HostedSearchManifest = StaticSearchManifest;
 type HostedSearchShard = StaticSearchShard;
+
+type HostedKindShard = {
+	schema_version: number;
+	name: string;
+	version: string;
+	kind: NodeKind;
+	entries: NodeSummary[];
+};
 
 type HostedAliasShard = {
 	schema_version: number;
@@ -976,6 +985,31 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				entries.push(summarizeNode(node));
 			}
 		}
+		return entries.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
+	}
+
+	async function loadHostedKindShardFromRef(
+		ref: ArtifactRef,
+		kind: NodeKind,
+	): Promise<HostedKindShard | null> {
+		return readArtifactJson<HostedKindShard>(ref, `site/kinds/${kind}.json`);
+	}
+
+	async function filterNodesFromKindIndex(
+		ref: ArtifactRef,
+		meta: HostedMetaArtifact,
+		kinds: Set<NodeKind>,
+		limit: number,
+	): Promise<NodeSummary[] | null> {
+		if (kinds.size === 0) return [];
+		if (!meta.artifacts?.kindIndex) return null;
+		const shards = await Promise.all(
+			Array.from(kinds)
+				.sort()
+				.map((kind) => loadHostedKindShardFromRef(ref, kind)),
+		);
+		const entries = shards.flatMap((shard) => shard?.entries ?? []);
+		if (shards.length <= 1) return entries.slice(0, limit);
 		return entries.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
 	}
 
@@ -1870,7 +1904,12 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			if (!context) return [];
 			const kindSet = new Set<NodeKind>(kinds);
 			const needle = queryText.trim().toLowerCase();
-			if (!needle) return filterNodesFromShards(context.ref, kindSet, limit);
+			if (!needle) {
+				return (
+					(await filterNodesFromKindIndex(context.ref, context.meta, kindSet, limit)) ??
+					filterNodesFromShards(context.ref, kindSet, limit)
+				);
+			}
 			const manifest = await loadHostedSearchManifestFromRef(context.ref);
 			if (!manifest) return [];
 			const queryP = searchPrefix(needle);
