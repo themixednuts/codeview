@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { triggerCrateParseForm } from '$lib/rpc/crate.remote';
+	import { triggerCrateParse } from '$lib/rpc/crate.remote';
 
 	let {
 		crateName,
@@ -15,17 +15,25 @@
 		onRetryError?: (message: string) => void;
 	} = $props();
 
-	const retryForm = triggerCrateParseForm;
-	let lastFormKey = '';
-	$effect(() => {
-		if (!crateName || !version) return;
-		const key = `${crateName}@${version}`;
-		if (key === lastFormKey) return;
-		lastFormKey = key;
-		retryForm.fields.set({ name: crateName, version, force: true });
-	});
-
+	let retrying = $state(false);
+	let retryError = $state<string | null>(null);
 	const canRetry = $derived(!!crateName && !!version);
+
+	async function retryParse() {
+		if (!crateName || !version || retrying) return;
+		retrying = true;
+		retryError = null;
+		try {
+			await triggerCrateParse({ name: crateName, version });
+			onRetryStart?.();
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			retryError = message;
+			onRetryError?.(message);
+		} finally {
+			retrying = false;
+		}
+	}
 </script>
 
 <div class="flex flex-1 items-center justify-center">
@@ -40,24 +48,20 @@
 				{error}
 			</div>
 		{/if}
-		<form
-			{...retryForm.enhance(async ({ submit }) => {
-				if (!canRetry) return;
-				onRetryStart?.();
-				try {
-					await submit();
-				} catch (err) {
-					onRetryError?.(err instanceof Error ? err.message : String(err));
-				}
-			})}
-		>
-			<button
-				type="submit"
-				disabled={!canRetry}
-				class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+		{#if retryError}
+			<div
+				class="mb-4 rounded-md border border-(--danger-border) bg-(--danger-bg) px-3 py-2 text-sm text-(--danger)"
 			>
-				Retry
-			</button>
-		</form>
+				{retryError}
+			</div>
+		{/if}
+		<button
+			type="button"
+			disabled={!canRetry || retrying}
+			class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+			onclick={retryParse}
+		>
+			{retrying ? 'Retrying...' : 'Retry'}
+		</button>
 	</div>
 </div>

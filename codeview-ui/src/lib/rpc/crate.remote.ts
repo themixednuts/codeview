@@ -86,16 +86,6 @@ export const triggerCrateParse = command(
 	},
 );
 
-export const triggerCrateParseForm = form(
-	TriggerParseInputSchema,
-	async ({ name, version }): Promise<void> => {
-		assertCrateRef(name, version);
-		const provider = await loader.provider();
-		const result = await provider.triggerParse(name, version, false);
-		throwIfProviderErr(result, { RateLimitError: 429 });
-	},
-);
-
 /** Trigger std crate install + parse (local mode, requires user consent). */
 export const installStdDocs = form(
 	InstallStdDocsInputSchema,

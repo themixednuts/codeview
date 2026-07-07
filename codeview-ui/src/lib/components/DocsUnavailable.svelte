@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { probeAvailableDocsVersion, triggerCrateParseForm } from '$lib/rpc/crate.remote';
+	import { probeAvailableDocsVersion, triggerCrateParse } from '$lib/rpc/crate.remote';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { LoaderCircleIcon } from '@lucide/svelte';
@@ -20,19 +20,13 @@
 		onRetryError?: (message: string) => void;
 	} = $props();
 
-	const retryForm = triggerCrateParseForm;
-	let lastFormKey = '';
-	$effect(() => {
-		if (!crateName || !version) return;
-		const key = `${crateName}@${version}`;
-		if (key === lastFormKey) return;
-		lastFormKey = key;
-		retryForm.fields.set({ name: crateName, version, force: true });
-	});
-
+	let queueing = $state(false);
+	let queueError = $state<string | null>(null);
 	const canRetry = $derived(!!crateName && !!version);
 	const isStd = $derived(!!crateName && isStdCrate(crateName));
-	const retryLabel = $derived(isHosted && isStd ? 'Queue sysroot parse' : isHosted ? 'Queue parse' : 'Retry');
+	const retryLabel = $derived(
+		isHosted && isStd ? 'Queue sysroot parse' : isHosted ? 'Queue parse' : 'Retry',
+	);
 	const canQueueParse = $derived(!isStd || isHosted);
 	const externalDocsHref = $derived.by(() => {
 		if (!crateName || !version) return null;
@@ -44,6 +38,22 @@
 
 	function goBack() {
 		void goto(resolve('/'));
+	}
+
+	async function requestParse() {
+		if (!crateName || !version || queueing) return;
+		queueing = true;
+		queueError = null;
+		try {
+			await triggerCrateParse({ name: crateName, version });
+			onRetryStart?.();
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			queueError = message;
+			onRetryError?.(message);
+		} finally {
+			queueing = false;
+		}
 	}
 
 	let suggestedVersion = $derived(
@@ -113,6 +123,14 @@
 			{/if}
 		</svelte:boundary>
 
+		{#if queueError}
+			<div
+				class="mb-4 rounded-md border border-(--danger-border) bg-(--danger-bg) px-3 py-2 text-sm text-(--danger)"
+			>
+				{queueError}
+			</div>
+		{/if}
+
 		<div class="mt-2 flex items-center justify-center gap-3">
 			{#if externalDocsHref}
 				<a
@@ -125,25 +143,14 @@
 				</a>
 			{/if}
 			{#if canQueueParse}
-				<form
-					{...retryForm.enhance(async ({ submit }) => {
-						if (!canRetry) return;
-						onRetryStart?.();
-						try {
-							await submit();
-						} catch (err) {
-							onRetryError?.(err instanceof Error ? err.message : String(err));
-						}
-					})}
+				<button
+					type="button"
+					disabled={!canRetry || queueing}
+					class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
+					onclick={requestParse}
 				>
-					<button
-						type="submit"
-						disabled={!canRetry}
-						class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-					>
-						{retryLabel}
-					</button>
-				</form>
+					{queueing ? 'Queueing...' : retryLabel}
+				</button>
 			{/if}
 			<button
 				type="button"

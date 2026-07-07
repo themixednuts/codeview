@@ -9,6 +9,7 @@
 	import CodeIcon from '@lucide/svelte/icons/code';
 	import GaugeIcon from '@lucide/svelte/icons/gauge';
 	import Volume2Icon from '@lucide/svelte/icons/volume-2';
+	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
 
 	type SpeechState = 'idle' | 'speaking' | 'paused';
 
@@ -20,6 +21,7 @@
 	let chunkIndex = $state(0);
 	let utterance: SpeechSynthesisUtterance | null = null;
 	let queuedChunks: string[] = [];
+	let speechSession = 0;
 
 	const docs = $derived(node.docs ?? '');
 	const segments = $derived(docs ? parseDocumentation(docs, 'rust', node.doc_links ?? {}) : []);
@@ -54,7 +56,9 @@
 				continue;
 			}
 
-			parts.push(includeCode ? `Code example. ${codeToSpeech(segment.content)}` : 'Code example omitted.');
+			parts.push(
+				includeCode ? `Code example. ${codeToSpeech(segment.content)}` : 'Code example omitted.',
+			);
 		}
 
 		return normalizeSpeechText(parts.join('\n\n'));
@@ -114,32 +118,36 @@
 		if (speechState === 'paused') {
 			window.speechSynthesis.resume();
 			speechState = 'speaking';
+			if (!utterance && chunkIndex < queuedChunks.length) speakCurrent(speechSession);
 			return;
 		}
 
 		stop(true);
+		const session = speechSession;
 		queuedChunks = splitTranscript(transcript);
 		chunkIndex = 0;
 		speechState = 'speaking';
-		speakCurrent();
+		queueMicrotask(() => speakCurrent(session));
 	}
 
-	function speakCurrent() {
-		if (!supported || speechState !== 'speaking') return;
+	function speakCurrent(session = speechSession) {
+		if (session !== speechSession || !supported || speechState !== 'speaking') return;
 		if (chunkIndex >= queuedChunks.length) {
-			finish();
+			finish(session);
 			return;
 		}
 
-		utterance = new SpeechSynthesisUtterance(queuedChunks[chunkIndex]);
-		utterance.rate = rate;
-		utterance.onend = () => {
-			if (speechState !== 'speaking') return;
+		const nextUtterance = new SpeechSynthesisUtterance(queuedChunks[chunkIndex]);
+		utterance = nextUtterance;
+		nextUtterance.rate = rate;
+		nextUtterance.onend = () => {
+			if (session !== speechSession || utterance !== nextUtterance || speechState !== 'speaking')
+				return;
 			chunkIndex += 1;
-			speakCurrent();
+			speakCurrent(session);
 		};
-		utterance.onerror = finish;
-		window.speechSynthesis.speak(utterance);
+		nextUtterance.onerror = () => finish(session);
+		window.speechSynthesis.speak(nextUtterance);
 	}
 
 	function pause() {
@@ -149,13 +157,23 @@
 	}
 
 	function stop(force = false) {
+		speechSession += 1;
+		if (utterance) {
+			utterance.onend = null;
+			utterance.onerror = null;
+		}
 		if (supported && (force || speechState !== 'idle' || utterance || queuedChunks.length > 0)) {
 			window.speechSynthesis.cancel();
 		}
-		finish();
+		resetSpeechState();
 	}
 
-	function finish() {
+	function finish(session = speechSession) {
+		if (session !== speechSession) return;
+		resetSpeechState();
+	}
+
+	function resetSpeechState() {
 		speechState = 'idle';
 		chunkIndex = 0;
 		utterance = null;
@@ -182,13 +200,22 @@
 		title={supported
 			? speechState === 'paused'
 				? 'Resume read aloud'
-				: 'Read aloud'
+				: speechState === 'speaking'
+					? 'Restart read aloud'
+					: 'Read aloud'
 			: 'Read aloud unavailable'}
-		aria-label={speechState === 'paused' ? 'Resume read aloud' : 'Read aloud'}
+		aria-label={speechState === 'paused'
+			? 'Resume read aloud'
+			: speechState === 'speaking'
+				? 'Restart read aloud'
+				: 'Read aloud'}
 	>
 		{#if speechState === 'paused'}
 			<PlayIcon size={13} />
 			<span>Resume</span>
+		{:else if speechState === 'speaking'}
+			<RotateCcwIcon size={13} />
+			<span>Restart</span>
 		{:else}
 			<Volume2Icon size={13} />
 			<span>Read</span>
@@ -196,13 +223,25 @@
 	</button>
 
 	{#if speechState === 'speaking'}
-		<button type="button" class="reader-icon-button" onclick={pause} title="Pause" aria-label="Pause">
+		<button
+			type="button"
+			class="reader-icon-button"
+			onclick={pause}
+			title="Pause"
+			aria-label="Pause"
+		>
 			<PauseIcon size={13} />
 		</button>
 	{/if}
 
 	{#if speechState !== 'idle'}
-		<button type="button" class="reader-icon-button" onclick={() => stop()} title="Stop" aria-label="Stop">
+		<button
+			type="button"
+			class="reader-icon-button"
+			onclick={() => stop()}
+			title="Stop"
+			aria-label="Stop"
+		>
 			<SquareIcon size={12} />
 		</button>
 		<span class="reader-progress" aria-live="polite">{progressLabel}</span>
