@@ -1204,9 +1204,21 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
+	function planItemKey(kind: string, name: string, version: string): string {
+		return `${kind}:${name}:${version}`;
+	}
+
+	function queueStatusKeys(queue: StoredParseQueueSnapshot): Set<string> {
+		const keys = new Set<string>();
+		for (const entry of [...queue.active, ...queue.recent]) {
+			keys.add(planItemKey(entry.kind, entry.name, entry.version));
+		}
+		return keys;
+	}
+
 	function planItemFromArtifact(item: NonNullable<WorkPlanArtifact['work']>[number]): PlannedParseItem | null {
 		if (!item.name || !item.version) return null;
-		const kind = item.kind === 'std' ? 'sysroot' : 'crate';
+		const kind = item.kind === 'std' || item.kind === 'sysroot' ? 'sysroot' : 'crate';
 		return {
 			kind,
 			name: item.name,
@@ -1219,21 +1231,26 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
-	function planFromArtifact(plan: WorkPlanArtifact, limit: number): PlannedParseRun | null {
+	function planFromArtifact(
+		plan: WorkPlanArtifact,
+		limit: number,
+		excludedKeys = new Set<string>(),
+	): PlannedParseRun | null {
 		const runId = plan.run_id ?? plan.runId;
 		const generatedAt = plan.generated_at ?? plan.generatedAt;
 		if (!runId || !generatedAt) return null;
 		const work = Array.isArray(plan.work) ? plan.work : [];
+		const items = work
+			.map(planItemFromArtifact)
+			.filter((entry): entry is PlannedParseItem => entry !== null)
+			.filter((entry) => !excludedKeys.has(planItemKey(entry.kind, entry.name, entry.version)));
 		return {
 			runId,
 			generatedAt,
 			mode: plan.mode ?? 'unknown',
 			shardCount: plan.shard_count ?? plan.shardCount ?? 0,
-			total: work.length,
-			items: work
-				.map(planItemFromArtifact)
-				.filter((entry): entry is PlannedParseItem => entry !== null)
-				.slice(0, Math.max(1, limit)),
+			total: items.length,
+			items: items.slice(0, Math.max(1, limit)),
 		};
 	}
 
@@ -1263,11 +1280,14 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		);
 	}
 
-	async function loadLatestPlannedRun(limit: number): Promise<PlannedParseRun | null> {
+	async function loadLatestPlannedRun(
+		limit: number,
+		excludedKeys = new Set<string>(),
+	): Promise<PlannedParseRun | null> {
 		const plans = await Promise.all(
 			(await listPlanKeys()).slice(0, 25).map(async ({ key }) => {
 				const raw = await readJson<WorkPlanArtifact>(key);
-				return raw ? planFromArtifact(raw, limit) : null;
+				return raw ? planFromArtifact(raw, limit, excludedKeys) : null;
 			}),
 		);
 		return plans
@@ -1679,17 +1699,17 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 
 		async getParseQueue(limit = 50): Promise<ParseQueueSnapshot> {
 			const boundedLimit = Math.max(1, Math.min(limit, 100));
-			const [queue, activeRuns, planned] = await Promise.all([
+			const [queue, activeRuns] = await Promise.all([
 				readHostedQueue(boundedLimit),
 				listActiveGitHubParseRuns(boundedLimit).catch((err) => {
 					log.warn`active GitHub parse run load failed: ${String(err)}`;
 					return [];
 				}),
-				loadLatestPlannedRun(boundedLimit).catch((err) => {
-					log.warn`planned parse run load failed: ${String(err)}`;
-					return null;
-				}),
 			]);
+			const planned = await loadLatestPlannedRun(boundedLimit, queueStatusKeys(queue)).catch((err) => {
+				log.warn`planned parse run load failed: ${String(err)}`;
+				return null;
+			});
 			return {
 				active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
 				activeRuns,

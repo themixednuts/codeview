@@ -8,6 +8,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import {
 	crateStatusTag,
 	isParseRequestMessage,
+	makeParseRequest,
 	parseStatusObject,
 	parseWorkflowId,
 	type BeginParseResponse,
@@ -36,6 +37,8 @@ type ParseWorkerEnv = Env & {
 	DOCSRS_PARSE_REFILL_SECONDS?: string;
 	SYSROOT_PARSE_BURST?: string;
 	SYSROOT_PARSE_REFILL_SECONDS?: string;
+	PLAN_DRAIN_ACTIVE_TARGET?: string;
+	PLAN_DRAIN_BATCH_SIZE?: string;
 };
 
 type WebSocketAttachment = {
@@ -67,6 +70,31 @@ type RateBucketState = RateBucketConfig & {
 type LeaseResult =
 	| { leased: true }
 	| { leased: false; retryAfterSeconds: number };
+
+type WorkPlanArtifact = {
+	run_id?: string;
+	runId?: string;
+	generated_at?: string;
+	generatedAt?: string;
+	work?: Array<{
+		work_id?: string;
+		workId?: string;
+		kind?: string;
+		name?: string;
+		version?: string;
+	}>;
+};
+
+type PlanCandidate = {
+	key: string;
+	uploaded?: string;
+};
+
+type PlannedParseItem = {
+	kind: 'crate' | 'sysroot';
+	name: string;
+	version: string;
+};
 
 function json(value: unknown, init?: ResponseInit): Response {
 	const headers = new Headers(init?.headers);
@@ -130,6 +158,11 @@ function databaseNow(): string {
 
 function parsePositiveNumber(value: string | undefined, fallback: number): number {
 	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+	const parsed = Number.parseInt(value ?? '', 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
@@ -312,6 +345,144 @@ async function updateStatus(env: ParseWorkerEnv, event: ParseStatusEvent): Promi
 	});
 	if (!response.ok) throw new Error(`status update failed: ${response.status}`);
 	return (await response.json()) as StoredParseStatus;
+}
+
+async function readStatus(
+	env: ParseWorkerEnv,
+	name: string,
+	version: string,
+): Promise<StoredParseStatus | null> {
+	const url = new URL('https://status/status');
+	url.searchParams.set('name', name);
+	url.searchParams.set('version', version);
+	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+	if (!response.ok) return null;
+	return (await response.json()) as StoredParseStatus | null;
+}
+
+async function readProcessingCount(env: ParseWorkerEnv): Promise<number> {
+	const url = new URL('https://status/queue');
+	url.searchParams.set('limit', '100');
+	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+	if (!response.ok) return 0;
+	const snapshot = (await response.json()) as ParseQueueSnapshot;
+	return snapshot.active.length;
+}
+
+async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 2000): Promise<PlanCandidate[]> {
+	const candidates: PlanCandidate[] = [];
+	let cursor: string | undefined;
+	do {
+		const page = await env.CRATE_GRAPHS.list({
+			prefix: 'rust/_runs/',
+			limit: Math.min(1000, Math.max(1, maxKeys - candidates.length)),
+			cursor,
+		});
+		for (const object of page.objects) {
+			if (object.key.endsWith('/plan.json')) {
+				candidates.push({
+					key: object.key,
+					uploaded: object.uploaded?.toISOString(),
+				});
+			}
+			if (candidates.length >= maxKeys) break;
+		}
+		cursor = page.truncated ? page.cursor : undefined;
+	} while (cursor && candidates.length < maxKeys);
+	return candidates.sort(
+		(a, b) =>
+			(b.uploaded ?? '').localeCompare(a.uploaded ?? '') || b.key.localeCompare(a.key),
+	);
+}
+
+async function readPlan(env: ParseWorkerEnv, key: string): Promise<WorkPlanArtifact | null> {
+	const object = await env.CRATE_GRAPHS.get(key);
+	if (!object) return null;
+	return (await object.json()) as WorkPlanArtifact;
+}
+
+function generatedAt(plan: WorkPlanArtifact): string {
+	return plan.generated_at ?? plan.generatedAt ?? '';
+}
+
+async function loadLatestPlan(env: ParseWorkerEnv): Promise<WorkPlanArtifact | null> {
+	const plans = await Promise.all(
+		(await listPlanKeys(env)).slice(0, 25).map(async ({ key }) => readPlan(env, key)),
+	);
+	return (
+		plans
+			.filter((plan): plan is WorkPlanArtifact => plan !== null)
+			.sort((a, b) => generatedAt(b).localeCompare(generatedAt(a)))[0] ?? null
+	);
+}
+
+function plannedParseItem(value: NonNullable<WorkPlanArtifact['work']>[number]): PlannedParseItem | null {
+	const name = value.name ?? '';
+	const version = value.version ?? '';
+	if (!isSafeCrateName(name) || !isSafeVersion(version)) return null;
+	if (value.kind === 'std' || value.kind === 'sysroot') return { kind: 'sysroot', name, version };
+	if (value.kind === 'crate') return { kind: 'crate', name, version };
+	return null;
+}
+
+async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): Promise<void> {
+	const request = makeParseRequest(item.name, item.version, false, 'planned', item.kind);
+	const workflowId = parseWorkflowId(request.requestId);
+	await updateStatus(env, {
+		kind: request.kind,
+		name: request.name,
+		version: request.version,
+		status: 'processing',
+		step: 'queued',
+		requestId: request.requestId,
+		workflowId,
+	});
+	try {
+		await env.PARSE_REQUESTS!.send(request);
+	} catch (err) {
+		await updateStatus(env, {
+			kind: request.kind,
+			name: request.name,
+			version: request.version,
+			status: 'failed',
+			step: 'queue-send',
+			error: err instanceof Error ? err.message : String(err),
+			requestId: request.requestId,
+			workflowId,
+		});
+		throw err;
+	}
+}
+
+async function drainPlannedParses(env: ParseWorkerEnv): Promise<{ queued: number; skipped: number }> {
+	if (!env.PARSE_REQUESTS) return { queued: 0, skipped: 0 };
+	const activeTarget = parsePositiveInteger(env.PLAN_DRAIN_ACTIVE_TARGET, 4);
+	const batchSize = parsePositiveInteger(env.PLAN_DRAIN_BATCH_SIZE, 2);
+	const activeCount = await readProcessingCount(env);
+	let remaining = Math.max(0, Math.min(batchSize, activeTarget - activeCount));
+	if (remaining === 0) return { queued: 0, skipped: 0 };
+
+	const plan = await loadLatestPlan(env);
+	const work = Array.isArray(plan?.work) ? plan.work : [];
+	let queued = 0;
+	let skipped = 0;
+	for (const raw of work) {
+		if (remaining === 0) break;
+		const item = plannedParseItem(raw);
+		if (!item) {
+			skipped += 1;
+			continue;
+		}
+		const status = await readStatus(env, item.name, item.version);
+		if (status) {
+			skipped += 1;
+			continue;
+		}
+		await enqueuePlannedItem(env, item);
+		queued += 1;
+		remaining -= 1;
+	}
+	return { queued, skipped };
 }
 
 async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: string): Promise<void> {
@@ -927,6 +1098,15 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 }
 
 export default {
+	async scheduled(_controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
+		const result = await drainPlannedParses(env);
+		if (result.queued > 0) {
+			console.log(
+				`drained planned parses queued=${result.queued} skipped=${result.skipped}`,
+			);
+		}
+	},
+
 	async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
 		await Promise.all(batch.messages.map((message) => handleQueueMessage(message, env)));
 	},

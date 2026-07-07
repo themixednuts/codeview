@@ -1,11 +1,13 @@
 <script lang="ts">
+	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { authClient } from '$lib/auth-client';
 	import { Icon } from '$lib/components/design';
 	import { stepLabels } from '$lib/realtime/constants';
+	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
 	const PAGE_SIZE = 10;
+	const REFRESH_INTERVAL_MS = 15_000;
 
 	let { data, form }: PageProps = $props();
 
@@ -31,8 +33,7 @@
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
 	const actionMessage = $derived(form?.message);
 	const actionOk = $derived(form?.ok === true);
-	let authPending = $state(false);
-	let authError = $state<string | null>(null);
+	let refreshPending = $state(false);
 	let activePage = $state(1);
 	let plannedPage = $state(1);
 	const activePageCount = $derived(Math.max(1, Math.ceil(activeRows.length / PAGE_SIZE)));
@@ -102,31 +103,27 @@
 		return actor ? `@${actor.login}` : '';
 	}
 
-	async function signInGithub() {
-		authPending = true;
-		authError = null;
+	async function refreshQueue() {
+		if (refreshPending || document.visibilityState === 'hidden') return;
+		refreshPending = true;
 		try {
-			await authClient.signIn.social({
-				provider: 'github',
-				callbackURL: resolve('/queue'),
-			});
-		} catch (err) {
-			authError = err instanceof Error ? err.message : String(err);
-			authPending = false;
+			await invalidate('codeview:parse-queue');
+		} finally {
+			refreshPending = false;
 		}
 	}
 
-	async function signOut() {
-		authPending = true;
-		authError = null;
-		try {
-			await authClient.signOut();
-			location.href = resolve('/queue');
-		} catch (err) {
-			authError = err instanceof Error ? err.message : String(err);
-			authPending = false;
-		}
-	}
+	onMount(() => {
+		const interval = window.setInterval(() => void refreshQueue(), REFRESH_INTERVAL_MS);
+		const onVisibilityChange = () => {
+			if (document.visibilityState === 'visible') void refreshQueue();
+		};
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		return () => {
+			window.clearInterval(interval);
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+		};
+	});
 </script>
 
 <div class="flex flex-1 overflow-auto">
@@ -143,13 +140,18 @@
 						</div>
 						<h1 class="font-display text-2xl font-semibold text-(--ink)">Builds and planned parses</h1>
 					</div>
-					<a
-						href={resolve('/')}
-						class="corner-squircle inline-flex items-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-sm text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"
-					>
-						<Icon name="search" size={13} />
-						Browse
-					</a>
+					<div class="flex items-center gap-2">
+						<span class="badge badge-sm text-(--accent)">
+							{refreshPending ? 'Refreshing' : 'Live'}
+						</span>
+						<a
+							href={resolve('/')}
+							class="corner-squircle inline-flex items-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-sm text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"
+						>
+							<Icon name="search" size={13} />
+							Browse
+						</a>
+					</div>
 				</div>
 				<div class="grid gap-2 sm:grid-cols-3">
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
@@ -175,17 +177,9 @@
 									<span>Admin</span>
 								</div>
 								<div class="mt-1 truncate text-sm text-(--muted)">
-									Signed in with GitHub as {userLabel()}
+									Admin parse controls for {userLabel()}
 								</div>
 							</div>
-							<button
-								type="button"
-								onclick={signOut}
-								disabled={authPending}
-								class="corner-squircle inline-flex items-center rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-xs text-(--muted) transition-colors hover:border-(--accent-ring) hover:text-(--ink) disabled:opacity-60"
-							>
-								Sign out
-							</button>
 						</div>
 						<form method="POST" action="?/forceParse" class="grid gap-2 md:grid-cols-[minmax(0,1fr)_160px_auto]">
 							<label class="sr-only" for="force-name">Crate name</label>
@@ -214,72 +208,6 @@
 								Force parse
 							</button>
 						</form>
-					</div>
-				{:else if auth.authConfigured}
-					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) p-3">
-						<div class="flex flex-wrap items-center justify-between gap-3">
-							<div class="min-w-0">
-								<div class="flex items-center gap-2 text-[10px] font-semibold tracking-wider text-(--muted) uppercase">
-									<Icon name="github" size={12} />
-									<span>GitHub</span>
-								</div>
-								<div class="mt-1 text-sm text-(--muted)">
-									{#if auth.user}
-										Signed in as {userLabel()}. Admin force parse is not enabled for this account.
-									{:else}
-										Sign in for higher parse request limits.
-									{/if}
-								</div>
-							</div>
-							{#if auth.user}
-								<button
-									type="button"
-									onclick={signOut}
-									disabled={authPending}
-									class="corner-squircle inline-flex items-center justify-center rounded-(--radius-control) border border-(--panel-border) bg-(--panel-strong) px-3 py-2 text-sm font-semibold text-(--ink) transition-colors hover:border-(--accent-ring) disabled:opacity-60"
-								>
-									Sign out
-								</button>
-							{:else}
-								<button
-									type="button"
-									onclick={signInGithub}
-									disabled={authPending}
-									class="corner-squircle inline-flex items-center justify-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-strong) px-3 py-2 text-sm font-semibold text-(--ink) transition-colors hover:border-(--accent-ring) disabled:opacity-60"
-								>
-									<Icon name="github" size={13} />
-									{authPending ? 'Opening...' : 'Sign in'}
-								</button>
-							{/if}
-						</div>
-					</div>
-				{:else}
-					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) p-3">
-						<div class="flex flex-wrap items-center justify-between gap-3">
-							<div class="min-w-0">
-								<div class="flex items-center gap-2 text-[10px] font-semibold tracking-wider text-(--muted) uppercase">
-									<Icon name="github" size={12} />
-									<span>GitHub</span>
-								</div>
-								<div class="mt-1 text-sm text-(--muted)">
-									GitHub sign-in is not configured for this deployment.
-								</div>
-							</div>
-							<button
-								type="button"
-								disabled
-								class="corner-squircle inline-flex items-center justify-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-strong) px-3 py-2 text-sm font-semibold text-(--muted) opacity-70"
-							>
-								<Icon name="github" size={13} />
-								Sign in
-							</button>
-						</div>
-					</div>
-				{/if}
-
-				{#if authError}
-					<div class="rounded-md border border-(--danger) bg-(--panel) px-3 py-2 text-sm text-(--danger)">
-						{authError}
 					</div>
 				{/if}
 

@@ -4,6 +4,7 @@
 	import { afterNavigate, goto, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
+	import { authClient } from '$lib/auth-client';
 	import { getProcessingCrates } from '$lib/rpc/crate.remote';
 	import {
 		CrateStatusConnection,
@@ -61,6 +62,7 @@
 		type VcsMode,
 	} from '$lib/context';
 	import { LoaderCircleIcon, SettingsIcon } from '@lucide/svelte';
+	import type { LayoutProps } from './$types';
 	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
 	import { Icon } from '$lib/components/design';
 	import ParseToastContent from '$lib/components/ParseToastContent.svelte';
@@ -106,7 +108,7 @@
 		}
 	});
 
-	let { children } = $props();
+	let { children, data }: LayoutProps = $props();
 
 	const processingConn = new ProcessingStatusConnection();
 	const globalParseStatusConn = new CrateStatusConnection();
@@ -143,6 +145,9 @@
 	let parseToastDismissTimer: ReturnType<typeof setTimeout> | null = null;
 	let appUpdateToastVisible = false;
 	let appRefreshStarted = false;
+	let authPending = $state(false);
+	let authError = $state<string | null>(null);
+	const auth = $derived(data.auth);
 
 	function openProcessingPopover() {
 		showProcessing = true;
@@ -212,6 +217,41 @@
 		if (appRefreshStarted) return;
 		appRefreshStarted = true;
 		void forceRefreshClient();
+	}
+
+	function currentAuthRedirect(): string {
+		return `${page.url.pathname}${page.url.search}`;
+	}
+
+	function userLabel(): string {
+		if (!auth.user) return '';
+		return auth.user.githubLogin ? `@${auth.user.githubLogin}` : auth.user.email;
+	}
+
+	async function signInGithub() {
+		authPending = true;
+		authError = null;
+		try {
+			await authClient.signIn.social({
+				provider: 'github',
+				callbackURL: currentAuthRedirect(),
+			});
+		} catch (err) {
+			authError = err instanceof Error ? err.message : String(err);
+			authPending = false;
+		}
+	}
+
+	async function signOut() {
+		authPending = true;
+		authError = null;
+		try {
+			await authClient.signOut();
+			location.href = currentAuthRedirect();
+		} catch (err) {
+			authError = err instanceof Error ? err.message : String(err);
+			authPending = false;
+		}
 	}
 
 	function showAppUpdateToast(description = 'Reload to use the current build.') {
@@ -782,6 +822,31 @@
 		</a>
 
 		<div class="flex items-center justify-end gap-2">
+			{#if auth.authConfigured}
+				{#if auth.user}
+					<button
+						type="button"
+						class="corner-squircle inline-flex max-w-40 items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) disabled:opacity-60"
+						title={`Sign out ${userLabel()}`}
+						disabled={authPending}
+						onclick={signOut}
+					>
+						<Icon name="github" size={13} />
+						<span class="hidden truncate sm:inline">{userLabel()}</span>
+					</button>
+				{:else}
+					<button
+						type="button"
+						class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) disabled:opacity-60"
+						title={authError ?? 'Sign in with GitHub'}
+						disabled={authPending}
+						onclick={signInGithub}
+					>
+						<Icon name="github" size={13} />
+						<span class="hidden sm:inline">{authPending ? 'Opening...' : 'Sign in'}</span>
+					</button>
+				{/if}
+			{/if}
 			<a
 				href={resolve('/queue')}
 				class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"

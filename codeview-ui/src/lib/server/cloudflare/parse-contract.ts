@@ -5,7 +5,7 @@ export const PARSE_STATUS_OBJECT_NAME = 'rust';
 
 export type ParseRequestKind = 'crate' | 'sysroot';
 
-export type ParseRequestSource = 'ui' | 'manual';
+export type ParseRequestSource = 'ui' | 'manual' | 'planned';
 
 export type ParseRequestActor = {
 	provider: 'github';
@@ -142,7 +142,7 @@ export function isParseRequestMessage(value: unknown): value is ParseRequestMess
 		typeof candidate.requestId === 'string' &&
 		candidate.requestId.length > 0 &&
 		typeof candidate.requestedAt === 'string' &&
-		(candidate.source === 'ui' || candidate.source === 'manual') &&
+		(candidate.source === 'ui' || candidate.source === 'manual' || candidate.source === 'planned') &&
 		(candidate.requestedBy === undefined || isParseRequestActor(candidate.requestedBy))
 	);
 }

@@ -12,6 +12,7 @@ const emptySnapshot: ParseQueueSnapshot = {
 };
 
 export const load: PageServerLoad = async (event) => {
+	event.depends('codeview:parse-queue');
 	const provider = await initProvider(event);
 	const [snapshot, auth] = await Promise.all([
 		provider.getParseQueue ? provider.getParseQueue(100).catch(() => emptySnapshot) : emptySnapshot,
