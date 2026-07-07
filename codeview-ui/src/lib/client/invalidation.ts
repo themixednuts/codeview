@@ -4,8 +4,16 @@ export async function forceRefreshClient(): Promise<void> {
 			const registrations = await navigator.serviceWorker.getRegistrations();
 			await Promise.all(
 				registrations.map(async (registration) => {
-					registration.active?.postMessage({ type: 'codeview:force-refresh' });
+					const workers = [
+						registration.waiting,
+						registration.installing,
+						registration.active,
+					].filter((worker): worker is ServiceWorker => Boolean(worker));
+					for (const worker of workers) {
+						worker.postMessage({ type: 'codeview:force-refresh' });
+					}
 					await registration.update().catch(() => {});
+					registration.waiting?.postMessage({ type: 'codeview:force-refresh' });
 				}),
 			);
 		}

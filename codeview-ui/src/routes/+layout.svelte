@@ -65,7 +65,6 @@
 	import { Icon } from '$lib/components/design';
 	import ParseToastContent from '$lib/components/ParseToastContent.svelte';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
-	import { isHosted } from '$lib/platform';
 	import {
 		clearParseToastTarget,
 		parseToastState,
@@ -142,6 +141,7 @@
 	let activeParseToastKey = '';
 	let parseToastShownAt = 0;
 	let parseToastDismissTimer: ReturnType<typeof setTimeout> | null = null;
+	let appUpdateToastVisible = false;
 	let appRefreshStarted = false;
 
 	function openProcessingPopover() {
@@ -208,12 +208,127 @@
 		}
 	}
 
-	$effect(() => {
-		if (!browser) return;
-		if (appRefreshStarted || !updated.current) return;
+	function refreshForAppUpdate() {
+		if (appRefreshStarted) return;
 		appRefreshStarted = true;
 		void forceRefreshClient();
+	}
+
+	function showAppUpdateToast(description = 'Reload to use the current build.') {
+		if (appRefreshStarted || appUpdateToastVisible) return;
+		appUpdateToastVisible = true;
+		untrack(() =>
+			toast.warning('New Codeview version available', {
+				id: 'codeview-app-update',
+				description,
+				duration: Number.POSITIVE_INFINITY,
+				dismissable: false,
+				closeButton: false,
+				action: {
+					label: 'Reload',
+					onClick: refreshForAppUpdate,
+				},
+			}),
+		);
+	}
+
+	function isChunkLoadFailure(value: unknown): boolean {
+		const message =
+			value instanceof Error
+				? value.message
+				: typeof value === 'string'
+					? value
+					: typeof value === 'object' && value !== null && 'message' in value
+						? String((value as { message?: unknown }).message ?? '')
+						: '';
+		return (
+			message.includes('Failed to fetch dynamically imported module') ||
+			message.includes('Importing a module script failed') ||
+			message.includes('error loading dynamically imported module')
+		);
+	}
+
+	$effect(() => {
+		if (!browser) return;
+		if (!updated.current) return;
+		showAppUpdateToast();
 	});
+
+	function watchServiceWorkerRegistration(registration: ServiceWorkerRegistration): () => void {
+		const notifyWaitingWorker = () => {
+			if (registration.waiting) {
+				showAppUpdateToast('A new app build is ready. Reload to switch to it.');
+			}
+		};
+		const handleUpdateFound = () => {
+			const worker = registration.installing;
+			if (!worker) return;
+			const handleStateChange = () => {
+				if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+					showAppUpdateToast('A new app build is ready. Reload to switch to it.');
+				}
+			};
+			worker.addEventListener('statechange', handleStateChange);
+		};
+
+		notifyWaitingWorker();
+		registration.addEventListener('updatefound', handleUpdateFound);
+		void registration.update().catch(() => {});
+		return () => registration.removeEventListener('updatefound', handleUpdateFound);
+	}
+
+	function setupAppUpdateNotifications(): () => void {
+		const cleanups: Array<() => void> = [];
+		let disposed = false;
+
+		const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+			if (!isChunkLoadFailure(event.reason)) return;
+			showAppUpdateToast('The current page is using stale app files. Reload to fetch the current build.');
+		};
+		const handleResourceError = (event: Event) => {
+			if (event instanceof ErrorEvent && isChunkLoadFailure(event.error ?? event.message)) {
+				showAppUpdateToast(
+					'The current page is using stale app files. Reload to fetch the current build.',
+				);
+				return;
+			}
+			const target = event.target;
+			const url =
+				target instanceof HTMLScriptElement
+					? target.src
+					: target instanceof HTMLLinkElement
+						? target.href
+						: '';
+			if (!url.includes('/_app/immutable/')) return;
+			showAppUpdateToast('The current page is using stale app files. Reload to fetch the current build.');
+		};
+		const checkForAppUpdate = () => {
+			if (document.visibilityState === 'visible') void updated.check();
+		};
+
+		window.addEventListener('unhandledrejection', handleUnhandledRejection);
+		window.addEventListener('error', handleResourceError, true);
+		document.addEventListener('visibilitychange', checkForAppUpdate);
+		cleanups.push(() => {
+			window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+			window.removeEventListener('error', handleResourceError, true);
+			document.removeEventListener('visibilitychange', checkForAppUpdate);
+		});
+
+		if ('serviceWorker' in navigator) {
+			void navigator.serviceWorker.ready
+				.then((registration) => {
+					if (disposed) return;
+					cleanups.push(watchServiceWorkerRegistration(registration));
+				})
+				.catch(() => {});
+		}
+
+		return () => {
+			disposed = true;
+			for (const cleanup of cleanups.splice(0)) cleanup();
+		};
+	}
 
 	$effect(() => {
 		if (!browser) return;
@@ -352,6 +467,7 @@
 	onMount(() => {
 		if (!browser) return () => processingConn.destroy();
 		let processingPollTimer: ReturnType<typeof setInterval> | null = null;
+		const cleanupAppUpdates = setupAppUpdateNotifications();
 		const pollProcessingCrates = () => {
 			if (document.visibilityState !== 'visible') return;
 			void refreshProcessingCrates(Date.now());
@@ -369,6 +485,7 @@
 		processingPollTimer = setInterval(pollProcessingCrates, 2_000);
 		document.addEventListener('visibilitychange', syncProcessingStream);
 		return () => {
+			cleanupAppUpdates();
 			if (processingPollTimer) clearInterval(processingPollTimer);
 			document.removeEventListener('visibilitychange', syncProcessingStream);
 			processingConn.destroy();
