@@ -89,6 +89,41 @@ export interface ParseQueueSnapshot {
 	planned: PlannedParseRun | null;
 }
 
+export interface GitHubActionsBillingSummary {
+	available: boolean;
+	owner: string;
+	accountType: 'User' | 'Organization' | 'unknown';
+	includedMinutes: number | null;
+	totalMinutesUsed: number | null;
+	totalPaidMinutesUsed: number | null;
+	minutesUsedBreakdown?: Record<string, number>;
+	error?: string;
+}
+
+export interface ParseQueueAllowance {
+	repo: string | null;
+	workflowFile: string;
+	activeTarget: number;
+	batchSize: number;
+	trackedActiveCount: number;
+	githubActiveRunCount: number;
+	actionsInUse: number;
+	availableSlots: number;
+	repoUsageTargetPercent: number;
+	repoPrivate: boolean | null;
+	standardRunnerMinutesMetered: boolean | null;
+	monthStartedAt: string;
+	estimatedRepoMinutesThisMonth: number | null;
+	repoBudgetMinutes: number | null;
+	repoBudgetUsedPercent: number | null;
+	billing: GitHubActionsBillingSummary;
+}
+
+export interface AdminDashboardData {
+	queue: ParseQueueSnapshot;
+	allowance: ParseQueueAllowance;
+}
+
 export interface CrossEdgeData {
 	edges: Edge[];
 	nodes: NodeSummary[];
@@ -163,6 +198,7 @@ export interface DataProvider {
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getParseQueue?(limit?: number): Promise<ParseQueueSnapshot>;
+	getAdminDashboard?(limit?: number): Promise<AdminDashboardData>;
 	getCrateVersions(name: string, limit?: number): Promise<string[]>;
 
 	/** Resolve version aliases ("latest", channel names) to an actual semver.

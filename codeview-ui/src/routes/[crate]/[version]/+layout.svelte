@@ -256,14 +256,12 @@
 		connectProgressForCurrentRoute();
 
 		log.debug`status: ${currentStatus} step=${currentStep ?? 'none'} for ${crateName}@${version}`;
-		if (currentStatus === 'failed') {
-			log.warn`status=failed ${crateName}@${version} error=${statusConn.error ?? '(none)'} action=${statusConn.action ?? 'none'}`;
-		}
 
-		// Query data arrived before status SSE — promote to ready
-		if (currentStatus === 'unknown' && hasRoots) {
+		// Query data can arrive before SSE, and stale failed queue rows should not override hosted data.
+		if ((currentStatus === 'unknown' || currentStatus === 'failed') && hasRoots) {
 			statusConn.status = 'ready';
 			statusConn.step = null;
+			statusConn.error = null;
 			progressConn.reset();
 		}
 

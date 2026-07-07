@@ -23,7 +23,10 @@ import type {
 	CrateSummaryResult,
 	CrossEdgeData,
 	DataProvider,
+	AdminDashboardData,
 	ActiveParseRun,
+	GitHubActionsBillingSummary,
+	ParseQueueAllowance,
 	ParseQueueEntry,
 	ParseQueueSnapshot,
 	PlannedParseItem,
@@ -84,6 +87,9 @@ type AppEnv = Env & {
 	GITHUB_REF?: string;
 	GITHUB_WORKFLOW_FILE?: string;
 	GITHUB_TOKEN?: string;
+	PLAN_DRAIN_ACTIVE_TARGET?: string;
+	PLAN_DRAIN_BATCH_SIZE?: string;
+	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
 };
 
 type SearchEntry = NodeSummary & { score?: number };
@@ -91,6 +97,9 @@ const NODE_VIEW_BUCKETS = 128;
 const DEFAULT_SITE_TREE_BUCKETS = 128;
 const DEFAULT_SITE_ALIAS_BUCKETS = 128;
 const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
+const DEFAULT_PLAN_DRAIN_ACTIVE_TARGET = 4;
+const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 2;
+const DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT = 35;
 const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
 
 type GitHubWorkflowRun = {
@@ -108,6 +117,42 @@ type GitHubWorkflowRun = {
 type GitHubWorkflowRunsResponse = {
 	workflow_runs?: GitHubWorkflowRun[];
 };
+
+type GitHubRepositoryResponse = {
+	full_name?: string;
+	private?: boolean;
+	owner?: {
+		login?: string;
+		type?: string;
+	};
+};
+
+type GitHubActionsBillingResponse = {
+	total_minutes_used?: number;
+	total_paid_minutes_used?: number;
+	included_minutes?: number;
+	minutes_used_breakdown?: Record<string, number>;
+};
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+	if (value === undefined || value.trim() === '') return fallback;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function parsePositiveNumber(value: string | undefined, fallback: number): number {
+	if (value === undefined || value.trim() === '') return fallback;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function monthStartIso(now = new Date()): string {
+	return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+}
+
+function finiteNumber(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
 
 function registrySummary(result: PackageMetadata): CrateSummaryResult {
 	return {
@@ -1196,10 +1241,199 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					.filter((run): run is ActiveParseRun => run !== null);
 			}),
 		);
-		return runs
-			.flat()
+		const byId = new Map<string, ActiveParseRun>();
+		for (const run of runs.flat()) byId.set(run.id, run);
+		return [...byId.values()]
 			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 			.slice(0, Math.max(1, Math.min(limit, 20)));
+	}
+
+	async function loadGitHubRepository(): Promise<GitHubRepositoryResponse | null> {
+		const repo = env.GITHUB_REPO;
+		if (!repo) return null;
+		const response = await fetch(`https://api.github.com/repos/${repo}`, { headers: githubHeaders() });
+		if (!response.ok) {
+			log.warn`GitHub repository lookup failed code=${String(response.status)}`;
+			return null;
+		}
+		return (await response.json()) as GitHubRepositoryResponse;
+	}
+
+	function emptyBillingSummary(
+		owner: string,
+		accountType: GitHubActionsBillingSummary['accountType'],
+		error?: string,
+	): GitHubActionsBillingSummary {
+		return {
+			available: false,
+			owner,
+			accountType,
+			includedMinutes: null,
+			totalMinutesUsed: null,
+			totalPaidMinutesUsed: null,
+			error,
+		};
+	}
+
+	async function loadGitHubActionsBilling(
+		repository: GitHubRepositoryResponse | null,
+	): Promise<GitHubActionsBillingSummary> {
+		const owner = repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '';
+		const ownerType =
+			repository?.owner?.type === 'Organization'
+				? 'Organization'
+				: repository?.owner?.type === 'User'
+					? 'User'
+					: 'unknown';
+		if (!owner) return emptyBillingSummary('', 'unknown', 'GITHUB_REPO is not configured');
+		if (!env.GITHUB_TOKEN) return emptyBillingSummary(owner, ownerType, 'GITHUB_TOKEN is not configured');
+
+		const path =
+			ownerType === 'Organization'
+				? `/orgs/${owner}/settings/billing/actions`
+				: `/users/${owner}/settings/billing/actions`;
+		const response = await fetch(`https://api.github.com${path}`, { headers: githubHeaders() });
+		if (!response.ok) {
+			return emptyBillingSummary(
+				owner,
+				ownerType,
+				`GitHub billing unavailable: ${response.status} ${response.statusText}`,
+			);
+		}
+		const body = (await response.json()) as GitHubActionsBillingResponse;
+		return {
+			available: true,
+			owner,
+			accountType: ownerType,
+			includedMinutes: finiteNumber(body.included_minutes),
+			totalMinutesUsed: finiteNumber(body.total_minutes_used),
+			totalPaidMinutesUsed: finiteNumber(body.total_paid_minutes_used),
+			minutesUsedBreakdown: body.minutes_used_breakdown,
+		};
+	}
+
+	function workflowRunDurationMinutes(run: GitHubWorkflowRun, nowMs: number): number {
+		const start = run.created_at ? Date.parse(run.created_at) : NaN;
+		if (!Number.isFinite(start)) return 0;
+		const isActive = run.status
+			? (ACTIVE_GITHUB_RUN_STATUSES as readonly string[]).includes(run.status)
+			: false;
+		const updated = run.updated_at ? Date.parse(run.updated_at) : NaN;
+		const end = isActive ? nowMs : Number.isFinite(updated) ? updated : nowMs;
+		return Math.max(0, (end - start) / 60_000);
+	}
+
+	async function estimateParseWorkflowMinutesThisMonth(): Promise<number | null> {
+		const repo = env.GITHUB_REPO;
+		if (!repo) return null;
+		const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
+		const startedAt = monthStartIso();
+		let total = 0;
+		let loaded = 0;
+		const nowMs = Date.now();
+		for (let page = 1; page <= 5; page += 1) {
+			const url = new URL(
+				`https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
+			);
+			url.searchParams.set('created', `>=${startedAt}`);
+			url.searchParams.set('per_page', '100');
+			url.searchParams.set('page', String(page));
+			const response = await fetch(url, { headers: githubHeaders() });
+			if (!response.ok) {
+				log.warn`GitHub monthly workflow usage lookup failed code=${String(response.status)}`;
+				return null;
+			}
+			const body = (await response.json()) as GitHubWorkflowRunsResponse;
+			const runs = body.workflow_runs ?? [];
+			loaded += runs.length;
+			for (const run of runs) total += workflowRunDurationMinutes(run, nowMs);
+			if (runs.length < 100) break;
+		}
+		return loaded > 0 ? total : 0;
+	}
+
+	async function buildParseQueueSnapshot(limit: number): Promise<ParseQueueSnapshot> {
+		const boundedLimit = Math.max(1, Math.min(limit, 100));
+		const [queue, activeRuns] = await Promise.all([
+			readHostedQueue(boundedLimit),
+			listActiveGitHubParseRuns(boundedLimit).catch((err) => {
+				log.warn`active GitHub parse run load failed: ${String(err)}`;
+				return [];
+			}),
+		]);
+		const planned = await loadLatestPlannedRun(boundedLimit, queueStatusKeys(queue)).catch((err) => {
+			log.warn`planned parse run load failed: ${String(err)}`;
+			return null;
+		});
+		return {
+			active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
+			activeRuns,
+			recent: queue.recent.map((entry) => storedStatusToQueueEntry(entry)),
+			planned,
+		};
+	}
+
+	async function buildParseAllowance(queue: ParseQueueSnapshot): Promise<ParseQueueAllowance> {
+		const activeTarget = parsePositiveInteger(
+			env.PLAN_DRAIN_ACTIVE_TARGET,
+			DEFAULT_PLAN_DRAIN_ACTIVE_TARGET,
+		);
+		const batchSize = parsePositiveInteger(
+			env.PLAN_DRAIN_BATCH_SIZE,
+			DEFAULT_PLAN_DRAIN_BATCH_SIZE,
+		);
+		const repoUsageTargetPercent = parsePositiveNumber(
+			env.GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT,
+			DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT,
+		);
+		const trackedActiveCount = queue.active.length;
+		const githubActiveRunCount = queue.activeRuns.length;
+		const actionsInUse = Math.max(trackedActiveCount, githubActiveRunCount);
+		const availableSlots = Math.max(0, activeTarget - actionsInUse);
+		const [repository, estimatedRepoMinutesThisMonth] = await Promise.all([
+			loadGitHubRepository().catch(() => null),
+			estimateParseWorkflowMinutesThisMonth().catch(() => null),
+		]);
+		const billing = await loadGitHubActionsBilling(repository).catch((err) =>
+			emptyBillingSummary(
+				repository?.owner?.login ?? env.GITHUB_REPO?.split('/')[0] ?? '',
+				repository?.owner?.type === 'Organization'
+					? 'Organization'
+					: repository?.owner?.type === 'User'
+						? 'User'
+						: 'unknown',
+				errorMessage(err),
+			),
+		);
+		const repoPrivate = typeof repository?.private === 'boolean' ? repository.private : null;
+		const standardRunnerMinutesMetered = repoPrivate === null ? null : repoPrivate;
+		const repoBudgetMinutes =
+			standardRunnerMinutesMetered && billing.includedMinutes !== null
+				? billing.includedMinutes * (repoUsageTargetPercent / 100)
+				: null;
+		const repoBudgetUsedPercent =
+			repoBudgetMinutes && estimatedRepoMinutesThisMonth !== null && repoBudgetMinutes > 0
+				? (estimatedRepoMinutesThisMonth / repoBudgetMinutes) * 100
+				: null;
+
+		return {
+			repo: repository?.full_name ?? env.GITHUB_REPO ?? null,
+			workflowFile: env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE,
+			activeTarget,
+			batchSize,
+			trackedActiveCount,
+			githubActiveRunCount,
+			actionsInUse,
+			availableSlots,
+			repoUsageTargetPercent,
+			repoPrivate,
+			standardRunnerMinutesMetered,
+			monthStartedAt: monthStartIso(),
+			estimatedRepoMinutesThisMonth,
+			repoBudgetMinutes,
+			repoBudgetUsedPercent,
+			billing,
+		};
 	}
 
 	async function recordHostedParseEvent(event: ParseStatusEvent): Promise<void> {
@@ -1732,24 +1966,13 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		},
 
 		async getParseQueue(limit = 50): Promise<ParseQueueSnapshot> {
-			const boundedLimit = Math.max(1, Math.min(limit, 100));
-			const [queue, activeRuns] = await Promise.all([
-				readHostedQueue(boundedLimit),
-				listActiveGitHubParseRuns(boundedLimit).catch((err) => {
-					log.warn`active GitHub parse run load failed: ${String(err)}`;
-					return [];
-				}),
-			]);
-			const planned = await loadLatestPlannedRun(boundedLimit, queueStatusKeys(queue)).catch((err) => {
-				log.warn`planned parse run load failed: ${String(err)}`;
-				return null;
-			});
-			return {
-				active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
-				activeRuns,
-				recent: queue.recent.map((entry) => storedStatusToQueueEntry(entry)),
-				planned,
-			};
+			return buildParseQueueSnapshot(limit);
+		},
+
+		async getAdminDashboard(limit = 100): Promise<AdminDashboardData> {
+			const queue = await buildParseQueueSnapshot(limit);
+			const allowance = await buildParseAllowance(queue);
+			return { queue, allowance };
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {

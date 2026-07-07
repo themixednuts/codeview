@@ -39,6 +39,7 @@ type ParseWorkerEnv = Env & {
 	SYSROOT_PARSE_REFILL_SECONDS?: string;
 	PLAN_DRAIN_ACTIVE_TARGET?: string;
 	PLAN_DRAIN_BATCH_SIZE?: string;
+	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
 };
 
 type WebSocketAttachment = {
@@ -55,6 +56,7 @@ const MAX_WS_TAGS_PER_SOCKET = 100;
 const SAFE_CRATE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_VERSION_PATTERN = /^(?:stable|beta|nightly|[0-9A-Za-z][0-9A-Za-z.+_-]{0,127})$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,160}$/;
+const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
 
 type RateBucketConfig = {
 	name: string;
@@ -94,6 +96,29 @@ type PlannedParseItem = {
 	kind: 'crate' | 'sysroot';
 	name: string;
 	version: string;
+};
+
+type GitHubWorkflowRun = {
+	id?: number;
+	status?: string;
+	created_at?: string;
+	updated_at?: string;
+};
+
+type GitHubWorkflowRunsResponse = {
+	workflow_runs?: GitHubWorkflowRun[];
+};
+
+type GitHubRepositoryResponse = {
+	private?: boolean;
+	owner?: {
+		login?: string;
+		type?: string;
+	};
+};
+
+type GitHubActionsBillingResponse = {
+	included_minutes?: number;
 };
 
 function json(value: unknown, init?: ResponseInit): Response {
@@ -180,6 +205,25 @@ function parsePositiveNumber(value: string | undefined, fallback: number): numbe
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? '', 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function finiteNumber(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function monthStartIso(now = new Date()): string {
+	return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+}
+
+function workflowRunDurationMinutes(run: GitHubWorkflowRun, nowMs: number): number {
+	const start = run.created_at ? Date.parse(run.created_at) : NaN;
+	if (!Number.isFinite(start)) return 0;
+	const isActive = run.status
+		? (ACTIVE_GITHUB_RUN_STATUSES as readonly string[]).includes(run.status)
+		: false;
+	const updated = run.updated_at ? Date.parse(run.updated_at) : NaN;
+	const end = isActive ? nowMs : Number.isFinite(updated) ? updated : nowMs;
+	return Math.max(0, (end - start) / 60_000);
 }
 
 function isSafeCrateName(value: string): boolean {
@@ -385,6 +429,144 @@ async function readProcessingCount(env: ParseWorkerEnv): Promise<number> {
 	return snapshot.active.length;
 }
 
+function githubReadHeaders(env: ParseWorkerEnv): HeadersInit {
+	const headers: Record<string, string> = {
+		accept: 'application/vnd.github+json',
+		'user-agent': 'codeview-parse-worker',
+		'x-github-api-version': '2022-11-28',
+	};
+	if (env.GITHUB_TOKEN) headers.authorization = `Bearer ${env.GITHUB_TOKEN}`;
+	return headers;
+}
+
+async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> {
+	const repo = env.GITHUB_REPO;
+	if (!repo) return 0;
+	const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
+	const ids = new Set<number>();
+	await Promise.all(
+		ACTIVE_GITHUB_RUN_STATUSES.map(async (status) => {
+			const url = new URL(
+				`https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
+			);
+			url.searchParams.set('status', status);
+			url.searchParams.set('per_page', '20');
+			const response = await fetch(url, { headers: githubReadHeaders(env) });
+			if (!response.ok) {
+				console.warn(
+					`active GitHub parse run count failed status=${status} code=${response.status}`,
+				);
+				return;
+			}
+			const body = (await response.json()) as GitHubWorkflowRunsResponse;
+			for (const run of body.workflow_runs ?? []) {
+				if (typeof run.id === 'number') ids.add(run.id);
+			}
+		}),
+	);
+	return ids.size;
+}
+
+async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubRepositoryResponse | null> {
+	const repo = env.GITHUB_REPO;
+	if (!repo) return null;
+	const response = await fetch(`https://api.github.com/repos/${repo}`, {
+		headers: githubReadHeaders(env),
+	});
+	if (!response.ok) return null;
+	return (await response.json()) as GitHubRepositoryResponse;
+}
+
+async function loadGitHubIncludedActionsMinutes(
+	env: ParseWorkerEnv,
+	repository: GitHubRepositoryResponse,
+): Promise<number | null> {
+	const owner = repository.owner?.login ?? env.GITHUB_REPO?.split('/')[0];
+	if (!owner || !env.GITHUB_TOKEN) return null;
+	const ownerType = repository.owner?.type;
+	const path =
+		ownerType === 'Organization'
+			? `/orgs/${owner}/settings/billing/actions`
+			: `/users/${owner}/settings/billing/actions`;
+	const response = await fetch(`https://api.github.com${path}`, {
+		headers: githubReadHeaders(env),
+	});
+	if (!response.ok) return null;
+	const body = (await response.json()) as GitHubActionsBillingResponse;
+	return finiteNumber(body.included_minutes);
+}
+
+async function estimateParseWorkflowMinutesThisMonth(env: ParseWorkerEnv): Promise<number | null> {
+	const repo = env.GITHUB_REPO;
+	if (!repo) return null;
+	const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
+	const startedAt = monthStartIso();
+	const nowMs = Date.now();
+	let total = 0;
+	let loaded = 0;
+	for (let page = 1; page <= 5; page += 1) {
+		const url = new URL(
+			`https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
+		);
+		url.searchParams.set('created', `>=${startedAt}`);
+		url.searchParams.set('per_page', '100');
+		url.searchParams.set('page', String(page));
+		const response = await fetch(url, { headers: githubReadHeaders(env) });
+		if (!response.ok) return null;
+		const body = (await response.json()) as GitHubWorkflowRunsResponse;
+		const runs = body.workflow_runs ?? [];
+		loaded += runs.length;
+		for (const run of runs) total += workflowRunDurationMinutes(run, nowMs);
+		if (runs.length < 100) break;
+	}
+	return loaded > 0 ? total : 0;
+}
+
+async function plannedDrainBudgetAllowance(env: ParseWorkerEnv): Promise<{
+	allowed: boolean;
+	reason?: string;
+	estimatedRepoMinutesThisMonth?: number;
+	repoBudgetMinutes?: number;
+}> {
+	const repository = await loadGitHubRepository(env).catch(() => null);
+	if (repository?.private !== true) return { allowed: true };
+
+	const [includedMinutes, estimatedRepoMinutesThisMonth] = await Promise.all([
+		loadGitHubIncludedActionsMinutes(env, repository).catch(() => null),
+		estimateParseWorkflowMinutesThisMonth(env).catch(() => null),
+	]);
+	if (includedMinutes === null || estimatedRepoMinutesThisMonth === null) {
+		return { allowed: true, reason: 'budget-unavailable' };
+	}
+	const targetPercent = parsePositiveNumber(env.GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT, 35);
+	const repoBudgetMinutes = includedMinutes * (targetPercent / 100);
+	if (repoBudgetMinutes <= 0 || estimatedRepoMinutesThisMonth < repoBudgetMinutes) {
+		return { allowed: true, estimatedRepoMinutesThisMonth, repoBudgetMinutes };
+	}
+	return {
+		allowed: false,
+		reason: 'repo-budget-exhausted',
+		estimatedRepoMinutesThisMonth,
+		repoBudgetMinutes,
+	};
+}
+
+async function readDrainPressure(env: ParseWorkerEnv): Promise<{
+	statusActive: number;
+	githubActive: number;
+	actionsInUse: number;
+}> {
+	const [statusActive, githubActive] = await Promise.all([
+		readProcessingCount(env),
+		countActiveGitHubParseRuns(env).catch(() => 0),
+	]);
+	return {
+		statusActive,
+		githubActive,
+		actionsInUse: Math.max(statusActive, githubActive),
+	};
+}
+
 async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 2000): Promise<PlanCandidate[]> {
 	const candidates: PlanCandidate[] = [];
 	let cursor: string | undefined;
@@ -470,13 +652,55 @@ async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): 
 	}
 }
 
-async function drainPlannedParses(env: ParseWorkerEnv): Promise<{ queued: number; skipped: number }> {
-	if (!env.PARSE_REQUESTS) return { queued: 0, skipped: 0 };
+async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
+	queued: number;
+	skipped: number;
+	statusActive: number;
+	githubActive: number;
+	actionsInUse: number;
+	activeTarget: number;
+	availableSlots: number;
+	budgetLimited: boolean;
+	budgetReason?: string;
+}> {
 	const activeTarget = parsePositiveInteger(env.PLAN_DRAIN_ACTIVE_TARGET, 4);
+	const empty = {
+		queued: 0,
+		skipped: 0,
+		statusActive: 0,
+		githubActive: 0,
+		actionsInUse: 0,
+		activeTarget,
+		availableSlots: 0,
+		budgetLimited: false,
+	};
+	if (!env.PARSE_REQUESTS) return empty;
 	const batchSize = parsePositiveInteger(env.PLAN_DRAIN_BATCH_SIZE, 2);
-	const activeCount = await readProcessingCount(env);
-	let remaining = Math.max(0, Math.min(batchSize, activeTarget - activeCount));
-	if (remaining === 0) return { queued: 0, skipped: 0 };
+	const pressure = await readDrainPressure(env);
+	const availableSlots = Math.max(0, activeTarget - pressure.actionsInUse);
+	let remaining = Math.max(0, Math.min(batchSize, availableSlots));
+	if (remaining === 0) {
+		return {
+			...pressure,
+			activeTarget,
+			availableSlots,
+			budgetLimited: false,
+			queued: 0,
+			skipped: 0,
+		};
+	}
+	const budget = await plannedDrainBudgetAllowance(env);
+	if (!budget.allowed) {
+		return {
+			...pressure,
+			activeTarget,
+			availableSlots,
+			budgetLimited: true,
+			budgetReason: budget.reason,
+			queued: 0,
+			skipped: 0,
+		};
+	}
 
 	const plan = await loadLatestPlan(env);
 	const work = Array.isArray(plan?.work) ? plan.work : [];
@@ -498,7 +722,7 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{ queued: number
 		queued += 1;
 		remaining -= 1;
 	}
-	return { queued, skipped };
+	return { ...pressure, activeTarget, availableSlots, budgetLimited: false, queued, skipped };
 }
 
 type CrateRefs = {
@@ -1236,9 +1460,11 @@ export default {
 			);
 		}
 		const result = await drainPlannedParses(env);
-		if (result.queued > 0) {
+		if (result.budgetLimited) {
+			console.log(`planned parse drain paused reason=${result.budgetReason ?? 'budget-limited'}`);
+		} else if (result.queued > 0) {
 			console.log(
-				`drained planned parses queued=${result.queued} skipped=${result.skipped}`,
+				`drained planned parses queued=${result.queued} skipped=${result.skipped} activeTarget=${result.activeTarget} actionsInUse=${result.actionsInUse} statusActive=${result.statusActive} githubActive=${result.githubActive}`,
 			);
 		}
 	},

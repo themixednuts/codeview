@@ -833,6 +833,16 @@
 					</button>
 				{/if}
 			{/if}
+			{#if auth.isAdmin}
+				<a
+					href={resolve('/admin')}
+					class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"
+					title="Admin"
+				>
+					<Icon name="command" size={13} />
+					<span class="hidden sm:inline">Admin</span>
+				</a>
+			{/if}
 			<div
 				class="relative"
 				role="group"

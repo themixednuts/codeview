@@ -9,14 +9,13 @@
 	const PAGE_SIZE = 10;
 	const REFRESH_INTERVAL_MS = 15_000;
 
-	let { data, form }: PageProps = $props();
+	let { data }: PageProps = $props();
 
 	type ActiveQueueRow =
 		| { type: 'run'; run: PageProps['data']['snapshot']['activeRuns'][number] }
 		| { type: 'entry'; entry: PageProps['data']['snapshot']['active'][number] };
 
 	const snapshot = $derived(data.snapshot);
-	const auth = $derived(data.auth);
 	const active = $derived(snapshot.active);
 	const activeRuns = $derived(snapshot.activeRuns);
 	const recent = $derived(snapshot.recent);
@@ -31,8 +30,6 @@
 	const totalActiveCount = $derived(activeCount + activeRunCount);
 	const plannedCount = $derived(planned?.total ?? 0);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
-	const actionMessage = $derived(form?.message);
-	const actionOk = $derived(form?.ok === true);
 	let refreshPending = $state(false);
 	let activePage = $state(1);
 	let plannedPage = $state(1);
@@ -92,11 +89,6 @@
 		if (status === 'waiting') return 'Waiting';
 		if (status === 'requested') return 'Requested';
 		return status;
-	}
-
-	function userLabel(): string {
-		if (!auth.user) return 'not signed in';
-		return auth.user.githubLogin ? `@${auth.user.githubLogin}` : auth.user.email;
 	}
 
 	function actorLabel(actor: { login: string } | undefined): string {
@@ -168,58 +160,6 @@
 					</div>
 				</div>
 
-				{#if auth.isAdmin}
-					<div class="rounded-md border border-(--accent-ring) bg-(--panel) p-3">
-						<div class="mb-3 flex flex-wrap items-center justify-between gap-3">
-							<div class="min-w-0">
-								<div class="flex items-center gap-2 text-[10px] font-semibold tracking-wider text-(--accent) uppercase">
-									<Icon name="sparkle" size={12} />
-									<span>Admin</span>
-								</div>
-								<div class="mt-1 truncate text-sm text-(--muted)">
-									Admin parse controls for {userLabel()}
-								</div>
-							</div>
-						</div>
-						<form method="POST" action="?/forceParse" class="grid gap-2 md:grid-cols-[minmax(0,1fr)_160px_auto]">
-							<label class="sr-only" for="force-name">Crate name</label>
-							<input
-								id="force-name"
-								name="name"
-								autocomplete="off"
-								placeholder="crate name"
-								required
-								class="corner-squircle min-w-0 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2 font-mono text-sm text-(--ink) outline-none transition-colors placeholder:text-(--muted-soft) focus:border-(--accent-ring)"
-							/>
-							<label class="sr-only" for="force-version">Version</label>
-							<input
-								id="force-version"
-								name="version"
-								autocomplete="off"
-								placeholder="latest"
-								value="latest"
-								class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2 font-mono text-sm text-(--ink) outline-none transition-colors placeholder:text-(--muted-soft) focus:border-(--accent-ring)"
-							/>
-							<button
-								type="submit"
-								class="corner-squircle inline-flex items-center justify-center gap-2 rounded-(--radius-control) border border-(--accent-ring) bg-(--accent) px-3 py-2 text-sm font-semibold text-(--on-accent) transition-colors hover:bg-(--accent-strong)"
-							>
-								<Icon name="sparkle" size={13} />
-								Force parse
-							</button>
-						</form>
-					</div>
-				{/if}
-
-				{#if actionMessage}
-					<div
-						class="rounded-md border px-3 py-2 text-sm {actionOk
-							? 'border-(--accent-ring) bg-(--panel) text-(--accent)'
-							: 'border-(--danger) bg-(--panel) text-(--danger)'}"
-					>
-						{actionMessage}
-					</div>
-				{/if}
 			</div>
 		</div>
 

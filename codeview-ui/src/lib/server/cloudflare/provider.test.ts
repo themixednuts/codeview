@@ -223,7 +223,7 @@ describe('createCloudflareProvider', () => {
 		]);
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
 		await expect(provider.getCrateStatus('proc-macro', '1.98.0-nightly')).resolves.toEqual({
 			status: 'ready',
@@ -433,6 +433,105 @@ describe('createCloudflareProvider', () => {
 			],
 			recent: [],
 			planned: null,
+		});
+	});
+
+	test('builds admin dashboard allowance from GitHub active runs and billing', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input));
+				if (url.pathname === '/repos/themixednuts/codeview') {
+					return new Response(
+						JSON.stringify({
+							full_name: 'themixednuts/codeview',
+							private: true,
+							owner: { login: 'themixednuts', type: 'User' },
+						}),
+						{ status: 200, headers: { 'content-type': 'application/json' } },
+					);
+				}
+				if (url.pathname === '/users/themixednuts/settings/billing/actions') {
+					return new Response(
+						JSON.stringify({
+							included_minutes: 2000,
+							total_minutes_used: 125,
+							total_paid_minutes_used: 0,
+						}),
+						{ status: 200, headers: { 'content-type': 'application/json' } },
+					);
+				}
+				if (url.pathname === '/repos/themixednuts/codeview/actions/workflows/parse.yml/runs') {
+					if (url.searchParams.has('created')) {
+						return new Response(
+							JSON.stringify({
+								workflow_runs: [
+									{
+										id: 321,
+										status: 'completed',
+										created_at: '2026-07-07T12:00:00Z',
+										updated_at: '2026-07-07T12:30:00Z',
+									},
+								],
+							}),
+							{ status: 200, headers: { 'content-type': 'application/json' } },
+						);
+					}
+					return new Response(
+						JSON.stringify({
+							workflow_runs:
+								url.searchParams.get('status') === 'in_progress'
+									? [
+											{
+												id: 123,
+												name: 'parse',
+												display_title: 'parse bitflags 2.13.0',
+												status: 'in_progress',
+												event: 'workflow_dispatch',
+												head_branch: 'main',
+												html_url: 'https://github.com/themixednuts/codeview/actions/runs/123',
+												created_at: '2026-07-07T12:00:00Z',
+												updated_at: '2026-07-07T12:05:00Z',
+											},
+										]
+									: [],
+						}),
+						{ status: 200, headers: { 'content-type': 'application/json' } },
+					);
+				}
+				return new Response('{}', { status: 404 });
+			}),
+		);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+			GITHUB_REPO: 'themixednuts/codeview',
+			GITHUB_WORKFLOW_FILE: 'parse.yml',
+			GITHUB_TOKEN: 'token',
+			PLAN_DRAIN_ACTIVE_TARGET: '4',
+			PLAN_DRAIN_BATCH_SIZE: '2',
+			GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: '35',
+		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const dashboard = await provider.getAdminDashboard?.(10);
+
+		expect(dashboard?.allowance).toMatchObject({
+			repo: 'themixednuts/codeview',
+			activeTarget: 4,
+			batchSize: 2,
+			trackedActiveCount: 0,
+			githubActiveRunCount: 1,
+			actionsInUse: 1,
+			availableSlots: 3,
+			repoUsageTargetPercent: 35,
+			repoPrivate: true,
+			standardRunnerMinutesMetered: true,
+			estimatedRepoMinutesThisMonth: 30,
+			repoBudgetMinutes: 700,
+			billing: {
+				available: true,
+				includedMinutes: 2000,
+				totalMinutesUsed: 125,
+			},
 		});
 	});
 
