@@ -57,7 +57,7 @@ export const load: LayoutServerLoad = async (event) => {
 		}
 	}
 
-	if (!isHosted && isStdCrate(name)) {
+	if (!isHosted && isStdCrate(normalizeCrateName(name))) {
 		void provider.ensureParsed?.(name, version).catch((err) => {
 			console.error(`ensureParsed failed for ${name}@${version}:`, err);
 		});

@@ -633,4 +633,50 @@ describe('createCloudflareProvider', () => {
 			source: 'ui',
 		});
 	});
+
+	test('queues std latest as stable hosted parse request', async () => {
+		const objects = new Map<string, unknown>();
+		const sent: unknown[] = [];
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+			PARSE_REQUESTS: fakeQueue(sent),
+			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const result = await provider.triggerParse('std', 'latest');
+		if (result.isErr()) throw result.error;
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({
+			schemaVersion: 1,
+			ecosystem: 'rust',
+			kind: 'sysroot',
+			name: 'std',
+			version: 'stable',
+			force: false,
+			source: 'ui',
+		});
+	});
+
+	test('queues hyphenated proc macro route as hosted std-library parse request', async () => {
+		const objects = new Map<string, unknown>();
+		const sent: unknown[] = [];
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+			PARSE_REQUESTS: fakeQueue(sent),
+			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const result = await provider.triggerParse('proc-macro', 'nightly');
+		if (result.isErr()) throw result.error;
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({
+			schemaVersion: 1,
+			ecosystem: 'rust',
+			kind: 'sysroot',
+			name: 'proc-macro',
+			version: 'nightly',
+			force: false,
+			source: 'ui',
+		});
+	});
 });

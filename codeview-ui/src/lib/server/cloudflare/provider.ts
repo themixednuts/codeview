@@ -1905,7 +1905,10 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
-			const requestKind = isStdCrate(normalizeCrateName(name)) ? 'sysroot' : 'crate';
+			const normalizedName = normalizeCrateName(name);
+			const requestKind = isStdCrate(normalizedName) ? 'sysroot' : 'crate';
+			const requestedVersion =
+				requestKind === 'sysroot' && version === 'latest' ? 'stable' : version;
 			if (force) {
 				const authContext = await resolveParseRequestContext({ rateLimit: false });
 				if (!authContext.auth?.isAdmin) {
@@ -1917,7 +1920,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				}
 			}
 			if (!force) {
-				const ref = await resolveRefForArtifact(name, version);
+				const ref = await resolveRefForArtifact(name, requestedVersion);
 				if (ref) {
 					const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
 					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
@@ -1935,7 +1938,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			}
 			const parseRequest = makeParseRequest(
 				name,
-				version,
+				requestedVersion,
 				!!force,
 				'ui',
 				requestKind,
@@ -2047,6 +2050,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		},
 
 		async resolveVersion(name: string, version: string): Promise<string> {
+			if (version === 'latest' && isStdCrate(normalizeCrateName(name))) return 'stable';
 			const ref = await resolveRefForArtifact(name, version);
 			return ref?.version ?? version;
 		},

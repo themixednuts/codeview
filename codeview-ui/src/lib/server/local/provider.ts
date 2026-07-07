@@ -127,8 +127,7 @@ function findWorkspaceCrate(
 
 function findCrateIndexEntry(crates: CrateIndexEntry[], name: string): CrateIndexEntry | null {
 	return (
-		crates.find((crate) => sameCrateName(crate.id, name) || sameCrateName(crate.name, name)) ??
-		null
+		crates.find((crate) => sameCrateName(crate.id, name) || sameCrateName(crate.name, name)) ?? null
 	);
 }
 
@@ -334,8 +333,7 @@ export function createLocalProvider(): DataProvider {
 				{ retries: { limit: 2, delayMs: 3000, backoff: 'exponential' } },
 				async () => {
 					const artifactUrl =
-						meta.artifactUrl ??
-						`https://docs.rs/crate/${resolvedName}/${resolvedVersion}/json.gz`;
+						meta.artifactUrl ?? `https://docs.rs/crate/${resolvedName}/${resolvedVersion}/json.gz`;
 					const artifactRes = await fetch(artifactUrl, {
 						headers: { 'User-Agent': USER_AGENT },
 					});
@@ -405,7 +403,11 @@ export function createLocalProvider(): DataProvider {
 					const lc = await getCache();
 
 					// Initialize crate entry (will be finalized after parsing)
-					const tempIndex: CrateIndex = { name: resolvedName, version: resolvedVersion, crates: [] };
+					const tempIndex: CrateIndex = {
+						name: resolvedName,
+						version: resolvedVersion,
+						crates: [],
+					};
 					lc.initCrate(resolvedName, resolvedVersion, tempIndex);
 
 					// Track node summaries for cross-edge detection
@@ -965,12 +967,7 @@ export function createLocalProvider(): DataProvider {
 			// spans use `library/{crate}/...` paths — we stream those
 			// straight from rust-lang/rust on GitHub.
 			if (isStdCrate(normalizeCrateName(crateName))) {
-				const result = await fetchStdSourceFile(
-					file,
-					crateVersion,
-					SOURCE_MAX_BYTES,
-					USER_AGENT,
-				);
+				const result = await fetchStdSourceFile(file, crateVersion, SOURCE_MAX_BYTES, USER_AGENT);
 				if ('content' in result) {
 					setCachedSourceFile(cacheKey, result.content);
 					return {
@@ -1252,14 +1249,17 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async getCrateStatus(name: string, version: string): Promise<CrateStatus> {
-			if (isStdCrate(name)) {
+			const normalizedName = normalizeCrateName(name);
+			const requestedVersion =
+				isStdCrate(normalizedName) && version === 'latest' ? 'stable' : version;
+			if (isStdCrate(normalizedName)) {
 				// Check cache first
 				const lc = await getCache();
-				if (lc.hasCrate(name, version)) {
-					await emitStatus(name, version, { status: 'ready' });
+				if (lc.hasCrate(name, requestedVersion)) {
+					await emitStatus(name, requestedVersion, { status: 'ready' });
 					return { status: 'ready' };
 				}
-				const dbStatus = lc.getStatus('rust', name, version);
+				const dbStatus = lc.getStatus('rust', name, requestedVersion);
 				if (dbStatus.status !== 'unknown') {
 					const action = statusAction.classify(dbStatus);
 					return action ? { ...dbStatus, action } : dbStatus;
@@ -1267,18 +1267,18 @@ export function createLocalProvider(): DataProvider {
 
 				// Check sysroot availability
 				try {
-					const stdInfo = await findStdJson(name, version);
+					const stdInfo = await findStdJson(name, requestedVersion);
 					if (stdInfo.available) return { status: 'unknown' }; // auto-triggerable
 
 					// Mismatch — needs user consent to install
 					return {
 						status: 'failed',
-						error: `std ${version} not installed. Available: ${stdInfo.installedVersion ?? 'none'}`,
+						error: `Rust docs for ${requestedVersion} are not installed locally. Available: ${stdInfo.installedVersion ?? 'none'}`,
 						action: 'install_std_docs',
 						installedVersion: stdInfo.installedVersion,
 					};
 				} catch {
-					return { status: 'failed', error: `Failed to detect sysroot for ${name}` };
+					return { status: 'failed', error: `Failed to detect local Rust docs for ${name}` };
 				}
 			}
 
@@ -1319,21 +1319,26 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async triggerParse(name: string, version: string, force?: boolean) {
-			if (isStdCrate(name)) {
+			const normalizedName = normalizeCrateName(name);
+			const requestedVersion =
+				isStdCrate(normalizedName) && version === 'latest' ? 'stable' : version;
+			if (isStdCrate(normalizedName)) {
 				// Check if sysroot JSON is available (no install consent)
-				const stdInfo = await findStdJson(name, version);
+				const stdInfo = await findStdJson(name, requestedVersion);
 				if (!stdInfo.available) {
 					return Result.err(
-						new NotAvailableError({ message: `${name}@${version} not available in sysroot` }),
+						new NotAvailableError({
+							message: `${name}@${requestedVersion} is not available locally`,
+						}),
 					);
 				}
 				const lc = await getCache();
-				if (!force && lc.hasCrate(name, version)) {
-					await emitStatus(name, version, { status: 'ready' });
+				if (!force && lc.hasCrate(name, requestedVersion)) {
+					await emitStatus(name, requestedVersion, { status: 'ready' });
 					return Result.ok(undefined);
 				}
-				await emitStatus(name, version, { status: 'processing' }, 'resolving');
-				startStdParse(name, version, false);
+				await emitStatus(name, requestedVersion, { status: 'processing' }, 'resolving');
+				startStdParse(name, requestedVersion, false);
 				return Result.ok(undefined);
 			}
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
@@ -1372,6 +1377,25 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async ensureParsed(name: string, version: string): Promise<void> {
+			const normalizedName = normalizeCrateName(name);
+			const requestedVersion =
+				isStdCrate(normalizedName) && version === 'latest' ? 'stable' : version;
+			if (isStdCrate(normalizedName)) {
+				const lc = await getCache();
+				if (lc.hasCrate(name, requestedVersion)) return;
+				const key = parseKey(name, requestedVersion);
+				let promise = inFlight.get(key);
+				if (!promise) {
+					await emitStatus(name, requestedVersion, { status: 'processing' }, 'resolving');
+					startStdParse(name, requestedVersion, false);
+					promise = inFlight.get(key);
+				}
+				if (promise) {
+					await Promise.race([promise, new Promise<void>((r) => setTimeout(r, 15_000))]);
+				}
+				return;
+			}
+
 			const workspaceCrate = await getWorkspaceCrate(name, version);
 			if (workspaceCrate) {
 				await emitWorkspaceReady(name, version, workspaceCrate);
@@ -1401,18 +1425,20 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async triggerStdInstall(name: string, version: string) {
-			if (!isStdCrate(name)) {
+			const normalizedName = normalizeCrateName(name);
+			const requestedVersion = version === 'latest' ? 'stable' : version;
+			if (!isStdCrate(normalizedName)) {
 				return Result.err(
 					new ValidationError({ message: `${name} is not a standard library crate` }),
 				);
 			}
 			const lc = await getCache();
-			if (lc.hasCrate(name, version)) {
-				await emitStatus(name, version, { status: 'ready' });
+			if (lc.hasCrate(name, requestedVersion)) {
+				await emitStatus(name, requestedVersion, { status: 'ready' });
 				return Result.ok(undefined);
 			}
-			await emitStatus(name, version, { status: 'processing' }, 'resolving');
-			startStdParse(name, version, true);
+			await emitStatus(name, requestedVersion, { status: 'processing' }, 'resolving');
+			startStdParse(name, requestedVersion, true);
 			return Result.ok(undefined);
 		},
 
@@ -1456,6 +1482,7 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async resolveVersion(name: string, version: string): Promise<string> {
+			if (version === 'latest' && isStdCrate(normalizeCrateName(name))) return 'stable';
 			if (version === 'latest') {
 				const versions = await this.getCrateVersions(name, 1);
 				if (versions.length > 0) return versions[0];

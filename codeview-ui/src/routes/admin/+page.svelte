@@ -53,8 +53,8 @@
 		return status;
 	}
 
-	function kindLabel(kind: string): string {
-		return kind === 'sysroot' ? 'sysroot' : 'crate';
+	function kindLabel(_kind: string): string {
+		return 'crate';
 	}
 
 	function absoluteTime(value: string): string {

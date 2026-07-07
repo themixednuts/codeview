@@ -2,7 +2,8 @@ import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 import { getAuthState } from '$lib/server/auth';
 import { initProvider } from '$lib/server/provider';
-import { isValidCrateName, isValidVersion } from '$lib/server/validation';
+import { isValidCrateName, isValidVersion, normalizeCrateName } from '$lib/server/validation';
+import { isStdCrate } from '$lib/std';
 
 export const load: PageServerLoad = async (event) => {
 	event.depends('codeview:admin-dashboard');
@@ -52,9 +53,11 @@ export const actions: Actions = {
 
 		const provider = await initProvider(event);
 		const version =
-			requestedVersion === 'latest'
-				? ((await provider.getCrateVersions(name, 1).catch(() => []))[0] ?? requestedVersion)
-				: requestedVersion;
+			requestedVersion === 'latest' && isStdCrate(normalizeCrateName(name))
+				? 'stable'
+				: requestedVersion === 'latest'
+					? ((await provider.getCrateVersions(name, 1).catch(() => []))[0] ?? requestedVersion)
+					: requestedVersion;
 		if (!isValidVersion(version)) {
 			return fail(400, {
 				type: 'forceParse',

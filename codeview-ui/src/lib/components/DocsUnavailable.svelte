@@ -5,6 +5,7 @@
 	import { LoaderCircleIcon } from '@lucide/svelte';
 	import { isHosted } from '$lib/platform';
 	import { isStdCrate } from '$lib/std';
+	import { normalizeCrateName } from '$lib/crate-names';
 
 	let {
 		crateName,
@@ -23,15 +24,14 @@
 	let queueing = $state(false);
 	let queueError = $state<string | null>(null);
 	const canRetry = $derived(!!crateName && !!version);
-	const isStd = $derived(!!crateName && isStdCrate(crateName));
-	const retryLabel = $derived(
-		isHosted && isStd ? 'Queue sysroot parse' : isHosted ? 'Queue parse' : 'Retry',
-	);
+	const normalizedCrateName = $derived(crateName ? normalizeCrateName(crateName) : '');
+	const isStd = $derived(!!normalizedCrateName && isStdCrate(normalizedCrateName));
+	const retryLabel = $derived(isHosted ? 'Queue parse' : 'Retry');
 	const canQueueParse = $derived(!isStd || isHosted);
 	const externalDocsHref = $derived.by(() => {
 		if (!crateName || !version) return null;
 		return isStd
-			? `https://doc.rust-lang.org/${version}/${crateName}/`
+			? `https://doc.rust-lang.org/${version}/${normalizedCrateName}/`
 			: `https://docs.rs/crate/${crateName}/${version}`;
 	});
 	const externalDocsLabel = $derived(isStd ? 'View on doc.rust-lang.org' : 'View on docs.rs');

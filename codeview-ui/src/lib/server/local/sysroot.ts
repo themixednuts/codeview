@@ -3,6 +3,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getLogger } from '$lib/log';
+import { normalizeCrateName } from '$lib/crate-names';
 
 const execFile = promisify(execFileCb);
 const log = getLogger('sysroot');
@@ -171,10 +172,11 @@ function checkCrateInSysroot(crateName: string, info: SysrootInfo): StdJsonResul
  * toolchain implied by the version string (e.g. nightly for "1.94.0-nightly").
  */
 export async function findStdJson(crateName: string, version: string): Promise<StdJsonResult> {
+	const normalizedCrateName = normalizeCrateName(crateName);
 	// Try default toolchain first
 	const defaultInfo = await getDefaultSysroot();
 	if (defaultInfo && versionMatchesSysroot(version, defaultInfo)) {
-		return checkCrateInSysroot(crateName, defaultInfo);
+		return checkCrateInSysroot(normalizedCrateName, defaultInfo);
 	}
 
 	// Try the toolchain implied by the version
@@ -183,7 +185,7 @@ export async function findStdJson(crateName: string, version: string): Promise<S
 	if (toolchain !== defaultToolchain) {
 		const altInfo = await getToolchainSysroot(toolchain);
 		if (altInfo && versionMatchesSysroot(version, altInfo)) {
-			return checkCrateInSysroot(crateName, altInfo);
+			return checkCrateInSysroot(normalizedCrateName, altInfo);
 		}
 	}
 
