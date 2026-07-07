@@ -14,8 +14,24 @@ async function clearCodeviewCaches(): Promise<void> {
 	await Promise.all(keys.filter((key) => key.startsWith('cache-')).map((key) => caches.delete(key)));
 }
 
+async function precacheAssets(): Promise<void> {
+	const cache = await caches.open(CACHE_NAME);
+	await Promise.all(
+		PRECACHE_ASSETS.map(async (asset) => {
+			try {
+				const request = new Request(asset, { cache: 'reload' });
+				const response = await fetch(request);
+				if (!response.ok) return;
+				await cache.put(request, response);
+			} catch {
+				// A missing deploy artifact should not strand users on an old worker.
+			}
+		}),
+	);
+}
+
 sw.addEventListener('install', (event) => {
-	event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(PRECACHE_ASSETS)));
+	event.waitUntil(precacheAssets().then(() => sw.skipWaiting()));
 });
 
 sw.addEventListener('activate', (event) => {

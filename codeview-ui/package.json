@@ -41,11 +41,11 @@
 		"cf:types": "vp run cf:types:app && vp run cf:types:parser",
 		"cf:types:app": "wrangler types src/cloudflare.d.ts --config ./wrangler.toml",
 		"cf:types:parser": "wrangler types src/lib/server/cloudflare/workers/parse-worker.d.ts --config ./wrangler.parser.toml",
-		"cf:build": "bun scripts/with-platform.ts cloudflare vp build",
+		"cf:build": "bun scripts/retain-cloudflare-assets.ts capture && bun scripts/with-platform.ts cloudflare vp build && bun scripts/retain-cloudflare-assets.ts capture && bun scripts/retain-cloudflare-assets.ts restore",
 		"cf:dev": "vp run cf:build && vp run cron:seed-std:if-missing && bun scripts/with-platform.ts cloudflare wrangler dev -c ./wrangler.toml --local --persist-to .wrangler/state --live-reload",
 		"cf:dev:parser": "bun scripts/with-platform.ts cloudflare wrangler dev -c ./wrangler.parser.toml --local --persist-to .wrangler/state",
 		"cf:dev:clear": "rm -rf .wrangler && vp run cf:dev",
-		"cf:deploy:app": "wrangler deploy -c ./wrangler.toml",
+		"cf:deploy:app": "wrangler deploy -c ./wrangler.toml --old-asset-ttl 604800",
 		"cf:deploy:parser": "wrangler deploy -c ./wrangler.parser.toml",
 		"cf:deploy": "vp run cf:build && vp run cf:deploy:parser && vp run cf:deploy:app"
 	},
