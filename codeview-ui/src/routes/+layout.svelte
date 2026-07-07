@@ -88,6 +88,8 @@
 				current?: unknown;
 		  };
 
+	const PARSE_TOAST_DURATION_MS = 6000;
+
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
 	onNavigate((navigation) => {
@@ -141,8 +143,6 @@
 	let globalParseSubscriptionKey = '';
 	let activeParseToastId: string | number | null = null;
 	let activeParseToastKey = '';
-	let parseToastShownAt = 0;
-	let parseToastDismissTimer: ReturnType<typeof setTimeout> | null = null;
 	let appUpdateToastVisible = false;
 	let appRefreshStarted = false;
 	let authPending = $state(false);
@@ -387,12 +387,6 @@
 		}
 	});
 
-	function clearParseToastDismissTimer() {
-		if (!parseToastDismissTimer) return;
-		clearTimeout(parseToastDismissTimer);
-		parseToastDismissTimer = null;
-	}
-
 	function clearGlobalParseToastState() {
 		parseToastState.active = false;
 		parseToastState.crateName = '';
@@ -403,46 +397,40 @@
 		parseToastState.totalItems = null;
 	}
 
+	function markGlobalParseToastClosed(id: string | number) {
+		if (activeParseToastId !== id) return;
+		activeParseToastId = null;
+	}
+
 	function dismissGlobalParseToast() {
 		if (activeParseToastId !== null) {
 			const id = activeParseToastId;
+			activeParseToastId = null;
 			untrack(() => toast.dismiss(id));
 		}
-		activeParseToastId = null;
 		activeParseToastKey = '';
-		parseToastShownAt = 0;
 	}
 
 	function ensureGlobalParseToast(key: string) {
 		if (activeParseToastKey && activeParseToastKey !== key) {
 			dismissGlobalParseToast();
 		}
-		if (activeParseToastId !== null) return;
+		if (activeParseToastKey === key) return;
 		activeParseToastId = untrack(() =>
 			toast.custom(ParseToastContent, {
 				id: key,
-				duration: Number.POSITIVE_INFINITY,
-				dismissable: false,
-				closeButton: false,
+				duration: PARSE_TOAST_DURATION_MS,
+				dismissable: true,
+				closeButton: true,
+				onAutoClose: (closedToast) => markGlobalParseToastClosed(closedToast.id),
+				onDismiss: (closedToast) => markGlobalParseToastClosed(closedToast.id),
 			}),
 		);
 		activeParseToastKey = key;
-		parseToastShownAt = Date.now();
 	}
 
 	function scheduleGlobalParseToastDismiss() {
 		clearGlobalParseToastState();
-		if (activeParseToastId === null) return;
-		const elapsed = parseToastShownAt ? Date.now() - parseToastShownAt : 0;
-		const remaining = elapsed < 800 ? 800 - elapsed : 0;
-		clearParseToastDismissTimer();
-		if (remaining > 0) {
-			parseToastDismissTimer = setTimeout(() => {
-				parseToastDismissTimer = null;
-				dismissGlobalParseToast();
-			}, remaining);
-			return;
-		}
 		dismissGlobalParseToast();
 	}
 
@@ -484,7 +472,6 @@
 			return;
 		}
 
-		clearParseToastDismissTimer();
 		ensureGlobalParseToast(`parse:${subscriptionKey}`);
 		parseToastState.active = true;
 		parseToastState.crateName = name;
@@ -496,7 +483,6 @@
 	});
 
 	onDestroy(() => {
-		clearParseToastDismissTimer();
 		clearGlobalParseToastState();
 		dismissGlobalParseToast();
 		globalParseStatusConn.destroy();
