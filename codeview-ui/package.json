@@ -41,7 +41,7 @@
 		"cf:types": "vp run cf:types:app && vp run cf:types:parser",
 		"cf:types:app": "wrangler types src/cloudflare.d.ts --config ./wrangler.toml",
 		"cf:types:parser": "wrangler types src/lib/server/cloudflare/workers/parse-worker.d.ts --config ./wrangler.parser.toml",
-		"cf:build": "bun scripts/retain-cloudflare-assets.ts capture && bun scripts/with-platform.ts cloudflare vp build && bun scripts/retain-cloudflare-assets.ts capture && bun scripts/retain-cloudflare-assets.ts restore",
+		"cf:build": "bun scripts/retain-cloudflare-assets.ts capture && bun scripts/with-platform.ts cloudflare vp build && bun scripts/harden-cloudflare-worker.ts && bun scripts/retain-cloudflare-assets.ts capture && bun scripts/retain-cloudflare-assets.ts restore",
 		"cf:dev": "vp run cf:build && vp run cron:seed-std:if-missing && bun scripts/with-platform.ts cloudflare wrangler dev -c ./wrangler.toml --local --persist-to .wrangler/state --live-reload",
 		"cf:dev:parser": "bun scripts/with-platform.ts cloudflare wrangler dev -c ./wrangler.parser.toml --local --persist-to .wrangler/state",
 		"cf:dev:clear": "rm -rf .wrangler && vp run cf:dev",

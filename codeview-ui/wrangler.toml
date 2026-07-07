@@ -4,7 +4,11 @@ compatibility_date = "2026-07-07"
 compatibility_flags = ["nodejs_compat"]
 main = ".svelte-kit/cloudflare/_worker.js"
 workers_dev = false
-assets = { directory = ".svelte-kit/cloudflare", binding = "ASSETS" }
+
+[assets]
+directory = ".svelte-kit/cloudflare"
+binding = "ASSETS"
+run_worker_first = ["/_app/immutable/*", "/_app/version.json", "/service-worker.js"]
 
 [vars]
 BETTER_AUTH_URL = "https://codeview.codes"
@@ -19,7 +23,20 @@ pattern = "codeview.codes"
 custom_domain = true
 
 [cache]
-enabled = false
+enabled = true
+cross_version_cache = false
+
+[exports.default]
+type = "worker"
+
+	[exports.default.cache]
+	enabled = false
+
+[exports.CachedImmutableAsset]
+type = "worker"
+
+	[exports.CachedImmutableAsset.cache]
+	enabled = true
 
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"
