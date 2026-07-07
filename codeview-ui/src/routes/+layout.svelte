@@ -6,11 +6,7 @@
 	import { page, updated } from '$app/state';
 	import { authClient } from '$lib/auth-client';
 	import { getProcessingCrates } from '$lib/rpc/crate.remote';
-	import {
-		CrateStatusConnection,
-		ParseProgressConnection,
-		ProcessingStatusConnection,
-	} from '$lib/realtime';
+	import { ProcessingStatusConnection } from '$lib/realtime';
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { perf } from '$lib/perf';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
@@ -66,13 +62,7 @@
 	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
 	import GlobalCrateCommand from '$lib/components/GlobalCrateCommand.svelte';
 	import { Icon } from '$lib/components/design';
-	import ParseToastContent from '$lib/components/ParseToastContent.svelte';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
-	import {
-		clearParseToastTarget,
-		parseToastState,
-		parseToastTarget,
-	} from '$lib/toast/parse-toast.svelte';
 	import { toast } from 'svelte-sonner';
 	import { forceRefreshClient } from '$lib/client/invalidation';
 
@@ -88,8 +78,6 @@
 				run?: () => Promise<unknown>;
 				current?: unknown;
 		  };
-
-	const PARSE_TOAST_DURATION_MS = 6000;
 
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
@@ -114,36 +102,12 @@
 	let { children, data }: LayoutProps = $props();
 
 	const processingConn = new ProcessingStatusConnection();
-	const globalParseStatusConn = new CrateStatusConnection();
-	const globalParseProgressConn = new ParseProgressConnection();
 	const processingCount = $derived(processingConn.count);
 	let showProcessing = $state(false);
 	let processingCrates = $state.raw<ProcessingCrateItem[]>([]);
 	let processingCrateFetchSeq = 0;
 	let lastProcessingCrateRefresh = 0;
 	const visibleProcessingCount = $derived(Math.max(processingCount, processingCrates.length));
-	const activeProcessingCrate = $derived(processingCrates[0] ?? null);
-	const activeParseCrate = $derived.by(() => {
-		const processingName = processingCrateName(activeProcessingCrate);
-		if (processingName && activeProcessingCrate?.version) {
-			return {
-				name: processingName,
-				version: activeProcessingCrate.version,
-				source: 'processing' as const,
-			};
-		}
-		if (parseToastTarget.active && parseToastTarget.crateName && parseToastTarget.version) {
-			return {
-				name: parseToastTarget.crateName,
-				version: parseToastTarget.version,
-				source: 'route' as const,
-			};
-		}
-		return null;
-	});
-	let globalParseSubscriptionKey = '';
-	let activeParseToastId: string | number | null = null;
-	let activeParseToastKey = '';
 	let appUpdateToastVisible = false;
 	let appRefreshStarted = false;
 	let authPending = $state(false);
@@ -187,12 +151,6 @@
 
 	function processingCrateItems(value: unknown): ProcessingCrateItem[] {
 		return Array.isArray(value) ? value.filter(isProcessingCrateItem) : [];
-	}
-
-	function removeProcessingCrate(name: string, version: string) {
-		processingCrates = processingCrates.filter(
-			(crate) => processingCrateName(crate) !== name || crate.version !== version,
-		);
 	}
 
 	async function resolveProcessingCrates(refresh: number): Promise<ProcessingCrateItem[]> {
@@ -324,7 +282,9 @@
 
 		const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
 			if (!isChunkLoadFailure(event.reason)) return;
-			showAppUpdateToast('The current page is using stale app files. Reload to fetch the current build.');
+			showAppUpdateToast(
+				'The current page is using stale app files. Reload to fetch the current build.',
+			);
 		};
 		const handleResourceError = (event: Event) => {
 			if (event instanceof ErrorEvent && isChunkLoadFailure(event.error ?? event.message)) {
@@ -341,7 +301,9 @@
 						? target.href
 						: '';
 			if (!url.includes('/_app/immutable/')) return;
-			showAppUpdateToast('The current page is using stale app files. Reload to fetch the current build.');
+			showAppUpdateToast(
+				'The current page is using stale app files. Reload to fetch the current build.',
+			);
 		};
 		const checkForAppUpdate = () => {
 			if (document.visibilityState === 'visible') void updated.check();
@@ -388,106 +350,7 @@
 		}
 	});
 
-	function clearGlobalParseToastState() {
-		parseToastState.active = false;
-		parseToastState.crateName = '';
-		parseToastState.version = '';
-		parseToastState.step = null;
-		parseToastState.nodeCount = 0;
-		parseToastState.edgeCount = 0;
-		parseToastState.totalItems = null;
-	}
-
-	function markGlobalParseToastClosed(id: string | number) {
-		if (activeParseToastId !== id) return;
-		activeParseToastId = null;
-	}
-
-	function dismissGlobalParseToast() {
-		if (activeParseToastId !== null) {
-			const id = activeParseToastId;
-			activeParseToastId = null;
-			untrack(() => toast.dismiss(id));
-		}
-		activeParseToastKey = '';
-	}
-
-	function ensureGlobalParseToast(key: string) {
-		if (activeParseToastKey && activeParseToastKey !== key) {
-			dismissGlobalParseToast();
-		}
-		if (activeParseToastKey === key) return;
-		activeParseToastId = untrack(() =>
-			toast.custom(ParseToastContent, {
-				id: key,
-				duration: PARSE_TOAST_DURATION_MS,
-				dismissable: true,
-				closeButton: true,
-				onAutoClose: (closedToast) => markGlobalParseToastClosed(closedToast.id),
-				onDismiss: (closedToast) => markGlobalParseToastClosed(closedToast.id),
-			}),
-		);
-		activeParseToastKey = key;
-	}
-
-	function scheduleGlobalParseToastDismiss() {
-		clearGlobalParseToastState();
-		dismissGlobalParseToast();
-	}
-
-	$effect(() => {
-		if (!browser) return;
-
-		const crate = activeParseCrate;
-		const name = crate?.name ?? '';
-		const version = crate?.version ?? '';
-		if (!name || !version) {
-			globalParseSubscriptionKey = '';
-			globalParseStatusConn.disconnect();
-			globalParseProgressConn.reset();
-			scheduleGlobalParseToastDismiss();
-			return;
-		}
-
-		const subscriptionKey = `${name}@${version}`;
-		if (globalParseSubscriptionKey !== subscriptionKey) {
-			globalParseSubscriptionKey = subscriptionKey;
-			globalParseProgressConn.reset();
-			globalParseStatusConn.connect(name, version);
-			globalParseStatusConn.status = 'processing';
-			globalParseStatusConn.step = null;
-			globalParseStatusConn.error = null;
-			globalParseStatusConn.action = undefined;
-			globalParseProgressConn.connect(name, version);
-		}
-
-		const terminal =
-			globalParseStatusConn.status === 'ready' || globalParseStatusConn.status === 'failed';
-		if (terminal) {
-			if (crate?.source === 'route') clearParseToastTarget(name, version);
-			if (crate?.source === 'processing') removeProcessingCrate(name, version);
-			globalParseSubscriptionKey = '';
-			globalParseStatusConn.disconnect();
-			globalParseProgressConn.reset();
-			scheduleGlobalParseToastDismiss();
-			return;
-		}
-
-		ensureGlobalParseToast(`parse:${subscriptionKey}`);
-		parseToastState.active = true;
-		parseToastState.crateName = name;
-		parseToastState.version = version;
-		parseToastState.step = globalParseStatusConn.step;
-		parseToastState.nodeCount = globalParseProgressConn.nodeCount;
-		parseToastState.edgeCount = globalParseProgressConn.edgeCount;
-		parseToastState.totalItems = globalParseProgressConn.totalItems;
-	});
-
 	onDestroy(() => {
-		clearGlobalParseToastState();
-		dismissGlobalParseToast();
-		globalParseStatusConn.destroy();
-		globalParseProgressConn.destroy();
 		processingConn.destroy();
 	});
 
@@ -772,7 +635,9 @@
 						fill="none"
 					/>
 				</svg>
-				<span class="font-display truncate text-[15.5px] font-semibold tracking-tight">codeview</span>
+				<span class="font-display truncate text-[15.5px] font-semibold tracking-tight">
+					codeview
+				</span>
 			</a>
 		</div>
 

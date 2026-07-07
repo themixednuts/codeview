@@ -22,13 +22,18 @@
 	let refreshPending = $state(false);
 	let activePage = $state(1);
 	let plannedPage = $state(1);
+	let recentPage = $state(1);
 	const activePageCount = $derived(Math.max(1, Math.ceil(active.length / PAGE_SIZE)));
 	const plannedPageCount = $derived(Math.max(1, Math.ceil(plannedItems.length / PAGE_SIZE)));
+	const recentPageCount = $derived(Math.max(1, Math.ceil(recent.length / PAGE_SIZE)));
 	const visibleActiveEntries = $derived(
 		active.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
 	);
 	const visiblePlannedItems = $derived(
 		plannedItems.slice((plannedPage - 1) * PAGE_SIZE, plannedPage * PAGE_SIZE),
+	);
+	const visibleRecentEntries = $derived(
+		recent.slice((recentPage - 1) * PAGE_SIZE, recentPage * PAGE_SIZE),
 	);
 
 	$effect(() => {
@@ -36,6 +41,8 @@
 		if (activePage < 1) activePage = 1;
 		if (plannedPage > plannedPageCount) plannedPage = plannedPageCount;
 		if (plannedPage < 1) plannedPage = 1;
+		if (recentPage > recentPageCount) recentPage = recentPageCount;
+		if (recentPage < 1) recentPage = 1;
 	});
 
 	function itemHref(name: string, version: string): string {
@@ -111,7 +118,9 @@
 							<Icon name="clock" size={12} />
 							<span>Parse Queue</span>
 						</div>
-						<h1 class="font-display text-2xl font-semibold text-(--ink)">Builds and planned parses</h1>
+						<h1 class="font-display text-2xl font-semibold text-(--ink)">
+							Builds and planned parses
+						</h1>
 					</div>
 					<div class="flex items-center gap-2">
 						<span class="badge badge-sm text-(--accent)">
@@ -140,7 +149,6 @@
 						<div class="mt-1 font-mono text-lg text-(--ink)">{failedCount}</div>
 					</div>
 				</div>
-
 			</div>
 		</div>
 
@@ -289,7 +297,10 @@
 					</div>
 					<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
 						<div class="font-mono text-[11px] text-(--muted-soft)">
-							Showing {pageStart(plannedPage, plannedItems.length)}-{pageEnd(plannedPage, plannedItems.length)}
+							Showing {pageStart(plannedPage, plannedItems.length)}-{pageEnd(
+								plannedPage,
+								plannedItems.length,
+							)}
 							of {plannedItems.length}{planned.total > plannedItems.length
 								? ` loaded (${planned.total} planned)`
 								: ''}
@@ -338,9 +349,9 @@
 					<span class="font-mono text-[11px] text-(--muted-soft)">{recent.length} entries</span>
 				</div>
 
-				{#if recent.length > 0}
+				{#if visibleRecentEntries.length > 0}
 					<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
-						{#each recent as item (`${item.name}@${item.version}:${item.updatedAt}`)}
+						{#each visibleRecentEntries as item (`${item.name}@${item.version}:${item.updatedAt}`)}
 							<a
 								href={itemHref(item.name, item.version)}
 								data-sveltekit-preload-data="off"
@@ -381,6 +392,37 @@
 							</a>
 						{/each}
 					</div>
+					{#if recent.length > PAGE_SIZE}
+						<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
+							<div class="font-mono text-[11px] text-(--muted-soft)">
+								Showing {pageStart(recentPage, recent.length)}-{pageEnd(recentPage, recent.length)}
+								of {recent.length}
+							</div>
+							<div class="flex items-center gap-2">
+								<button
+									type="button"
+									disabled={recentPage <= 1}
+									onclick={() => (recentPage -= 1)}
+									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+								>
+									<Icon name="chevron-left" size={12} />
+									Prev
+								</button>
+								<span class="font-mono text-[11px] text-(--muted-soft)">
+									{recentPage}/{recentPageCount}
+								</span>
+								<button
+									type="button"
+									disabled={recentPage >= recentPageCount}
+									onclick={() => (recentPage += 1)}
+									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+								>
+									Next
+									<Icon name="chevron-right" size={12} />
+								</button>
+							</div>
+						</div>
+					{/if}
 				{:else}
 					<div
 						class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"

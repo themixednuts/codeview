@@ -33,10 +33,6 @@
 	import { nodeKindOrder } from '$lib/display-names';
 	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 	import { isHosted } from '$lib/platform';
-	import {
-		clearParseToastTarget,
-		showParseToastTarget,
-	} from '$lib/toast/parse-toast.svelte';
 
 	const log = getLogger('layout');
 
@@ -74,7 +70,6 @@
 	let wasHidden = false;
 	let metaRefreshInFlight: Promise<void> | null = null;
 	let clientReady = $state(false);
-	let routeParseToastKey = '';
 
 	function refreshRemote(resource: unknown): Promise<unknown> {
 		const refresh = (resource as { refresh?: () => Promise<unknown> } | null | undefined)?.refresh;
@@ -485,23 +480,6 @@
 	const crateSwitcherLabel = $derived(buildCrateSwitcherLabel(localCrates));
 	const crateVersionOptions = $derived(buildCrateVersionOptions(versionsFromQuery, version));
 	const loadingCrateSwitcher = $derived(!isHosted && !localCrates && !indexFromQuery);
-
-	$effect(() => {
-		if (!browser || !canonicalCrateName || !version) return;
-		const key = `${canonicalCrateName}@${version}`;
-		const showProgress =
-			effectiveCrateStatus === 'processing' ||
-			(effectiveCrateStatus === 'unknown' && !hasTreeData);
-		if (showProgress) {
-			routeParseToastKey = key;
-			showParseToastTarget(canonicalCrateName, version);
-			return;
-		}
-		if (routeParseToastKey === key) {
-			routeParseToastKey = '';
-			clearParseToastTarget(canonicalCrateName, version);
-		}
-	});
 </script>
 
 <CrateParseState
