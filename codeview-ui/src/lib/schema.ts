@@ -21,7 +21,9 @@ import type {
 	Node,
 	NodeKind,
 	PolyTrait,
+	ProvidedDefaultUnstable,
 	Span,
+	StabilityInfo,
 	Term,
 	TypeRef,
 	VariantInfo,
@@ -79,8 +81,8 @@ export const ImplCategorySchema = v.picklist([
 ]);
 
 /**
- * Visibility is a tagged union (schema v3+) — the `Restricted` variant
- * carries the optional restriction `path` (e.g. `crate::foo::bar`).
+ * Visibility is a tagged union — the `Restricted` variant carries the
+ * optional restriction `path` (e.g. `crate::foo::bar`).
  * Other variants are tag-only objects: `{ kind: 'Public' }` etc.
  *
  * Use the discriminated `v.variant` so each branch validates its own
@@ -354,6 +356,25 @@ export const DeprecationSchema = v.object({
 	note: v.optional(v.nullable(v.string())),
 });
 
+export const StabilityInfoSchema = v.intersect([
+	v.object({
+		feature: v.string(),
+	}),
+	v.variant('level', [
+		v.object({
+			level: v.literal('stable'),
+			since: v.optional(v.nullable(v.string())),
+		}),
+		v.object({
+			level: v.literal('unstable'),
+		}),
+	]),
+]);
+
+export const ProvidedDefaultUnstableSchema = v.object({
+	feature: v.string(),
+});
+
 // --- Node & Edge ---
 
 export const NodeSchema = v.object({
@@ -374,11 +395,13 @@ export const NodeSchema = v.object({
 	has_stripped_variants: v.optional(v.boolean()),
 	is_dyn_compatible: v.optional(v.nullable(v.boolean())),
 	deprecation: v.optional(v.nullable(DeprecationSchema)),
+	stability: v.optional(v.nullable(StabilityInfoSchema)),
+	const_stability: v.optional(v.nullable(StabilityInfoSchema)),
+	default_unstable: v.optional(v.nullable(ProvidedDefaultUnstableSchema)),
 	fields: v.optional(v.nullable(v.array(FieldInfoSchema))),
 	variants: v.optional(v.nullable(v.array(VariantInfoSchema))),
 	signature: v.optional(v.nullable(FunctionSignatureSchema)),
-	// Structured generics (params + where-clause) — replaces the old
-	// flat-string `generics` + `where_clause` + `bound_links` triple.
+	// Structured generics (params + where-clause).
 	generics: v.optional(GenericsSchema),
 	docs: v.optional(v.nullable(v.string())),
 	doc_links: v.optional(v.record(v.string(), v.string())),
@@ -415,6 +438,7 @@ export const EdgeSchema = v.object({
 	to: v.string(),
 	kind: EdgeKindSchema,
 	confidence: ConfidenceSchema,
+	occurrences: v.optional(v.array(SpanSchema)),
 	is_glob: v.optional(v.boolean()),
 });
 
@@ -632,7 +656,13 @@ type _NodeKindSchemaMatchesGenerated = Assert<
 	IsEqual<v.InferOutput<typeof NodeKindSchema>, NodeKind>
 >;
 type _NodeSchemaMatchesGenerated = Assert<IsEqual<v.InferOutput<typeof NodeSchema>, Node>>;
+type _ProvidedDefaultUnstableSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof ProvidedDefaultUnstableSchema>, ProvidedDefaultUnstable>
+>;
 type _SpanSchemaMatchesGenerated = Assert<IsEqual<v.InferOutput<typeof SpanSchema>, Span>>;
+type _StabilityInfoSchemaMatchesGenerated = Assert<
+	IsEqual<v.InferOutput<typeof StabilityInfoSchema>, StabilityInfo>
+>;
 type _VariantInfoSchemaMatchesGenerated = Assert<
 	IsEqual<v.InferOutput<typeof VariantInfoSchema>, VariantInfo>
 >;
@@ -665,7 +695,9 @@ export type {
 	Node,
 	NodeKind,
 	PolyTrait,
+	ProvidedDefaultUnstable,
 	Span,
+	StabilityInfo,
 	Term,
 	TypeRef,
 	VariantInfo,
@@ -742,15 +774,12 @@ export const StaticCrateManifestSchema = v.object({
 	/**
 	 * Lists of populated shard buckets per kind (hex strings like `"00f"`).
 	 * Worker reads these before issuing a shard GET to skip empty buckets.
-	 * Optional for back-compat with pre-S3 artifacts.
 	 */
-	populatedShards: v.optional(
-		v.object({
-			nodes: v.array(v.string()),
-			nodeDetails: v.array(v.string()),
-			treeChildren: v.array(v.string()),
-		}),
-	),
+	populatedShards: v.object({
+		nodes: v.array(v.string()),
+		nodeDetails: v.array(v.string()),
+		treeChildren: v.array(v.string()),
+	}),
 });
 export type StaticCrateManifest = v.InferOutput<typeof StaticCrateManifestSchema>;
 
@@ -862,41 +891,10 @@ export const StaticNodeDetailShardSchema = v.object({
 });
 export type StaticNodeDetailShard = v.InferOutput<typeof StaticNodeDetailShardSchema>;
 
-/** Node kinds that were merged — normalize before validation. */
-const KIND_ALIASES: Record<string, string> = {
-	Method: 'Function',
-};
-
-/**
- * Walk raw JSON and normalize deprecated node kinds before validation.
- * Mutates in place to avoid deep-cloning large payloads.
- */
-function normalizeNodeKinds(data: unknown): void {
-	if (!data || typeof data !== 'object') return;
-	const obj = data as Record<string, unknown>;
-
-	// Normalize nodes arrays in crates and external_crates
-	for (const key of ['crates', 'external_crates'] as const) {
-		const arr = obj[key];
-		if (!Array.isArray(arr)) continue;
-		for (const crate of arr) {
-			const nodes = (crate as Record<string, unknown>).nodes;
-			if (!Array.isArray(nodes)) continue;
-			for (const node of nodes) {
-				const n = node as Record<string, unknown>;
-				if (typeof n.kind === 'string' && n.kind in KIND_ALIASES) {
-					n.kind = KIND_ALIASES[n.kind];
-				}
-			}
-		}
-	}
-}
-
 /**
  * Parse and validate a raw JSON object as a Workspace.
  * Throws a ValiError if validation fails.
  */
 export function parseWorkspace(data: unknown): WorkspaceOutput {
-	normalizeNodeKinds(data);
 	return v.parse(WorkspaceSchema, data);
 }

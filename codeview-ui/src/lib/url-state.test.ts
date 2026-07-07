@@ -112,6 +112,10 @@ describe('url-state', () => {
 			tab: 'popular',
 		});
 		expect(parseHomeState(url('?tab=missing'))).toEqual({ q: '', tab: 'workspace' });
+		expect(parseHomeState(url('?tab=missing'), { defaultTab: 'popular' })).toEqual({
+			q: '',
+			tab: 'popular',
+		});
 
 		const next = serializeHomeState(url('?tab=popular&q=old&debug=1'), {
 			q: ' tokio ',
@@ -120,5 +124,14 @@ describe('url-state', () => {
 		expect(next.searchParams.get('debug')).toBe('1');
 		expect(next.searchParams.get('q')).toBe('tokio');
 		expect(next.searchParams.has('tab')).toBe(false);
+
+		const hostedNext = serializeHomeState(
+			url('?tab=workspace&q=old&debug=1'),
+			{ q: ' tokio ', tab: 'popular' },
+			{ defaultTab: 'popular' },
+		);
+		expect(hostedNext.searchParams.get('debug')).toBe('1');
+		expect(hostedNext.searchParams.get('q')).toBe('tokio');
+		expect(hostedNext.searchParams.has('tab')).toBe(false);
 	});
 });

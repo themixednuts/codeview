@@ -31,7 +31,7 @@ pub struct PublishRun {
     #[arg(long, value_enum, default_value_t = PlanMode::Daily)]
     pub mode: PlanMode,
 
-    /// Corpus source: `catalog`, `top:N`, `file:<path>`, `all`, or a file path.
+    /// Corpus source: `queue`, `catalog`, `top:N`, `file:<path>`, `all`, or a file path.
     #[arg(long, default_value = "catalog")]
     pub corpus: String,
 

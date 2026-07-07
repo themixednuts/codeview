@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { Handle, Position } from '@xyflow/svelte';
 	import type { CrateMapModuleNode, CrateMapSemanticKind } from '$lib/graph/crate-map';
 	import { edgeLabels } from '$lib/display-names';
 	import KindBadge from '$lib/components/design/KindBadge.svelte';
@@ -49,11 +50,15 @@
 	href={data.href}
 	data-sveltekit-noscroll
 	data-sveltekit-keepfocus
-	class="crate-module-node nodrag nopan block rounded-lg border p-3 text-left shadow-(--shadow-soft) transition-all"
+	draggable="false"
+	class="crate-module-node block rounded-lg border p-3 text-left shadow-(--shadow-soft) transition-all"
 	aria-current={data.selected ? 'page' : undefined}
 	title={`${data.module.id} (${data.module.totalNodeCount.toLocaleString()} items)`}
 	{style}
 >
+	<Handle type="target" position={Position.Left} class="crate-module-node__handle" />
+	<Handle type="source" position={Position.Right} class="crate-module-node__handle" />
+
 	<div class="mb-2 flex min-w-0 items-center gap-2">
 		<KindBadge kind={data.module.kind} size={17} />
 		<span class="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--ink)">
@@ -103,7 +108,12 @@
 		background: var(--module-bg);
 		border-color: var(--module-border);
 		opacity: var(--module-opacity);
+		cursor: grab;
 		text-decoration: none;
+	}
+
+	.crate-module-node:active {
+		cursor: grabbing;
 	}
 
 	.crate-module-node:hover,
@@ -116,5 +126,16 @@
 	.crate-module-node:focus-visible {
 		outline: 2px solid var(--accent);
 		outline-offset: 3px;
+	}
+
+	.crate-module-node :global(.crate-module-node__handle) {
+		width: 1px;
+		height: 1px;
+		min-width: 1px;
+		min-height: 1px;
+		border: 0;
+		background: transparent;
+		opacity: 0;
+		pointer-events: none;
 	}
 </style>

@@ -1,14 +1,7 @@
 <script lang="ts">
-	import {
-		parseDocumentation,
-		highlightDocumentation,
-		type SupportedLanguage,
-		type DocLinks,
-	} from '$lib/highlight';
-	import { browser } from '$app/environment';
+	import { parseDocumentation, type SupportedLanguage, type DocLinks } from '$lib/highlight';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { tick } from 'svelte';
 	import { externalDocsUrl } from '$lib/docs';
 	import CodeBlock from './CodeBlock.svelte';
 	import { extLinkModeCtx } from '$lib/context';
@@ -33,49 +26,8 @@
 		nodeExists?: (nodeId: string) => boolean;
 	}>();
 
-	type RenderedSegment = { type: 'text' | 'code'; content: string; html: string };
-
 	// Parse documentation into segments (with intra-doc link resolution)
 	const segments = $derived(parseDocumentation(docs, defaultLang, docLinks));
-
-	function escapeHtml(text: string): string {
-		return text
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#039;');
-	}
-
-	function buildPlainCodeHtml(code: string): string {
-		return `<pre class="shiki"><code>${escapeHtml(code)}</code></pre>`;
-	}
-
-	const fallbackSegments = $derived.by<RenderedSegment[]>(() =>
-		segments.map((segment) =>
-			segment.type === 'code'
-				? { type: 'code', content: segment.content, html: buildPlainCodeHtml(segment.content) }
-				: { type: 'text', content: segment.content, html: segment.html },
-		),
-	);
-
-	let highlightedOverride = $state<RenderedSegment[] | null>(null);
-	const highlightedSegments = $derived(highlightedOverride ?? fallbackSegments);
-
-	$effect(() => {
-		highlightedOverride = null;
-		if (!browser) return;
-		let cancelled = false;
-		highlightDocumentation(segments, theme).then(async (result) => {
-			if (cancelled) return;
-			await tick();
-			if (cancelled) return;
-			highlightedOverride = result;
-		});
-		return () => {
-			cancelled = true;
-		};
-	});
 
 	/**
 	 * Handle clicks on the documentation container.
@@ -111,19 +63,14 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="documentation space-y-3" onclick={handleClick}>
-	{#each highlightedSegments as segment, i (i)}
+	{#each segments as segment, i (i)}
 		{#if segment.type === 'text'}
 			<div class="documentation-text prose prose-sm text-(--ink)">
 				<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized markdown-it output -->
 				{@html segment.html}
 			</div>
-		{:else if segment.type === 'code' && segment.html}
-			<div class="code-block corner-squircle overflow-x-auto rounded-(--radius-control) text-sm">
-				<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized Shiki output -->
-				{@html segment.html}
-			</div>
 		{:else if segment.type === 'code'}
-			<CodeBlock code={segment.content} lang={defaultLang} {theme} />
+			<CodeBlock code={segment.content} lang={segment.lang} {theme} />
 		{/if}
 	{/each}
 </div>

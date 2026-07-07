@@ -25,11 +25,11 @@ pub struct CrateInfo {
 
 /// Single-crate lookup. `None` if crates.io returns 404 (e.g. typo'd
 /// crate name) — anything else propagates.
-pub async fn newest_version(
-    client: &reqwest::Client,
-    name: &str,
-) -> Result<Option<CrateInfo>> {
-    let url = format!("https://crates.io/api/v1/crates/{}", urlencoding::encode(name));
+pub async fn newest_version(client: &reqwest::Client, name: &str) -> Result<Option<CrateInfo>> {
+    let url = format!(
+        "https://crates.io/api/v1/crates/{}",
+        urlencoding::encode(name)
+    );
     let resp = client
         .get(&url)
         .header("Accept", "application/json")
@@ -55,9 +55,7 @@ pub async fn newest_version(
 /// watchlist is configured as `top:N` rather than an explicit list.
 pub async fn top(client: &reqwest::Client, n: usize) -> Result<Vec<CrateInfo>> {
     let per_page = n.min(100);
-    let url = format!(
-        "https://crates.io/api/v1/crates?per_page={per_page}&page=1&sort=downloads"
-    );
+    let url = format!("https://crates.io/api/v1/crates?per_page={per_page}&page=1&sort=downloads");
     let resp = client
         .get(&url)
         .header("Accept", "application/json")

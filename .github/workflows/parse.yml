@@ -1,53 +1,75 @@
 name: parse
 
-# Daily freshness sweep + per-crate parse jobs.
+# Bounded hosted parser queue.
 #
-# All work happens in the `codeview` Rust CLI now — TypeScript scripts
-# are gone.  Each job calls one `codeview cron *` subcommand:
+# The site build only builds the Cloudflare Worker/Svelte app. Parsing is
+# handled here on GitHub-hosted runners:
 #
-#   freshness → `codeview cron sweep`
-#   parse     → `codeview cron parse-one`
-#   catalog   → `codeview cron catalog`
+#   plan            -> read queued work and write one deterministic work plan to R2
+#   parse-shard     -> drain bounded shards with docs.rs request delays
+#   freshness-merge -> single-writer index/catalog/ref finalizer
 #
-# Std crates are out of scope here — see std.yml.
+# Local/offline equivalent:
+#
+#   STATIC_R2_TARGET=remote CODEVIEW_SKIP_SIDECAR=1 \
+#     cargo run --release -p codeview-cli -- cron publish-run \
+#       --corpus top:100 --max-total 100 --shard-count 10 --concurrency 4
 
 on:
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
-      force:
-        description: 'Comma-separated crate names to force-parse (skip freshness)'
+      corpus:
+        description: "`queue`, `catalog`, `top:N`, `file:<path>`, or `all`"
         required: false
-        default: ''
-      max_crates:
-        description: 'Cap on stale crates parsed this run'
+        default: 'queue'
+      max_total:
+        description: 'Maximum crates in this run'
         required: false
         default: '20'
-      watchlist:
-        description: "'catalog' | 'top:N' | path/to/file"
+      shard_count:
+        description: 'Deterministic queue shards'
         required: false
-        default: 'catalog'
+        default: '8'
+      max_per_shard:
+        description: 'Maximum crates each shard can drain'
+        required: false
+        default: '3'
+      max_duration_minutes:
+        description: 'Wall-clock cap for each shard'
+        required: false
+        default: '45'
+      docsrs_min_delay_ms:
+        description: 'Minimum delay between docs.rs requests per shard'
+        required: false
+        default: '15000'
+      force:
+        description: 'Comma-separated crate names to reparse'
+        required: false
+        default: ''
 
 env:
   R2_BUCKET: crate-graphs
   STATIC_R2_TARGET: remote
   PARSER_REVISION: ${{ github.sha }}
-  # R2 over the S3-compatible endpoint
   R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-  # Skip the SvelteKit bundle that codeview-cli's build.rs embeds — the
-  # cron subcommands don't need it.
   CODEVIEW_SKIP_SIDECAR: '1'
 
+concurrency:
+  group: codeview-parse-queue
+  cancel-in-progress: false
+
 jobs:
-  freshness:
-    name: freshness sweep
+  plan:
+    name: plan queue
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.sweep.outputs.matrix }}
-      count: ${{ steps.sweep.outputs.count }}
+      worker_matrix: ${{ steps.plan.outputs.worker_matrix }}
+      run_id: ${{ steps.plan.outputs.run_id }}
+      shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
       - uses: actions/checkout@v6
 
@@ -60,32 +82,39 @@ jobs:
         with:
           shared-key: cron-release
 
-      - name: Build codeview-cli (release)
+      - name: Build codeview-cli
         run: cargo build --release -p codeview-cli
 
-      - name: Run sweep
-        id: sweep
+      - name: Build bounded work plan
+        id: plan
         run: |
-          target/release/codeview cron sweep \
-            --watchlist "${{ inputs.watchlist || 'catalog' }}" \
-            --max-crates "${{ inputs.max_crates || '20' }}" \
+          RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          PLAN_KEY="rust/_runs/${RUN_ID}/plan.json"
+          target/release/codeview cron plan \
+            --mode daily \
+            --corpus "${{ inputs.corpus || 'queue' }}" \
+            --max-total "${{ inputs.max_total || '20' }}" \
+            --max-per-shard "${{ inputs.max_per_shard || '3' }}" \
+            --shard-count "${{ inputs.shard_count || '8' }}" \
             --force "${{ inputs.force || '' }}" \
-            --bucket "$R2_BUCKET" \
-            --quiet
+            --plan-out "r2:${PLAN_KEY}" \
+            --matrix-out "$GITHUB_OUTPUT" \
+            --run-id "$RUN_ID" \
+            --bucket "$R2_BUCKET"
 
   parse:
-    name: parse ${{ matrix.crate.name }}@${{ matrix.crate.version }}
-    needs: freshness
-    if: needs.freshness.outputs.count != '0' && needs.freshness.outputs.count != ''
+    name: parse shard ${{ matrix.shard_index }}
+    needs: plan
+    if: needs.plan.outputs.worker_matrix != '' && needs.plan.outputs.worker_matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 10
-      matrix: ${{ fromJSON(needs.freshness.outputs.matrix) }}
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.worker_matrix) }}
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust nightly (for the codeview-rustdoc parser path)
+      - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: nightly
@@ -94,40 +123,26 @@ jobs:
         with:
           shared-key: cron-release
 
-      - name: Build codeview-cli (release)
+      - name: Build codeview-cli
         run: cargo build --release -p codeview-cli
 
-      - name: Parse + publish + record freshness
-        env:
-          NAME: ${{ matrix.crate.name }}
-          VERSION: ${{ matrix.crate.version }}
-        # codeview cron parse-one exit codes:
-        #   0  ok
-        #   64 transient (retry next sweep)
-        #   65 permanent (don't retry until parser/schema changes)
-        #   70 internal bug — page a human
+      - name: Drain shard
         run: |
-          set +e
-          target/release/codeview cron parse-one \
-            --name "$NAME" \
-            --version "$VERSION" \
+          PLAN_KEY="rust/_runs/${{ needs.plan.outputs.run_id }}/plan.json"
+          target/release/codeview cron parse-shard \
+            --plan "r2:${PLAN_KEY}" \
+            --shard-index "${{ matrix.shard_index }}" \
+            --shard-count "${{ needs.plan.outputs.shard_count }}" \
+            --max-items "${{ inputs.max_per_shard || '3' }}" \
+            --max-duration-minutes "${{ inputs.max_duration_minutes || '45' }}" \
+            --docsrs-min-delay-ms "${{ inputs.docsrs_min_delay_ms || '15000' }}" \
+            --run-id "${{ needs.plan.outputs.run_id }}" \
             --bucket "$R2_BUCKET"
-          code=$?
-          set -e
-          case $code in
-            0)  echo "::notice title=parse $NAME@$VERSION::ok" ;;
-            64) echo "::warning title=parse $NAME@$VERSION::transient — will retry next sweep" ;;
-            65) echo "::warning title=parse $NAME@$VERSION::permanent — skipping until parser/schema changes" ;;
-            *)  echo "::error title=parse $NAME@$VERSION::internal error (exit $code)" ;;
-          esac
-          # Translate handled non-zero codes back to 0 so they don't flag
-          # the whole job as failed.
-          exit $([ $code -le 65 ] && echo 0 || echo $code)
 
-  catalog:
-    name: rebuild catalog
-    needs: [freshness, parse]
-    if: always() && needs.freshness.outputs.count != '0' && needs.freshness.outputs.count != ''
+  finalize:
+    name: merge freshness + catalog
+    needs: [plan, parse]
+    if: always() && needs.plan.outputs.worker_matrix != '' && needs.plan.outputs.worker_matrix != '[]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -141,20 +156,26 @@ jobs:
         with:
           shared-key: cron-release
 
-      - name: Build codeview-cli (release)
+      - name: Build codeview-cli
         run: cargo build --release -p codeview-cli
 
-      - name: Rebuild rust/catalog.json from freshness index
-        run: target/release/codeview cron catalog --bucket "$R2_BUCKET"
+      - name: Merge deltas and publish catalog
+        run: |
+          target/release/codeview cron freshness-merge \
+            --run-id "${{ needs.plan.outputs.run_id }}" \
+            --write-catalog \
+            --bucket "$R2_BUCKET"
 
   summary:
     name: parse summary
-    needs: [freshness, parse, catalog]
-    if: always() && needs.freshness.outputs.count != '0'
+    needs: [plan, parse, finalize]
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Echo summary
         run: |
-          echo "freshness produced ${{ needs.freshness.outputs.count }} stale crates"
-          echo "parse job result: ${{ needs.parse.result }}"
-          echo "catalog job result: ${{ needs.catalog.result }}"
+          echo "run_id=${{ needs.plan.outputs.run_id }}"
+          echo "shard_count=${{ needs.plan.outputs.shard_count }}"
+          echo "matrix=${{ needs.plan.outputs.worker_matrix }}"
+          echo "parse_result=${{ needs.parse.result }}"
+          echo "finalize_result=${{ needs.finalize.result }}"

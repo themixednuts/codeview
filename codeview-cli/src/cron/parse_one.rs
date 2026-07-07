@@ -65,6 +65,7 @@ pub async fn run(args: ParseOne) -> Result<()> {
     );
 
     let outcome = publish_one(PublishOptions {
+        package_name: &args.name,
         name: &canonical,
         version: &args.version,
         storage_name: &storage,

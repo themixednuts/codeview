@@ -31,24 +31,36 @@
 	let inlineMeasuredWidth = $state(0);
 
 	function attachContainer(el: HTMLDivElement) {
+		let disposed = false;
+		let frame = 0;
+		const measure = () => {
+			if (!disposed) containerWidth = el.getBoundingClientRect().width;
+		};
 		const ro = new ResizeObserver(([entry]) => {
-			containerWidth = entry.contentRect.width;
+			if (!disposed) containerWidth = entry.contentRect.width;
 		});
 		ro.observe(el);
-		// Seed first paint so we have a value before the first RO callback.
-		containerWidth = el.getBoundingClientRect().width;
-		return () => ro.disconnect();
+		frame = requestAnimationFrame(measure);
+		return () => {
+			disposed = true;
+			cancelAnimationFrame(frame);
+			ro.disconnect();
+		};
 	}
 
 	function attachMeasure(el: HTMLDivElement) {
 		// scrollWidth gives the *unwrapped* layout width — exactly what
 		// we'd see if we forced the inline form to render without breaking.
-		inlineMeasuredWidth = el.scrollWidth;
 		let disposed = false;
-		const ro = new ResizeObserver(() => {
+		let frame = 0;
+		const measure = () => {
 			if (!disposed) inlineMeasuredWidth = el.scrollWidth;
+		};
+		const ro = new ResizeObserver(() => {
+			measure();
 		});
 		ro.observe(el);
+		frame = requestAnimationFrame(measure);
 		// Fonts lazy-load on cold visit — re-read once they're ready so the
 		// first measurement reflects real JetBrains Mono metrics rather
 		// than the fallback font's narrower glyphs.
@@ -59,6 +71,7 @@
 		}
 		return () => {
 			disposed = true;
+			cancelAnimationFrame(frame);
 			ro.disconnect();
 		};
 	}

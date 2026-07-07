@@ -28,6 +28,7 @@ pub struct Catalog {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct CatalogFile {
     pub(crate) schema_version: u32,
+    #[serde(rename = "generatedAt")]
     pub(crate) generated_at: String,
     pub(crate) crates: Vec<CatalogEntry>,
 }
@@ -37,11 +38,13 @@ pub(crate) struct CatalogEntry {
     pub(crate) name: String,
     #[serde(rename = "storageName")]
     pub(crate) storage_name: String,
-    pub(crate) newest_version: String,
+    pub(crate) version: String,
     #[serde(rename = "parsedAt")]
     pub(crate) parsed_at: String,
-    pub(crate) nodes: usize,
-    pub(crate) edges: usize,
+    #[serde(rename = "nodeCount")]
+    pub(crate) node_count: usize,
+    #[serde(rename = "edgeCount")]
+    pub(crate) edge_count: usize,
 }
 
 impl From<FreshnessEntry> for CatalogEntry {
@@ -51,10 +54,10 @@ impl From<FreshnessEntry> for CatalogEntry {
                 .storage_name
                 .clone()
                 .unwrap_or_else(|| entry.name.clone()),
-            newest_version: entry.version,
+            version: entry.version,
             parsed_at: entry.parsed_at,
-            nodes: entry.nodes,
-            edges: entry.edges,
+            node_count: entry.nodes,
+            edge_count: entry.edges,
             name: entry.name,
         }
     }
@@ -85,5 +88,33 @@ pub(crate) fn build_catalog(mut crates: Vec<CatalogEntry>, generated_at: String)
         schema_version: 1,
         generated_at,
         crates,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_json_uses_ui_contract() {
+        let catalog = build_catalog(
+            vec![CatalogEntry {
+                name: "proc_macro".to_string(),
+                storage_name: "proc_macro".to_string(),
+                version: "1.98.0-nightly".to_string(),
+                parsed_at: "2026-07-04T00:00:00Z".to_string(),
+                node_count: 10,
+                edge_count: 20,
+            }],
+            "2026-07-04T00:00:00Z".to_string(),
+        );
+
+        let json = serde_json::to_string(&catalog).expect("serialize catalog");
+        assert!(json.contains("\"generatedAt\""));
+        assert!(json.contains("\"version\""));
+        assert!(json.contains("\"parsedAt\""));
+        assert!(json.contains("\"nodeCount\""));
+        assert!(json.contains("\"edgeCount\""));
+        assert!(!json.contains("newest_version"));
     }
 }

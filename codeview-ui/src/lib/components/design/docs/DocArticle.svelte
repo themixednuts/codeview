@@ -1,9 +1,10 @@
 <script lang="ts">
 	import type { Node, NodeDetail, NodeSummary } from '$lib/schema';
 	import type { MaterializedDetailDocModel } from '$lib/detail-model';
-	import { edgeLabels, kindLabels } from '$lib/display-names';
+	import { kindLabels } from '$lib/display-names';
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import NodeDetails from '$lib/components/NodeDetails.svelte';
+	import DocReadAloud from './DocReadAloud.svelte';
 
 	let {
 		detail,
@@ -46,8 +47,13 @@
 
 <div class={`doc-article min-w-0 ${className}`}>
 	{#if showBreadcrumb}
-		<div class="mb-6 border-b border-(--panel-border-soft) pb-3">
-			<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
+		<div
+			class="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-(--panel-border-soft) pb-3"
+		>
+			<div class="min-w-0">
+				<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
+			</div>
+			<DocReadAloud node={selected} />
 		</div>
 	{/if}
 
@@ -58,7 +64,6 @@
 		blanketImpls={model.blanketImpls}
 		methodGroups={model.methodGroups}
 		{kindLabels}
-		{edgeLabels}
 		{displayNode}
 		{theme}
 		{getNodeUrl}

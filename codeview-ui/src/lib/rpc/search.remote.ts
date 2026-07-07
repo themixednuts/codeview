@@ -16,11 +16,11 @@ export const searchNodes = query(
 		if (crateId && version) assertCrateRef(crateId, version);
 
 		const provider = await loader.provider();
-		const ws = await loader.workspace(provider);
+		const ws = await loader.localWorkspace(provider);
 		const lower = queryText.toLowerCase();
 
 		if (ws) {
-			// If scoped to a specific crate that isn't in the workspace, fall through
+			// If scoped to a specific crate that isn't in the local workspace, fall through
 			const normalizedCrateId = crateId ? normalizeCrateName(crateId) : null;
 			const isWorkspaceCrate =
 				!normalizedCrateId ||
@@ -50,7 +50,7 @@ export const searchNodes = query(
 				}
 				return results;
 			}
-			// Not a workspace crate — fall through to universal path
+			// Not a local workspace crate — fall through to universal path
 		}
 
 		if (!crateId) return [];
@@ -70,11 +70,11 @@ export const searchNodes = query(
 	},
 );
 
-/** Check whether node IDs exist in the workspace (for link validation) */
+/** Check whether node IDs exist in the local workspace (for link validation) */
 export const checkNodeExists = query(
 	NodeIdsSchema,
 	async (nodeIds: string[]): Promise<Record<string, boolean>> => {
-		const ws = await loader.workspace();
+		const ws = await loader.localWorkspace();
 		if (!ws) return {};
 		const allNodes = getAllNodes(ws);
 		const result: Record<string, boolean> = {};

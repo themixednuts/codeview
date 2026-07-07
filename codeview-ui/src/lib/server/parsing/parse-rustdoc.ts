@@ -15,7 +15,7 @@
  * freshness tracking, etc.) lives in `codeview-cli/src/cron/`.
  */
 
-import { execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,6 +23,7 @@ import type { Edge, Node } from '$lib/graph';
 import type { CrateTree } from '$lib/schema';
 import { getLogger } from '$lib/log';
 import { normalizeCrateName } from '$lib/crate-names';
+import { buildCrateTree } from '$lib/node-summary';
 
 const log = getLogger('parse-rustdoc');
 
@@ -141,10 +142,8 @@ export async function parseWithRustBinary(
 		log.info`Invoking codeview-cli parse-json for ${crateName}`;
 		options.onFinalizingStart?.();
 
-		execFileSync('cargo', args, {
-			env: { ...process.env, CODEVIEW_SKIP_SIDECAR: '1' },
-			stdio: 'inherit',
-		});
+		// Keep the dev SSR process responsive while Rust parses large crates.
+		await runCargo(args);
 
 		const graph = JSON.parse(readFileSync(graphPath, 'utf-8')) as CrateGraphJson;
 		storageCallbacks.storeNodes(graph.nodes);
@@ -160,13 +159,30 @@ export async function parseWithRustBinary(
 		return {
 			nodeCount: graph.nodes.length,
 			edgeCount: graph.edges.length,
-			tree: { nodes: [], edges: graph.edges },
+			tree: buildCrateTree(graph),
 			externalCrates: [],
 			crateVersion: graph.version || null,
 		};
 	} finally {
 		rmSync(tmpDir, { recursive: true, force: true });
 	}
+}
+
+function runCargo(args: string[]): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const child = spawn('cargo', args, {
+			env: { ...process.env, CODEVIEW_SKIP_SIDECAR: '1' },
+			stdio: 'inherit',
+		});
+		child.once('error', reject);
+		child.once('exit', (code, signal) => {
+			if (code === 0) {
+				resolve();
+				return;
+			}
+			reject(new Error(signal ? `cargo exited with signal ${signal}` : `cargo exited with ${code}`));
+		});
+	});
 }
 
 let cachedRepoRoot: string | null = null;

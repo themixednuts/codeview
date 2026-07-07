@@ -14,10 +14,22 @@ export type GraphNodePillFlowData = {
 	height: number;
 	inCount: number;
 	outCount: number;
-	onEscape?: () => void;
+	direction: FocusDirection | 'focus';
 };
 
 export type GraphNodePillFlowNode = FlowNode<GraphNodePillFlowData, 'graphNodePill'>;
+
+export type RelationshipLabelFlowData = {
+	text: string;
+	count: number;
+	color: string;
+	width: number;
+	dim: boolean;
+	active: boolean;
+};
+
+export type RelationshipLabelFlowNode = FlowNode<RelationshipLabelFlowData, 'relationshipLabel'>;
+export type FocusGraphFlowNode = GraphNodePillFlowNode | RelationshipLabelFlowNode;
 
 export type RelationshipEdgeData = {
 	kind: EdgeKind;

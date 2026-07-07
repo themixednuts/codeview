@@ -22,7 +22,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::publisher::artifacts::{CrateSource, PublishOptions, Outcome, publish_one};
+use crate::publisher::artifacts::{CrateSource, Outcome, PublishOptions, publish_one};
 use crate::publisher::freshness::Source;
 use crate::sysroot::{STD_JSON_CRATES, aliases_for_toolchain, detect_sysroot};
 
@@ -123,6 +123,7 @@ pub async fn run(args: SeedStd) -> Result<()> {
 
             eprintln!("\n[seed-std] {crate_name}@{}", info.toolchain_version);
             let outcome = publish_one(PublishOptions {
+                package_name: crate_name,
                 name: crate_name,
                 version: &info.toolchain_version,
                 storage_name: crate_name,
@@ -162,9 +163,7 @@ pub async fn run(args: SeedStd) -> Result<()> {
         }
     }
 
-    eprintln!(
-        "\n── seed-std summary ──────────────────────────────────"
-    );
+    eprintln!("\n── seed-std summary ──────────────────────────────────");
     eprintln!("published={total_published} skipped={total_skipped} failed={total_failed}");
 
     if total_failed > 0 {

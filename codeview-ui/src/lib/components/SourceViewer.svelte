@@ -7,6 +7,7 @@
 	import { browser } from '$app/environment';
 	import { getSource } from '$lib/rpc/source.remote';
 	import { sourceProviderModeCtx, editorSchemeCtx, vcsModeCtx } from '$lib/context';
+	import type { SourceResult } from '$lib/schema';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import CodeBlock from './CodeBlock.svelte';
 	import X from '@lucide/svelte/icons/x';
@@ -39,16 +40,7 @@
 	const viewState = $derived(parseExplorerState(page.url));
 	const isOpen = $derived(browser && !!spanKey && viewState.src === spanKey);
 
-	const sourceData = $derived(
-		isOpen && span
-			? await getSource({
-					file: span.file,
-					crateName,
-					crateVersion,
-					sourceProvider: sourceProviderMode,
-				})
-			: null,
-	);
+	let sourceData = $state<SourceResult | null>(null);
 	const sourceContent = $derived(sourceData?.content ?? null);
 	const absolutePath = $derived(sourceData?.absolutePath ?? null);
 	const repoUrl = $derived(sourceData?.repoUrl ?? null);
@@ -74,6 +66,41 @@
 
 	let clonePopoverOpen = $state(false);
 	let cloneCopied = $state(false);
+
+	$effect(() => {
+		if (!isOpen || !span) {
+			sourceData = null;
+			return;
+		}
+
+		const input = {
+			file: span.file,
+			crateName,
+			crateVersion,
+			sourceProvider: sourceProviderMode,
+		};
+		let cancelled = false;
+		sourceData = null;
+
+		void getSource(input)
+			.then((result) => {
+				if (!cancelled) sourceData = result;
+			})
+			.catch((error) => {
+				if (!cancelled) {
+					sourceData = {
+						error: error instanceof Error ? error.message : String(error),
+						content: null,
+						absolutePath: null,
+						repoUrl: null,
+					};
+				}
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	});
 
 	function openInEditor() {
 		if (!absolutePath || !span) return;
@@ -171,6 +198,9 @@
 				dialog.close();
 			}
 		});
+		return () => {
+			if (dialog.open) dialog.close();
+		};
 	};
 
 	// Attachment to scroll to highlighted line when content loads
@@ -202,88 +232,93 @@
 	<span class="token-meta">:{span.line}:{span.column}</span>
 </button>
 
-<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<dialog
-	{@attach syncDialog}
-	onclose={handleDialogClose}
-	onclick={handleBackdropClick}
-	aria-label="Source: {displayFile}"
->
-	<div class="modal-panel">
-		<header class="modal-header">
-			<div class="modal-title">
-				<span class="modal-file">{displayFile}</span>
-				<span class="modal-line">:{span.line}:{span.column}</span>
-			</div>
-			<div class="modal-actions">
-				{#if absolutePath}
-					<button type="button" class="modal-action" onclick={openInEditor} title="Open in editor">
-						<SquareArrowOutUpRight size={16} />
-					</button>
-				{/if}
-				{#if repoUrl}
-					<button type="button" class="modal-action" onclick={openOnGitHub} title="View on GitHub">
-						<ExternalLink size={16} />
-					</button>
-				{/if}
-				{#if isExternalCrate && repoUrl}
-					<div class="clone-wrapper" {@attach cloneClickOutside}>
+{#if isOpen}
+	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+	<dialog
+		{@attach syncDialog}
+		onclose={handleDialogClose}
+		onclick={handleBackdropClick}
+		aria-label="Source: {displayFile}"
+	>
+		<div class="modal-panel">
+			<header class="modal-header">
+				<div class="modal-title">
+					<span class="modal-file">{displayFile}</span>
+					<span class="modal-line">:{span.line}:{span.column}</span>
+				</div>
+				<div class="modal-actions">
+					{#if absolutePath}
 						<button
 							type="button"
 							class="modal-action"
-							onclick={toggleClonePopover}
-							title="Clone repository"
+							onclick={openInEditor}
+							title="Open in editor"
 						>
-							<TerminalSquare size={16} />
+							<SquareArrowOutUpRight size={16} />
 						</button>
-						{#if clonePopoverOpen}
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<div class="clone-popover" onkeydown={handleCloneKeydown}>
-								<code class="clone-command">{cloneCommand}</code>
-								<button
-									type="button"
-									class="clone-copy"
-									onclick={copyCloneCommand}
-									title="Copy to clipboard"
-								>
-									{#if cloneCopied}
-										<Check size={14} />
-									{:else}
-										<ClipboardCopy size={14} />
-									{/if}
-								</button>
-							</div>
-						{/if}
+					{/if}
+					{#if repoUrl}
+						<button type="button" class="modal-action" onclick={openOnGitHub} title="View on GitHub">
+							<ExternalLink size={16} />
+						</button>
+					{/if}
+					{#if isExternalCrate && repoUrl}
+						<div class="clone-wrapper" {@attach cloneClickOutside}>
+							<button
+								type="button"
+								class="modal-action"
+								onclick={toggleClonePopover}
+								title="Clone repository"
+							>
+								<TerminalSquare size={16} />
+							</button>
+							{#if clonePopoverOpen}
+								<!-- svelte-ignore a11y_no_static_element_interactions -->
+								<div class="clone-popover" onkeydown={handleCloneKeydown}>
+									<code class="clone-command">{cloneCommand}</code>
+									<button
+										type="button"
+										class="clone-copy"
+										onclick={copyCloneCommand}
+										title="Copy to clipboard"
+									>
+										{#if cloneCopied}
+											<Check size={14} />
+										{:else}
+											<ClipboardCopy size={14} />
+										{/if}
+									</button>
+								</div>
+							{/if}
+						</div>
+					{/if}
+					<button type="button" class="modal-close" onclick={close} aria-label="Close">
+						<X size={18} />
+					</button>
+				</div>
+			</header>
+			<div class="modal-body" {@attach scrollToHighlight}>
+				{#if sourceData?.error}
+					<p class="source-error">{sourceData.error}</p>
+				{:else if sourceData?.content}
+					<CodeBlock
+						code={sourceData.content}
+						lang={langFromFile(span.file)}
+						{theme}
+						startLine={1}
+						highlightLines={highlightRange}
+						showLineNumbers={true}
+					/>
+				{:else}
+					<div class="flex items-center gap-2 p-4">
+						<LoaderCircleIcon class="animate-spin" size={12} />
+						<span class="text-xs text-(--muted)">Loading source...</span>
 					</div>
 				{/if}
-				<button type="button" class="modal-close" onclick={close} aria-label="Close">
-					<X size={18} />
-				</button>
 			</div>
-		</header>
-		<div class="modal-body" {@attach scrollToHighlight}>
-			{#if sourceData?.error}
-				<p class="source-error">{sourceData.error}</p>
-			{:else if sourceData?.content}
-				<CodeBlock
-					code={sourceData.content}
-					lang={langFromFile(span.file)}
-					{theme}
-					startLine={1}
-					highlightLines={highlightRange}
-					showLineNumbers={true}
-				/>
-			{:else if isOpen}
-				<div class="flex items-center gap-2 p-4">
-					<LoaderCircleIcon class="animate-spin" size={12} />
-					<span class="text-xs text-(--muted)">Loading source...</span>
-				</div>
-			{:else}
-				<p class="source-error">Source unavailable.</p>
-			{/if}
 		</div>
-	</div>
-</dialog>
+	</dialog>
+{/if}
 
 <style>
 	.source-link {

@@ -516,7 +516,7 @@
 						{/each}
 					</div>
 					<span class="mt-0.5 text-[10px] text-(--muted)">
-						Split falls back to Classic when source is unavailable.
+						Layouts change the full docs route composition.
 					</span>
 				</div>
 			</section>

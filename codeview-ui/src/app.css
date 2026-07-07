@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import 'tailwindcss' source('./');
 @import '@xyflow/svelte/dist/base.css';
 @import '$lib/shadcn/theme.css';
 
@@ -516,6 +516,35 @@
 		text-rendering: optimizeLegibility;
 	}
 
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: var(--panel-border-strong) transparent;
+	}
+
+	*::-webkit-scrollbar {
+		width: 10px;
+		height: 10px;
+	}
+
+	*::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	*::-webkit-scrollbar-thumb {
+		border: 2px solid transparent;
+		border-radius: 999px;
+		background-color: color-mix(in srgb, var(--muted-soft) 54%, transparent);
+		background-clip: padding-box;
+	}
+
+	*::-webkit-scrollbar-thumb:hover {
+		background-color: color-mix(in srgb, var(--accent) 58%, var(--muted-soft));
+	}
+
+	*::-webkit-scrollbar-corner {
+		background: transparent;
+	}
+
 	code,
 	pre,
 	kbd,
@@ -642,6 +671,13 @@
 
 	.generic-bracket {
 		flex-shrink: 0;
+	}
+
+	.inline-icon {
+		display: inline-block;
+		flex-shrink: 0;
+		width: 1em;
+		height: 1em;
 	}
 
 	.generic-sep {
@@ -876,6 +912,44 @@
 	}
 	.row-hover:hover {
 		background-color: var(--panel-muted);
+	}
+
+	.codeview-resizable-group {
+		min-height: 0;
+		height: 100%;
+		background: var(--bg);
+	}
+
+	.codeview-resize-handle {
+		z-index: 5;
+		width: 10px;
+		flex: 0 0 10px;
+		background-color: var(--bg) !important;
+		transition:
+			background-color 0.12s ease,
+			color 0.12s ease;
+	}
+
+	.codeview-resize-handle::after {
+		width: 1px;
+		background: var(--panel-border-soft);
+	}
+
+	.codeview-resize-handle:hover,
+	.codeview-resize-handle:focus-visible {
+		background-color: var(--accent-soft) !important;
+	}
+
+	.codeview-resize-handle:hover::after,
+	.codeview-resize-handle:focus-visible::after {
+		background: var(--accent);
+	}
+
+	.codeview-resize-handle > div {
+		width: 2px;
+		height: 26px;
+		border-radius: 999px;
+		background: var(--panel-border-strong);
 	}
 }
 

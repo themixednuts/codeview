@@ -19,9 +19,43 @@
 		showLineNumbers?: boolean;
 	}>();
 
-	const highlightedHtml = $derived(
-		await highlightCode(code, lang, theme, { startLine, highlightLines, showLineNumbers }),
-	);
+	function escapeHtml(text: string): string {
+		return text
+			.replace(/&/g, '&amp;')
+			.replace(/</g, '&lt;')
+			.replace(/>/g, '&gt;')
+			.replace(/"/g, '&quot;')
+			.replace(/'/g, '&#039;');
+	}
+
+	function plainCodeHtml(source: string): string {
+		return `<pre class="shiki"><code>${escapeHtml(source)}</code></pre>`;
+	}
+
+	let highlightedHtml = $state('');
+	const fallbackHtml = $derived(plainCodeHtml(code));
+	const renderedHtml = $derived(highlightedHtml || fallbackHtml);
+
+	$effect(() => {
+		const nextCode = code;
+		const nextLang = lang;
+		const nextTheme = theme;
+		const options = { startLine, highlightLines, showLineNumbers };
+		let cancelled = false;
+		highlightedHtml = '';
+
+		void highlightCode(nextCode, nextLang, nextTheme, options)
+			.then((html) => {
+				if (!cancelled) highlightedHtml = html;
+			})
+			.catch(() => {
+				if (!cancelled) highlightedHtml = plainCodeHtml(nextCode);
+			});
+
+		return () => {
+			cancelled = true;
+		};
+	});
 </script>
 
 <div
@@ -29,7 +63,7 @@
 	class:code-block--flat={variant === 'flat'}
 >
 	<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized Shiki output -->
-	{@html highlightedHtml}
+	{@html renderedHtml}
 </div>
 
 <style>

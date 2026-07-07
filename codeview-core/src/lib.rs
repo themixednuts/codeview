@@ -145,6 +145,12 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<Deprecation>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub stability: Option<StabilityInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub const_stability: Option<StabilityInfo>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_unstable: Option<ProvidedDefaultUnstable>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<FieldInfo>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variants: Option<Vec<VariantInfo>>,
@@ -210,10 +216,87 @@ pub struct Node {
     pub proc_macro_helpers: Vec<String>,
 }
 
+impl Node {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        kind: NodeKind,
+        visibility: Visibility,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            kind,
+            visibility,
+            span: None,
+            line_count: None,
+            attrs: Vec::new(),
+            is_external: false,
+            is_deprecated: false,
+            is_unsafe: false,
+            is_auto: false,
+            is_mutable: false,
+            is_stripped: false,
+            has_stripped_fields: false,
+            has_stripped_variants: false,
+            is_dyn_compatible: None,
+            deprecation: None,
+            stability: None,
+            const_stability: None,
+            default_unstable: None,
+            fields: None,
+            variants: None,
+            signature: None,
+            generics: Generics::default(),
+            docs: None,
+            doc_links: std::collections::HashMap::new(),
+            impl_type: None,
+            parent_impl: None,
+            impl_trait: None,
+            impl_category: None,
+            provided_trait_methods: None,
+            required_trait_methods: None,
+            default_trait_methods: None,
+            type_: None,
+            variant_kind: None,
+            discriminant: None,
+            const_value: None,
+            bounds: Vec::new(),
+            import_source: None,
+            import_name: None,
+            is_glob: false,
+            extern_crate_name: None,
+            extern_crate_rename: None,
+            macro_source: None,
+            proc_macro_kind: None,
+            proc_macro_helpers: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct Deprecation {
     pub since: Option<String>,
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct StabilityInfo {
+    pub feature: String,
+    #[serde(flatten)]
+    pub level: StabilityLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "level", rename_all = "snake_case")]
+pub enum StabilityLevel {
+    Stable { since: Option<String> },
+    Unstable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProvidedDefaultUnstable {
+    pub feature: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -327,7 +410,7 @@ pub enum Visibility {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Span {
     pub file: String,
     pub line: u32,
@@ -390,17 +473,11 @@ pub enum TypeRef {
     Slice { element: Box<TypeRef> },
     /// `[T; N]`. `len` is the const expression as written; may be `"N + 1"`
     /// or a parameter name — not guaranteed to be a literal.
-    Array {
-        element: Box<TypeRef>,
-        len: String,
-    },
+    Array { element: Box<TypeRef>, len: String },
     /// `impl Iterator<Item=T>`, `impl Trait + 'a`.
     ImplTrait { bounds: Vec<GenericBound> },
     /// `*const T` / `*mut T`.
-    RawPointer {
-        mutable: bool,
-        inner: Box<TypeRef>,
-    },
+    RawPointer { mutable: bool, inner: Box<TypeRef> },
     /// `<T as Trait>::Item` or `T::Item` (inherent assoc when `trait_` is None).
     QualifiedPath {
         name: String,
@@ -416,10 +493,7 @@ pub enum TypeRef {
     Infer,
     /// Pattern type, e.g. `u32 is 1..` (unstable). `pat` is the stringified
     /// pattern since rustdoc-types hides the inner pattern structure today.
-    Pat {
-        base: Box<TypeRef>,
-        pat: String,
-    },
+    Pat { base: Box<TypeRef>, pat: String },
 }
 
 /// `<…>` or `(…) -> _` arguments to a path segment.
@@ -445,10 +519,17 @@ pub enum GenericArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind")]
 pub enum GenericArg {
-    Lifetime { name: String },
-    Type { value: TypeRef },
+    Lifetime {
+        name: String,
+    },
+    Type {
+        value: TypeRef,
+    },
     /// Const generic value, e.g. the `42` in `IntoIter<u32, 42>`.
-    Const { expr: String, is_literal: bool },
+    Const {
+        expr: String,
+        is_literal: bool,
+    },
     /// `_` placeholder in generic arg position: `Vec::<_>`.
     Infer,
 }
@@ -582,10 +663,7 @@ pub enum WherePredicate {
         outlives: Vec<String>,
     },
     /// `T::Item = u32`
-    Eq {
-        lhs: TypeRef,
-        rhs: Term,
-    },
+    Eq { lhs: TypeRef, rhs: Term },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -627,11 +705,16 @@ pub struct Edge {
     pub to: String,
     pub kind: EdgeKind,
     pub confidence: Confidence,
+    /// Exact source locations that justify this relationship. Empty when
+    /// source-backed occurrence extraction is unavailable; `Node::span`
+    /// remains the declaration target for go-to-definition/declaration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub occurrences: Vec<Span>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_glob: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum EdgeKind {
     Contains,
     Defines,

@@ -296,6 +296,7 @@ async fn process_item(ctx: &CronContext, item: &super::plan::WorkItem, force: bo
 
     eprintln!("[parse-shard] processing {}@{}", item.name, item.version);
     let outcome = publish_one(PublishOptions {
+        package_name: &item.name,
         name: &canonical,
         version: &item.version,
         storage_name: &storage,
@@ -327,7 +328,7 @@ async fn success_delta(
     canonical_name: &str,
     outcome: Outcome,
 ) -> RunDelta {
-    let latest = match ctx.freshness.latest(canonical_name).await {
+    let latest = match ctx.freshness.version(canonical_name, &item.version).await {
         Ok(entry) => entry,
         Err(err) => {
             return RunDelta {

@@ -220,6 +220,13 @@
         "kind": {
           "$ref": "#/$defs/EdgeKind"
         },
+        "occurrences": {
+          "description": "Exact source locations that justify this relationship. Empty when\nsource-backed occurrence extraction is unavailable; `Node::span`\nremains the declaration target for go-to-definition/declaration.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Span"
+          }
+        },
         "to": {
           "type": "string"
         }
@@ -768,6 +775,16 @@
             "$ref": "#/$defs/GenericBound"
           }
         },
+        "const_stability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StabilityInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "const_value": {
           "type": [
             "string",
@@ -782,6 +799,16 @@
           "items": {
             "type": "string"
           }
+        },
+        "default_unstable": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProvidedDefaultUnstable"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "deprecation": {
           "anyOf": [
@@ -989,6 +1016,16 @@
             }
           ]
         },
+        "stability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StabilityInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "type": {
           "description": "The item's type (for Constant, Static, AssocConst, TypeAlias,\nAssocType, StructField with named field). Structured so the\nrenderer can produce links + syntax-aware highlighting.",
           "anyOf": [
@@ -1111,6 +1148,17 @@
         }
       ]
     },
+    "ProvidedDefaultUnstable": {
+      "type": "object",
+      "properties": {
+        "feature": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "feature"
+      ]
+    },
     "Span": {
       "type": "object",
       "properties": {
@@ -1148,6 +1196,49 @@
         "file",
         "line",
         "column"
+      ]
+    },
+    "StabilityInfo": {
+      "type": "object",
+      "properties": {
+        "feature": {
+          "type": "string"
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "level": {
+              "type": "string",
+              "const": "stable"
+            },
+            "since": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "level"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "level": {
+              "type": "string",
+              "const": "unstable"
+            }
+          },
+          "required": [
+            "level"
+          ]
+        }
+      ],
+      "required": [
+        "feature"
       ]
     },
     "Term": {

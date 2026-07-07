@@ -14,22 +14,34 @@ import type { CrateGraph, Node, Edge, Visibility } from '$lib/graph';
 import type { CrateIndex, CrateTree } from '$lib/schema';
 import { getLogger } from '$lib/log';
 import { visibilityKey, parseVisibilityKey } from '$lib/display-names';
+import { buildCrateTree } from '$lib/node-summary';
+import type { drizzle as bunSqliteDrizzle } from 'drizzle-orm/bun-sqlite';
 
 const log = getLogger('cache');
 
-/**
- * `bun:sqlite` is a Bun-only module — fatal to import at the workerd
- * module-init phase. Keep this loader lazy and local-only: the static dynamic
- * import lets Bun --compile bundle the drizzle Bun driver without hoisting it
- * into Cloudflare/workerd module initialization.
- */
-async function loadBunSqlite() {
-	const { Database } = require('bun:sqlite') as typeof import('bun:sqlite');
-	const { drizzle } = await import('drizzle-orm/bun-sqlite');
-	return { Database, drizzle };
-}
+type LocalSqliteDatabase = ReturnType<typeof bunSqliteDrizzle>;
 
-type BunSqliteModules = Awaited<ReturnType<typeof loadBunSqlite>>;
+type SqliteModules = {
+	Database: new (path: string) => any;
+	drizzle: (config: { client: any }) => LocalSqliteDatabase;
+};
+
+/**
+ * Keep SQLite runtime modules lazy and local-only. Cloudflare hosted mode must
+ * never load native SQLite; Vite+ dev currently runs SSR under Node, while the
+ * compiled local app can still run under Bun.
+ */
+async function loadSqliteModules(): Promise<SqliteModules> {
+	if (typeof Bun !== 'undefined') {
+		const { Database } = await import('bun:sqlite');
+		const { drizzle } = await import('drizzle-orm/bun-sqlite');
+		return { Database, drizzle };
+	}
+
+	const { default: Database } = await import('better-sqlite3');
+	const { drizzle } = await import('drizzle-orm/better-sqlite3');
+	return { Database, drizzle: drizzle as unknown as SqliteModules['drizzle'] };
+}
 
 const sqlModules = import.meta.glob('../db/migrations/*/migration.sql', {
 	query: '?raw',
@@ -87,18 +99,18 @@ function setCachedGraph(key: string, graph: CrateGraph): void {
 }
 
 export class LocalCache {
-	private db;
+	private db: LocalSqliteDatabase;
 	private stepMap = new Map<string, string>();
 
 	static async create(): Promise<LocalCache> {
-		return new LocalCache(await loadBunSqlite());
+		return new LocalCache(await loadSqliteModules());
 	}
 
 	private norm(name: string): string {
 		return normalizeCrateName(name);
 	}
 
-	private constructor({ Database, drizzle }: BunSqliteModules) {
+	private constructor({ Database, drizzle }: SqliteModules) {
 		mkdirSync(CACHE_DIR, { recursive: true });
 		const client = new Database(CACHE_DB);
 		client.exec('PRAGMA journal_mode = WAL;');
@@ -537,7 +549,7 @@ export class LocalCache {
 	 * @deprecated Use initCrate + insertNodes + insertEdges + finalizeCrate instead.
 	 */
 	putCrate(name: string, version: string, graph: CrateGraph, index: CrateIndex): void {
-		const tree = computeTreeSummary(graph);
+		const tree = buildCrateTree(graph);
 		this.initCrate(name, version, index);
 		this.insertNodes(name, version, graph.nodes);
 		this.insertEdges(name, version, graph.edges);
@@ -942,34 +954,4 @@ export class LocalCache {
 		}
 		return ancestors;
 	}
-}
-
-function summarizeNode(n: Node): CrateTree['nodes'][number] {
-	return {
-		id: n.id,
-		name: n.name,
-		kind: n.kind,
-		visibility: n.visibility,
-		is_external: n.is_external,
-		is_deprecated: n.is_deprecated,
-		...(n.kind === 'Impl'
-			? {
-					impl_trait: n.impl_trait,
-					impl_category: n.impl_category,
-					generics: n.generics,
-				}
-			: {}),
-	};
-}
-
-function computeTreeSummary(graph: CrateGraph): CrateTree {
-	const internalNodes = graph.nodes.filter((n) => !n.is_external);
-	const internalIds = new Set(internalNodes.map((n) => n.id));
-	const treeEdges = graph.edges.filter(
-		(e) =>
-			(e.kind === 'Contains' || e.kind === 'Defines') &&
-			internalIds.has(e.from) &&
-			internalIds.has(e.to),
-	);
-	return { nodes: internalNodes.map(summarizeNode), edges: treeEdges };
 }

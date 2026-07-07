@@ -1,8 +1,16 @@
 <script lang="ts">
+	import { Handle, Position } from '@xyflow/svelte';
 	import type { GraphNodePillFlowData } from './flow-types';
 	import KindBadge from '$lib/components/design/KindBadge.svelte';
 
 	let { data } = $props<{ data: GraphNodePillFlowData }>();
+
+	const targetPosition = $derived(
+		data.direction === 'outgoing' || data.direction === 'focus' ? Position.Left : Position.Right,
+	);
+	const sourcePosition = $derived(
+		data.direction === 'incoming' || data.direction === 'focus' ? Position.Right : Position.Left,
+	);
 
 	const style = $derived(
 		[
@@ -28,26 +36,23 @@
 		].join('; '),
 	);
 
-	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') {
-			data.onEscape?.();
-		}
-	}
 </script>
 
 <a
 	href={data.href}
 	data-sveltekit-noscroll
 	data-sveltekit-keepfocus
-	class="graph-node-pill-flow nodrag nopan flex min-w-0 items-center gap-2 rounded-lg transition-all"
+	draggable="false"
+	class="graph-node-pill-flow flex min-w-0 items-center gap-2 rounded-lg transition-all"
 	data-focus={data.isFocus}
 	data-active={data.active}
 	aria-current={data.isFocus ? 'page' : undefined}
 	title={`${data.node.path} (${data.inCount} incoming, ${data.outCount} outgoing)`}
 	{style}
-	onkeydown={handleKeydown}
 >
 	<KindBadge kind={data.node.kind} size={data.isFocus ? 20 : 16} />
+	<Handle type="target" position={targetPosition} class="graph-node-pill-flow__handle" />
+	<Handle type="source" position={sourcePosition} class="graph-node-pill-flow__handle" />
 	<span class="graph-node-pill-flow__label truncate text-left leading-none">
 		{data.node.label || data.node.id}
 	</span>
@@ -69,12 +74,12 @@
 		opacity: var(--pill-opacity);
 		transform: var(--pill-transform);
 		color: var(--pill-ink);
-		cursor: pointer;
+		cursor: grab;
 		text-decoration: none;
 	}
 
-	.graph-node-pill-flow[data-focus='true'] {
-		cursor: default;
+	.graph-node-pill-flow:active {
+		cursor: grabbing;
 	}
 
 	.graph-node-pill-flow:focus-visible {
@@ -87,6 +92,17 @@
 		font-size: 12px;
 		font-weight: 600;
 		color: var(--pill-ink);
+	}
+
+	.graph-node-pill-flow :global(.graph-node-pill-flow__handle) {
+		width: 1px;
+		height: 1px;
+		min-width: 1px;
+		min-height: 1px;
+		border: 0;
+		background: transparent;
+		opacity: 0;
+		pointer-events: none;
 	}
 
 	.graph-node-pill-flow[data-focus='true'] .graph-node-pill-flow__label {

@@ -39,11 +39,7 @@ impl SysrootInfo {
     /// Path to the rustdoc JSON for a given crate, if `rust-docs-json` is
     /// installed for this toolchain and that crate is shipped.
     pub fn json_path_for(&self, crate_name: &str) -> Option<PathBuf> {
-        if self
-            .available_crates
-            .iter()
-            .any(|c| c == crate_name)
-        {
+        if self.available_crates.iter().any(|c| c == crate_name) {
             Some(self.json_dir.join(format!("{crate_name}.json")))
         } else {
             None
@@ -114,11 +110,14 @@ fn parse_rustc_version(line: &str) -> Option<String> {
 pub fn detect_sysroot(toolchain: Option<&str>) -> Result<SysrootInfo> {
     let sysroot_path: PathBuf = exec_rustc(toolchain, &["--print", "sysroot"])?.into();
     let version_line = exec_rustc(toolchain, &["--version"])?;
-    let toolchain_version = parse_rustc_version(&version_line).ok_or_else(|| {
-        anyhow!("could not parse rustc version from {version_line:?}")
-    })?;
+    let toolchain_version = parse_rustc_version(&version_line)
+        .ok_or_else(|| anyhow!("could not parse rustc version from {version_line:?}"))?;
 
-    let json_dir = sysroot_path.join("share").join("doc").join("rust").join("json");
+    let json_dir = sysroot_path
+        .join("share")
+        .join("doc")
+        .join("rust")
+        .join("json");
     let available_crates = list_json_crates(&json_dir).unwrap_or_default();
 
     Ok(SysrootInfo {

@@ -9,7 +9,7 @@ export const getNodeDetail = query.batch(
 	NodeDetailInputSchema,
 	async (inputs): Promise<(input: NodeDetailInput, index: number) => NodeDetail | null> => {
 		const provider = await loader.provider();
-		const workspace = await provider.loadWorkspace();
+		const workspace = await loader.localWorkspace(provider);
 		const results = await Effect.runPromise(
 			Effect.forEach(
 				inputs,

@@ -63,9 +63,12 @@ pub async fn run(args: Mimic) -> Result<()> {
         let status = Command::new(&exe)
             .arg("cron")
             .arg("parse-one")
-            .arg("--name").arg(&name)
-            .arg("--version").arg(&version)
-            .arg("--bucket").arg(&args.bucket)
+            .arg("--name")
+            .arg(&name)
+            .arg("--version")
+            .arg(&version)
+            .arg("--bucket")
+            .arg(&args.bucket)
             .args(if args.force { vec!["--force"] } else { vec![] })
             .status()?;
         let code = status.code().unwrap_or(-1);

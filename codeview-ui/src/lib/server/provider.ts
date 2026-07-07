@@ -35,8 +35,6 @@ export interface CrossEdgeData {
 }
 
 export interface DataProvider {
-	// Existing (kept for local CLI / single-workspace mode)
-	loadWorkspace(): Promise<Workspace | null>;
 	loadSourceFile(
 		relativePath: string,
 		crateName?: string,
@@ -116,6 +114,14 @@ export interface DataProvider {
 	 * timeout with partial data from progressive storage.
 	 */
 	ensureParsed?(name: string, version: string): Promise<void>;
+}
+
+export interface LocalWorkspaceProvider {
+	loadWorkspace(): Promise<Workspace | null>;
+}
+
+export function hasLocalWorkspace(provider: DataProvider): provider is DataProvider & LocalWorkspaceProvider {
+	return typeof (provider as Partial<LocalWorkspaceProvider>).loadWorkspace === 'function';
 }
 
 /**

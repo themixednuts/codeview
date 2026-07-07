@@ -29,20 +29,22 @@ export const kindLabels: Record<NodeKind, string> = {
  *
  * The `Restricted` variant carries the actual restriction path so we can
  * show `pub(in crate::foo::bar)` instead of a generic "Restricted" badge.
- * Schema v3+; legacy artifacts pre-bump deserialised as the bare enum
- * value (no `kind`) and would land in the fallback.
+ * Schema v3+ values carry `kind`; bare enum values land in the fallback.
  */
 export function visibilityLabel(visibility: Visibility): string {
-	switch (visibility.kind) {
+	const parsed = visibilityParts(visibility);
+	switch (parsed.kind) {
 		case 'Public':
 			return 'Public';
 		case 'Crate':
 			return 'pub(crate)';
 		case 'Restricted':
-			return `pub(in ${visibility.path})`;
+			return `pub(in ${parsed.path ?? 'Unknown'})`;
 		case 'Inherited':
 			return 'Inherited';
 		case 'Unknown':
+			return 'Unknown';
+		default:
 			return 'Unknown';
 	}
 }
@@ -54,7 +56,7 @@ export function visibilityLabel(visibility: Visibility): string {
  * `PubSuper` variant) by failing closed.
  */
 export function isPublic(visibility: Visibility): boolean {
-	return visibility.kind === 'Public';
+	return visibilityParts(visibility).kind === 'Public';
 }
 
 /**
@@ -71,9 +73,63 @@ export function isPublic(visibility: Visibility): boolean {
  * Round-trip safe with `parseVisibilityKey()` for all variants.
  */
 export function visibilityKey(visibility: Visibility): string {
-	return visibility.kind === 'Restricted'
-		? `Restricted:${visibility.path}`
-		: visibility.kind;
+	const parsed = visibilityParts(visibility);
+	return parsed.kind === 'Restricted' ? `Restricted:${parsed.path ?? ''}` : parsed.kind;
+}
+
+function visibilityParts(visibility: Visibility): { kind: string; path?: string } {
+	const raw = visibility as unknown;
+	if (typeof raw === 'string') return normalizeVisibilityKind(raw);
+	if (!raw || typeof raw !== 'object') return { kind: 'Unknown' };
+
+	const record = raw as {
+		kind?: unknown;
+		path?: unknown;
+		restricted?: { path?: unknown } | unknown;
+	};
+
+	if (record.restricted && typeof record.restricted === 'object') {
+		return {
+			kind: 'Restricted',
+			path: primitiveText((record.restricted as { path?: unknown }).path),
+		};
+	}
+
+	const kind = primitiveText(record.kind);
+	return {
+		...normalizeVisibilityKind(kind ?? 'Unknown'),
+		path: primitiveText(record.path),
+	};
+}
+
+function normalizeVisibilityKind(kind: string): { kind: string; path?: string } {
+	switch (kind) {
+		case 'Public':
+		case 'public':
+			return { kind: 'Public' };
+		case 'Crate':
+		case 'crate':
+			return { kind: 'Crate' };
+		case 'Restricted':
+		case 'restricted':
+			return { kind: 'Restricted' };
+		case 'Inherited':
+		case 'default':
+			return { kind: 'Inherited' };
+		case 'Unknown':
+			return { kind: 'Unknown' };
+		default:
+			return { kind: 'Unknown' };
+	}
+}
+
+function primitiveText(value: unknown): string | undefined {
+	if (typeof value === 'string') return value;
+	if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+		return String(value);
+	}
+	if (typeof value === 'symbol') return value.description;
+	return undefined;
 }
 
 /**
@@ -81,9 +137,7 @@ export function visibilityKey(visibility: Visibility): string {
  * its serialized string form. Used by the local SQLite cache when
  * reading visibility back out of the nodeIndex/crossNodes TEXT column.
  *
- * Unrecognised strings fall back to `{ kind: 'Unknown' }` — keeps
- * legacy v2 artifacts (which stored bare 'Public' etc.) readable
- * via this same path.
+ * Unrecognised strings fall back to `{ kind: 'Unknown' }`.
  */
 export function parseVisibilityKey(key: string): Visibility {
 	if (key === 'Public') return { kind: 'Public' };

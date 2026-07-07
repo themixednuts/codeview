@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { HTMLButtonAttributes } from 'svelte/elements';
-	import { cn, type WithElementRef } from '$lib/shadcn/utils.js';
+	import { cn, refAttachment, type WithElementRef } from '$lib/shadcn/utils.js';
 
 	type Variant = 'default' | 'outline' | 'secondary' | 'ghost';
 	type Size = 'default' | 'sm' | 'icon';
@@ -32,10 +32,12 @@
 		children,
 		...restProps
 	}: Props = $props();
+
+	const attachRef = refAttachment<HTMLButtonElement>((node) => (ref = node));
 </script>
 
 <button
-	bind:this={ref}
+	{@attach attachRef}
 	data-slot="button"
 	class={cn(
 		'corner-squircle inline-flex items-center justify-center gap-1.5 rounded-(--radius-control) font-medium whitespace-nowrap transition-colors focus-visible:ring-2 focus-visible:ring-(--accent) focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',

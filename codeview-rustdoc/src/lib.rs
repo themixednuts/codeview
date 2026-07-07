@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "native")]
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 #[cfg(feature = "native")]
 use std::process::Command;
@@ -15,10 +16,12 @@ use std::process::Command;
 use cargo_metadata::{MetadataCommand, TargetKind};
 use codeview_core::{
     ArgumentInfo, Confidence, CrateGraph, Deprecation, Edge, EdgeKind, ExternalCrate, FieldInfo,
-    FunctionSignature, Graph, ImplCategory, ImplType, Node, NodeKind, Span, VariantInfo,
-    VariantKind as CvVariantKind, Visibility, Workspace,
+    FunctionSignature, Graph, ImplCategory, ImplType, Node, NodeKind, ProvidedDefaultUnstable,
+    Span, StabilityInfo, StabilityLevel, VariantInfo, VariantKind as CvVariantKind, Visibility,
+    Workspace,
 };
 use rustdoc_types as rdt;
+use syn::spanned::Spanned;
 use syn::visit::Visit;
 use thiserror::Error;
 
@@ -441,7 +444,7 @@ pub fn load_workspace_graph(
     call_mode: CallMode,
 ) -> Result<Workspace, RustdocError> {
     let mut nodes_by_id: HashMap<String, Node> = HashMap::new();
-    let mut edge_keys = HashSet::new();
+    let mut edge_index = EdgeIndex::default();
     let mut edges = Vec::new();
 
     // Collect crate versions from cargo metadata
@@ -507,12 +510,9 @@ pub fn load_workspace_graph(
             }
         }
 
-        // Merge edges (deduplicate by from+to+kind)
+        // Merge edges without dropping confidence, glob status, or occurrences.
         for edge in graph.edges {
-            let key = format!("{}|{}|{:?}", edge.from, edge.to, edge.kind);
-            if edge_keys.insert(key) {
-                edges.push(edge);
-            }
+            edge_index.insert_or_merge(&mut edges, edge);
         }
     }
 
@@ -782,6 +782,9 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
 /// | 51  | `7fa8901cd090` | `GenericArgs` → `Option<Box<GenericArgs>>` (backward-compatible) |
 /// | 54  | `078332fdc8e1` | `Item.attrs`: `Vec<String>` → `Vec<Attribute>`        |
 /// | 57  | `361af821ab16` | Added required `ExternalCrate.path: PathBuf`          |
+/// | 58  | `16d4d0853c03` | Added required `Item.stability`                      |
+/// | 59  | `6b6982e08e32` | Added required `Item.const_stability`                |
+/// | 60  | `fd623933c2a9` | Added required default-body stability fields         |
 ///
 /// Non-breaking bumps (v45–v46, v48–v50, v52–v53, v55–v56) only changed
 /// attribute pretty-printing or added new enum variants — no fixup needed.
@@ -802,6 +805,15 @@ mod compat {
         }
         if source < 57 && TARGET >= 57 {
             fixup_external_crate_path(doc);
+        }
+        if source < 58 && TARGET >= 58 {
+            walk(doc, fixup_item_stability);
+        }
+        if source < 59 && TARGET >= 59 {
+            walk(doc, fixup_item_const_stability);
+        }
+        if source < 60 && TARGET >= 60 {
+            walk(doc, fixup_default_body_stability);
         }
         // Always: catch unknown Attribute variants from newer nightlies.
         walk(doc, fixup_unknown_attrs);
@@ -835,6 +847,33 @@ mod compat {
         for ec in ext_crates.values_mut() {
             let Value::Object(obj) = ec else { continue };
             obj.entry("path").or_insert(Value::String(String::new()));
+        }
+    }
+
+    /// v58: `Item` gained required `stability`. Older JSON has no data here.
+    fn fixup_item_stability(map: &mut serde_json::Map<String, Value>) {
+        if map.contains_key("inner") {
+            map.entry("stability").or_insert(Value::Null);
+        }
+    }
+
+    /// v59: `Item` gained required `const_stability`. Older JSON has no data here.
+    fn fixup_item_const_stability(map: &mut serde_json::Map<String, Value>) {
+        if map.contains_key("inner") {
+            map.entry("const_stability").or_insert(Value::Null);
+        }
+    }
+
+    /// v60: function/associated defaults gained required unstable-default metadata.
+    fn fixup_default_body_stability(map: &mut serde_json::Map<String, Value>) {
+        let Some(Value::Object(inner)) = map.get_mut("inner") else {
+            return;
+        };
+        for key in ["function", "assoc_const", "assoc_type"] {
+            let Some(Value::Object(payload)) = inner.get_mut(key) else {
+                continue;
+            };
+            payload.entry("default_unstable").or_insert(Value::Null);
         }
     }
 
@@ -1266,7 +1305,7 @@ fn build_graph_with_stats(
 
     let mut graph = Graph::new();
     let mut node_cache = HashSet::new();
-    let mut edge_cache = HashSet::new();
+    let mut edge_cache = EdgeIndex::with_capacity(krate.index.len().saturating_mul(4));
     let method_ids = collect_method_ids(krate);
     let path_index = build_path_index(krate, crate_name);
     let function_index = build_function_index(krate, &method_ids, crate_name);
@@ -1396,55 +1435,51 @@ fn build_graph_with_stats(
             // bound_links removed: type IDs now live inline in
             // TypeRef::ResolvedPath, so the side table is redundant.
 
+            let mut node = Node::new(node_id.clone(), name, node_kind, visibility);
+            node.line_count = line_count(&span);
+            node.span = span;
+            node.attrs = attrs;
+            node.is_external = is_external;
+            node.is_deprecated = deprecation.is_some();
+            node.is_unsafe = details.is_unsafe;
+            node.is_auto = details.is_auto;
+            node.is_mutable = details.is_mutable;
+            node.is_stripped = details.is_stripped;
+            node.has_stripped_fields = details.has_stripped_fields;
+            node.has_stripped_variants = details.has_stripped_variants;
+            node.is_dyn_compatible = details.is_dyn_compatible;
+            node.deprecation = deprecation;
+            node.stability = item.and_then(|item| map_stability(item.stability.as_deref()));
+            node.const_stability =
+                item.and_then(|item| map_stability(item.const_stability.as_deref()));
+            node.default_unstable = details.default_unstable;
+            node.fields = details.fields;
+            node.variants = details.variants;
+            node.signature = details.signature;
+            node.generics = details.generics;
+            node.docs = details.docs;
+            node.doc_links = doc_links;
+            node.required_trait_methods = details.required_trait_methods;
+            node.default_trait_methods = details.default_trait_methods;
+            node.type_ = details.type_;
+            node.variant_kind = details.variant_kind;
+            node.discriminant = details.discriminant;
+            node.const_value = details.const_value;
+            node.bounds = details.bounds;
+            node.import_source = details.import_source;
+            node.import_name = details.import_name;
+            node.is_glob = details.is_glob;
+            node.extern_crate_name = details.extern_crate_name;
+            node.extern_crate_rename = details.extern_crate_rename;
+            node.macro_source = details.macro_source;
+            node.proc_macro_kind = details.proc_macro_kind;
+            node.proc_macro_helpers = details.proc_macro_helpers;
+
             upsert_node(
                 &mut graph,
                 &mut node_cache,
                 &mut placeholder_module_nodes,
-                Node {
-                    id: node_id.clone(),
-                    name,
-                    kind: node_kind,
-                    visibility,
-                    line_count: line_count(&span),
-                    span,
-                    attrs,
-                    is_external,
-                    is_deprecated: deprecation.is_some(),
-                    is_unsafe: details.is_unsafe,
-                    is_auto: details.is_auto,
-                    is_mutable: details.is_mutable,
-                    is_stripped: details.is_stripped,
-                    has_stripped_fields: details.has_stripped_fields,
-                    has_stripped_variants: details.has_stripped_variants,
-                    is_dyn_compatible: details.is_dyn_compatible,
-                    deprecation,
-                    fields: details.fields,
-                    variants: details.variants,
-                    signature: details.signature,
-                    generics: details.generics,
-                    docs: details.docs,
-                    doc_links,
-                    impl_type: None,
-                    parent_impl: None,
-                    impl_trait: None,
-                    impl_category: None,
-                    provided_trait_methods: None,
-                    required_trait_methods: details.required_trait_methods,
-                    default_trait_methods: details.default_trait_methods,
-                    type_: details.type_,
-                    variant_kind: details.variant_kind,
-                    discriminant: details.discriminant,
-                    const_value: details.const_value,
-                    bounds: details.bounds,
-                    import_source: details.import_source,
-                    import_name: details.import_name,
-                    is_glob: details.is_glob,
-                    extern_crate_name: details.extern_crate_name,
-                    extern_crate_rename: details.extern_crate_rename,
-                    macro_source: details.macro_source,
-                    proc_macro_kind: details.proc_macro_kind,
-                    proc_macro_helpers: details.proc_macro_helpers,
-                },
+                node,
             );
         }
 
@@ -1452,13 +1487,18 @@ fn build_graph_with_stats(
             // Skip self-loops (can happen when path is just the crate name)
             if parent_id != node_id {
                 let kind = structural_edge_kind(&parent_id, &item_crate_name, &path_index);
-                push_edge(
+                let occurrence = krate
+                    .index
+                    .get(item_id)
+                    .and_then(|item| item.span.as_ref().map(map_span));
+                push_edge_with_occurrence(
                     &mut graph,
                     &mut edge_cache,
                     parent_id,
                     node_id,
                     kind,
                     Confidence::Static,
+                    occurrence,
                 );
             }
         }
@@ -1494,6 +1534,7 @@ fn build_graph_with_stats(
                     is_external,
                 );
                 let impl_id = impl_node_id(&item_crate_name, item.id);
+                let impl_span = item.span.as_ref().map(map_span);
                 // Resolve the trait ID for trait impls
                 let impl_trait_id = impl_block.trait_.as_ref().and_then(|trait_path| {
                     resolve_id(krate, crate_name, &path_index, trait_path.id)
@@ -1517,63 +1558,41 @@ fn build_graph_with_stats(
                     } else {
                         ImplCategory::Inherent
                     };
-                    let span = item.span.as_ref().map(map_span);
+                    let span = impl_span.clone();
                     let deprecation = map_deprecation(item.deprecation.as_ref());
-                    graph.add_node(Node {
-                        id: impl_id.clone(),
+                    let mut node = Node::new(
+                        impl_id.clone(),
                         name,
-                        kind: NodeKind::Impl,
-                        visibility: map_visibility(&item.visibility),
-                        line_count: line_count(&span),
-                        span,
-                        attrs: format_attributes(&item.attrs),
-                        is_external,
-                        is_deprecated: deprecation.is_some(),
-                        is_unsafe: impl_block.is_unsafe,
-                        is_auto: false,
-                        is_mutable: false,
-                        is_stripped: false,
-                        has_stripped_fields: false,
-                        has_stripped_variants: false,
-                        is_dyn_compatible: None,
-                        deprecation,
-                        fields: None,
-                        variants: None,
-                        signature: None,
-                        generics: map_generics(&impl_block.generics),
-                        docs: extract_docs(item),
-                        doc_links: extract_doc_links(
-                            item,
-                            krate,
-                            crate_name,
-                            &path_index,
-                            &canonical_to_alias,
-                        ),
-                        impl_type,
-                        parent_impl: None,
-                        impl_trait: impl_trait_id.clone(),
-                        impl_category: Some(impl_category),
-                        provided_trait_methods: if impl_block.provided_trait_methods.is_empty() {
-                            None
-                        } else {
-                            Some(impl_block.provided_trait_methods.clone())
-                        },
-                        required_trait_methods: None,
-                        default_trait_methods: None,
-                        type_: None,
-                        variant_kind: None,
-                        discriminant: None,
-                        const_value: None,
-                        bounds: Vec::new(),
-                        import_source: None,
-                        import_name: None,
-                        is_glob: false,
-                        extern_crate_name: None,
-                        extern_crate_rename: None,
-                        macro_source: None,
-                        proc_macro_kind: None,
-                        proc_macro_helpers: Vec::new(),
-                    });
+                        NodeKind::Impl,
+                        map_visibility(&item.visibility),
+                    );
+                    node.line_count = line_count(&span);
+                    node.span = span;
+                    node.attrs = format_attributes(&item.attrs);
+                    node.is_external = is_external;
+                    node.is_deprecated = deprecation.is_some();
+                    node.is_unsafe = impl_block.is_unsafe;
+                    node.deprecation = deprecation;
+                    node.stability = map_stability(item.stability.as_deref());
+                    node.const_stability = map_stability(item.const_stability.as_deref());
+                    node.generics = map_generics(&impl_block.generics);
+                    node.docs = extract_docs(item);
+                    node.doc_links = extract_doc_links(
+                        item,
+                        krate,
+                        crate_name,
+                        &path_index,
+                        &canonical_to_alias,
+                    );
+                    node.impl_type = impl_type;
+                    node.impl_trait = impl_trait_id.clone();
+                    node.impl_category = Some(impl_category);
+                    node.provided_trait_methods = if impl_block.provided_trait_methods.is_empty() {
+                        None
+                    } else {
+                        Some(impl_block.provided_trait_methods.clone())
+                    };
+                    graph.add_node(node);
                     node_cache.insert(impl_id.clone());
                 }
 
@@ -1582,39 +1601,42 @@ fn build_graph_with_stats(
                     && let Some(parent_node_id) =
                         resolve_id(krate, crate_name, &path_index, *parent_id)
                 {
-                    push_edge(
+                    push_edge_with_occurrence(
                         &mut graph,
                         &mut edge_cache,
                         parent_node_id,
                         impl_id.clone(),
                         EdgeKind::Contains,
                         Confidence::Static,
+                        impl_span.clone(),
                     );
                 }
 
                 if let Some(for_id) = type_to_id(&impl_block.for_)
                     && let Some(type_node_id) = resolve_id(krate, crate_name, &path_index, for_id)
                 {
-                    push_edge(
+                    push_edge_with_occurrence(
                         &mut graph,
                         &mut edge_cache,
                         type_node_id.clone(),
                         impl_id.clone(),
                         EdgeKind::Defines,
                         Confidence::Static,
+                        impl_span.clone(),
                     );
 
                     if let Some(trait_path) = impl_block.trait_.as_ref()
                         && let Some(trait_node_id) =
                             resolve_id(krate, crate_name, &path_index, trait_path.id)
                     {
-                        push_edge(
+                        push_edge_with_occurrence(
                             &mut graph,
                             &mut edge_cache,
                             type_node_id,
                             trait_node_id,
                             EdgeKind::Implements,
                             Confidence::Static,
+                            impl_span.clone(),
                         );
                     }
                 }
@@ -1637,75 +1659,77 @@ fn build_graph_with_stats(
                     // This avoids shared children when the same rustdoc ID appears
                     // in multiple impl blocks (e.g. blanket impls like `impl<T> Any for T`).
                     let assoc_node_id = format!("{}::{}-{}", impl_id, assoc_prefix, assoc_id.0);
+                    let assoc_span = assoc_item.span.as_ref().map(map_span);
                     if !node_cache.contains(&assoc_node_id) {
                         let name = assoc_item
                             .name
                             .clone()
                             .unwrap_or_else(|| assoc_node_id.clone());
                         let details = extract_item_details(&krate.index, assoc_item);
-                        let span = assoc_item.span.as_ref().map(map_span);
+                        let span = assoc_span.clone();
                         let deprecation = map_deprecation(assoc_item.deprecation.as_ref());
-                        graph.add_node(Node {
-                            id: assoc_node_id.clone(),
+                        let mut node = Node::new(
+                            assoc_node_id.clone(),
                             name,
                             kind,
-                            visibility: map_visibility(&assoc_item.visibility),
-                            line_count: line_count(&span),
-                            span,
-                            attrs: format_attributes(&assoc_item.attrs),
-                            is_external,
-                            is_deprecated: deprecation.is_some(),
-                            is_unsafe: details.is_unsafe,
-                            is_auto: details.is_auto,
-                            is_mutable: details.is_mutable,
-                            is_stripped: details.is_stripped,
-                            has_stripped_fields: details.has_stripped_fields,
-                            has_stripped_variants: details.has_stripped_variants,
-                            is_dyn_compatible: details.is_dyn_compatible,
-                            deprecation,
-                            fields: details.fields,
-                            variants: details.variants,
-                            signature: details.signature,
-                            generics: details.generics,
-                            docs: details.docs,
-                            doc_links: extract_doc_links(
-                                assoc_item,
-                                krate,
-                                crate_name,
-                                &path_index,
-                                &canonical_to_alias,
-                            ),
-                            impl_type: None,
-                            parent_impl: Some(impl_id.clone()),
-                            impl_trait: None,
-                            impl_category: None,
-                            provided_trait_methods: None,
-                            required_trait_methods: details.required_trait_methods,
-                            default_trait_methods: details.default_trait_methods,
-                            type_: details.type_,
-                            variant_kind: details.variant_kind,
-                            discriminant: details.discriminant,
-                            const_value: details.const_value,
-                            bounds: details.bounds,
-                            import_source: details.import_source,
-                            import_name: details.import_name,
-                            is_glob: details.is_glob,
-                            extern_crate_name: details.extern_crate_name,
-                            extern_crate_rename: details.extern_crate_rename,
-                            macro_source: details.macro_source,
-                            proc_macro_kind: details.proc_macro_kind,
-                            proc_macro_helpers: details.proc_macro_helpers,
-                        });
+                            map_visibility(&assoc_item.visibility),
+                        );
+                        node.line_count = line_count(&span);
+                        node.span = span;
+                        node.attrs = format_attributes(&assoc_item.attrs);
+                        node.is_external = is_external;
+                        node.is_deprecated = deprecation.is_some();
+                        node.is_unsafe = details.is_unsafe;
+                        node.is_auto = details.is_auto;
+                        node.is_mutable = details.is_mutable;
+                        node.is_stripped = details.is_stripped;
+                        node.has_stripped_fields = details.has_stripped_fields;
+                        node.has_stripped_variants = details.has_stripped_variants;
+                        node.is_dyn_compatible = details.is_dyn_compatible;
+                        node.deprecation = deprecation;
+                        node.stability = map_stability(assoc_item.stability.as_deref());
+                        node.const_stability = map_stability(assoc_item.const_stability.as_deref());
+                        node.default_unstable = details.default_unstable;
+                        node.fields = details.fields;
+                        node.variants = details.variants;
+                        node.signature = details.signature;
+                        node.generics = details.generics;
+                        node.docs = details.docs;
+                        node.doc_links = extract_doc_links(
+                            assoc_item,
+                            krate,
+                            crate_name,
+                            &path_index,
+                            &canonical_to_alias,
+                        );
+                        node.parent_impl = Some(impl_id.clone());
+                        node.required_trait_methods = details.required_trait_methods;
+                        node.default_trait_methods = details.default_trait_methods;
+                        node.type_ = details.type_;
+                        node.variant_kind = details.variant_kind;
+                        node.discriminant = details.discriminant;
+                        node.const_value = details.const_value;
+                        node.bounds = details.bounds;
+                        node.import_source = details.import_source;
+                        node.import_name = details.import_name;
+                        node.is_glob = details.is_glob;
+                        node.extern_crate_name = details.extern_crate_name;
+                        node.extern_crate_rename = details.extern_crate_rename;
+                        node.macro_source = details.macro_source;
+                        node.proc_macro_kind = details.proc_macro_kind;
+                        node.proc_macro_helpers = details.proc_macro_helpers;
+                        graph.add_node(node);
                         node_cache.insert(assoc_node_id.clone());
                     }
 
-                    push_edge(
+                    push_edge_with_occurrence(
                         &mut graph,
                         &mut edge_cache,
                         impl_id.clone(),
                         assoc_node_id,
                         EdgeKind::Defines,
                         Confidence::Static,
+                        assoc_span,
                     );
                 }
 
@@ -1739,13 +1763,18 @@ fn build_graph_with_stats(
                     if let Some(assoc_node_id) =
                         resolve_id(krate, crate_name, &path_index, *assoc_id)
                     {
-                        push_edge(
+                        let occurrence = krate
+                            .index
+                            .get(assoc_id)
+                            .and_then(|item| item.span.as_ref().map(map_span));
+                        push_edge_with_occurrence(
                             &mut graph,
                             &mut edge_cache,
                             owner_id.clone(),
                             assoc_node_id,
                             EdgeKind::Defines,
                             Confidence::Static,
+                            occurrence,
                         );
                     }
                 }
@@ -2035,6 +2064,26 @@ fn map_deprecation(deprecation: Option<&rdt::Deprecation>) -> Option<Deprecation
     deprecation.map(|deprecation| Deprecation {
         since: deprecation.since.clone(),
         note: deprecation.note.clone(),
+    })
+}
+
+fn map_stability(stability: Option<&rdt::Stability>) -> Option<StabilityInfo> {
+    stability.map(|stability| StabilityInfo {
+        feature: stability.feature.clone(),
+        level: match &stability.level {
+            rdt::StabilityLevel::Stable { since } => StabilityLevel::Stable {
+                since: since.clone(),
+            },
+            rdt::StabilityLevel::Unstable => StabilityLevel::Unstable,
+        },
+    })
+}
+
+fn map_default_unstable(
+    default_unstable: Option<&rdt::ProvidedDefaultUnstable>,
+) -> Option<ProvidedDefaultUnstable> {
+    default_unstable.map(|default_unstable| ProvidedDefaultUnstable {
+        feature: default_unstable.feature.clone(),
     })
 }
 
@@ -2852,6 +2901,7 @@ struct ItemDetails {
     is_dyn_compatible: Option<bool>,
     required_trait_methods: Option<Vec<String>>,
     default_trait_methods: Option<Vec<String>>,
+    default_unstable: Option<ProvidedDefaultUnstable>,
     /// Structured type expression (replaces the old `type_name: String`).
     type_: Option<TypeRef>,
     variant_kind: Option<CvVariantKind>,
@@ -2987,6 +3037,7 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
                 &function.generics,
             )),
             generics: map_generics(&function.generics),
+            default_unstable: map_default_unstable(function.default_unstable.as_deref()),
             docs,
             ..Default::default()
         },
@@ -3059,16 +3110,23 @@ fn extract_item_details(index: &HashMap<rdt::Id, rdt::Item>, item: &rdt::Item) -
             generics,
             bounds,
             type_,
+            default_unstable,
         } => ItemDetails {
             generics: map_generics(generics),
             bounds: map_bounds(bounds),
             type_: type_.as_ref().map(map_type),
+            default_unstable: map_default_unstable(default_unstable.as_deref()),
             docs,
             ..Default::default()
         },
-        rdt::ItemEnum::AssocConst { type_, value } => ItemDetails {
+        rdt::ItemEnum::AssocConst {
+            type_,
+            value,
+            default_unstable,
+        } => ItemDetails {
             type_: Some(map_type(type_)),
             const_value: value.clone(),
+            default_unstable: map_default_unstable(default_unstable.as_deref()),
             docs,
             ..Default::default()
         },
@@ -3112,58 +3170,16 @@ fn ensure_crate_node(
         return;
     }
 
-    graph.add_node(Node {
-        id: crate_name.to_string(),
-        name: crate_name.to_string(),
-        kind: NodeKind::Crate,
-        visibility,
-        line_count: None,
-        span: None,
-        attrs: Vec::new(),
-        is_external,
-        is_deprecated: false,
-        is_unsafe: false,
-        is_auto: false,
-        is_mutable: false,
-        is_stripped: false,
-        has_stripped_fields: false,
-        has_stripped_variants: false,
-        is_dyn_compatible: None,
-        deprecation: None,
-        fields: None,
-        variants: None,
-        signature: None,
-        generics: CvGenerics::default(),
-        docs: None,
-        doc_links: HashMap::new(),
-        impl_type: None,
-        parent_impl: None,
-        impl_trait: None,
-        impl_category: None,
-        provided_trait_methods: None,
-        required_trait_methods: None,
-        default_trait_methods: None,
-        type_: None,
-        variant_kind: None,
-        discriminant: None,
-        const_value: None,
-        bounds: Vec::new(),
-        import_source: None,
-        import_name: None,
-        is_glob: false,
-        extern_crate_name: None,
-        extern_crate_rename: None,
-        macro_source: None,
-        proc_macro_kind: None,
-        proc_macro_helpers: Vec::new(),
-    });
+    let mut node = Node::new(crate_name, crate_name, NodeKind::Crate, visibility);
+    node.is_external = is_external;
+    graph.add_node(node);
     node_cache.insert(crate_name.to_string());
 }
 
 fn ensure_module_nodes(
     graph: &mut Graph,
     node_cache: &mut HashSet<String>,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     placeholder_module_nodes: &mut HashSet<String>,
     crate_name: &str,
     path: &[String],
@@ -3181,51 +3197,14 @@ fn ensure_module_nodes(
             break;
         }
         if !node_cache.contains(&module_id) {
-            graph.add_node(Node {
-                id: module_id.clone(),
-                name: segment.clone(),
-                kind: NodeKind::Module,
-                visibility: Visibility::Unknown,
-                line_count: None,
-                span: None,
-                attrs: Vec::new(),
-                is_external,
-                is_deprecated: false,
-                is_unsafe: false,
-                is_auto: false,
-                is_mutable: false,
-                is_stripped: false,
-                has_stripped_fields: false,
-                has_stripped_variants: false,
-                is_dyn_compatible: None,
-                deprecation: None,
-                fields: None,
-                variants: None,
-                signature: None,
-                generics: CvGenerics::default(),
-                docs: None,
-                doc_links: HashMap::new(),
-                impl_type: None,
-                parent_impl: None,
-                impl_trait: None,
-                impl_category: None,
-                provided_trait_methods: None,
-                required_trait_methods: None,
-                default_trait_methods: None,
-                type_: None,
-                variant_kind: None,
-                discriminant: None,
-                const_value: None,
-                bounds: Vec::new(),
-                import_source: None,
-                import_name: None,
-                is_glob: false,
-                extern_crate_name: None,
-                extern_crate_rename: None,
-                macro_source: None,
-                proc_macro_kind: None,
-                proc_macro_helpers: Vec::new(),
-            });
+            let mut node = Node::new(
+                module_id.clone(),
+                segment.clone(),
+                NodeKind::Module,
+                Visibility::Unknown,
+            );
+            node.is_external = is_external;
+            graph.add_node(node);
             node_cache.insert(module_id.clone());
             placeholder_module_nodes.insert(module_id.clone());
         }
@@ -3308,51 +3287,10 @@ fn prune_dangling_edges(graph: &mut Graph, node_cache: &HashSet<String>) -> usiz
 }
 
 fn external_stub_node(id: String, kind: NodeKind) -> Node {
-    Node {
-        name: last_segment(id.clone()),
-        id,
-        kind,
-        visibility: Visibility::Unknown,
-        line_count: None,
-        span: None,
-        attrs: Vec::new(),
-        is_external: true,
-        is_deprecated: false,
-        is_unsafe: false,
-        is_auto: false,
-        is_mutable: false,
-        is_stripped: false,
-        has_stripped_fields: false,
-        has_stripped_variants: false,
-        is_dyn_compatible: None,
-        deprecation: None,
-        fields: None,
-        variants: None,
-        signature: None,
-        generics: CvGenerics::default(),
-        docs: None,
-        doc_links: HashMap::new(),
-        impl_type: None,
-        parent_impl: None,
-        impl_trait: None,
-        impl_category: None,
-        provided_trait_methods: None,
-        required_trait_methods: None,
-        default_trait_methods: None,
-        type_: None,
-        variant_kind: None,
-        discriminant: None,
-        const_value: None,
-        bounds: Vec::new(),
-        import_source: None,
-        import_name: None,
-        is_glob: false,
-        extern_crate_name: None,
-        extern_crate_rename: None,
-        macro_source: None,
-        proc_macro_kind: None,
-        proc_macro_helpers: Vec::new(),
-    }
+    let name = last_segment(&id);
+    let mut node = Node::new(id, name, kind, Visibility::Unknown);
+    node.is_external = true;
+    node
 }
 
 fn parent_path_id(crate_name: &str, path: &[String]) -> Option<String> {
@@ -3501,21 +3439,21 @@ fn impl_node_name(
 ) -> String {
     let type_name = type_to_id(&impl_block.for_)
         .and_then(|id| resolve_id(krate, default_crate_name, path_index, id))
-        .map(last_segment)
+        .map(|path| last_segment(&path))
         .unwrap_or_else(|| "type".to_string());
 
     if let Some(trait_path) = impl_block.trait_.as_ref() {
         let trait_name = resolve_id(krate, default_crate_name, path_index, trait_path.id)
-            .map(last_segment)
-            .unwrap_or_else(|| last_segment(trait_path.path.clone()));
+            .map(|path| last_segment(&path))
+            .unwrap_or_else(|| last_segment(&trait_path.path));
         format!("impl {trait_name} for {type_name}")
     } else {
         format!("impl {type_name}")
     }
 }
 
-fn last_segment(path: String) -> String {
-    path.split("::").last().unwrap_or(&path).to_string()
+fn last_segment(path: &str) -> String {
+    path.rsplit("::").next().unwrap_or(path).to_string()
 }
 
 fn collect_struct_field_ids(
@@ -3757,7 +3695,7 @@ fn collect_signature_ids(sig: &rdt::FunctionSignature, type_ids: &mut HashSet<rd
 
 fn add_uses_edges(
     graph: &mut Graph,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     owner_id: &str,
     type_ids: HashSet<rdt::Id>,
     krate: &rdt::Crate,
@@ -3783,7 +3721,7 @@ fn add_uses_edges(
 
 fn add_use_import_edges_with_parent_map(
     graph: &mut Graph,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     krate: &rdt::Crate,
     default_crate_name: &str,
     path_index: &PathIndex,
@@ -3819,7 +3757,7 @@ fn add_use_import_edges_with_parent_map(
         };
 
         // Create edge from parent module to re-exported item
-        push_edge_with_glob(
+        push_edge_with_glob_and_occurrence(
             graph,
             edge_cache,
             parent_node_id,
@@ -3827,13 +3765,14 @@ fn add_use_import_edges_with_parent_map(
             EdgeKind::ReExports,
             Confidence::Static,
             use_item.is_glob,
+            item.span.as_ref().map(map_span),
         );
     }
 }
 
 fn add_derives_edges(
     graph: &mut Graph,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     owner_id: &str,
     attrs: &[rdt::Attribute],
     trait_lookup: &HashMap<String, Vec<String>>,
@@ -4235,7 +4174,7 @@ impl SourceProvider for MemorySourceProvider {
 #[allow(private_interfaces)]
 fn add_call_edges(
     graph: &mut Graph,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     root_file: &Path,
     function_index: &FunctionIndex,
     call_mode: CallMode,
@@ -4349,7 +4288,7 @@ fn resolve_by_name(map: &HashMap<String, Vec<String>>, name: &str) -> Vec<String
 struct SourceParser<'a> {
     function_index: &'a FunctionIndex,
     graph: &'a mut Graph,
-    edge_cache: &'a mut HashSet<String>,
+    edge_cache: &'a mut EdgeIndex,
     call_mode: CallMode,
     visited_files: HashSet<PathBuf>,
     source_provider: &'a dyn SourceProvider,
@@ -4359,7 +4298,7 @@ impl<'a> SourceParser<'a> {
     fn new(
         function_index: &'a FunctionIndex,
         graph: &'a mut Graph,
-        edge_cache: &'a mut HashSet<String>,
+        edge_cache: &'a mut EdgeIndex,
         call_mode: CallMode,
         source_provider: &'a dyn SourceProvider,
     ) -> Self {
@@ -4385,7 +4324,7 @@ impl<'a> SourceParser<'a> {
         let content = self.source_provider.read_file(&path)?;
         let file = syn::parse_file(&content)?;
         let current_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        self.parse_items(&file.items, &module_path, current_dir)?;
+        self.parse_items(&file.items, &module_path, current_dir, &path)?;
         Ok(())
     }
 
@@ -4394,20 +4333,21 @@ impl<'a> SourceParser<'a> {
         items: &[syn::Item],
         module_path: &[String],
         current_dir: &Path,
+        current_file: &Path,
     ) -> Result<(), RustdocError> {
         for item in items {
             match item {
                 syn::Item::Fn(item_fn) => {
-                    self.handle_fn(item_fn, module_path);
+                    self.handle_fn(item_fn, module_path, current_file);
                 }
                 syn::Item::Impl(item_impl) => {
-                    self.handle_impl(item_impl, module_path);
+                    self.handle_impl(item_impl, module_path, current_file);
                 }
                 syn::Item::Trait(item_trait) => {
-                    self.handle_trait(item_trait, module_path);
+                    self.handle_trait(item_trait, module_path, current_file);
                 }
                 syn::Item::Mod(item_mod) => {
-                    self.handle_mod(item_mod, module_path, current_dir)?;
+                    self.handle_mod(item_mod, module_path, current_dir, current_file)?;
                 }
                 _ => {}
             }
@@ -4420,13 +4360,14 @@ impl<'a> SourceParser<'a> {
         item_mod: &syn::ItemMod,
         module_path: &[String],
         current_dir: &Path,
+        current_file: &Path,
     ) -> Result<(), RustdocError> {
         let name = item_mod.ident.to_string();
         let mut next_path = module_path.to_vec();
         next_path.push(name.clone());
 
         if let Some((_, items)) = &item_mod.content {
-            self.parse_items(items, &next_path, current_dir)?;
+            self.parse_items(items, &next_path, current_dir, current_file)?;
             return Ok(());
         }
 
@@ -4437,16 +4378,21 @@ impl<'a> SourceParser<'a> {
         Ok(())
     }
 
-    fn handle_fn(&mut self, item_fn: &syn::ItemFn, module_path: &[String]) {
+    fn handle_fn(&mut self, item_fn: &syn::ItemFn, module_path: &[String], current_file: &Path) {
         let name = item_fn.sig.ident.to_string();
         let Some(caller_id) = self.resolve_free_fn_caller(module_path, &name) else {
             return;
         };
-        let calls = collect_calls(&item_fn.block);
+        let calls = collect_calls(&item_fn.block, current_file);
         self.add_call_edges(&caller_id, module_path, None, &calls);
     }
 
-    fn handle_impl(&mut self, item_impl: &syn::ItemImpl, module_path: &[String]) {
+    fn handle_impl(
+        &mut self,
+        item_impl: &syn::ItemImpl,
+        module_path: &[String],
+        current_file: &Path,
+    ) {
         let type_segments = type_segments_from_syn_type(&item_impl.self_ty)
             .map(|segments| resolve_type_segments(&segments, module_path))
             .filter(|segments| !segments.segments.is_empty());
@@ -4461,12 +4407,17 @@ impl<'a> SourceParser<'a> {
             else {
                 continue;
             };
-            let calls = collect_calls(&impl_fn.block);
+            let calls = collect_calls(&impl_fn.block, current_file);
             self.add_call_edges(&caller_id, module_path, type_segments.as_ref(), &calls);
         }
     }
 
-    fn handle_trait(&mut self, item_trait: &syn::ItemTrait, module_path: &[String]) {
+    fn handle_trait(
+        &mut self,
+        item_trait: &syn::ItemTrait,
+        module_path: &[String],
+        current_file: &Path,
+    ) {
         let trait_segments = vec![item_trait.ident.to_string()];
         let trait_segments = resolve_type_segments(&trait_segments, module_path);
 
@@ -4483,7 +4434,7 @@ impl<'a> SourceParser<'a> {
             else {
                 continue;
             };
-            let calls = collect_calls(block);
+            let calls = collect_calls(block, current_file);
             self.add_call_edges(&caller_id, module_path, Some(&trait_segments), &calls);
         }
     }
@@ -4496,26 +4447,32 @@ impl<'a> SourceParser<'a> {
         calls: &[CallExpr],
     ) {
         for call in calls {
-            let candidates = match call {
-                CallExpr::Path(segments) => {
-                    self.resolve_callee_path_candidates(segments, module_path)
-                }
-                CallExpr::Method(name) => {
-                    self.resolve_callee_method_candidates(name, module_path, self_type_segments)
-                }
+            let (candidates, occurrence) = match call {
+                CallExpr::Path {
+                    segments,
+                    occurrence,
+                } => (
+                    self.resolve_callee_path_candidates(segments, module_path),
+                    occurrence,
+                ),
+                CallExpr::Method { name, occurrence } => (
+                    self.resolve_callee_method_candidates(name, module_path, self_type_segments),
+                    occurrence,
+                ),
             };
 
             for (callee_id, confidence) in candidates {
                 if caller_id == callee_id {
                     continue;
                 }
-                push_edge(
+                push_edge_with_occurrence(
                     self.graph,
                     self.edge_cache,
                     caller_id.to_string(),
                     callee_id,
                     EdgeKind::CallsStatic,
                     confidence,
+                    occurrence.clone(),
                 );
             }
         }
@@ -4780,35 +4737,66 @@ fn resolve_type_segments(segments: &[String], module_path: &[String]) -> TypeSeg
 
 #[derive(Debug, Clone)]
 enum CallExpr {
-    Path(Vec<String>),
-    Method(String),
+    Path {
+        segments: Vec<String>,
+        occurrence: Option<Span>,
+    },
+    Method {
+        name: String,
+        occurrence: Option<Span>,
+    },
 }
 
-fn collect_calls(block: &syn::Block) -> Vec<CallExpr> {
-    let mut collector = CallCollector { calls: Vec::new() };
+fn collect_calls(block: &syn::Block, current_file: &Path) -> Vec<CallExpr> {
+    let mut collector = CallCollector {
+        calls: Vec::new(),
+        current_file,
+    };
     collector.visit_block(block);
     collector.calls
 }
 
-struct CallCollector {
+struct CallCollector<'a> {
     calls: Vec<CallExpr>,
+    current_file: &'a Path,
 }
 
-impl<'ast> Visit<'ast> for CallCollector {
+impl<'ast> Visit<'ast> for CallCollector<'_> {
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
         if let Some(path) = expr_to_path(&node.func) {
             let segments = path_segments(path);
             if !segments.is_empty() {
-                self.calls.push(CallExpr::Path(segments));
+                self.calls.push(CallExpr::Path {
+                    segments,
+                    occurrence: source_span(self.current_file, path.span()),
+                });
             }
         }
         syn::visit::visit_expr_call(self, node);
     }
 
     fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
-        self.calls.push(CallExpr::Method(node.method.to_string()));
+        self.calls.push(CallExpr::Method {
+            name: node.method.to_string(),
+            occurrence: source_span(self.current_file, node.method.span()),
+        });
         syn::visit::visit_expr_method_call(self, node);
     }
+}
+
+fn source_span(file: &Path, span: proc_macro2::Span) -> Option<Span> {
+    let start = span.start();
+    let end = span.end();
+    if start.line == 0 || end.line == 0 {
+        return None;
+    }
+    Some(Span {
+        file: file.to_string_lossy().to_string(),
+        line: start.line as u32,
+        column: (start.column + 1) as u32,
+        end_line: Some(end.line as u32),
+        end_column: Some((end.column + 1) as u32),
+    })
 }
 
 fn expr_to_path(expr: &syn::Expr) -> Option<&syn::Path> {
@@ -4831,9 +4819,111 @@ fn merge_confidence(left: Confidence, right: Confidence) -> Confidence {
     }
 }
 
+#[derive(Debug)]
+enum EdgeSlot {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+#[derive(Debug, Default)]
+struct EdgeIndex {
+    by_fingerprint: HashMap<u64, EdgeSlot>,
+}
+
+impl EdgeIndex {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            by_fingerprint: HashMap::with_capacity(capacity),
+        }
+    }
+
+    fn insert_or_merge(&mut self, edges: &mut Vec<Edge>, edge: Edge) {
+        let fingerprint = edge_fingerprint(&edge.from, &edge.to, edge.kind, edge.is_glob);
+        match self.by_fingerprint.entry(fingerprint) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let edge_index = edges.len();
+                edges.push(edge);
+                entry.insert(EdgeSlot::One(edge_index));
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                if let Some(edge_index) = matching_edge_index(entry.get(), edges, &edge) {
+                    merge_edge(&mut edges[edge_index], edge);
+                    return;
+                }
+
+                let edge_index = edges.len();
+                edges.push(edge);
+                match entry.get_mut() {
+                    EdgeSlot::One(existing) => {
+                        let existing = *existing;
+                        *entry.get_mut() = EdgeSlot::Many(vec![existing, edge_index]);
+                    }
+                    EdgeSlot::Many(indices) => indices.push(edge_index),
+                }
+            }
+        }
+    }
+
+    fn push_or_merge(
+        &mut self,
+        graph: &mut Graph,
+        from: String,
+        to: String,
+        kind: EdgeKind,
+        confidence: Confidence,
+        is_glob: bool,
+        occurrence: Option<Span>,
+    ) {
+        self.insert_or_merge(
+            &mut graph.edges,
+            Edge {
+                from,
+                to,
+                kind,
+                confidence,
+                occurrences: occurrence.into_iter().collect(),
+                is_glob,
+            },
+        );
+    }
+}
+
+fn edge_fingerprint(from: &str, to: &str, kind: EdgeKind, is_glob: bool) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    from.hash(&mut hasher);
+    to.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    is_glob.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn matching_edge_index(slot: &EdgeSlot, edges: &[Edge], candidate: &Edge) -> Option<usize> {
+    let matches = |index: usize| {
+        let edge = &edges[index];
+        edge.from == candidate.from
+            && edge.to == candidate.to
+            && edge.kind == candidate.kind
+            && edge.is_glob == candidate.is_glob
+    };
+
+    match slot {
+        EdgeSlot::One(index) => matches(*index).then_some(*index),
+        EdgeSlot::Many(indices) => indices.iter().copied().find(|index| matches(*index)),
+    }
+}
+
+fn merge_edge(existing: &mut Edge, edge: Edge) {
+    existing.confidence = merge_confidence(existing.confidence, edge.confidence);
+    for occurrence in edge.occurrences {
+        if !existing.occurrences.contains(&occurrence) {
+            existing.occurrences.push(occurrence);
+        }
+    }
+}
+
 fn push_edge(
     graph: &mut Graph,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     from: String,
     to: String,
     kind: EdgeKind,
@@ -4842,28 +4932,45 @@ fn push_edge(
     push_edge_with_glob(graph, edge_cache, from, to, kind, confidence, false);
 }
 
+fn push_edge_with_occurrence(
+    graph: &mut Graph,
+    edge_cache: &mut EdgeIndex,
+    from: String,
+    to: String,
+    kind: EdgeKind,
+    confidence: Confidence,
+    occurrence: Option<Span>,
+) {
+    push_edge_with_glob_and_occurrence(
+        graph, edge_cache, from, to, kind, confidence, false, occurrence,
+    );
+}
+
 fn push_edge_with_glob(
     graph: &mut Graph,
-    edge_cache: &mut HashSet<String>,
+    edge_cache: &mut EdgeIndex,
     from: String,
     to: String,
     kind: EdgeKind,
     confidence: Confidence,
     is_glob: bool,
 ) {
-    let key = format!(
-        "{from}|{to}|{kind:?}|{}",
-        if is_glob { "glob" } else { "named" }
+    push_edge_with_glob_and_occurrence(
+        graph, edge_cache, from, to, kind, confidence, is_glob, None,
     );
-    if edge_cache.insert(key) {
-        graph.add_edge(Edge {
-            from,
-            to,
-            kind,
-            confidence,
-            is_glob,
-        });
-    }
+}
+
+fn push_edge_with_glob_and_occurrence(
+    graph: &mut Graph,
+    edge_cache: &mut EdgeIndex,
+    from: String,
+    to: String,
+    kind: EdgeKind,
+    confidence: Confidence,
+    is_glob: bool,
+    occurrence: Option<Span>,
+) {
+    edge_cache.push_or_merge(graph, from, to, kind, confidence, is_glob, occurrence);
 }
 
 #[cfg(test)]
@@ -4948,51 +5055,77 @@ mod tests {
     }
 
     fn test_node(id: &str, kind: NodeKind) -> Node {
-        Node {
-            id: id.to_string(),
-            name: id.rsplit("::").next().unwrap_or(id).to_string(),
+        Node::new(
+            id,
+            id.rsplit("::").next().unwrap_or(id),
             kind,
-            visibility: Visibility::Public,
-            line_count: None,
-            span: None,
-            attrs: Vec::new(),
-            is_external: false,
-            is_deprecated: false,
-            is_unsafe: false,
-            is_auto: false,
-            is_mutable: false,
-            is_stripped: false,
-            has_stripped_fields: false,
-            has_stripped_variants: false,
-            is_dyn_compatible: None,
-            deprecation: None,
-            fields: None,
-            variants: None,
-            signature: None,
-            generics: CvGenerics::default(),
-            docs: None,
-            doc_links: HashMap::new(),
-            impl_type: None,
-            parent_impl: None,
-            impl_trait: None,
-            impl_category: None,
-            provided_trait_methods: None,
-            required_trait_methods: None,
-            default_trait_methods: None,
-            type_: None,
-            variant_kind: None,
-            discriminant: None,
-            const_value: None,
-            bounds: Vec::new(),
-            import_source: None,
-            import_name: None,
-            is_glob: false,
-            extern_crate_name: None,
-            extern_crate_rename: None,
-            macro_source: None,
-            proc_macro_kind: None,
-            proc_macro_helpers: Vec::new(),
+            Visibility::Public,
+        )
+    }
+
+    fn test_span(line: u32) -> Span {
+        Span {
+            file: "src/lib.rs".to_string(),
+            line,
+            column: 1,
+            end_line: Some(line),
+            end_column: Some(2),
         }
+    }
+
+    fn test_edge(from: &str, to: &str, kind: EdgeKind) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind,
+            confidence: Confidence::Static,
+            occurrences: Vec::new(),
+            is_glob: false,
+        }
+    }
+
+    #[test]
+    fn edge_index_merges_duplicates_without_dropping_metadata() {
+        let mut edge_index = EdgeIndex::default();
+        let mut edges = Vec::new();
+        let mut first = test_edge("fixture::caller", "fixture::callee", EdgeKind::CallsStatic);
+        first.occurrences.push(test_span(1));
+        edge_index.insert_or_merge(&mut edges, first);
+
+        let mut duplicate = test_edge("fixture::caller", "fixture::callee", EdgeKind::CallsStatic);
+        duplicate.confidence = Confidence::Runtime;
+        duplicate.occurrences.push(test_span(1));
+        duplicate.occurrences.push(test_span(2));
+        edge_index.insert_or_merge(&mut edges, duplicate);
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].confidence, Confidence::Runtime);
+        assert_eq!(edges[0].occurrences, vec![test_span(1), test_span(2)]);
+    }
+
+    #[test]
+    fn edge_index_collision_bucket_keeps_distinct_edges() {
+        let mut edge_index = EdgeIndex::default();
+        let mut edges = vec![test_edge("fixture::a", "fixture::b", EdgeKind::UsesType)];
+        let candidate = test_edge("fixture::x", "fixture::y", EdgeKind::UsesType);
+        let fingerprint = edge_fingerprint(
+            &candidate.from,
+            &candidate.to,
+            candidate.kind,
+            candidate.is_glob,
+        );
+        edge_index
+            .by_fingerprint
+            .insert(fingerprint, EdgeSlot::One(0));
+
+        edge_index.insert_or_merge(&mut edges, candidate);
+
+        assert_eq!(edges.len(), 2);
+        assert_eq!(edges[1].from, "fixture::x");
+        let Some(EdgeSlot::Many(indices)) = edge_index.by_fingerprint.get(&fingerprint) else {
+            panic!("expected a collision bucket");
+        };
+        assert_eq!(indices.as_slice(), &[0, 1]);
     }
 
     fn minimal_crate(
@@ -5075,8 +5208,39 @@ mod tests {
             "links": {},
             "attrs": [],
             "deprecation": null,
+            "stability": null,
+            "const_stability": null,
             "inner": inner
         })
+    }
+
+    fn rustdoc_function_item(id: u32, name: &str) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            name,
+            serde_json::json!({
+                "function": {
+                    "sig": {
+                        "inputs": [],
+                        "output": null,
+                        "is_c_variadic": false
+                    },
+                    "generics": {
+                        "params": [],
+                        "where_predicates": []
+                    },
+                    "header": {
+                        "is_const": false,
+                        "is_unsafe": false,
+                        "is_async": false,
+                        "abi": "Rust"
+                    },
+                    "has_body": true,
+                    "default_unstable": null
+                }
+            }),
+        )
     }
 
     #[test]
@@ -5115,6 +5279,112 @@ mod tests {
             Err(RustdocError::UnsupportedFormatVersion { found, .. })
                 if found == rdt::FORMAT_VERSION - 1
         ));
+    }
+
+    #[test]
+    fn rustdoc_compat_fills_required_fields_through_v60() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["format_version"] = serde_json::json!(57);
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_function_item(1, "f");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "f"],
+            "kind": "function"
+        });
+
+        for item_id in ["0", "1"] {
+            let item = value["index"][item_id].as_object_mut().unwrap();
+            item.remove("stability");
+            item.remove("const_stability");
+        }
+        value["index"]["1"]["inner"]["function"]
+            .as_object_mut()
+            .unwrap()
+            .remove("default_unstable");
+
+        let validated = validate_rustdoc_json(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("v57 payload is upgraded to the current schema");
+
+        assert_eq!(validated.report.source_format_version, 57);
+        assert_eq!(validated.krate.format_version, 57);
+        assert_eq!(validated.krate.index.len(), 2);
+    }
+
+    #[test]
+    fn rustdoc_v60_stability_metadata_projects_to_nodes() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_function_item(1, "f");
+        value["index"]["1"]["stability"] = serde_json::json!({
+            "feature": "fixture_api",
+            "level": "stable",
+            "since": "1.2.3"
+        });
+        value["index"]["1"]["const_stability"] = serde_json::json!({
+            "feature": "fixture_const_api",
+            "level": "unstable"
+        });
+        value["index"]["1"]["inner"]["function"]["default_unstable"] = serde_json::json!({
+            "feature": "fixture_default_body"
+        });
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "f"],
+            "kind": "function"
+        });
+
+        let validated = validate_rustdoc_json(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("current rustdoc JSON validates");
+        let (graph, _) = build_graph_with_stats(
+            &validated.krate,
+            "fixture",
+            BuildGraphOptions {
+                workspace_members: None,
+                source: None,
+                call_mode: CallMode::Ambiguous,
+                skip_external_nodes: false,
+                rustdoc_name: None,
+            },
+        )
+        .expect("graph builds");
+
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::f")
+            .expect("function node");
+
+        assert_eq!(
+            node.stability,
+            Some(StabilityInfo {
+                feature: "fixture_api".to_string(),
+                level: StabilityLevel::Stable {
+                    since: Some("1.2.3".to_string())
+                },
+            })
+        );
+        assert_eq!(
+            node.const_stability,
+            Some(StabilityInfo {
+                feature: "fixture_const_api".to_string(),
+                level: StabilityLevel::Unstable,
+            })
+        );
+        assert_eq!(
+            node.default_unstable,
+            Some(ProvidedDefaultUnstable {
+                feature: "fixture_default_body".to_string()
+            })
+        );
     }
 
     #[test]
@@ -5259,10 +5529,73 @@ mod tests {
     }
 
     #[test]
+    fn source_backed_call_edges_record_occurrence_spans() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1, 2]);
+        value["index"]["1"] = rustdoc_function_item(1, "caller");
+        value["index"]["2"] = rustdoc_function_item(2, "callee");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "caller"],
+            "kind": "function"
+        });
+        value["paths"]["2"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "callee"],
+            "kind": "function"
+        });
+
+        let graph = extract_graph_with_source_map(
+            &value.to_string(),
+            "fixture",
+            HashMap::from([(
+                "src/lib.rs".to_string(),
+                "pub fn caller() {\n    callee();\n    callee();\n}\n\npub fn callee() {}\n"
+                    .to_string(),
+            )]),
+            "src/lib.rs",
+            CallMode::Strict,
+        )
+        .expect("source-backed graph extracts");
+
+        let call_edge = graph
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.from == "fixture::caller"
+                    && edge.to == "fixture::callee"
+                    && edge.kind == EdgeKind::CallsStatic
+            })
+            .expect("caller to callee call edge");
+
+        assert_eq!(call_edge.occurrences.len(), 2);
+        assert_eq!(
+            call_edge.occurrences[0],
+            Span {
+                file: "src/lib.rs".to_string(),
+                line: 2,
+                column: 5,
+                end_line: Some(2),
+                end_column: Some(11),
+            }
+        );
+        assert_eq!(
+            call_edge.occurrences[1],
+            Span {
+                file: "src/lib.rs".to_string(),
+                line: 3,
+                column: 5,
+                end_line: Some(3),
+                end_column: Some(11),
+            }
+        );
+    }
+
+    #[test]
     fn non_module_path_prefix_is_not_created_as_module() {
         let mut graph = Graph::new();
         let mut node_cache = HashSet::from(["fixture".to_string()]);
-        let mut edge_cache = HashSet::new();
+        let mut edge_cache = EdgeIndex::default();
         let mut placeholder_modules = HashSet::new();
         let path_index = path_index(
             &["fixture", "fixture::Trait", "fixture::Trait::method"],
@@ -5294,7 +5627,7 @@ mod tests {
     fn placeholder_module_is_replaced_by_real_module_node() {
         let mut graph = Graph::new();
         let mut node_cache = HashSet::from(["fixture".to_string()]);
-        let mut edge_cache = HashSet::new();
+        let mut edge_cache = EdgeIndex::default();
         let mut placeholder_modules = HashSet::new();
         let path_index = path_index(
             &["fixture", "fixture::module", "fixture::module::Item"],
@@ -5434,6 +5767,7 @@ mod tests {
             to: "core::clone::Clone".to_string(),
             kind: EdgeKind::Implements,
             confidence: Confidence::Static,
+            occurrences: Vec::new(),
             is_glob: false,
         });
         graph.add_edge(Edge {
@@ -5441,6 +5775,7 @@ mod tests {
             to: "fixture::Type".to_string(),
             kind: EdgeKind::UsesType,
             confidence: Confidence::Static,
+            occurrences: Vec::new(),
             is_glob: false,
         });
         let mut node_cache = HashSet::from(["fixture::Type".to_string()]);

@@ -185,6 +185,17 @@ export type PreciseCapture =
 			kind: 'Param';
 			name: string;
 	  };
+export type StabilityInfo = {
+	feature: string;
+} & StabilityInfo1;
+export type StabilityInfo1 =
+	| {
+			level: 'stable';
+			since?: string | null;
+	  }
+	| {
+			level: 'unstable';
+	  };
 /**
  * Visibility level. Carries the restriction path when the visibility is
  * `pub(crate)` / `pub(super)` / `pub(in path::to::module)`.
@@ -322,7 +333,20 @@ export interface Edge {
 	from: string;
 	is_glob?: boolean;
 	kind: EdgeKind;
+	/**
+	 * Exact source locations that justify this relationship. Empty when
+	 * source-backed occurrence extraction is unavailable; `Node::span`
+	 * remains the declaration target for go-to-definition/declaration.
+	 */
+	occurrences?: Span[];
 	to: string;
+}
+export interface Span {
+	column: number;
+	end_column?: number | null;
+	end_line?: number | null;
+	file: string;
+	line: number;
 }
 export interface Node {
 	attrs: string[];
@@ -331,8 +355,10 @@ export interface Node {
 	 * declarations, assoc-type bounds, etc.). Structured.
 	 */
 	bounds?: GenericBound[];
+	const_stability?: StabilityInfo | null;
 	const_value?: string | null;
 	default_trait_methods?: string[] | null;
+	default_unstable?: ProvidedDefaultUnstable | null;
 	deprecation?: Deprecation | null;
 	discriminant?: string | null;
 	/**
@@ -379,6 +405,7 @@ export interface Node {
 	required_trait_methods?: string[] | null;
 	signature?: FunctionSignature | null;
 	span?: Span | null;
+	stability?: StabilityInfo | null;
 	/**
 	 * The item's type (for Constant, Static, AssocConst, TypeAlias,
 	 * AssocType, StructField with named field). Structured so the
@@ -434,6 +461,9 @@ export interface NamedTypeRef {
 	name: string;
 	type: TypeRef;
 }
+export interface ProvidedDefaultUnstable {
+	feature: string;
+}
 export interface Deprecation {
 	note?: string | null;
 	since?: string | null;
@@ -475,13 +505,6 @@ export interface Generics1 {
 export interface ArgumentInfo {
 	name: string;
 	type: TypeRef;
-}
-export interface Span {
-	column: number;
-	end_column?: number | null;
-	end_line?: number | null;
-	file: string;
-	line: number;
 }
 export interface VariantInfo {
 	fields: FieldInfo[];
