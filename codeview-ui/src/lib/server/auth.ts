@@ -157,9 +157,6 @@ function authOptions(env: AuthEnv) {
 			provider: 'sqlite',
 			schema: authTables,
 		}),
-		experimental: {
-			joins: true,
-		},
 		user: {
 			additionalFields: {
 				githubLogin: githubLoginField,
