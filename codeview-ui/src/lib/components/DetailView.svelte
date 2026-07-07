@@ -231,8 +231,7 @@
 	}
 </script>
 
-<svelte:boundary>
-	{#if selected && detail}
+{#if selected && detail}
 		<div class={`space-y-6 ${embedded ? 'px-4 py-4 sm:px-6 md:px-8' : ''}`}>
 			<!-- ── Crate sub-nav ──────────────────────────────────────
 				 doc-classic design: text breadcrumb + kind chip + pub
@@ -241,13 +240,7 @@
 				<div
 					class="sub-nav -mx-4 -mt-4 mb-2 flex flex-wrap items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-6 py-2 md:-mx-6 md:-mt-6"
 				>
-					<svelte:boundary>
-						<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
-						{#snippet failed(error: unknown, _reset: () => void)}
-							{@const _ = log.error`Breadcrumbs boundary error: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}" selected="${selected?.id}" ancestors=${ancestors.length}`}
-							<div class="text-xs text-(--danger)">Failed to load breadcrumbs</div>
-						{/snippet}
-					</svelte:boundary>
+					<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
 
 					{#if selected.kind && !isOnCrateRoot}
 						<span
@@ -293,157 +286,101 @@
 
 			<!-- Crate Overview: unified viz switcher (crate root only) -->
 			{#if isOnCrateRoot}
-				<svelte:boundary>
-					{#if crateMap}
-						<div class="space-y-3">
-							<div class="flex items-center justify-between">
-								<VizSwitcher mode={vizMode} onModeChange={setVizMode} />
-							</div>
-							{#if vizMode === 'graph'}
-								<CrateOverviewFlow data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
-							{:else if vizMode === 'treemap'}
-								<CrateTreemap
-									data={crateMap}
-									selectedNodeId={nodeId}
-									{getNodeUrl}
-									drillId={treemapDrillId}
-									onDrillChange={setTreemapDrill}
-								/>
-							{:else if vizMode === 'sunburst'}
-								<CrateSunburst
-									data={crateMap}
-									selectedNodeId={nodeId}
-									{getNodeUrl}
-									drillId={sunburstDrillId}
-									onDrillChange={setSunburstDrill}
-								/>
-							{:else if vizMode === 'grid'}
-								<CrateGrid data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
-							{/if}
+				{#if crateMap}
+					<div class="space-y-3">
+						<div class="flex items-center justify-between">
+							<VizSwitcher mode={vizMode} onModeChange={setVizMode} />
 						</div>
-					{:else if crateMapLoading}
-						<div
-							class="corner-squircle flex min-h-[200px] items-center justify-center rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-4"
-						>
-							<p class="text-sm text-(--muted)">Building crate module map…</p>
-						</div>
-					{/if}
-					{#snippet failed(error: unknown, reset: () => void)}
-						{@const _ = log.error`CrateViz boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
-						<div
-							class="corner-squircle rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-4 text-sm text-(--danger)"
-						>
-							<p class="font-medium">Failed to render crate visualization</p>
-							<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={reset}>
-								Try again
-							</button>
-						</div>
-					{/snippet}
-				</svelte:boundary>
+						{#if vizMode === 'graph'}
+							<CrateOverviewFlow data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
+						{:else if vizMode === 'treemap'}
+							<CrateTreemap
+								data={crateMap}
+								selectedNodeId={nodeId}
+								{getNodeUrl}
+								drillId={treemapDrillId}
+								onDrillChange={setTreemapDrill}
+							/>
+						{:else if vizMode === 'sunburst'}
+							<CrateSunburst
+								data={crateMap}
+								selectedNodeId={nodeId}
+								{getNodeUrl}
+								drillId={sunburstDrillId}
+								onDrillChange={setSunburstDrill}
+							/>
+						{:else if vizMode === 'grid'}
+							<CrateGrid data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
+						{/if}
+					</div>
+				{:else if crateMapLoading}
+					<div
+						class="corner-squircle flex min-h-[200px] items-center justify-center rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-4"
+					>
+						<p class="text-sm text-(--muted)">Building crate module map…</p>
+					</div>
+				{/if}
 			{/if}
 
 			<!-- doc-classic three-pane: body | TOC.
 				 The left tree lives in [crate]/[version]/+layout.svelte.
 				 Crate-root pages show the viz switcher above with no TOC. -->
 			{#if isOnCrateRoot}
-				<svelte:boundary>
-					<NodeDetails
-						{selected}
-						selectedEdges={filteredEdges}
-						{sourceImpls}
-						{blanketImpls}
-						{methodGroups}
-						{kindLabels}
-						{displayNode}
-						{theme}
-						{getNodeUrl}
-						{nodeExists}
-						{nodeMeta}
-						{crateName}
-						{crateVersion}
-						{crateVersions}
-					/>
-					{#snippet failed(error: unknown, reset: () => void)}
-						{@const _ = log.error`NodeDetails boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
-						<div
-							class="corner-squircle rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-4 text-sm text-(--danger)"
-						>
-							<p class="font-medium">Failed to render node details</p>
-							<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={reset}>
-								Try again
-							</button>
-						</div>
-					{/snippet}
-				</svelte:boundary>
+				<NodeDetails
+					{selected}
+					selectedEdges={filteredEdges}
+					{sourceImpls}
+					{blanketImpls}
+					{methodGroups}
+					{kindLabels}
+					{displayNode}
+					{theme}
+					{getNodeUrl}
+					{nodeExists}
+					{nodeMeta}
+					{crateName}
+					{crateVersion}
+					{crateVersions}
+				/>
 			{:else}
 				<div class="doc-body-grid grid gap-8 xl:grid-cols-[1fr_220px]">
 					<!-- Doc body — primary reading surface. -->
 					<div class="min-w-0">
-						<svelte:boundary>
-							<NodeDetails
-								{selected}
-								selectedEdges={filteredEdges}
-								{sourceImpls}
-								{blanketImpls}
-								{methodGroups}
-								{kindLabels}
-								{displayNode}
-								{theme}
-								{getNodeUrl}
-								{nodeExists}
-								{nodeMeta}
-								{crateName}
-								{crateVersion}
-								{crateVersions}
-							>
-								<!-- belowTitle slot: relationship graph card lives right
-									 below the title block so the visual context appears
-									 ahead of the doc prose. -->
-								{#snippet belowTitle()}
-									{#if detail}
-										<div class="mt-5 mb-6">
-											<svelte:boundary>
-												<FocusGraphFlow
-													{detail}
-													{ancestors}
-													crateName={crateName ?? ''}
-													crateVersion={crateVersion ?? ''}
-													{getNodeUrl}
-													height={360}
-													compact
-												/>
-												{#snippet failed(error: unknown, reset: () => void)}
-													{@const _ = log.error`FocusGraphFlow boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
-													<div
-														class="corner-squircle rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-4 text-sm text-(--danger)"
-													>
-														<p class="font-medium">Failed to render relationship graph</p>
-														<button
-															type="button"
-															class="mt-2 text-(--accent) hover:underline"
-															onclick={reset}>Try again</button
-														>
-													</div>
-												{/snippet}
-											</svelte:boundary>
-										</div>
-									{/if}
-								{/snippet}
-							</NodeDetails>
-							{#snippet failed(error: unknown, reset: () => void)}
-								{@const _ = log.error`NodeDetails boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
-								<div
-									class="corner-squircle rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-4 text-sm text-(--danger)"
-								>
-									<p class="font-medium">Failed to render node details</p>
-									<button
-										type="button"
-										class="mt-2 text-(--accent) hover:underline"
-										onclick={reset}>Try again</button
-									>
-								</div>
+						<NodeDetails
+							{selected}
+							selectedEdges={filteredEdges}
+							{sourceImpls}
+							{blanketImpls}
+							{methodGroups}
+							{kindLabels}
+							{displayNode}
+							{theme}
+							{getNodeUrl}
+							{nodeExists}
+							{nodeMeta}
+							{crateName}
+							{crateVersion}
+							{crateVersions}
+						>
+							<!-- belowTitle slot: relationship graph card lives right
+								 below the title block so the visual context appears
+								 ahead of the doc prose. -->
+							{#snippet belowTitle()}
+								{#if detail}
+									<div class="mt-5 mb-6">
+										<FocusGraphFlow
+											{detail}
+											{ancestors}
+											crateName={crateName ?? ''}
+											crateVersion={crateVersion ?? ''}
+											{getNodeUrl}
+											height={360}
+											compact
+										/>
+									</div>
+								{/if}
 							{/snippet}
-						</svelte:boundary>
+						</NodeDetails>
 					</div>
 
 					<!-- TOC sidebar -->
@@ -481,30 +418,3 @@
 			</div>
 		</div>
 	{/if}
-	{#snippet pending()}
-		<div class="flex h-full items-center justify-center">
-			<div class="flex flex-col items-center gap-3 text-center text-(--muted)">
-				<LoaderCircleIcon class="animate-spin" size={24} />
-				<p class="text-sm">Loading node details…</p>
-			</div>
-		</div>
-	{/snippet}
-	{#snippet failed(error, reset)}
-		{@const _ = log.error`DetailView outer boundary: ${error instanceof Error ? (error.stack ?? error.message) : String(error)} nodeId="${nodeId}"`}
-		<div class="flex h-full items-center justify-center p-6">
-			<div
-				class="corner-squircle max-w-md rounded-(--radius-card) border border-(--danger-border) bg-(--danger-bg) p-6 text-center"
-			>
-				<p class="font-medium text-(--danger)">Something went wrong</p>
-				<p class="mt-2 text-sm text-(--muted)">An error occurred while loading this node.</p>
-				<button
-					type="button"
-					class="corner-squircle mt-4 rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm text-(--on-accent) hover:opacity-90"
-					onclick={reset}
-				>
-					Reload
-				</button>
-			</div>
-		</div>
-	{/snippet}
-</svelte:boundary>
