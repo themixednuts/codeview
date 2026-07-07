@@ -28,6 +28,10 @@ export type HomeViewState = {
 	tab: HomeTab;
 };
 
+type HomeStateOptions = {
+	defaultTab?: HomeTab;
+};
+
 const EXPLORER_VIEW_VALUES = ['docs', 'graph'] as const satisfies readonly ExplorerViewMode[];
 const DOC_LAYOUT_VALUES = ['classic', 'reading', 'split'] as const satisfies readonly ExplorerDocLayout[];
 const VIZ_VALUES = ['graph', 'treemap', 'sunburst', 'grid'] as const satisfies readonly ExplorerVizMode[];
@@ -152,22 +156,28 @@ export function serializeExplorerState(base: URL, patch: Partial<ExplorerViewSta
 	return url;
 }
 
-export function parseHomeState(url: URL): HomeViewState {
+export function parseHomeState(url: URL, options: HomeStateOptions = {}): HomeViewState {
 	const { searchParams } = url;
+	const defaultTab = options.defaultTab ?? 'workspace';
 	return {
 		q: readText(searchParams, 'q'),
-		tab: readEnum(searchParams, 'tab', HOME_TAB_VALUES, 'workspace'),
+		tab: readEnum(searchParams, 'tab', HOME_TAB_VALUES, defaultTab),
 	};
 }
 
-export function serializeHomeState(base: URL, patch: Partial<HomeViewState>): URL {
-	const current = parseHomeState(base);
+export function serializeHomeState(
+	base: URL,
+	patch: Partial<HomeViewState>,
+	options: HomeStateOptions = {},
+): URL {
+	const defaultTab = options.defaultTab ?? 'workspace';
+	const current = parseHomeState(base, { defaultTab });
 	const next = applyPatch(current, patch);
 	const url = new URL(base);
 	resetParams(url, HOME_KEYS);
 
 	setText(url.searchParams, 'q', next.q);
-	if (next.tab !== 'workspace') url.searchParams.set('tab', next.tab);
+	if (next.tab !== defaultTab) url.searchParams.set('tab', next.tab);
 
 	return url;
 }

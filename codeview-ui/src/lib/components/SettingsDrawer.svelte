@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { untrack } from 'svelte';
 	import * as Sheet from '$lib/shadcn/ui/sheet/index.js';
 	import {
 		CUSTOM_EDITOR_KEY,
@@ -101,10 +102,21 @@
 		{ id: 'custom', label: 'Custom', scheme: '' },
 	];
 
+	const themeOptions: { id: Theme; label: string; Icon: typeof SunIcon }[] = [
+		{ id: 'light', label: 'Light', Icon: SunIcon },
+		{ id: 'dark', label: 'Dark', Icon: MoonIcon },
+		{ id: 'system', label: 'System', Icon: MonitorIcon },
+	];
+
 	const sourceProviders: { id: SourceProviderMode; label: string }[] = [
 		{ id: 'auto', label: 'Auto' },
 		{ id: 'crates-io', label: 'crates.io' },
 		{ id: 'github', label: 'GitHub' },
+	];
+
+	const linkOptions: { id: ExternalLinkMode; label: string; Icon: typeof LinkIcon }[] = [
+		{ id: 'codeview', label: 'Codeview', Icon: LinkIcon },
+		{ id: 'docs', label: 'docs.rs', Icon: ExternalLinkIcon },
 	];
 
 	const vcsOptions: { id: VcsMode; label: string; Icon: typeof GitBranchIcon }[] = [
@@ -166,6 +178,7 @@
 	let editor = $state<EditorId>('vscode');
 	let customScheme = $state('');
 	let ligatures = $state(false);
+	let sheetContentRef = $state<HTMLDivElement | null>(null);
 
 	const activeEditorScheme = $derived(
 		editor === 'custom'
@@ -173,61 +186,23 @@
 			: (editors.find((e) => e.id === editor)?.scheme ?? ''),
 	);
 
-	// ── Sliding indicator refs ──
-	let themeRefs: Record<Theme, HTMLButtonElement | null> = $state({
-		light: null,
-		dark: null,
-		system: null,
-	});
-	let densityRefs: Record<DensityMode, HTMLButtonElement | null> = $state({
-		compact: null,
-		comfortable: null,
-		spacious: null,
-	});
-	let voiceRefs: Record<VoiceMode, HTMLButtonElement | null> = $state({
-		editorial: null,
-		technical: null,
-		geometric: null,
-	});
-	let docLayoutRefs: Record<DocLayoutMode, HTMLButtonElement | null> = $state({
-		classic: null,
-		reading: null,
-		split: null,
-	});
-	let editorRefs: Record<EditorId, HTMLButtonElement | null> = $state({
-		vscode: null,
-		cursor: null,
-		zed: null,
-		neovim: null,
-		custom: null,
-	});
-	let linkRefs: Record<ExternalLinkMode, HTMLButtonElement | null> = $state({
-		codeview: null,
-		docs: null,
-	});
-	let sourceRefs: Record<SourceProviderMode, HTMLButtonElement | null> = $state({
-		auto: null,
-		'crates-io': null,
-		github: null,
-	});
-	let vcsRefs: Record<VcsMode, HTMLButtonElement | null> = $state({
-		git: null,
-		jj: null,
-	});
-
-	function indicator(ref: HTMLButtonElement | null) {
-		if (!ref) return { left: 0, width: 0 };
-		return { left: ref.offsetLeft, width: ref.offsetWidth };
+	function activeIndex<T extends string>(items: readonly { id: T }[], active: T): number {
+		const index = items.findIndex((item) => item.id === active);
+		return index < 0 ? 0 : index;
 	}
 
-	const themeIndicator = $derived(indicator(themeRefs[theme]));
-	const densityIndicator = $derived(indicator(densityRefs[densityMode]));
-	const voiceIndicator = $derived(indicator(voiceRefs[voiceMode]));
-	const docLayoutIndicator = $derived(indicator(docLayoutRefs[docLayout]));
-	const editorIndicator = $derived(indicator(editorRefs[editor]));
-	const linkIndicator = $derived(indicator(linkRefs[extLinkMode]));
-	const sourceIndicator = $derived(indicator(sourceRefs[sourceProviderMode]));
-	const vcsIndicator = $derived(indicator(vcsRefs[vcsMode]));
+	function indicatorStyle(index: number, count: number): string {
+		return `left: calc(${(index * 100) / count}% + 0.25rem); width: calc(${100 / count}% - 0.5rem)`;
+	}
+
+	const themeIndex = $derived(activeIndex(themeOptions, theme));
+	const densityIndex = $derived(activeIndex(densityOptions, densityMode));
+	const voiceIndex = $derived(activeIndex(voiceOptions, voiceMode));
+	const docLayoutIndex = $derived(activeIndex(docLayoutOptions, docLayout));
+	const editorIndex = $derived(activeIndex(editors, editor));
+	const linkIndex = $derived(activeIndex(linkOptions, extLinkMode));
+	const sourceIndex = $derived(activeIndex(sourceProviders, sourceProviderMode));
+	const vcsIndex = $derived(activeIndex(vcsOptions, vcsMode));
 
 	// ── Persistence (editor + ligatures only — tweak axes persisted in +layout) ──
 	function loadSettings() {
@@ -263,18 +238,34 @@
 		document.documentElement.style.setProperty('--font-ligatures', value ? 'normal' : 'none');
 	}
 
+	function handleOpenAutoFocus(event: Event) {
+		event.preventDefault();
+		requestAnimationFrame(() => sheetContentRef?.focus({ preventScroll: true }));
+	}
+
 	// Notify parent whenever editor scheme changes
 	$effect(() => {
 		onEditorSchemeChange?.(activeEditorScheme);
 	});
 
+	let loadedForOpen = false;
+
 	$effect(() => {
-		if (open) loadSettings();
+		if (!open) {
+			loadedForOpen = false;
+			return;
+		}
+		if (loadedForOpen) return;
+		loadedForOpen = true;
+		untrack(loadSettings);
 	});
 </script>
 
 <Sheet.Root bind:open onOpenChange={(v) => onOpenChange?.(v)}>
 	<Sheet.Content
+		bind:ref={sheetContentRef}
+		preventScroll={false}
+		onOpenAutoFocus={handleOpenAutoFocus}
 		side="right"
 		class="settings-sheet !gap-0 overflow-y-auto border-l border-(--panel-border) bg-(--bg) !p-0 sm:!max-w-[26rem]"
 	>
@@ -316,26 +307,20 @@
 
 				<div class="flex flex-col gap-1">
 					<div
-						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+						class="corner-squircle relative grid grid-cols-3 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 					>
 						<div
 							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-							style="left: {themeIndicator.left}px; width: {themeIndicator.width}px"
+							style={indicatorStyle(themeIndex, themeOptions.length)}
 						></div>
-						{#each [{ id: 'light' as Theme, label: 'Light', Icon: SunIcon }, { id: 'dark' as Theme, label: 'Dark', Icon: MoonIcon }, { id: 'system' as Theme, label: 'System', Icon: MonitorIcon }] as opt (opt.id)}
+						{#each themeOptions as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {theme ===
+								class="relative z-10 inline-flex items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {theme ===
 								opt.id
 									? 'text-(--on-accent)'
 									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onThemeChange(opt.id)}
-								{@attach (el) => {
-									themeRefs[opt.id] = el as HTMLButtonElement;
-									return () => {
-										themeRefs[opt.id] = null;
-									};
-								}}
 							>
 								<opt.Icon
 									size={13}
@@ -370,8 +355,9 @@
 								opt.id
 									? 'border-(--ink) shadow-(--shadow-toggle)'
 									: 'border-transparent hover:scale-105'}"
-								style="background: linear-gradient(90deg, {opt.swatch[0]} 0%, {opt.swatch[0]} 60%, {opt
-									.swatch[1]} 60%, {opt.swatch[1]} 80%, {opt.swatch[2]} 80%, {opt.swatch[2]} 100%)"
+								style="background: linear-gradient(90deg, {opt.swatch[0]} 0%, {opt
+									.swatch[0]} 60%, {opt.swatch[1]} 60%, {opt.swatch[1]} 80%, {opt
+									.swatch[2]} 80%, {opt.swatch[2]} 100%)"
 								onclick={() => onAccentChange(opt.id)}
 							></button>
 						{/each}
@@ -394,26 +380,20 @@
 
 				<div class="flex flex-col gap-1">
 					<div
-						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+						class="corner-squircle relative grid grid-cols-3 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 					>
 						<div
 							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-							style="left: {densityIndicator.left}px; width: {densityIndicator.width}px"
+							style={indicatorStyle(densityIndex, densityOptions.length)}
 						></div>
 						{#each densityOptions as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {densityMode ===
+								class="relative z-10 inline-flex flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {densityMode ===
 								opt.id
 									? 'text-(--on-accent)'
 									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onDensityChange(opt.id)}
-								{@attach (el) => {
-									densityRefs[opt.id] = el as HTMLButtonElement;
-									return () => {
-										densityRefs[opt.id] = null;
-									};
-								}}
 							>
 								<span>{opt.label}</span>
 								<span class="font-mono text-[9px] opacity-70">{opt.hint}</span>
@@ -435,26 +415,20 @@
 
 				<div class="flex flex-col gap-2">
 					<div
-						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+						class="corner-squircle relative grid grid-cols-3 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 					>
 						<div
 							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-							style="left: {voiceIndicator.left}px; width: {voiceIndicator.width}px"
+							style={indicatorStyle(voiceIndex, voiceOptions.length)}
 						></div>
 						{#each voiceOptions as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {voiceMode ===
+								class="relative z-10 inline-flex flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {voiceMode ===
 								opt.id
 									? 'text-(--on-accent)'
 									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onVoiceChange(opt.id)}
-								{@attach (el) => {
-									voiceRefs[opt.id] = el as HTMLButtonElement;
-									return () => {
-										voiceRefs[opt.id] = null;
-									};
-								}}
 							>
 								<span>{opt.label}</span>
 								<span class="font-mono text-[9px] opacity-70">{opt.hint}</span>
@@ -485,30 +459,26 @@
 
 				<div class="flex flex-col gap-1">
 					<div
-						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+						class="corner-squircle relative grid grid-cols-3 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 					>
 						<div
 							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-							style="left: {docLayoutIndicator.left}px; width: {docLayoutIndicator.width}px"
+							style={indicatorStyle(docLayoutIndex, docLayoutOptions.length)}
 						></div>
 						{#each docLayoutOptions as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {docLayout ===
+								class="relative z-10 inline-flex flex-col items-center justify-center gap-0.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {docLayout ===
 								opt.id
 									? 'text-(--on-accent)'
 									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onDocLayoutChange(opt.id)}
-								{@attach (el) => {
-									docLayoutRefs[opt.id] = el as HTMLButtonElement;
-									return () => {
-										docLayoutRefs[opt.id] = null;
-									};
-								}}
 							>
 								<opt.Icon
 									size={13}
-									class="transition-transform duration-200 {docLayout === opt.id ? 'scale-110' : ''}"
+									class="transition-transform duration-200 {docLayout === opt.id
+										? 'scale-110'
+										: ''}"
 								/>
 								<span>{opt.label}</span>
 								<span class="font-mono text-[9px] opacity-70">{opt.hint}</span>
@@ -516,7 +486,7 @@
 						{/each}
 					</div>
 					<span class="mt-0.5 text-[10px] text-(--muted)">
-						Split falls back to Classic when source is unavailable.
+						Layouts change the full docs route composition.
 					</span>
 				</div>
 			</section>
@@ -554,8 +524,8 @@
 						>
 							<pre class="m-0 px-3 py-2"><span class="tok-kw">pub fn</span> <span
 									class="tok-fn">greet</span>(<span class="tok-id">name</span>: <span
-									class="tok-ty">&str</span
-								>) -&gt; <span class="tok-ty">String</span> <span class="tok-mu">&#123;</span>
+									class="tok-ty">&str</span>) -&gt; <span class="tok-ty">String</span> <span
+									class="tok-mu">&#123;</span>
     <span class="tok-fn">format!</span>(<span class="tok-str">"hi, &#123;name&#125;"</span>)
 <span class="tok-mu">&#125;</span></pre>
 						</div>
@@ -581,8 +551,8 @@
 						>
 							<pre class="m-0 px-3 py-2"><span class="tok-kw">pub fn</span> <span
 									class="tok-fn">greet</span>(<span class="tok-id">name</span>: <span
-									class="tok-ty">&str</span
-								>) -&gt; <span class="tok-ty">String</span> <span class="tok-mu">&#123;</span>
+									class="tok-ty">&str</span>) -&gt; <span class="tok-ty">String</span> <span
+									class="tok-mu">&#123;</span>
     <span class="tok-fn">format!</span>(<span class="tok-str">"hi, &#123;name&#125;"</span>)
 <span class="tok-mu">&#125;</span></pre>
 						</div>
@@ -629,26 +599,20 @@
 					<div class="flex flex-col gap-1">
 						<span class="text-xs font-medium text-(--ink)">Doc links open in</span>
 						<div
-							class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+							class="corner-squircle relative grid grid-cols-2 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 						>
 							<div
 								class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-								style="left: {linkIndicator.left}px; width: {linkIndicator.width}px"
+								style={indicatorStyle(linkIndex, linkOptions.length)}
 							></div>
-							{#each [{ id: 'codeview' as ExternalLinkMode, label: 'Codeview', Icon: LinkIcon }, { id: 'docs' as ExternalLinkMode, label: 'docs.rs', Icon: ExternalLinkIcon }] as opt (opt.id)}
+							{#each linkOptions as opt (opt.id)}
 								<button
 									type="button"
-									class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {extLinkMode ===
+									class="relative z-10 inline-flex items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {extLinkMode ===
 									opt.id
 										? 'text-(--on-accent)'
 										: 'text-(--muted) hover:text-(--ink)'}"
 									onclick={() => onExtLinkModeChange(opt.id)}
-									{@attach (el) => {
-										linkRefs[opt.id] = el as HTMLButtonElement;
-										return () => {
-											linkRefs[opt.id] = null;
-										};
-									}}
 								>
 									<opt.Icon size={13} />
 									{opt.label}
@@ -666,26 +630,20 @@
 					<div class="flex flex-col gap-1">
 						<span class="text-xs font-medium text-(--ink)">Source provider</span>
 						<div
-							class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+							class="corner-squircle relative grid grid-cols-3 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 						>
 							<div
 								class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-								style="left: {sourceIndicator.left}px; width: {sourceIndicator.width}px"
+								style={indicatorStyle(sourceIndex, sourceProviders.length)}
 							></div>
 							{#each sourceProviders as prov (prov.id)}
 								<button
 									type="button"
-									class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {sourceProviderMode ===
+									class="relative z-10 inline-flex items-center justify-center gap-1.5 rounded-(--radius-chip) px-2 py-1.5 text-xs font-medium transition-colors {sourceProviderMode ===
 									prov.id
 										? 'text-(--on-accent)'
 										: 'text-(--muted) hover:text-(--ink)'}"
 									onclick={() => onSourceProviderModeChange(prov.id)}
-									{@attach (el) => {
-										sourceRefs[prov.id] = el as HTMLButtonElement;
-										return () => {
-											sourceRefs[prov.id] = null;
-										};
-									}}
 								>
 									{#if prov.id === 'github'}
 										<GlobeIcon size={12} />
@@ -717,26 +675,20 @@
 					<div class="flex flex-col gap-1">
 						<span class="text-xs font-medium text-(--ink)">Open files in</span>
 						<div
-							class="corner-squircle relative flex flex-wrap items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+							class="corner-squircle relative grid grid-cols-5 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 						>
 							<div
 								class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-								style="left: {editorIndicator.left}px; width: {editorIndicator.width}px"
+								style={indicatorStyle(editorIndex, editors.length)}
 							></div>
 							{#each editors as ed (ed.id)}
 								<button
 									type="button"
-									class="relative z-10 rounded-(--radius-chip) px-2.5 py-1.5 text-xs font-medium transition-colors {editor ===
+									class="relative z-10 rounded-(--radius-chip) px-2 py-1.5 text-center text-xs font-medium transition-colors {editor ===
 									ed.id
 										? 'text-(--on-accent)'
 										: 'text-(--muted) hover:text-(--ink)'}"
 									onclick={() => setEditor(ed.id)}
-									{@attach (el) => {
-										editorRefs[ed.id] = el as HTMLButtonElement;
-										return () => {
-											editorRefs[ed.id] = null;
-										};
-									}}
 								>
 									{ed.label}
 								</button>
@@ -787,26 +739,20 @@
 				<div class="flex flex-col gap-1">
 					<span class="text-xs font-medium text-(--ink)">Clone command</span>
 					<div
-						class="corner-squircle relative flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
+						class="corner-squircle relative grid grid-cols-2 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 					>
 						<div
 							class="corner-squircle absolute top-1 bottom-1 rounded-(--radius-chip) bg-(--accent) transition-all duration-200 ease-out"
-							style="left: {vcsIndicator.left}px; width: {vcsIndicator.width}px"
+							style={indicatorStyle(vcsIndex, vcsOptions.length)}
 						></div>
 						{#each vcsOptions as opt (opt.id)}
 							<button
 								type="button"
-								class="relative z-10 inline-flex flex-1 items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {vcsMode ===
+								class="relative z-10 inline-flex items-center justify-center gap-1.5 rounded-(--radius-chip) px-3 py-1.5 text-xs font-medium transition-colors {vcsMode ===
 								opt.id
 									? 'text-(--on-accent)'
 									: 'text-(--muted) hover:text-(--ink)'}"
 								onclick={() => onVcsModeChange(opt.id)}
-								{@attach (el) => {
-									vcsRefs[opt.id] = el as HTMLButtonElement;
-									return () => {
-										vcsRefs[opt.id] = null;
-									};
-								}}
 							>
 								<opt.Icon
 									size={13}

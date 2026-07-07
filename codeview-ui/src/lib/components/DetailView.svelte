@@ -9,7 +9,7 @@
 	import { resolveAppPath } from '$lib/app-paths';
 	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
 	import { getCrateMap, getStaticCrateMap } from '$lib/rpc/crateMap.remote';
-	import { kindLabels, edgeLabels, isPublic } from '$lib/display-names';
+	import { kindLabels, isPublic } from '$lib/display-names';
 	import { materializeDetailDocModel } from '$lib/detail-model';
 	import { isHosted } from '$lib/platform';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
@@ -233,7 +233,7 @@
 
 <svelte:boundary>
 	{#if selected && detail}
-		<div class="space-y-6">
+		<div class={`space-y-6 ${embedded ? 'px-4 py-4 sm:px-6 md:px-8' : ''}`}>
 			<!-- ── Crate sub-nav ──────────────────────────────────────
 				 doc-classic design: text breadcrumb + kind chip + pub
 				 chip + crate-scoped search + version + View source. -->
@@ -354,7 +354,6 @@
 						{blanketImpls}
 						{methodGroups}
 						{kindLabels}
-						{edgeLabels}
 						{displayNode}
 						{theme}
 						{getNodeUrl}
@@ -388,7 +387,6 @@
 								{blanketImpls}
 								{methodGroups}
 								{kindLabels}
-								{edgeLabels}
 								{displayNode}
 								{theme}
 								{getNodeUrl}

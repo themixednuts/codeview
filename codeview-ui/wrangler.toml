@@ -1,12 +1,30 @@
 name = "codeview"
-compatibility_date = "2026-05-01"
+account_id = "8ce8bd9cb4d667a578aee91aa8dc5edd"
+compatibility_date = "2026-07-07"
 compatibility_flags = ["nodejs_compat"]
 main = ".svelte-kit/cloudflare/_worker.js"
+workers_dev = false
 assets = { directory = ".svelte-kit/cloudflare", binding = "ASSETS" }
+
+[[routes]]
+pattern = "codeview.codes"
+custom_domain = true
+
+[cache]
+enabled = true
 
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"
 bucket_name = "crate-graphs"
+
+[[queues.producers]]
+binding = "PARSE_REQUESTS"
+queue = "codeview-parse-requests"
+
+[[durable_objects.bindings]]
+name = "PARSE_STATUS"
+class_name = "ParseStatusDurableObject"
+script_name = "codeview-parser"
 
 [[ratelimits]]
 name = "RATE_LIMIT_API"

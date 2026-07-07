@@ -89,12 +89,11 @@ impl S3Backend {
     /// Region is forced to `"auto"` per R2's quirk — it ignores the
     /// region but the SDK insists on a value.
     pub async fn from_env(bucket: impl Into<String>) -> Result<Self> {
-        let access_key = std::env::var("R2_ACCESS_KEY_ID")
-            .context("R2_ACCESS_KEY_ID env var not set")?;
+        let access_key =
+            std::env::var("R2_ACCESS_KEY_ID").context("R2_ACCESS_KEY_ID env var not set")?;
         let secret_key = std::env::var("R2_SECRET_ACCESS_KEY")
             .context("R2_SECRET_ACCESS_KEY env var not set")?;
-        let account_id = std::env::var("R2_ACCOUNT_ID")
-            .context("R2_ACCOUNT_ID env var not set")?;
+        let account_id = std::env::var("R2_ACCOUNT_ID").context("R2_ACCOUNT_ID env var not set")?;
         let endpoint = format!("https://{account_id}.r2.cloudflarestorage.com");
 
         let creds = aws_credential_types::Credentials::new(
@@ -133,11 +132,7 @@ impl S3Backend {
 /// next sweep.
 const R2_RETRIES: u32 = 4;
 
-async fn with_retries<T, F, Fut, ClassErr>(
-    op: &str,
-    classify: ClassErr,
-    mut f: F,
-) -> Result<T>
+async fn with_retries<T, F, Fut, ClassErr>(op: &str, classify: ClassErr, mut f: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, anyhow::Error>>,
@@ -153,7 +148,11 @@ where
                     return Err(err.context(format!("{op} (after {} attempts)", attempt + 1)));
                 }
                 let delay = std::time::Duration::from_secs(1u64 << attempt);
-                eprintln!("[r2] {op} failed (attempt {}): {err:#}; retrying in {:?}", attempt + 1, delay);
+                eprintln!(
+                    "[r2] {op} failed (attempt {}): {err:#}; retrying in {:?}",
+                    attempt + 1,
+                    delay
+                );
                 tokio::time::sleep(delay).await;
                 last_err = Some(err);
                 attempt += 1;
@@ -402,15 +401,13 @@ impl LocalMiniflareBackend {
         let r2_root = persist_to.join("v3").join("r2");
         let do_unique_key = "miniflare-R2BucketObject";
         let do_id = namespace_id_from_name(do_unique_key, &bucket);
-        let db_path = r2_root
-            .join(do_unique_key)
-            .join(format!("{do_id}.sqlite"));
+        let db_path = r2_root.join(do_unique_key).join(format!("{do_id}.sqlite"));
 
         // Match the wrangler.toml `[[r2_buckets]] binding` value.  If
         // the project ever runs more buckets we'll plumb this in via
         // env or arg; today there's exactly one.
-        let binding = std::env::var("CODEVIEW_R2_BINDING")
-            .unwrap_or_else(|_| "CRATE_GRAPHS".to_string());
+        let binding =
+            std::env::var("CODEVIEW_R2_BINDING").unwrap_or_else(|_| "CRATE_GRAPHS".to_string());
 
         Self {
             bucket,
@@ -744,7 +741,9 @@ pub enum Target {
 pub async fn build_backend(target: Target, bucket: &str) -> Result<Arc<dyn R2>> {
     match target {
         Target::Remote => Ok(Arc::new(S3Backend::from_env(bucket).await?)),
-        Target::Local { persist_to } => Ok(Arc::new(LocalMiniflareBackend::new(bucket, persist_to))),
+        Target::Local { persist_to } => {
+            Ok(Arc::new(LocalMiniflareBackend::new(bucket, persist_to)))
+        }
     }
 }
 
@@ -773,6 +772,12 @@ pub fn freshness_key(name: &str) -> String {
     format!("rust/_index/{name}.json")
 }
 
+/// Exact-version freshness entry. The crate-level freshness key remains
+/// a latest-version pointer; this key preserves every parsed version.
+pub fn version_freshness_key(name: &str, version: &str) -> String {
+    format!("rust/_index/by-version/{name}/{version}.json")
+}
+
 /// Convenience for the artifact orchestrator.
 #[allow(dead_code)]
 pub fn artifact_prefix(storage_name: &str, version: &str) -> String {
@@ -793,17 +798,13 @@ pub async fn read_json<T: serde::de::DeserializeOwned>(
     let Some(bytes) = r2.get(key).await? else {
         return Ok(None);
     };
-    Ok(Some(serde_json::from_slice(&bytes).with_context(|| {
-        format!("parse JSON for {key}")
-    })?))
+    Ok(Some(
+        serde_json::from_slice(&bytes).with_context(|| format!("parse JSON for {key}"))?,
+    ))
 }
 
 /// Helper to serialise+upload JSON via the trait.
-pub async fn write_json<T: serde::Serialize>(
-    r2: &Arc<dyn R2>,
-    key: &str,
-    value: &T,
-) -> Result<()> {
+pub async fn write_json<T: serde::Serialize>(r2: &Arc<dyn R2>, key: &str, value: &T) -> Result<()> {
     let bytes = serde_json::to_vec(value)?;
     r2.put(key, bytes, "application/json; charset=utf-8").await
 }

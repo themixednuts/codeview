@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { cn, type WithElementRef } from '$lib/shadcn/utils.js';
+	import { cn, refAttachment, type WithElementRef } from '$lib/shadcn/utils.js';
 	import type { HTMLAttributes } from 'svelte/elements';
 
 	let {
@@ -8,10 +8,12 @@
 		children,
 		...restProps
 	}: WithElementRef<HTMLAttributes<HTMLDivElement>> = $props();
+
+	const attachRef = refAttachment<HTMLDivElement>((node) => (ref = node));
 </script>
 
 <div
-	bind:this={ref}
+	{@attach attachRef}
 	data-slot="sheet-footer"
 	class={cn('mt-auto flex flex-col gap-2 p-4', className)}
 	{...restProps}

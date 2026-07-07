@@ -1,7 +1,7 @@
 import { Result } from 'better-result';
 import { Data, Effect } from 'effect';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { CrateGraph, Node, Workspace } from '$lib/graph';
+import type { CrateGraph, Node } from '$lib/graph';
 import type {
 	CrateIndex,
 	CrateTree,
@@ -15,7 +15,6 @@ import type {
 	StaticNodeShard,
 	StaticSearchManifest,
 	StaticSearchShard,
-	StaticTreeChildrenShard,
 	TreeNodeDTO,
 } from '$lib/schema';
 import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
@@ -25,14 +24,21 @@ import { getRegistry } from '../registry/index';
 import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
-import { NotAvailableError, ValidationError } from '../errors';
+import { NotAvailableError, RateLimitError, ValidationError } from '../errors';
 import {
 	crateNameVariants,
+	hyphenateCrateName,
 	isValidCrateName,
 	isValidVersion,
 	normalizeCrateName,
 } from '../validation';
 import { getLogger } from '$lib/log';
+import {
+	makeParseRequest,
+	parseStatusObject,
+	type ParseRequestMessage,
+	type StoredParseStatus,
+} from './parse-contract';
 import {
 	USER_AGENT,
 	SOURCE_MAX_BYTES,
@@ -41,11 +47,15 @@ import {
 	type SourceProviderMode,
 } from '../provider-utils';
 import type { PackageMetadata } from '../registry/types';
+import { orderCatalogSummaries } from './catalog';
 
 const log = getLogger('cloudflare');
 
 type AppEnv = Env & {
 	CRATE_GRAPHS: R2Bucket;
+	PARSE_REQUESTS?: Queue<ParseRequestMessage>;
+	PARSE_STATUS?: DurableObjectNamespace;
+	RATE_LIMIT_API?: RateLimit;
 	GITHUB_REPO?: string;
 	GITHUB_REF?: string;
 	GITHUB_TOKEN?: string;
@@ -53,6 +63,17 @@ type AppEnv = Env & {
 
 type SearchEntry = NodeSummary & { score?: number };
 const NODE_VIEW_BUCKETS = 128;
+const DEFAULT_SITE_TREE_BUCKETS = 128;
+const DEFAULT_SITE_ALIAS_BUCKETS = 128;
+
+function registrySummary(result: PackageMetadata): CrateSummaryResult {
+	return {
+		id: hyphenateCrateName(result.name),
+		name: result.name,
+		version: result.version,
+		description: result.description,
+	};
+}
 
 class R2ReadError extends Data.TaggedError('R2ReadError')<{
 	readonly key: string;
@@ -137,51 +158,6 @@ type ResolvedRefCacheEntry = {
 };
 
 const resolvedRefCache = new Map<string, ResolvedRefCacheEntry>();
-
-async function artifactManifestExists(
-	r2: R2Bucket,
-	storageName: string,
-	version: string,
-): Promise<boolean> {
-	try {
-		return (await r2.head(`${artifactPrefix(storageName, version)}/manifest.json`)) !== null;
-	} catch (err) {
-		log.warn`R2 head failed for ${artifactPrefix(storageName, version)}/manifest.json: ${String(err)}`;
-		return false;
-	}
-}
-
-async function resolveArtifactRefFallback(
-	r2: R2Bucket,
-	name: string,
-	version: string,
-): Promise<ArtifactRef | null> {
-	const variants = uniqueCrateNameVariants(name);
-
-	if (VERSION_ALIASES.has(version)) {
-		for (const variant of variants) {
-			const pointer = await readR2Json<{ version: string }>(r2, `rust/${variant}/${version}.json`);
-			if (typeof pointer?.version !== 'string' || pointer.version.length === 0) continue;
-			if (await artifactManifestExists(r2, variant, pointer.version)) {
-				return { storageName: variant, version: pointer.version };
-			}
-			for (const fallback of variants) {
-				if (fallback === variant) continue;
-				if (await artifactManifestExists(r2, fallback, pointer.version)) {
-					return { storageName: fallback, version: pointer.version };
-				}
-			}
-		}
-		return null;
-	}
-
-	for (const variant of variants) {
-		if (await artifactManifestExists(r2, variant, version)) {
-			return { storageName: variant, version };
-		}
-	}
-	return null;
-}
 
 function artifactPrefix(name: string, version: string): string {
 	return `rust/${name}/${version}`;
@@ -311,11 +287,6 @@ function treeChildrenBucket(parentId: string, bucketCount = NODE_VIEW_BUCKETS): 
  * 2-char prefix to look up. When it's 1 char, we return that single char
  * and the caller uses `manifest.prefixes.filter(p => p.startsWith(...))`
  * to fan out across all shards starting with that letter.
- *
- * Back-compat: artifacts written before two-letter sharding (prefixes
- * were single chars) still match — a single-char shard like `"r"` is
- * matched by `startsWith("r")` as well as `startsWith("re")` if the
- * latter were absent. The query-side handles both layouts uniformly.
  */
 function searchPrefix(value: string): string {
 	const normalized = value
@@ -345,6 +316,99 @@ function searchSummaries(entries: NodeSummary[], queryText: string, limit: numbe
 		.sort((a, b) => (a.score ?? 9) - (b.score ?? 9) || a.id.localeCompare(b.id))
 		.slice(0, limit)
 		.map(({ score: _score, ...entry }) => entry);
+}
+
+type HostedArtifactInfo = {
+	nodeViewBucketCount?: number;
+	treeChildrenBucketCount?: number;
+	aliasBucketCount?: number;
+	targetRawShardBytes?: number;
+	searchPrefixLength?: number;
+	nodeViewEntryLimit?: number;
+};
+
+type HostedMetaArtifact = {
+	schema_version: number;
+	name: string;
+	version: string;
+	index: CrateIndex;
+	nodeCount: number;
+	edgeCount: number;
+	kindCounts: Record<string, number>;
+	roots: TreeNodeDTO[];
+	rootChildren: Record<string, TreeNodeDTO[]>;
+	artifacts?: HostedArtifactInfo;
+};
+
+type HostedNodeDetail = Omit<NodeDetail, 'node' | 'relatedNodes'> & {
+	relatedNodes: NodeSummary[];
+};
+
+type HostedNodeViewEntry = {
+	nodeId: string;
+	detail: HostedNodeDetail;
+	ancestors: NodeSummary[];
+	stats?: {
+		incomingEdges?: number;
+		outgoingEdges?: number;
+		relatedNodes?: number;
+		includedIncomingEdges?: number;
+		includedOutgoingEdges?: number;
+		truncatedIncomingEdges?: number;
+		truncatedOutgoingEdges?: number;
+	};
+};
+
+type HostedNodeViewShard = {
+	schema_version: number;
+	name: string;
+	version: string;
+	bucket: string;
+	bucketCount?: number;
+	entries: Record<string, HostedNodeViewEntry>;
+};
+
+type HostedTreeChildrenShard = {
+	schema_version: number;
+	name: string;
+	version: string;
+	bucket: string;
+	bucketCount?: number;
+	parents: Record<
+		string,
+		{
+			parent: NodeSummary;
+			children: TreeNodeDTO[];
+		}
+	>;
+};
+
+type HostedSearchManifest = StaticSearchManifest;
+type HostedSearchShard = StaticSearchShard;
+
+type HostedAliasShard = {
+	schema_version: number;
+	name: string;
+	version: string;
+	bucket: string;
+	bucketCount?: number;
+	aliases: Record<string, { canonicalId: string; canonicalPath?: string }>;
+};
+
+function nodeFromSummary(summary: NodeSummary): Node {
+	const node: Node = {
+		id: summary.id,
+		name: summary.name,
+		kind: summary.kind,
+		visibility: summary.visibility,
+		attrs: [],
+	};
+	if (summary.is_external !== undefined) node.is_external = summary.is_external;
+	if (summary.is_deprecated !== undefined) node.is_deprecated = summary.is_deprecated;
+	if (summary.impl_trait !== undefined) node.impl_trait = summary.impl_trait;
+	if (summary.impl_category !== undefined) node.impl_category = summary.impl_category;
+	if (summary.generics !== undefined) node.generics = summary.generics;
+	return node;
 }
 
 function readR2JsonEffect<T>(r2: R2Bucket, key: string): Effect.Effect<T | null, R2JsonError> {
@@ -395,10 +459,6 @@ function readR2JsonEffect<T>(r2: R2Bucket, key: string): Effect.Effect<T | null,
 				}),
 		});
 	});
-}
-
-async function readR2Json<T>(r2: R2Bucket, key: string): Promise<T | null> {
-	return Effect.runPromise(readR2JsonEffect<T>(r2, key));
 }
 
 const artifactJsonCache = new Map<string, Promise<unknown | null>>();
@@ -489,7 +549,7 @@ async function readArtifactJsonWithCache<T>(
 	return (await inflight) as T | null;
 }
 
-export function createCloudflareProvider(env: AppEnv): DataProvider {
+export function createCloudflareProvider(env: AppEnv, request?: Request): DataProvider {
 	function sourceCacheKey(
 		crateName: string,
 		crateVersion: string,
@@ -515,6 +575,21 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			if (oldestKey === undefined) break;
 			sourceFileCache.delete(oldestKey);
 		}
+	}
+
+	function parseRateLimitKey(): string {
+		const ip =
+			request?.headers.get('cf-connecting-ip') ??
+			request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+			'anonymous';
+		return `parse:${ip}`;
+	}
+
+	async function checkParseRateLimit() {
+		if (!env.RATE_LIMIT_API) return null;
+		const outcome = await env.RATE_LIMIT_API.limit({ key: parseRateLimitKey() });
+		if (outcome.success) return null;
+		return new RateLimitError({ message: 'Too many parse requests. Try again shortly.' });
 	}
 
 	function readJson<T>(key: string): Promise<T | null> {
@@ -580,20 +655,15 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			foundRefs = true;
 			const ref = resolveRefFromRefs(refs, version);
 			if (!ref) continue;
+			const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
+			if (meta?.schema_version !== 1) continue;
 			return {
 				ref,
 				cacheMode: VERSION_ALIASES.has(version) ? 'short' : 'forever',
 			};
 		}
 
-		if (foundRefs) {
-			return { ref: null, cacheMode: 'short' };
-		}
-
-		return {
-			ref: await resolveArtifactRefFallback(env.CRATE_GRAPHS, name, version),
-			cacheMode: 'none',
-		};
+		return { ref: null, cacheMode: foundRefs ? 'short' : 'none' };
 	}
 
 	async function resolveRefForArtifact(name: string, version: string): Promise<ArtifactRef | null> {
@@ -634,21 +704,27 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		return foundRefs ? [] : null;
 	}
 
-	async function loadManifestArtifact(
+	async function loadHostedContext(
 		name: string,
 		version: string,
-	): Promise<StaticCrateManifest | null> {
+	): Promise<{ ref: ArtifactRef; meta: HostedMetaArtifact } | null> {
 		const ref = await resolveRefForArtifact(name, version);
 		if (!ref) return null;
-		return readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
+		const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
+		return meta?.schema_version === 1 ? { ref, meta } : null;
+	}
+
+	async function loadHostedMetaArtifact(
+		name: string,
+		version: string,
+	): Promise<HostedMetaArtifact | null> {
+		return (await loadHostedContext(name, version))?.meta ?? null;
 	}
 
 	/**
 	 * Per-isolate cache of `manifest.populatedShards` indexed for O(1) lookup.
 	 * Each entry is either:
-	 *   - `null`  : manifest has no `populatedShards` field (older artifact).
-	 *               Behave as if every bucket might be populated — preserves
-	 *               back-compat with the pre-shard-manifest layout.
+	 *   - `null`  : manifest missing or malformed, so no shard is trusted.
 	 *   - `Map<kind, Set<bucket>>` : the typed lookup tables.
 	 *
 	 * The manifest body is cached by the artifact JSON reader; this extra layer
@@ -669,7 +745,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			const manifest = await readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
 			if (!manifest?.populatedShards) {
 				populatedShardsCache.set(cacheKey, null);
-				return true;
+				return false;
 			}
 			entry = new Map<PopulatedKind, Set<string>>([
 				['nodes', new Set(manifest.populatedShards.nodes)],
@@ -678,21 +754,28 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			]);
 			populatedShardsCache.set(cacheKey, entry);
 		}
-		if (entry === null) return true;
+		if (entry === null) return false;
 		return entry.get(kind)?.has(bucket) ?? false;
 	}
 
-	async function loadNodeArtifact(
-		name: string,
-		version: string,
-		nodeId: string,
-	): Promise<Node | null> {
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
+	async function loadNodeFromRef(ref: ArtifactRef, nodeId: string): Promise<Node | null> {
 		const bucket = nodeViewBucket(nodeId);
 		if (!(await isShardPopulated(ref, 'nodes', bucket))) return null;
 		const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
 		return shard?.nodes[nodeId] ?? null;
+	}
+
+	async function loadHostedAlias(
+		ref: ArtifactRef,
+		meta: HostedMetaArtifact,
+		nodeId: string,
+	): Promise<string | null> {
+		const bucket = nodeViewBucket(
+			nodeId,
+			meta.artifacts?.aliasBucketCount ?? DEFAULT_SITE_ALIAS_BUCKETS,
+		);
+		const shard = await readArtifactJson<HostedAliasShard>(ref, `site/aliases/${bucket}.json`);
+		return shard?.aliases[nodeId]?.canonicalId ?? null;
 	}
 
 	/**
@@ -706,12 +789,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	 */
 	const aliasCache = new Map<string, Map<string, string> | null>();
 
-	async function loadCrateAliases(
-		name: string,
-		version: string,
-	): Promise<Map<string, string> | null> {
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
+	async function loadCrateAliasesFromRef(ref: ArtifactRef): Promise<Map<string, string> | null> {
 		const key = `${ref.storageName}@${ref.version}`;
 		if (aliasCache.has(key)) return aliasCache.get(key) ?? null;
 		const map = await readArtifactJson<Record<string, string>>(ref, 'aliases.json');
@@ -720,48 +798,44 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		return result;
 	}
 
-	async function loadNodeDetailEntryArtifact(
-		name: string,
-		version: string,
+	async function loadNodeDetailEntryFromRef(
+		ref: ArtifactRef,
 		nodeId: string,
 	): Promise<StaticNodeDetailEntry | null> {
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
 		const bucket = nodeViewBucket(nodeId);
 		if (!(await isShardPopulated(ref, 'nodeDetails', bucket))) return null;
 		const shard = await readArtifactJson<StaticNodeDetailShard>(ref, `node-details/${bucket}.json`);
 		return shard?.details[nodeId] ?? null;
 	}
 
-	async function loadNodeViewArtifact(
-		name: string,
-		version: string,
+	async function assembleNodeViewFromShards(
+		ref: ArtifactRef,
 		nodeId: string,
 	): Promise<NodeViewBase | null> {
 		let resolvedId = nodeId;
 		let [entry, node] = await Effect.runPromise(
 			Effect.all(
 				[
-					Effect.promise(() => loadNodeDetailEntryArtifact(name, version, resolvedId)),
-					Effect.promise(() => loadNodeArtifact(name, version, resolvedId)),
+					Effect.promise(() => loadNodeDetailEntryFromRef(ref, resolvedId)),
+					Effect.promise(() => loadNodeFromRef(ref, resolvedId)),
 				] as const,
 				{ concurrency: 2 },
 			),
 		);
 
-		// Alias fallback — `nodeId` may be a public re-export path (e.g.
+		// Alias resolution — `nodeId` may be a public re-export path (e.g.
 		// `core::async_iter::AsyncIterator`) that doesn't correspond to a
 		// stored node. Resolve via `aliases.json` to the canonical ID.
 		if ((!entry || !node) && !resolvedId.endsWith('!alias-checked')) {
-			const aliases = await loadCrateAliases(name, version);
+			const aliases = await loadCrateAliasesFromRef(ref);
 			const canonical = aliases?.get(nodeId);
 			if (canonical && canonical !== nodeId) {
 				resolvedId = canonical;
 				[entry, node] = await Effect.runPromise(
 					Effect.all(
 						[
-							Effect.promise(() => loadNodeDetailEntryArtifact(name, version, resolvedId)),
-							Effect.promise(() => loadNodeArtifact(name, version, resolvedId)),
+							Effect.promise(() => loadNodeDetailEntryFromRef(ref, resolvedId)),
+							Effect.promise(() => loadNodeFromRef(ref, resolvedId)),
 						] as const,
 						{ concurrency: 2 },
 					),
@@ -778,17 +852,13 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			(relatedBuckets.get(bucket) ?? relatedBuckets.set(bucket, []).get(bucket)!).push(id);
 		}
 
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
 		await Effect.runPromise(
 			Effect.forEach(
 				Array.from(relatedBuckets.entries()),
 				([bucket, ids]) =>
 					Effect.promise(async () => {
-						// Skip empty buckets — relatedIds may reference nodes whose
-						// bucket has been pruned in older crates (e.g. stripped
-						// items). The populated-shards manifest tells us before we
-						// pay the R2 round-trip.
+						// Skip empty buckets. The populated-shards manifest tells us
+						// before we pay the R2 round-trip.
 						if (!(await isShardPopulated(ref, 'nodes', bucket))) return;
 						const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
 						if (!shard) return;
@@ -813,37 +883,82 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		};
 	}
 
-	async function loadSearchManifestArtifact(
-		name: string,
-		version: string,
-	): Promise<StaticSearchManifest | null> {
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
-		return readArtifactJson<StaticSearchManifest>(ref, 'search-manifest.json');
+	async function loadMaterializedNodeView(
+		hostedRef: ArtifactRef,
+		hostedMeta: HostedMetaArtifact,
+		nodeId: string,
+	): Promise<NodeViewBase | null> {
+		async function loadEntry(id: string): Promise<HostedNodeViewEntry | null> {
+			const bucketCount = hostedMeta.artifacts?.nodeViewBucketCount ?? NODE_VIEW_BUCKETS;
+			if (bucketCount <= 0) return null;
+			const bucket = nodeViewBucket(id, bucketCount);
+			const shard = await readArtifactJson<HostedNodeViewShard>(
+				hostedRef,
+				`site/node-views/${bucket}.json`,
+			);
+			return shard?.entries[id] ?? null;
+		}
+
+		let resolvedId = nodeId;
+		let entry = await loadEntry(resolvedId);
+		if (!entry) {
+			const canonical = await loadHostedAlias(hostedRef, hostedMeta, nodeId);
+			if (canonical && canonical !== nodeId) {
+				resolvedId = canonical;
+				entry = await loadEntry(resolvedId);
+			}
+		}
+		const node = entry ? await loadNodeFromRef(hostedRef, resolvedId) : null;
+		return entry && node
+			? {
+					detail: {
+						node,
+						edges: entry.detail.edges,
+						relatedNodes: entry.detail.relatedNodes.map(nodeFromSummary),
+					},
+					ancestors: entry.ancestors,
+				}
+			: null;
 	}
 
-	async function loadSearchShardArtifact(
+	async function loadNodeView(
 		name: string,
 		version: string,
+		nodeId: string,
+	): Promise<NodeViewBase | null> {
+		const context = await loadHostedContext(name, version);
+		if (!context) return null;
+		const nodeViewBucketCount = context.meta.artifacts?.nodeViewBucketCount ?? NODE_VIEW_BUCKETS;
+		if (nodeViewBucketCount <= 0) {
+			return assembleNodeViewFromShards(context.ref, nodeId);
+		}
+		return loadMaterializedNodeView(context.ref, context.meta, nodeId);
+	}
+
+	async function loadHostedSearchManifestFromRef(
+		ref: ArtifactRef,
+	): Promise<HostedSearchManifest | null> {
+		return readArtifactJson<HostedSearchManifest>(ref, 'site/search-manifest.json');
+	}
+
+	async function loadHostedSearchShardFromRef(
+		ref: ArtifactRef,
 		prefix: string,
-	): Promise<StaticSearchShard | null> {
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
-		return readArtifactJson<StaticSearchShard>(ref, `search/${prefix}.json`);
+	): Promise<HostedSearchShard | null> {
+		return readArtifactJson<HostedSearchShard>(ref, `site/search/${prefix}.json`);
 	}
 
-	async function loadTreeChildrenArtifact(
-		name: string,
-		version: string,
+	async function loadHostedTreeChildrenFromContext(
+		context: { ref: ArtifactRef; meta: HostedMetaArtifact },
 		parentId: string,
 	): Promise<TreeNodeDTO[] | null> {
-		const ref = await resolveRefForArtifact(name, version);
-		if (!ref) return null;
-		const bucket = treeChildrenBucket(parentId);
-		if (!(await isShardPopulated(ref, 'treeChildren', bucket))) return null;
-		const shard = await readArtifactJson<StaticTreeChildrenShard>(
-			ref,
-			`tree-children/${bucket}.json`,
+		const bucket = treeChildrenBucket(
+			parentId,
+			context.meta.artifacts?.treeChildrenBucketCount ?? DEFAULT_SITE_TREE_BUCKETS,
+		);
+		const shard = await readArtifactJson<HostedTreeChildrenShard>(
+			context.ref,
+			`site/tree-children/${bucket}.json`,
 		);
 		return shard?.parents[parentId]?.children ?? null;
 	}
@@ -856,37 +971,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 
 	async function listPublishedVersions(name: string, limit = 20): Promise<string[]> {
 		const refsVersions = await listPublishedVersionsFromRefs(name, limit);
-		if (refsVersions !== null) return refsVersions;
-
-		const versions = new Set<string>();
-		const aliases = isStdCrate(normalizeCrateName(name))
-			? (['stable', 'nightly', 'beta', 'latest'] as const)
-			: (['latest'] as const);
-		for (const alias of aliases) {
-			const ref = await resolveRefForArtifact(name, alias);
-			if (ref) versions.add(ref.version);
-		}
-		for (const variant of uniqueCrateNameVariants(name)) {
-			let cursor: string | undefined;
-			do {
-				const listed = await env.CRATE_GRAPHS.list({
-					prefix: `rust/${variant}/`,
-					delimiter: '/',
-					limit: Math.max(1, Math.min(1000, limit)),
-					cursor,
-				});
-				for (const prefix of listed.delimitedPrefixes ?? []) {
-					const parts = prefix.split('/');
-					const version = parts[2];
-					if (version) versions.add(version);
-				}
-				cursor = listed.truncated ? listed.cursor : undefined;
-			} while (cursor && versions.size < limit);
-			if (versions.size >= limit) break;
-		}
-		return Array.from(versions)
-			.sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }))
-			.slice(0, limit);
+		return refsVersions ?? [];
 	}
 
 	async function firstPublishedVersion(name: string): Promise<string | null> {
@@ -895,41 +980,36 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		return (await listPublishedVersions(name, 1))[0] ?? null;
 	}
 
-	async function listPublishedCratesFromR2(): Promise<CrateSummaryResult[]> {
-		const storageNames: string[] = [];
-		let cursor: string | undefined;
-		do {
-			const listed = await env.CRATE_GRAPHS.list({
-				prefix: 'rust/',
-				delimiter: '/',
-				limit: 1000,
-				cursor,
-			});
-			for (const prefix of listed.delimitedPrefixes ?? []) {
-				const storageName = prefix.split('/')[1];
-				if (storageName) storageNames.push(storageName);
-			}
-			cursor = listed.truncated ? listed.cursor : undefined;
-		} while (cursor);
+	function storedStatusToCrateStatus(stored: StoredParseStatus) {
+		return {
+			status: stored.status,
+			error: stored.error,
+			step: stored.step,
+			action: stored.action,
+			installedVersion: stored.installedVersion,
+		};
+	}
 
-		const crates = await Effect.runPromise(
-			Effect.forEach(
-				[...new Set(storageNames)].sort(),
-				(storageName) =>
-					Effect.promise(async (): Promise<CrateSummaryResult | null> => {
-						const version = await firstPublishedVersion(storageName);
-						if (!version) return null;
-						const manifest = await loadManifestArtifact(storageName, version);
-						return {
-							id: storageName,
-							name: manifest?.name ?? storageName,
-							version,
-						};
-					}),
-				{ concurrency: 8 },
-			),
-		);
-		return crates.filter((crate): crate is CrateSummaryResult => crate !== null);
+	async function readHostedParseStatus(
+		name: string,
+		version: string,
+	): Promise<StoredParseStatus | null> {
+		if (!env.PARSE_STATUS) return null;
+		const url = new URL('https://status/status');
+		url.searchParams.set('name', name);
+		url.searchParams.set('version', version);
+		const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+		if (!response.ok) return null;
+		return (await response.json()) as StoredParseStatus | null;
+	}
+
+	async function listHostedProcessing(limit: number): Promise<StoredParseStatus[]> {
+		if (!env.PARSE_STATUS) return [];
+		const url = new URL('https://status/processing');
+		url.searchParams.set('limit', String(limit));
+		const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+		if (!response.ok) return [];
+		return (await response.json()) as StoredParseStatus[];
 	}
 
 	let publishedCratesCache: Promise<CrateSummaryResult[]> | null = null;
@@ -938,20 +1018,9 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			publishedCratesCache = (async () => {
 				const catalog = await loadCatalogArtifact();
 				if (catalog) {
-					const crates = catalog.crates.map((entry) => ({
-						id: entry.storageName ?? crateNameVariants(entry.name)[1],
-						name: entry.name,
-						version: entry.version,
-						description: entry.description,
-					}));
-					const std: CrateSummaryResult[] = [];
-					const thirdParty: CrateSummaryResult[] = [];
-					for (const [index, entry] of catalog.crates.entries()) {
-						(entry.source === 'std' ? std : thirdParty).push(crates[index]);
-					}
-					return [...thirdParty, ...std];
+					return orderCatalogSummaries(catalog.crates) satisfies CrateSummaryResult[];
 				}
-				return listPublishedCratesFromR2();
+				return [];
 			})().catch((err) => {
 				publishedCratesCache = null;
 				log.warn`published crate catalog load failed: ${String(err)}`;
@@ -962,10 +1031,6 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 	}
 
 	return {
-		async loadWorkspace(): Promise<Workspace | null> {
-			return null;
-		},
-
 		async loadSourceFile(
 			relativePath: string,
 			crateName?: string,
@@ -1110,13 +1175,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		},
 
 		async loadTreeMeta(name: string, version: string) {
-			const manifest = await loadManifestArtifact(name, version);
-			return manifest ? { kindCounts: manifest.kindCounts, roots: manifest.roots } : null;
+			const meta = await loadHostedMetaArtifact(name, version);
+			return meta ? { kindCounts: meta.kindCounts, roots: meta.roots } : null;
 		},
 
 		async loadTreeRootsDirect(name: string, version: string): Promise<TreeNodeDTO[] | null> {
-			const manifest = await loadManifestArtifact(name, version);
-			return manifest?.roots ?? [];
+			return (await loadHostedMetaArtifact(name, version))?.roots ?? [];
 		},
 
 		async loadTreeChildrenDirect(
@@ -1124,10 +1188,11 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			version: string,
 			parentId: string,
 		): Promise<TreeNodeDTO[] | null> {
-			const manifest = await loadManifestArtifact(name, version);
-			const rootChildren = manifest?.rootChildren[parentId];
-			if (rootChildren) return rootChildren;
-			return (await loadTreeChildrenArtifact(name, version, parentId)) ?? [];
+			const context = await loadHostedContext(name, version);
+			if (!context) return [];
+			const rootChildren = context.meta.rootChildren[parentId];
+			if (rootChildren !== undefined) return rootChildren;
+			return (await loadHostedTreeChildrenFromContext(context, parentId)) ?? [];
 		},
 
 		async loadTreeAncestorsDirect(
@@ -1135,7 +1200,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			version: string,
 			nodeId: string,
 		): Promise<NodeSummary[] | null> {
-			const view = await loadNodeViewArtifact(name, version, nodeId);
+			const view = await loadNodeView(name, version, nodeId);
 			return view?.ancestors ?? [];
 		},
 
@@ -1144,8 +1209,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		},
 
 		async loadCrateIndex(name: string, version: string): Promise<CrateIndex | null> {
-			const manifest = await loadManifestArtifact(name, version);
-			return manifest?.index ?? null;
+			return (await loadHostedMetaArtifact(name, version))?.index ?? null;
 		},
 
 		async loadNodeViewDirect(
@@ -1153,7 +1217,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			version: string,
 			nodeId: string,
 		): Promise<NodeViewBase | null> {
-			return loadNodeViewArtifact(name, version, nodeId);
+			return loadNodeView(name, version, nodeId);
 		},
 
 		async loadNodeDetail(
@@ -1161,7 +1225,7 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			version: string,
 			nodeId: string,
 		): Promise<NodeDetail | null> {
-			const view = await loadNodeViewArtifact(name, version, nodeId);
+			const view = await loadNodeView(name, version, nodeId);
 			return view?.detail ?? null;
 		},
 
@@ -1170,10 +1234,9 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			version: string,
 			options?: CrateMapOptions,
 		): Promise<CrateMapData | null> {
-			const ref = await resolveRefForArtifact(name, version);
-			if (!ref) return null;
-			const artifact = await readArtifactJson<CrateMapData>(ref, 'crate-map.json');
-			return artifact ?? null;
+			const context = await loadHostedContext(name, version);
+			if (!context) return null;
+			return readArtifactJson<CrateMapData>(context.ref, 'crate-map.json');
 		},
 
 		async getCrossEdgeData(_nodeId: string): Promise<CrossEdgeData> {
@@ -1186,20 +1249,17 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			queryText: string,
 			limit = 200,
 		): Promise<NodeSummary[] | null> {
-			const manifest = await loadSearchManifestArtifact(crateName, crateVersion);
+			const context = await loadHostedContext(crateName, crateVersion);
+			if (!context) return [];
+			const manifest = await loadHostedSearchManifestFromRef(context.ref);
 			if (!manifest) return [];
 			const needle = queryText.trim().toLowerCase();
 			if (!needle) return [];
-			// Query prefix is up to 2 chars; manifest prefixes are 1 or 2 chars
-			// (the latter post-S1, the former in legacy artifacts). startsWith
-			// covers both layouts: a 1-char query matches every 2-char shard
-			// that starts with it, a 2-char query matches one shard, and a
-			// legacy 1-char shard is still matched by a 1+ char query.
 			const queryP = searchPrefix(needle);
 			const prefixes = manifest.prefixes.filter((prefix) => prefix.startsWith(queryP));
 			const entries: NodeSummary[] = [];
 			for (const prefix of prefixes.slice(0, 64)) {
-				const shard = await loadSearchShardArtifact(crateName, crateVersion, prefix);
+				const shard = await loadHostedSearchShardFromRef(context.ref, prefix);
 				if (shard) entries.push(...shard.entries);
 			}
 			return searchSummaries(entries, queryText, limit);
@@ -1210,31 +1270,42 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 				return { status: 'failed' as const, error: 'Invalid crate name or version' };
 			}
 			const ref = await resolveRefForArtifact(name, version);
-			if (!ref) {
-				return {
-					status: 'failed' as const,
-					error: `No static graph is published for ${name}@${version}.`,
-					action: 'docs_unavailable' as const,
-				};
+			if (ref) {
+				const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
+				if (meta?.schema_version === 1 && meta.index) return { status: 'ready' as const };
 			}
-			const manifest = await readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
-			if (manifest?.index) return { status: 'ready' as const };
+			const hostedStatus = await readHostedParseStatus(name, version);
+			if (hostedStatus) return storedStatusToCrateStatus(hostedStatus);
 			return {
 				status: 'failed' as const,
-				error: `No static graph is published for ${name}@${ref.version}. Static graphs are generated offline and uploaded to R2.`,
+				error: `No static graph is published for ${name}@${version}.`,
 				action: 'docs_unavailable' as const,
 			};
 		},
 
-		async triggerParse(name: string, version: string) {
+		async triggerParse(name: string, version: string, force?: boolean) {
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
-			return Result.err(
-				new NotAvailableError({
-					message: `Hosted parsing is disabled for ${name}@${version}; static graphs are generated offline and uploaded to R2.`,
-				}),
-			);
+			const requestKind = isStdCrate(normalizeCrateName(name)) ? 'sysroot' : 'crate';
+			if (!force) {
+				const ref = await resolveRefForArtifact(name, version);
+				if (ref) {
+					const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
+					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
+				}
+			}
+			const rateLimitError = await checkParseRateLimit();
+			if (rateLimitError) return Result.err(rateLimitError);
+			if (!env.PARSE_REQUESTS) {
+				return Result.err(
+					new NotAvailableError({
+						message: 'Hosted parse queue is not configured',
+					}),
+				);
+			}
+			await env.PARSE_REQUESTS.send(makeParseRequest(name, version, !!force, 'ui', requestKind));
+			return Result.ok(undefined);
 		},
 
 		async triggerStdInstall(_name: string, _version: string) {
@@ -1248,6 +1319,11 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		async searchRegistry(query: string) {
 			const needle = query.trim().toLowerCase();
 			if (!needle) return [];
+			const registryResult = getRegistry('rust');
+			if (!registryResult.isErr()) {
+				const live = await registryResult.value.search(needle, 20);
+				if (live.length > 0) return live.map(registrySummary);
+			}
 			const crates = await listPublishedCrates();
 			return crates
 				.map((crate) => {
@@ -1271,11 +1347,21 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		},
 
 		async getTopCrates(limit = 10) {
+			const registryResult = getRegistry('rust');
+			if (!registryResult.isErr()) {
+				const live = await registryResult.value.listTop(limit);
+				if (live.length > 0) return live.map(registrySummary);
+			}
 			return (await listPublishedCrates()).slice(0, limit);
 		},
 
-		async getProcessingCrates() {
-			return [];
+		async getProcessingCrates(limit = 20) {
+			return (await listHostedProcessing(limit)).map((entry) => ({
+				id: hyphenateCrateName(entry.name),
+				name: entry.name,
+				version: entry.version,
+				description: entry.step ?? 'Parsing',
+			}));
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
@@ -1292,10 +1378,15 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 /** Build-time entry point imported through the `$provider` alias. */
 export function createProvider(event: RequestEvent): DataProvider {
 	const env = (event.platform as { env: AppEnv }).env;
-	return createCloudflareProvider(env);
+	return createCloudflareProvider(env, event.request);
 }
 
-/** Hosted mode has no realtime Durable Object; static artifacts are the source of truth. */
-export function handleWsUpgrade(_event?: RequestEvent): Response {
-	return new Response('Hosted realtime parsing is disabled', { status: 410 });
+/** Hosted mode uses the parser status Durable Object for realtime parse/status events. */
+export function handleWsUpgrade(event?: RequestEvent): Response | Promise<Response> {
+	if (!event) return new Response('Hosted realtime status requires a request event', { status: 500 });
+	const env = (event?.platform as { env?: AppEnv } | undefined)?.env;
+	if (!env?.PARSE_STATUS) {
+		return new Response('Hosted realtime status is not configured', { status: 503 });
+	}
+	return parseStatusObject(env.PARSE_STATUS).fetch(event.request);
 }

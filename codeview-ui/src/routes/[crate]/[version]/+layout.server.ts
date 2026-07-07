@@ -5,9 +5,11 @@ import { hyphenateCrateName, normalizeCrateName } from '$lib/crate-names';
 import { resolve } from '$lib/rpc/helpers';
 import { isHosted } from '$lib/platform';
 import { parseExplorerState } from '$lib/url-state';
+import { isStdCrate } from '$lib/std';
 
 /** Version aliases that should be resolved to a concrete semver and redirected. */
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
+const INVALID_VERSION_SENTINELS = new Set(['undefined']);
 const LOAD_TIMEOUT_MS = 120;
 const MAX_PREFETCH_TREE_CHILDREN = 64;
 
@@ -34,6 +36,15 @@ export const load: LayoutServerLoad = async (event) => {
 	const provider = await initProvider(event);
 	const name = hyphenateCrateName(crate);
 
+	if (INVALID_VERSION_SENTINELS.has(version)) {
+		const resolved = await provider.resolveVersion(name, 'latest');
+		const prefix = `/${crate}/${version}`;
+		const rest = event.url.pathname.startsWith(prefix)
+			? event.url.pathname.slice(prefix.length)
+			: '';
+		throw redirect(302, `/${crate}/${resolved}${rest}${event.url.search}`);
+	}
+
 	// Resolve version aliases (latest → concrete semver) and redirect
 	if (VERSION_ALIASES.has(version)) {
 		const resolved = await provider.resolveVersion(name, version);
@@ -46,7 +57,7 @@ export const load: LayoutServerLoad = async (event) => {
 		}
 	}
 
-	if (!isHosted) {
+	if (!isHosted && isStdCrate(name)) {
 		void provider.ensureParsed?.(name, version).catch((err) => {
 			console.error(`ensureParsed failed for ${name}@${version}:`, err);
 		});

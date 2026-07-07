@@ -142,6 +142,7 @@ pub struct DbDumpCacheMetadata {
 struct CrateAccumulator {
     name: String,
     all_time_downloads: u64,
+    downloads_from_crates_csv: bool,
     newest: Option<VersionChoice>,
 }
 
@@ -369,21 +370,25 @@ fn read_crates_csv(reader: impl Read, crates: &mut HashMap<u64, CrateAccumulator
     let headers = csv.headers().context("read crates.csv headers")?.clone();
     let id_idx = required_header(&headers, "id")?;
     let name_idx = required_header(&headers, "name")?;
-    let downloads_idx = required_header(&headers, "downloads")?;
+    let downloads_idx = optional_header(&headers, "downloads");
 
     for record in csv.records() {
         let record = record.context("read crates.csv row")?;
         let id = parse_u64(required_field(&record, id_idx, "id")?, "crates.id")?;
         let name = required_field(&record, name_idx, "name")?.to_string();
-        let all_time_downloads = parse_u64(
-            required_field(&record, downloads_idx, "downloads")?,
-            "crates.downloads",
-        )?;
+        let all_time_downloads = match downloads_idx {
+            Some(idx) => parse_u64(
+                required_field(&record, idx, "downloads")?,
+                "crates.downloads",
+            )?,
+            None => 0,
+        };
         crates.insert(
             id,
             CrateAccumulator {
                 name,
                 all_time_downloads,
+                downloads_from_crates_csv: downloads_idx.is_some(),
                 newest: None,
             },
         );
@@ -402,15 +407,10 @@ fn read_versions_csv(
     let num_idx = required_header(&headers, "num")?;
     let yanked_idx = required_header(&headers, "yanked")?;
     let created_at_idx = optional_header(&headers, "created_at");
+    let downloads_idx = optional_header(&headers, "downloads");
 
     for record in csv.records() {
         let record = record.context("read versions.csv row")?;
-        if parse_bool(
-            required_field(&record, yanked_idx, "yanked")?,
-            "versions.yanked",
-        )? {
-            continue;
-        }
         let crate_id = parse_u64(
             required_field(&record, crate_id_idx, "crate_id")?,
             "versions.crate_id",
@@ -418,6 +418,23 @@ fn read_versions_csv(
         let Some(accumulator) = crates.get_mut(&crate_id) else {
             continue;
         };
+
+        if !accumulator.downloads_from_crates_csv
+            && let Some(idx) = downloads_idx
+        {
+            accumulator.all_time_downloads =
+                accumulator.all_time_downloads.saturating_add(parse_u64(
+                    required_field(&record, idx, "downloads")?,
+                    "versions.downloads",
+                )?);
+        }
+
+        if parse_bool(
+            required_field(&record, yanked_idx, "yanked")?,
+            "versions.yanked",
+        )? {
+            continue;
+        }
         let raw = required_field(&record, num_idx, "num")?;
         let Ok(parsed) = Version::parse(raw) else {
             continue;
@@ -645,6 +662,39 @@ id,crate_id,num,yanked,created_at
         assert_eq!(snapshot.crates[2].name, "gamma");
         assert_eq!(snapshot.crates[2].all_time_rank, Some(3));
         assert_eq!(snapshot.crates[2].newest_non_yanked, None);
+    }
+
+    #[test]
+    fn csv_snapshot_sums_version_downloads_when_crates_csv_has_no_downloads() {
+        let crates = "\
+id,name
+1,alpha
+2,beta
+";
+        let versions = "\
+id,crate_id,num,downloads,yanked,created_at
+10,1,1.0.0,100,false,2024-01-01 00:00:00
+11,1,1.1.0,25,true,2024-02-01 00:00:00
+20,2,2.0.0,250,false,2024-03-01 00:00:00
+";
+
+        let snapshot = build_snapshot_from_csv_readers(
+            Cursor::new(crates),
+            Cursor::new(versions),
+            test_source(),
+            SnapshotBuildOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(snapshot.crates[0].name, "beta");
+        assert_eq!(snapshot.crates[0].all_time_downloads, 250);
+        assert_eq!(snapshot.crates[0].all_time_rank, Some(1));
+        assert_eq!(snapshot.crates[1].name, "alpha");
+        assert_eq!(snapshot.crates[1].all_time_downloads, 125);
+        assert_eq!(
+            snapshot.crates[1].newest_non_yanked.as_deref(),
+            Some("1.0.0")
+        );
     }
 
     #[test]

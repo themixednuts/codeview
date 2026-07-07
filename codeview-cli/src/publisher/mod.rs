@@ -22,5 +22,6 @@ pub mod crates_dump;
 pub mod crates_io;
 pub mod docs_rs;
 pub mod freshness;
+pub mod hosted_artifacts;
 pub mod r2;
 pub mod shards;

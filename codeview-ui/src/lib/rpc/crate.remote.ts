@@ -22,9 +22,10 @@ import {
 	ProbeDocsInputSchema,
 } from './schemas';
 
-/** Get list of workspace crates (for index page + switcher) */
-export const getCrates = query(async (): Promise<CrateSummary[]> => {
-	const ws = await loader.workspace();
+/** Get local CLI workspace crates. Hosted mode has no workspace. */
+export const getLocalCrates = query(async (): Promise<CrateSummary[]> => {
+	if (isHosted) return [];
+	const ws = await loader.localWorkspace();
 	if (!ws) return [];
 	return ws.crates.map((c) => ({
 		id: c.id,

@@ -1,12 +1,16 @@
 <script lang="ts">
 	import '../app.css';
 	import { browser } from '$app/environment';
-	import { afterNavigate, goto, onNavigate } from '$app/navigation';
+	import { afterNavigate, goto, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { page } from '$app/state';
+	import { page, updated } from '$app/state';
 	import { getProcessingCrates } from '$lib/rpc/crate.remote';
-	import { ProcessingStatusConnection } from '$lib/realtime';
-	import { onMount } from 'svelte';
+	import {
+		CrateStatusConnection,
+		ParseProgressConnection,
+		ProcessingStatusConnection,
+	} from '$lib/realtime';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { perf } from '$lib/perf';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import {
@@ -59,8 +63,29 @@
 	import { LoaderCircleIcon, SettingsIcon } from '@lucide/svelte';
 	import SettingsDrawer from '$lib/components/SettingsDrawer.svelte';
 	import { Icon } from '$lib/components/design';
+	import ParseToastContent from '$lib/components/ParseToastContent.svelte';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
 	import { isHosted } from '$lib/platform';
+	import {
+		clearParseToastTarget,
+		parseToastState,
+		parseToastTarget,
+	} from '$lib/toast/parse-toast.svelte';
+	import { toast } from 'svelte-sonner';
+	import { forceRefreshClient } from '$lib/client/invalidation';
+
+	type ProcessingCrateItem = {
+		id?: string;
+		name?: string;
+		version: string;
+	};
+
+	type ProcessingCratesResource =
+		| Promise<unknown>
+		| {
+				run?: () => Promise<unknown>;
+				current?: unknown;
+		  };
 
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
@@ -85,11 +110,39 @@
 	let { children } = $props();
 
 	const processingConn = new ProcessingStatusConnection();
+	const globalParseStatusConn = new CrateStatusConnection();
+	const globalParseProgressConn = new ParseProgressConnection();
 	const processingCount = $derived(processingConn.count);
 	let showProcessing = $state(false);
-	const processingListQuery = $derived(
-		showProcessing ? getProcessingCrates({ refresh: processingCount }) : null,
-	);
+	let processingCrates = $state.raw<ProcessingCrateItem[]>([]);
+	let processingCrateFetchSeq = 0;
+	let lastProcessingCrateRefresh = 0;
+	const visibleProcessingCount = $derived(Math.max(processingCount, processingCrates.length));
+	const activeProcessingCrate = $derived(processingCrates[0] ?? null);
+	const activeParseCrate = $derived.by(() => {
+		const processingName = processingCrateName(activeProcessingCrate);
+		if (processingName && activeProcessingCrate?.version) {
+			return {
+				name: processingName,
+				version: activeProcessingCrate.version,
+				source: 'processing' as const,
+			};
+		}
+		if (parseToastTarget.active && parseToastTarget.crateName && parseToastTarget.version) {
+			return {
+				name: parseToastTarget.crateName,
+				version: parseToastTarget.version,
+				source: 'route' as const,
+			};
+		}
+		return null;
+	});
+	let globalParseSubscriptionKey = '';
+	let activeParseToastId: string | number | null = null;
+	let activeParseToastKey = '';
+	let parseToastShownAt = 0;
+	let parseToastDismissTimer: ReturnType<typeof setTimeout> | null = null;
+	let appRefreshStarted = false;
 
 	function openProcessingPopover() {
 		showProcessing = true;
@@ -113,18 +166,210 @@
 		if (!current.contains(next)) closeProcessingPopover();
 	}
 
+	function processingCrateName(crate: { id?: string; name?: string } | null | undefined): string {
+		return crate?.name || crate?.id || '';
+	}
+
+	function isProcessingCrateItem(value: unknown): value is ProcessingCrateItem {
+		if (!value || typeof value !== 'object') return false;
+		const item = value as { id?: unknown; name?: unknown; version?: unknown };
+		return (
+			typeof item.version === 'string' &&
+			(typeof item.name === 'string' || typeof item.id === 'string')
+		);
+	}
+
+	function processingCrateItems(value: unknown): ProcessingCrateItem[] {
+		return Array.isArray(value) ? value.filter(isProcessingCrateItem) : [];
+	}
+
+	function removeProcessingCrate(name: string, version: string) {
+		processingCrates = processingCrates.filter(
+			(crate) => processingCrateName(crate) !== name || crate.version !== version,
+		);
+	}
+
+	async function resolveProcessingCrates(refresh: number): Promise<ProcessingCrateItem[]> {
+		const resource = getProcessingCrates({ refresh }) as ProcessingCratesResource;
+		const value =
+			resource && typeof (resource as { run?: unknown }).run === 'function'
+				? await (resource as { run: () => Promise<unknown> }).run()
+				: await resource;
+		return processingCrateItems(value);
+	}
+
+	async function refreshProcessingCrates(refresh: number) {
+		const seq = ++processingCrateFetchSeq;
+		try {
+			const crates = await resolveProcessingCrates(refresh);
+			if (seq === processingCrateFetchSeq) processingCrates = crates;
+		} catch {
+			if (seq === processingCrateFetchSeq) processingCrates = [];
+		}
+	}
+
+	$effect(() => {
+		if (!browser) return;
+		if (appRefreshStarted || !updated.current) return;
+		appRefreshStarted = true;
+		void forceRefreshClient();
+	});
+
+	$effect(() => {
+		if (!browser) return;
+
+		const count = processingCount;
+		if (count <= 0) {
+			lastProcessingCrateRefresh = 0;
+			processingCrateFetchSeq += 1;
+			processingCrates = [];
+			return;
+		}
+
+		if (count !== lastProcessingCrateRefresh) {
+			lastProcessingCrateRefresh = count;
+			void refreshProcessingCrates(count);
+		}
+	});
+
+	function clearParseToastDismissTimer() {
+		if (!parseToastDismissTimer) return;
+		clearTimeout(parseToastDismissTimer);
+		parseToastDismissTimer = null;
+	}
+
+	function clearGlobalParseToastState() {
+		parseToastState.active = false;
+		parseToastState.crateName = '';
+		parseToastState.version = '';
+		parseToastState.step = null;
+		parseToastState.nodeCount = 0;
+		parseToastState.edgeCount = 0;
+		parseToastState.totalItems = null;
+	}
+
+	function dismissGlobalParseToast() {
+		if (activeParseToastId !== null) {
+			const id = activeParseToastId;
+			untrack(() => toast.dismiss(id));
+		}
+		activeParseToastId = null;
+		activeParseToastKey = '';
+		parseToastShownAt = 0;
+	}
+
+	function ensureGlobalParseToast(key: string) {
+		if (activeParseToastKey && activeParseToastKey !== key) {
+			dismissGlobalParseToast();
+		}
+		if (activeParseToastId !== null) return;
+		activeParseToastId = untrack(() =>
+			toast.custom(ParseToastContent, {
+				id: key,
+				duration: Number.POSITIVE_INFINITY,
+				dismissable: false,
+				closeButton: false,
+			}),
+		);
+		activeParseToastKey = key;
+		parseToastShownAt = Date.now();
+	}
+
+	function scheduleGlobalParseToastDismiss() {
+		clearGlobalParseToastState();
+		if (activeParseToastId === null) return;
+		const elapsed = parseToastShownAt ? Date.now() - parseToastShownAt : 0;
+		const remaining = elapsed < 800 ? 800 - elapsed : 0;
+		clearParseToastDismissTimer();
+		if (remaining > 0) {
+			parseToastDismissTimer = setTimeout(() => {
+				parseToastDismissTimer = null;
+				dismissGlobalParseToast();
+			}, remaining);
+			return;
+		}
+		dismissGlobalParseToast();
+	}
+
+	$effect(() => {
+		if (!browser) return;
+
+		const crate = activeParseCrate;
+		const name = crate?.name ?? '';
+		const version = crate?.version ?? '';
+		if (!name || !version) {
+			globalParseSubscriptionKey = '';
+			globalParseStatusConn.disconnect();
+			globalParseProgressConn.reset();
+			scheduleGlobalParseToastDismiss();
+			return;
+		}
+
+		const subscriptionKey = `${name}@${version}`;
+		if (globalParseSubscriptionKey !== subscriptionKey) {
+			globalParseSubscriptionKey = subscriptionKey;
+			globalParseProgressConn.reset();
+			globalParseStatusConn.connect(name, version);
+			globalParseStatusConn.status = 'processing';
+			globalParseStatusConn.step = null;
+			globalParseStatusConn.error = null;
+			globalParseStatusConn.action = undefined;
+			globalParseProgressConn.connect(name, version);
+		}
+
+		const terminal =
+			globalParseStatusConn.status === 'ready' || globalParseStatusConn.status === 'failed';
+		if (terminal) {
+			if (crate?.source === 'route') clearParseToastTarget(name, version);
+			if (crate?.source === 'processing') removeProcessingCrate(name, version);
+			globalParseSubscriptionKey = '';
+			globalParseStatusConn.disconnect();
+			globalParseProgressConn.reset();
+			scheduleGlobalParseToastDismiss();
+			return;
+		}
+
+		clearParseToastDismissTimer();
+		ensureGlobalParseToast(`parse:${subscriptionKey}`);
+		parseToastState.active = true;
+		parseToastState.crateName = name;
+		parseToastState.version = version;
+		parseToastState.step = globalParseStatusConn.step;
+		parseToastState.nodeCount = globalParseProgressConn.nodeCount;
+		parseToastState.edgeCount = globalParseProgressConn.edgeCount;
+		parseToastState.totalItems = globalParseProgressConn.totalItems;
+	});
+
+	onDestroy(() => {
+		clearParseToastDismissTimer();
+		clearGlobalParseToastState();
+		dismissGlobalParseToast();
+		globalParseStatusConn.destroy();
+		globalParseProgressConn.destroy();
+		processingConn.destroy();
+	});
+
 	onMount(() => {
-		if (!browser || isHosted) return () => processingConn.destroy();
+		if (!browser) return () => processingConn.destroy();
+		let processingPollTimer: ReturnType<typeof setInterval> | null = null;
+		const pollProcessingCrates = () => {
+			if (document.visibilityState !== 'visible') return;
+			void refreshProcessingCrates(Date.now());
+		};
 		const syncProcessingStream = () => {
 			if (document.visibilityState === 'visible') {
 				processingConn.connect('rust');
+				pollProcessingCrates();
 			} else {
 				processingConn.disconnect();
 			}
 		};
 		syncProcessingStream();
+		void updated.check();
+		processingPollTimer = setInterval(pollProcessingCrates, 2_000);
 		document.addEventListener('visibilitychange', syncProcessingStream);
 		return () => {
+			if (processingPollTimer) clearInterval(processingPollTimer);
 			document.removeEventListener('visibilitychange', syncProcessingStream);
 			processingConn.destroy();
 		};
@@ -252,12 +497,9 @@
 		if (!browser) return;
 		writePref(DOC_LAYOUT_KEY, next);
 		document.documentElement.dataset.docLayout = next;
+		window.dispatchEvent(new CustomEvent('codeview-doc-layout-change', { detail: next }));
 		if (isExplorerRoute) {
-			void goto(serializeExplorerState(page.url, { layout: next }), {
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
-			});
+			replaceState(serializeExplorerState(page.url, { layout: next }), page.state);
 		}
 	}
 
@@ -315,6 +557,59 @@
 
 	// ── Settings drawer ──
 	let settingsOpen = $state(false);
+	let shortcutModLabel = $state('Ctrl');
+	const globalShortcutOptions = { capture: true };
+
+	function isEditableTarget(target: EventTarget | null): boolean {
+		if (!(target instanceof HTMLElement)) return false;
+		const tag = target.tagName.toLowerCase();
+		return (
+			target.isContentEditable ||
+			tag === 'input' ||
+			tag === 'textarea' ||
+			tag === 'select' ||
+			target.closest('[role="textbox"]') !== null
+		);
+	}
+
+	function focusHomeSearch(): boolean {
+		const input = document.getElementById('home-library-search');
+		if (!(input instanceof HTMLInputElement)) return false;
+		input.focus();
+		input.select();
+		return true;
+	}
+
+	async function openGlobalSearch() {
+		if (focusHomeSearch()) return;
+		await goto(resolve('/'), {
+			noScroll: true,
+			keepFocus: false,
+		});
+		requestAnimationFrame(() => focusHomeSearch());
+	}
+
+	function handleGlobalShortcut(event: KeyboardEvent) {
+		const isModified = event.metaKey || event.ctrlKey;
+		const key = event.key.toLowerCase();
+		if (!isModified) return;
+		if (isEditableTarget(event.target) && key !== 'k') return;
+		if (key === 'k') {
+			event.preventDefault();
+			void openGlobalSearch();
+			return;
+		}
+		if (event.key === ',') {
+			event.preventDefault();
+			settingsOpen = true;
+		}
+	}
+
+	onMount(() => {
+		shortcutModLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl';
+		window.addEventListener('keydown', handleGlobalShortcut, globalShortcutOptions);
+		return () => window.removeEventListener('keydown', handleGlobalShortcut, globalShortcutOptions);
+	});
 </script>
 
 <svelte:head>
@@ -364,14 +659,14 @@
 				<span class="truncate">Search crates, types, functions...</span>
 			</span>
 			<span class="inline-flex shrink-0 items-center gap-1" aria-hidden="true">
-				<span class="kbd">⌘</span>
+				<span class="kbd">{shortcutModLabel}</span>
 				<span class="kbd">K</span>
 			</span>
 		</a>
 
 		<div class="flex items-center justify-end gap-2">
 			<a
-				href="https://github.com/jonfontaine/codeview"
+				href="https://github.com/themixednuts/codeview"
 				target="_blank"
 				rel="noopener noreferrer"
 				class="grid size-7 place-items-center rounded-md text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
@@ -380,7 +675,7 @@
 			>
 				<Icon name="github" size={14} />
 			</a>
-			{#if processingCount > 0}
+			{#if visibleProcessingCount > 0}
 				<div class="relative" onfocusin={openProcessingPopover} onfocusout={handleProcessingBlur}>
 					<button
 						type="button"
@@ -390,7 +685,7 @@
 						aria-haspopup="dialog"
 						onclick={() => (showProcessing = !showProcessing)}
 					>
-						Parsing {processingCount}
+						Parsing {visibleProcessingCount}
 					</button>
 					{#if showProcessing}
 						<div
@@ -401,32 +696,24 @@
 							<div class="px-2 pb-1 text-[10px] tracking-wider text-(--muted) uppercase">
 								Background parses
 							</div>
-							{#if processingListQuery}
-								<svelte:boundary>
-									{@const crates = await processingListQuery}
-									{#if crates && crates.length > 0}
-										<div class="space-y-1">
-											{#each crates as crate (crate.name)}
-												<div
-													class="corner-squircle flex items-center justify-between gap-2 rounded-(--radius-chip) bg-(--panel) px-2 py-1"
-												>
-													<span class="truncate text-xs font-medium text-(--ink)">
-														{crate.name}
-													</span>
-													<span class="badge badge-sm">{crate.version}</span>
-												</div>
-											{/each}
+							{#if processingCrates.length > 0}
+								<div class="space-y-1">
+									{#each processingCrates as crate (`${processingCrateName(crate)}@${crate.version}`)}
+										<div
+											class="corner-squircle flex items-center justify-between gap-2 rounded-(--radius-chip) bg-(--panel) px-2 py-1"
+										>
+											<span class="truncate text-xs font-medium text-(--ink)">
+												{processingCrateName(crate)}
+											</span>
+											<span class="badge badge-sm">{crate.version}</span>
 										</div>
-									{:else}
-										<div class="p-2 text-xs text-(--muted)">No active parses</div>
-									{/if}
-									{#snippet pending()}
-										<div class="flex items-center gap-2 p-2">
-											<LoaderCircleIcon class="animate-spin" size={12} />
-											<span class="text-xs text-(--muted)">Loading...</span>
-										</div>
-									{/snippet}
-								</svelte:boundary>
+									{/each}
+								</div>
+							{:else if visibleProcessingCount > 0}
+								<div class="flex items-center gap-2 p-2">
+									<LoaderCircleIcon class="animate-spin" size={12} />
+									<span class="text-xs text-(--muted)">Loading...</span>
+								</div>
 							{:else}
 								<div class="p-2 text-xs text-(--muted)">No active parses</div>
 							{/if}

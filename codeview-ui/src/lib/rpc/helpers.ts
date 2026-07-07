@@ -1,6 +1,6 @@
 import { getRequestEvent } from '$app/server';
 import { Effect } from 'effect';
-import { initProvider } from '$lib/server/provider';
+import { hasLocalWorkspace, initProvider } from '$lib/server/provider';
 import { perf } from '$lib/perf';
 import { isHosted } from '$lib/platform';
 import { normalizeCrateName, hyphenateCrateName } from '$lib/crate-names';
@@ -189,8 +189,9 @@ export class Loader {
 		return p ?? initProvider(getRequestEvent());
 	}
 
-	async workspace(p?: Provider): Promise<Workspace | null> {
+	async localWorkspace(p?: Provider): Promise<Workspace | null> {
 		const resolved = await this.provider(p);
+		if (isHosted || !hasLocalWorkspace(resolved)) return null;
 		return resolved.loadWorkspace();
 	}
 
@@ -351,7 +352,7 @@ export class Resolver {
 
 						return { node, edges, relatedNodes };
 					}
-					// Not a workspace crate — fall through to universal path
+					// Not a local workspace crate — fall through to universal path
 				}
 
 				// Universal path: prefer provider-level node detail to avoid loading full graphs.
@@ -427,10 +428,10 @@ export class Resolver {
 		}
 
 		return perf.timeAsync('server', `resolveTreeIndex(${key})`, async () => {
-			const ws = await this.#loader.workspace(resolved);
+			const ws = await this.#loader.localWorkspace(resolved);
 			let crateTree: CrateTree | null = null;
 
-			// Workspace path
+			// Local workspace path
 			const normalizedName = normalizeCrateName(name);
 			const wsCrate =
 				ws?.crates.find(
@@ -553,7 +554,7 @@ export class Resolver {
 			const direct = await provider.loadNodeViewDirect(name, resolvedVersion, nodeId);
 			return direct ? composeNodeView(direct) : null;
 		}
-		const ws = await this.#loader.workspace(provider);
+		const ws = await this.#loader.localWorkspace(provider);
 		if (isHosted) {
 			const [detail, ancestors] = await Effect.runPromise(
 				Effect.all(

@@ -31,8 +31,9 @@
 	});
 
 	const canRetry = $derived(!!crateName && !!version);
-
 	const isStd = $derived(!!crateName && isStdCrate(crateName));
+	const retryLabel = $derived(isHosted && isStd ? 'Queue sysroot parse' : isHosted ? 'Queue parse' : 'Retry');
+	const canQueueParse = $derived(!isStd || isHosted);
 	const externalDocsHref = $derived.by(() => {
 		if (!crateName || !version) return null;
 		return isStd
@@ -70,12 +71,12 @@
 				</code>
 				. The official rustdoc is available on doc.rust-lang.org.
 			{:else if isHosted}
-				Codeview has not published a static graph for
+				Codeview has not parsed a graph for
 				<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">
 					{crateName}
 					{version}
 				</code>
-				yet.
+				yet. Queue a parse to generate the graph artifacts.
 			{:else}
 				docs.rs hasn't published rustdoc JSON for
 				<code class="rounded-sm bg-(--panel-strong) px-1 py-0.5 text-xs">
@@ -123,7 +124,7 @@
 					{externalDocsLabel}
 				</a>
 			{/if}
-			{#if !isHosted}
+			{#if canQueueParse}
 				<form
 					{...retryForm.enhance(async ({ submit }) => {
 						if (!canRetry) return;
@@ -140,7 +141,7 @@
 						disabled={!canRetry}
 						class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
 					>
-						Retry
+						{retryLabel}
 					</button>
 				</form>
 			{/if}

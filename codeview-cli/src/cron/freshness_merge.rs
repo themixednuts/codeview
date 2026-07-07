@@ -64,7 +64,7 @@ pub struct FreshnessMerge {
     #[arg(long)]
     pub no_write_refs: bool,
 
-    /// Ignore any existing aggregate and bootstrap from per-crate files.
+    /// Initialize the aggregate from per-crate freshness files.
     #[arg(long)]
     pub bootstrap: bool,
 
@@ -312,8 +312,8 @@ async fn load_current_aggregate(
             let shard: AggregateShard = read_json(r2, &shard_ref.key)
                 .await?
                 .with_context(|| format!("aggregate shard missing: {}", shard_ref.key))?;
-            for (name, entry) in shard.entries {
-                entries.insert(name, entry);
+            for (_key, entry) in shard.entries {
+                entries.insert(aggregate_key(&entry.name, &entry.version), entry);
             }
         }
         return Ok(LoadedAggregate {
@@ -322,13 +322,19 @@ async fn load_current_aggregate(
         });
     }
 
-    eprintln!("[freshness-merge] bootstrap: list_all() O(N) compatibility read");
+    if !bootstrap {
+        anyhow::bail!(
+            "aggregate manifest missing at {INDEX_MANIFEST_KEY}; rerun with --bootstrap to initialize from per-crate freshness files"
+        );
+    }
+
+    eprintln!("[freshness-merge] bootstrap: loading per-crate freshness files");
     let entries = freshness
         .list_all()
         .await?
         .into_iter()
         .map(AggregateEntry::from_freshness)
-        .map(|entry| (entry.name.clone(), entry))
+        .map(|entry| (aggregate_key(&entry.name, &entry.version), entry))
         .collect();
     Ok(LoadedAggregate {
         manifest: None,
@@ -367,26 +373,28 @@ async fn apply_delta(
     config: &FreshnessMergeConfig,
 ) -> Result<()> {
     let canonical_name = normalise_crate_name(&delta.name);
+    let key = aggregate_key(&canonical_name, &delta.version);
     match delta.outcome {
         RunDeltaOutcome::Published | RunDeltaOutcome::ParserBumped | RunDeltaOutcome::Fresh => {
-            let previous = entries.get(&canonical_name).cloned();
-            let mut entry = if let Some(latest) = freshness.latest(&canonical_name).await? {
-                AggregateEntry::from_freshness(latest)
-            } else if let Some(mut entry) = previous.clone() {
-                entry.apply_success_delta(delta, config);
-                entry
-            } else {
-                AggregateEntry::placeholder(delta, &canonical_name, config)
-            };
+            let previous = entries.get(&key).cloned();
+            let mut entry =
+                if let Some(latest) = freshness.version(&canonical_name, &delta.version).await? {
+                    AggregateEntry::from_freshness(latest)
+                } else if let Some(mut entry) = previous.clone() {
+                    entry.apply_success_delta(delta, config);
+                    entry
+                } else {
+                    AggregateEntry::placeholder(delta, &canonical_name, config)
+                };
             entry.apply_enrichment(delta, previous.as_ref());
             entry.failure = None;
-            entries.insert(entry.name.clone(), entry);
+            entries.insert(aggregate_key(&entry.name, &entry.version), entry);
         }
         RunDeltaOutcome::Transient | RunDeltaOutcome::Permanent | RunDeltaOutcome::Quarantine => {
-            let previous = entries.get(&canonical_name).cloned();
+            let previous = entries.get(&key).cloned();
             let mut entry = if let Some(entry) = previous.clone() {
                 entry
-            } else if let Some(latest) = freshness.latest(&canonical_name).await? {
+            } else if let Some(latest) = freshness.version(&canonical_name, &delta.version).await? {
                 AggregateEntry::from_freshness(latest)
             } else {
                 AggregateEntry::placeholder(delta, &canonical_name, config)
@@ -397,7 +405,7 @@ async fn apply_delta(
                 error: delta.error.clone().unwrap_or_default(),
                 last_attempt_at: config.generated_at.clone(),
             });
-            entries.insert(entry.name.clone(), entry);
+            entries.insert(aggregate_key(&entry.name, &entry.version), entry);
         }
     }
     Ok(())
@@ -527,16 +535,27 @@ fn catalog_from_aggregate(
     entries: &BTreeMap<String, AggregateEntry>,
     generated_at: String,
 ) -> catalog::CatalogFile {
-    let crates = entries
-        .values()
-        .filter(|entry| entry.has_good_freshness())
+    let mut newest_by_storage = BTreeMap::<String, &AggregateEntry>::new();
+    for entry in entries.values().filter(|entry| entry.has_good_freshness()) {
+        newest_by_storage
+            .entry(entry.storage_name.clone())
+            .and_modify(|current| {
+                if compare_entries_for_newest(&entry, current).is_lt() {
+                    *current = entry;
+                }
+            })
+            .or_insert(entry);
+    }
+
+    let crates = newest_by_storage
+        .into_values()
         .map(|entry| CatalogEntry {
             name: entry.name.clone(),
             storage_name: entry.storage_name.clone(),
-            newest_version: entry.version.clone(),
+            version: entry.version.clone(),
             parsed_at: entry.parsed_at.clone(),
-            nodes: entry.nodes,
-            edges: entry.edges,
+            node_count: entry.nodes,
+            edge_count: entry.edges,
         })
         .collect();
     catalog::build_catalog(crates, generated_at)
@@ -638,6 +657,10 @@ fn compare_entries_for_newest(left: &&AggregateEntry, right: &&AggregateEntry) -
     compare_versions_desc(&left.version, &right.version)
         .then_with(|| right.parsed_at.cmp(&left.parsed_at))
         .then_with(|| left.name.cmp(&right.name))
+}
+
+fn aggregate_key(name: &str, version: &str) -> String {
+    format!("{name}@{version}")
 }
 
 fn compare_versions_desc(left: &str, right: &str) -> Ordering {
@@ -929,9 +952,9 @@ mod tests {
         )
         .await;
 
-        let report = merge(backend, &freshness, config("run-1", "gen-1"))
-            .await
-            .expect("merge");
+        let mut cfg = config("run-1", "gen-1");
+        cfg.bootstrap = true;
+        let report = merge(backend, &freshness, cfg).await.expect("merge");
 
         assert_eq!(report.changed_shards, 4);
         assert_eq!(report.aggregate_entries, 2);
@@ -942,8 +965,24 @@ mod tests {
         assert_eq!(manifest.shards.len(), 4);
 
         let entries = load_entries(&r2).await;
-        assert_eq!(entries["alpha"].storage_name, "alpha");
-        assert_eq!(entries["serde_json"].storage_name, "serde-json");
+        assert_eq!(entries["alpha@1.0.0"].storage_name, "alpha");
+        assert_eq!(entries["serde_json@1.0.0"].storage_name, "serde-json");
+    }
+
+    #[tokio::test]
+    async fn missing_aggregate_requires_explicit_bootstrap() {
+        let r2 = MemoryR2::new();
+        let backend = r2.backend();
+        let freshness = FreshnessRegistry::new(backend.clone());
+
+        let err = merge(backend, &freshness, config("run-1", "gen-1"))
+            .await
+            .expect_err("merge should require explicit bootstrap");
+
+        assert!(
+            err.to_string().contains("rerun with --bootstrap"),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -966,7 +1005,9 @@ mod tests {
             )
             .await;
         }
-        merge(backend.clone(), &freshness, config("run-1", "gen-1"))
+        let mut cfg = config("run-1", "gen-1");
+        cfg.bootstrap = true;
+        merge(backend.clone(), &freshness, cfg)
             .await
             .expect("initial merge");
 
@@ -1025,35 +1066,35 @@ mod tests {
             .expect("second merge");
 
         let entries = load_entries(&r2).await;
-        assert_eq!(entries["alpha"].version, "2.0.0");
-        assert_eq!(entries["alpha"].graph_hash, "hash-alpha-new");
-        assert_eq!(entries["alpha"].nodes, 99);
-        assert!(entries["alpha"].failure.is_none());
+        assert_eq!(entries["alpha@2.0.0"].version, "2.0.0");
+        assert_eq!(entries["alpha@2.0.0"].graph_hash, "hash-alpha-new");
+        assert_eq!(entries["alpha@2.0.0"].nodes, 99);
+        assert!(entries["alpha@2.0.0"].failure.is_none());
         assert_eq!(
-            entries["alpha"].priority_tier.as_deref(),
+            entries["alpha@2.0.0"].priority_tier.as_deref(),
             Some("top-download-stale")
         );
-        assert_eq!(entries["alpha"].download_rank, Some(12));
+        assert_eq!(entries["alpha@2.0.0"].download_rank, Some(12));
 
-        assert_eq!(entries["beta"].parser_revision, "parser-new");
-        assert_eq!(entries["beta"].schema_version, 7);
-        assert!(entries["beta"].failure.is_none());
+        assert_eq!(entries["beta@1.0.0"].parser_revision, "parser-new");
+        assert_eq!(entries["beta@1.0.0"].schema_version, 7);
+        assert!(entries["beta@1.0.0"].failure.is_none());
 
-        assert_eq!(entries["delta"].graph_hash, "hash-delta-old");
-        assert!(entries["delta"].failure.is_none());
+        assert_eq!(entries["delta@1.0.0"].graph_hash, "hash-delta-old");
+        assert!(entries["delta@1.0.0"].failure.is_none());
 
-        assert_eq!(entries["epsilon"].graph_hash, "hash-epsilon-old");
+        assert_eq!(entries["epsilon@1.0.0"].graph_hash, "hash-epsilon-old");
         assert_eq!(
-            entries["epsilon"].failure.as_ref().map(|f| f.outcome),
+            entries["epsilon@1.0.0"].failure.as_ref().map(|f| f.outcome),
             Some(RunDeltaOutcome::Transient)
         );
         assert_eq!(
-            entries["gamma"].failure.as_ref().map(|f| f.outcome),
+            entries["gamma@0.1.0"].failure.as_ref().map(|f| f.outcome),
             Some(RunDeltaOutcome::Permanent)
         );
-        assert_eq!(entries["gamma"].graph_hash, "");
+        assert_eq!(entries["gamma@0.1.0"].graph_hash, "");
         assert_eq!(
-            entries["zeta"].failure.as_ref().map(|f| f.outcome),
+            entries["zeta@0.1.0"].failure.as_ref().map(|f| f.outcome),
             Some(RunDeltaOutcome::Quarantine)
         );
     }
@@ -1089,7 +1130,9 @@ mod tests {
             ),
         )
         .await;
-        merge(backend.clone(), &freshness, config("run-1", "gen-1"))
+        let mut cfg = config("run-1", "gen-1");
+        cfg.bootstrap = true;
+        merge(backend.clone(), &freshness, cfg)
             .await
             .expect("initial merge");
         let first_manifest: AggregateManifest = r2.json(INDEX_MANIFEST_KEY).await;
@@ -1183,6 +1226,7 @@ mod tests {
         .await;
 
         let mut cfg = config("run-1", "gen-1");
+        cfg.bootstrap = true;
         cfg.write_refs = true;
         merge(backend, &freshness, cfg).await.expect("merge");
 

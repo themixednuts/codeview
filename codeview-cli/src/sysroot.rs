@@ -1,7 +1,7 @@
 //! Locate the `rust-docs-json` component on disk.
 //!
-//! `rust-docs-json` is a nightly-only rustup component that drops the
-//! rustdoc JSON for `std`, `core`, `alloc`, `proc_macro`, and `test`
+//! `rust-docs-json` is a rustup component that drops the rustdoc JSON for
+//! `std`, `core`, `alloc`, `proc_macro`, and `test`
 //! into `{sysroot}/share/doc/rust/json/{crate}.json`.  `cron seed-std`
 //! reads those files directly instead of fetching from docs.rs (which
 //! doesn't host std).
@@ -39,11 +39,7 @@ impl SysrootInfo {
     /// Path to the rustdoc JSON for a given crate, if `rust-docs-json` is
     /// installed for this toolchain and that crate is shipped.
     pub fn json_path_for(&self, crate_name: &str) -> Option<PathBuf> {
-        if self
-            .available_crates
-            .iter()
-            .any(|c| c == crate_name)
-        {
+        if self.available_crates.iter().any(|c| c == crate_name) {
             Some(self.json_dir.join(format!("{crate_name}.json")))
         } else {
             None
@@ -114,11 +110,14 @@ fn parse_rustc_version(line: &str) -> Option<String> {
 pub fn detect_sysroot(toolchain: Option<&str>) -> Result<SysrootInfo> {
     let sysroot_path: PathBuf = exec_rustc(toolchain, &["--print", "sysroot"])?.into();
     let version_line = exec_rustc(toolchain, &["--version"])?;
-    let toolchain_version = parse_rustc_version(&version_line).ok_or_else(|| {
-        anyhow!("could not parse rustc version from {version_line:?}")
-    })?;
+    let toolchain_version = parse_rustc_version(&version_line)
+        .ok_or_else(|| anyhow!("could not parse rustc version from {version_line:?}"))?;
 
-    let json_dir = sysroot_path.join("share").join("doc").join("rust").join("json");
+    let json_dir = sysroot_path
+        .join("share")
+        .join("doc")
+        .join("rust")
+        .join("json");
     let available_crates = list_json_crates(&json_dir).unwrap_or_default();
 
     Ok(SysrootInfo {
@@ -142,16 +141,15 @@ fn list_json_crates(json_dir: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Channel aliases the seeder should write for a given toolchain string.
-/// Mirrors `stdAliasesForToolchain` in the deleted `publish-static-batch.ts`.
-///
-/// Bare `nightly` aliases as `[nightly, stable, beta, latest]` so URLs
-/// like `/std/stable` resolve until per-channel parsing exists.  Date-pinned
-/// nightlies (`nightly-2026-05-14`) stay as themselves — they're for
-/// reproducibility, not channel promotion.
+/// Channel aliases the seeder should publish for a requested toolchain.
+/// Aliases must describe the actual toolchain data that was parsed: stable
+/// may serve `latest`, beta serves `beta`, and nightly serves `nightly`.
+/// Date-pinned nightlies stay version-only for reproducible artifacts.
 pub fn aliases_for_toolchain(toolchain: &str) -> Vec<&'static str> {
     match toolchain {
-        "nightly" => vec!["nightly", "stable", "beta", "latest"],
+        "stable" => vec!["stable", "latest"],
+        "beta" => vec!["beta"],
+        "nightly" => vec!["nightly"],
         _ => Vec::new(),
     }
 }
@@ -177,11 +175,10 @@ mod tests {
     }
 
     #[test]
-    fn nightly_aliases_to_channels() {
-        assert_eq!(
-            aliases_for_toolchain("nightly"),
-            vec!["nightly", "stable", "beta", "latest"]
-        );
+    fn channel_aliases_match_requested_toolchain() {
+        assert_eq!(aliases_for_toolchain("stable"), vec!["stable", "latest"]);
+        assert_eq!(aliases_for_toolchain("beta"), vec!["beta"]);
+        assert_eq!(aliases_for_toolchain("nightly"), vec!["nightly"]);
     }
 
     #[test]

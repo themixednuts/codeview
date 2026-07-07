@@ -104,6 +104,7 @@ type PositionedGroup = Omit<FocusGraphGroup, 'items'> & {
 
 const FOCUS_HEIGHT = 48;
 const PILL_HEIGHT = 32;
+const GROUP_GAP_ROWS = 0.85;
 
 export function measureFocusPill(node: DesignNode<Node>, isFocus = false): number {
 	const label = node.label || node.id;
@@ -114,23 +115,32 @@ export function layoutFocusGraph(
 	model: FocusGraphModel,
 	size: FocusGraphSize,
 ): FocusGraphLayout {
-	const width = Math.max(size.compact ? 560 : 720, Math.round(size.width || 0));
-	const height = Math.max(size.compact ? 320 : 460, Math.round(size.height || 0));
+	const baseWidth = Math.max(size.compact ? 560 : 720, Math.round(size.width || 0));
+	const baseHeight = Math.max(size.compact ? 320 : 460, Math.round(size.height || 0));
 	const margin = size.compact ? 22 : 30;
 	const top = size.compact ? 30 : 40;
 	const focusWidth = measureFocusPill(model.focus, true);
 	const maxOut = maxItemWidth(model.outgoing);
 	const maxIn = maxItemWidth(model.incoming);
+	const sideGap = size.compact ? 58 : 86;
+	const width = Math.max(
+		baseWidth,
+		Math.ceil(margin * 2 + maxIn + sideGap + focusWidth + sideGap + maxOut),
+	);
 	const rightX = model.outgoing.length ? width - margin - maxOut : width - margin;
 	const leftX = model.incoming.length ? margin + maxIn : margin;
 	const centerX = (leftX + rightX) / 2;
+	const maxRows = Math.max(rowsSide(model.outgoing), rowsSide(model.incoming), 1);
+	const bottom = size.compact ? 46 : 60;
+	const minRow = size.compact ? 38 : 42;
+	const idealRow = size.compact ? 42 : 48;
+	const height = Math.max(baseHeight, Math.ceil(top + bottom + maxRows * minRow));
 	const centerY = (height + top) / 2;
 	const hubOutX = centerX + (rightX - centerX) * 0.42;
 	const hubInX = centerX - (centerX - leftX) * 0.42;
-	const maxRows = Math.max(rowsSide(model.outgoing), rowsSide(model.incoming), 1);
-	const avail = height - top - (size.compact ? 42 : 54);
-	const row = Math.min(size.compact ? 38 : 44, Math.max(size.compact ? 28 : 30, avail / maxRows));
-	const gap = row * 0.6;
+	const avail = height - top - bottom;
+	const row = Math.min(idealRow, Math.max(minRow, avail / maxRows));
+	const gap = row * GROUP_GAP_ROWS;
 	const focusLeftEdge = centerX - focusWidth / 2;
 	const focusRightEdge = centerX + focusWidth / 2;
 	const incoming = layoutSide(model.incoming, centerY, row, gap);
@@ -234,7 +244,10 @@ function maxItemWidth(groups: FocusGraphGroup[]): number {
 }
 
 function rowsSide(groups: FocusGraphGroup[]): number {
-	return groups.reduce((sum, group) => sum + group.items.length, 0) + Math.max(0, groups.length - 1) * 0.6;
+	return (
+		groups.reduce((sum, group) => sum + group.items.length, 0) +
+		Math.max(0, groups.length - 1) * GROUP_GAP_ROWS
+	);
 }
 
 function layoutSide(groups: FocusGraphGroup[], centerY: number, row: number, gap: number): PositionedGroup[] {

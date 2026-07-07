@@ -415,7 +415,7 @@ export function renderExcalidraw(
 	return {
 		type: 'excalidraw',
 		version: 2,
-		source: 'https://github.com/nicholasgasior/codeview',
+		source: 'https://github.com/themixednuts/codeview',
 		elements,
 		appState: {
 			viewBackgroundColor: '#ffffff',

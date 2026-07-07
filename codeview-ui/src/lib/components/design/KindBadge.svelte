@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { NodeKind } from '$lib/schema';
 	import { kindLabels } from '$lib/display-names';
-	import { kindColors, kindIcons } from '$lib/tree';
+	import { kindColors } from '$lib/tree';
 	import { designKindToNodeKind } from '$lib/design/live-node';
 
 	let {
@@ -16,17 +16,26 @@
 		title?: string;
 	}>();
 
-	const nodeKind = $derived(designKindToNodeKind(kind));
-	const displayLabel = $derived(nodeKind ? (kindLabels[nodeKind] ?? nodeKind) : kind);
+	const kindText = $derived(primitiveText(kind));
+	const nodeKind = $derived(designKindToNodeKind(kindText));
+	const displayLabel = $derived(nodeKind ? (kindLabels[nodeKind] ?? nodeKind) : kindText);
 	const badgeTitle = $derived(title ?? displayLabel);
 	const color = $derived(nodeKind ? (kindColors[nodeKind] ?? 'var(--muted)') : 'var(--muted)');
-	const KindIcon = $derived(nodeKind ? (kindIcons[nodeKind] ?? kindIcons.Crate) : undefined);
-	const iconSize = $derived(Math.max(10, Math.round(size * 0.64)));
 	const glyphSize = $derived(Math.max(9, Math.round(size * 0.56)));
+	const glyph = $derived(displayLabel.slice(0, 1).toUpperCase());
 	const labelText = $derived(typeof label === 'string' ? label : displayLabel);
 	const style = $derived(
 		`width: ${size}px; height: ${size}px; background: ${color}; font-size: ${glyphSize}px`,
 	);
+
+	function primitiveText(value: unknown): string {
+		if (typeof value === 'string') return value;
+		if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+			return String(value);
+		}
+		if (typeof value === 'symbol') return value.description ?? 'unknown';
+		return 'unknown';
+	}
 </script>
 
 <span class="inline-flex items-center gap-1.5 align-middle" title={badgeTitle}>
@@ -35,11 +44,7 @@
 		aria-hidden="true"
 		{style}
 	>
-		{#if KindIcon}
-			<KindIcon size={iconSize} strokeWidth={2.25} />
-		{:else}
-			<span aria-hidden="true">·</span>
-		{/if}
+		{glyph}
 	</span>
 	{#if label}
 		<span class="mono truncate text-[10.5px] font-semibold text-[color:var(--muted)]">

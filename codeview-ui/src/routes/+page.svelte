@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { browser } from '$app/environment';
+	import { goto, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import { Icon, KindBadge } from '$lib/components/design';
@@ -11,35 +12,47 @@
 		type HomeTab,
 		type HomeViewState,
 	} from '$lib/url-state';
-	import { Debounced } from 'runed';
+	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
 	type CrateListItem = CrateSearchResult | CrateSummary;
 
 	let { data }: PageProps = $props();
 
-	const workspaceCrates = $derived(data.workspaceCrates);
-	const topCratesPromise = $derived(data.topCrates);
+	const hasLocalWorkspace = $derived(data.hasLocalWorkspace);
+	const localCrates = $derived(data.localCrates);
+	const topCrates = $derived(data.topCrates);
+	const defaultHomeTab = $derived(
+		hasLocalWorkspace && localCrates.length > 0 ? ('workspace' as const) : ('popular' as const),
+	);
 
-	const homeState = $derived(parseHomeState(page.url));
-	const selectedSection = $derived(homeState.tab);
-	const searchTerm = $derived(homeState.q);
-	const debouncedSearch = new Debounced(() => searchTerm, 250);
-	const debouncedTerm = $derived(debouncedSearch.current);
+	const homeState = $derived(parseHomeState(page.url, { defaultTab: defaultHomeTab }));
+	const selectedSection = $derived(
+		!hasLocalWorkspace && homeState.tab === 'workspace' ? 'popular' : homeState.tab,
+	);
+	let searchInput = $state('');
+	const searchTerm = $derived(searchInput.trim());
+	let debouncedTerm = $state('');
 	const isDebouncing = $derived(searchTerm.length >= 2 && searchTerm !== debouncedTerm);
 	const showSearchResults = $derived(searchTerm.length >= 2);
 	const visibleSection = $derived(showSearchResults ? 'search' : selectedSection);
 	const searchQuery = $derived(
 		debouncedTerm.length >= 2 ? searchRegistry({ q: debouncedTerm }) : null,
 	);
+	let shortcutModLabel = $state('Ctrl');
+	let syncedHomeHref = '';
 
 	const sidebarSections = $derived([
-		{
-			id: 'workspace' as const,
-			label: 'Workspace',
-			meta: `${workspaceCrates.length} crate${workspaceCrates.length === 1 ? '' : 's'}`,
-			icon: 'layers' as const,
-		},
+		...(hasLocalWorkspace
+			? [
+					{
+						id: 'workspace' as const,
+						label: 'Workspace',
+						meta: `${localCrates.length} crate${localCrates.length === 1 ? '' : 's'}`,
+						icon: 'layers' as const,
+					},
+				]
+			: []),
 		{
 			id: 'popular' as const,
 			label: 'Popular',
@@ -48,29 +61,65 @@
 		},
 	]);
 
+	$effect(() => {
+		const href = page.url.href;
+		if (href === syncedHomeHref) return;
+		syncedHomeHref = href;
+		searchInput = homeState.q;
+	});
+
+	$effect(() => {
+		const nextTerm = searchTerm;
+		if (nextTerm.length < 2) {
+			debouncedTerm = nextTerm;
+			return;
+		}
+		const timer = setTimeout(() => {
+			debouncedTerm = nextTerm;
+		}, 250);
+		return () => clearTimeout(timer);
+	});
+
+	$effect(() => {
+		const nextSearch = searchInput;
+		if (!browser) return;
+		const currentSearch = parseHomeState(new URL(window.location.href), {
+			defaultTab: defaultHomeTab,
+		}).q;
+		if (nextSearch.trim() === currentSearch) return;
+		const timer = setTimeout(() => {
+			replaceState(serializeHomeState(currentHomeUrl(), { q: nextSearch }, { defaultTab: defaultHomeTab }), page.state);
+		}, 80);
+		return () => clearTimeout(timer);
+	});
+
+	function currentHomeUrl() {
+		return browser ? new URL(window.location.href) : page.url;
+	}
+
 	function crateHref(crate: CrateListItem) {
-		return resolve(`/${crate.id ?? crate.name}/${crate.version}`);
+		return resolve(`/${crate.id ?? crate.name}/${crate.version || 'latest'}`);
 	}
 
 	function crateKey(crate: CrateListItem) {
-		return `${crate.id ?? crate.name}:${crate.version}`;
+		return `${crate.id ?? crate.name}:${crate.version || 'latest'}`;
 	}
 
 	function updateHomeState(patch: Partial<HomeViewState>) {
-		void goto(serializeHomeState(page.url, patch), {
+		void goto(serializeHomeState(currentHomeUrl(), patch, { defaultTab: defaultHomeTab }), {
 			replaceState: true,
 			noScroll: true,
 			keepFocus: true,
 		});
 	}
 
-	function setSearchInput(value: string) {
-		updateHomeState({ q: value });
-	}
-
 	function setSelectedSection(tab: HomeTab) {
 		updateHomeState({ tab });
 	}
+
+	onMount(() => {
+		shortcutModLabel = navigator.platform.toLowerCase().includes('mac') ? '⌘' : 'Ctrl';
+	});
 </script>
 
 <div class="flex flex-1 overflow-auto">
@@ -91,15 +140,14 @@
 						type="search"
 						aria-label="Search registry crates"
 						placeholder="Search registry crates..."
-						value={homeState.q}
-						oninput={(event) => setSearchInput(event.currentTarget.value)}
+						bind:value={searchInput}
 						class="w-full bg-transparent py-2.5 pr-20 pl-10 font-mono text-[13px] text-(--ink) outline-none placeholder:text-(--muted-soft)"
 					/>
 					<div
 						class="absolute top-1/2 right-3 hidden -translate-y-1/2 items-center gap-1 sm:flex"
 						aria-hidden="true"
 					>
-						<span class="kbd">⌘</span>
+						<span class="kbd">{shortcutModLabel}</span>
 						<span class="kbd">K</span>
 					</div>
 				</div>
@@ -115,7 +163,7 @@
 					<span class="text-(--muted-soft)" aria-hidden="true">·</span>
 					<span class="font-mono">
 						{visibleSection === 'workspace'
-							? `${workspaceCrates.length} local`
+							? `${localCrates.length} local`
 							: visibleSection === 'search'
 								? searchTerm
 								: 'deferred registry'}
@@ -192,8 +240,13 @@
 					</div>
 					<div class="space-y-2 text-[12px] text-(--muted)">
 						<div class="flex items-center justify-between gap-3">
-							<span>Workspace</span>
-							<span class="font-mono text-(--ink-soft)">{workspaceCrates.length}</span>
+							{#if hasLocalWorkspace}
+								<span>Workspace</span>
+								<span class="font-mono text-(--ink-soft)">{localCrates.length}</span>
+							{:else}
+								<span>Graphs</span>
+								<span class="font-mono text-(--ink-soft)">hosted</span>
+							{/if}
 						</div>
 						<div class="flex items-center justify-between gap-3">
 							<span>Registry</span>
@@ -292,7 +345,7 @@
 							{/snippet}
 						</svelte:boundary>
 					{/if}
-				{:else if visibleSection === 'workspace'}
+				{:else if visibleSection === 'workspace' && hasLocalWorkspace}
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="layers" size={13} class="text-(--accent)" />
@@ -300,13 +353,13 @@
 								Your workspace
 							</h2>
 							<span class="font-mono text-[11px] text-(--muted-soft)">
-								{workspaceCrates.length} crate{workspaceCrates.length === 1 ? '' : 's'}
+								{localCrates.length} crate{localCrates.length === 1 ? '' : 's'}
 							</span>
 						</div>
 					</div>
-					{#if workspaceCrates.length > 0}
+					{#if localCrates.length > 0}
 						<div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-							{#each workspaceCrates as crate (crateKey(crate))}
+							{#each localCrates as crate (crateKey(crate))}
 								<a
 									href={crateHref(crate)}
 									data-sveltekit-preload-data="off"
@@ -340,63 +393,48 @@
 						</div>
 						<span class="font-mono text-[11px] text-(--muted-soft)">registry provider</span>
 					</div>
-					<svelte:boundary>
-						{#await topCratesPromise}
-							<div class="grid gap-3 sm:grid-cols-2">
-								{#each Array.from({ length: 6 }) as _, i (i)}
-									<div
-										class="corner-squircle rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 opacity-80"
-									>
-										<div class="h-4 w-28 rounded bg-(--panel-strong)"></div>
-										<div class="mt-3 h-3 w-2/3 rounded bg-(--panel-strong)"></div>
-									</div>
-								{/each}
-							</div>
-						{:then topCrates}
-							{#if topCrates.length > 0}
-								<div class="grid gap-3 sm:grid-cols-2">
-									{#each topCrates as crate (crateKey(crate))}
-										<a
-											href={crateHref(crate)}
-											data-sveltekit-preload-data="off"
-											class="group corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-all hover:-translate-y-0.5 hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
-										>
-											<div class="flex items-start justify-between gap-3">
-												<div class="min-w-0">
-													<div class="flex min-w-0 items-baseline gap-2">
-														<KindBadge kind="crate" size={14} />
-														<span class="truncate font-mono text-[14px] font-semibold text-(--ink)">
-															{crate.name}
-														</span>
-														<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
-															{crate.version}
-														</span>
-													</div>
-													{#if crate.description}
-														<p class="mt-2 line-clamp-2 text-[12.5px] leading-snug text-(--muted)">
-															{crate.description}
-														</p>
-													{/if}
-												</div>
-												<Icon
-													name="arrow-right"
-													size={13}
-													class="-translate-x-1 shrink-0 text-(--muted) opacity-0 transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-70"
-												/>
-											</div>
-										</a>
-									{/each}
-								</div>
-							{:else}
-								<div
-									class="corner-squircle rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-10 text-center"
+					{#if topCrates.length > 0}
+						<div class="grid gap-3 sm:grid-cols-2">
+							{#each topCrates as crate (crateKey(crate))}
+								<a
+									href={crateHref(crate)}
+									data-sveltekit-preload-data="off"
+									class="group corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-all hover:-translate-y-0.5 hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
-									<p class="text-sm font-medium text-(--ink)">No popular crates available</p>
-									<p class="mt-1 text-xs text-(--muted)">Search the registry above.</p>
-								</div>
-							{/if}
-						{/await}
-					</svelte:boundary>
+									<div class="flex items-start justify-between gap-3">
+										<div class="min-w-0">
+											<div class="flex min-w-0 items-baseline gap-2">
+												<KindBadge kind="crate" size={14} />
+												<span class="truncate font-mono text-[14px] font-semibold text-(--ink)">
+													{crate.name}
+												</span>
+												<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+													{crate.version}
+												</span>
+											</div>
+											{#if crate.description}
+												<p class="mt-2 line-clamp-2 text-[12.5px] leading-snug text-(--muted)">
+													{crate.description}
+												</p>
+											{/if}
+										</div>
+										<Icon
+											name="arrow-right"
+											size={13}
+											class="-translate-x-1 shrink-0 text-(--muted) opacity-0 transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-70"
+										/>
+									</div>
+								</a>
+							{/each}
+						</div>
+					{:else}
+						<div
+							class="corner-squircle rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-10 text-center"
+						>
+							<p class="text-sm font-medium text-(--ink)">No popular crates available</p>
+							<p class="mt-1 text-xs text-(--muted)">Search the registry above.</p>
+						</div>
+					{/if}
 				{/if}
 			</section>
 		</div>

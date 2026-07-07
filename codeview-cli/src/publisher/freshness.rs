@@ -5,17 +5,18 @@
 //! same code path serves both local (miniflare SQLite) and remote
 //! (Cloudflare R2 over S3) targets.
 //!
-//! Mirrors the old TS `FreshnessRegistry` shape verbatim — same JSON
-//! field names, same staleness predicate, same `Restricted` semantics
-//! — so any catalog or freshness file already on disk reads cleanly
-//! once the binary swaps in.
+//! Preserves the registry JSON shape: same field names, same staleness
+//! predicate, same `Restricted` semantics.
 
 use std::sync::Arc;
 
 use anyhow::Result;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
-use super::r2::{INDEX_MANIFEST_KEY, R2, freshness_key, read_json, write_json};
+#[cfg(test)]
+use super::r2::INDEX_MANIFEST_KEY;
+use super::r2::{R2, freshness_key, read_json, version_freshness_key, write_json};
 
 /// What we record after every successful parse. JSON-on-the-wire is
 /// stable: the TS UI hits these files for "last parsed at" decorations.
@@ -117,6 +118,11 @@ impl FreshnessRegistry {
         read_json(&self.r2, &freshness_key(name)).await
     }
 
+    /// Read one exact crate version freshness entry.
+    pub async fn version(&self, name: &str, version: &str) -> Result<Option<FreshnessEntry>> {
+        read_json(&self.r2, &version_freshness_key(name, version)).await
+    }
+
     /// Decide whether `(name, observed_newest_version)` needs
     /// re-parsing. Stale on first miss, newer version on crates.io,
     /// parser-SHA bump, or schema bump.
@@ -127,7 +133,7 @@ impl FreshnessRegistry {
         current_parser_revision: &str,
         current_schema_version: u32,
     ) -> Result<Staleness> {
-        let Some(entry) = self.latest(name).await? else {
+        let Some(entry) = self.version(name, observed_newest_version).await? else {
             return Ok(Staleness::NeverParsed);
         };
         if entry.version != observed_newest_version {
@@ -152,15 +158,26 @@ impl FreshnessRegistry {
     }
 
     pub async fn record(&self, entry: &FreshnessEntry) -> Result<()> {
-        write_json(&self.r2, &freshness_key(&entry.name), entry).await
+        write_json(
+            &self.r2,
+            &version_freshness_key(&entry.name, &entry.version),
+            entry,
+        )
+        .await?;
+
+        let latest = self.latest(&entry.name).await?;
+        if should_replace_latest(latest.as_ref(), entry) {
+            write_json(&self.r2, &freshness_key(&entry.name), entry).await?;
+        }
+        Ok(())
     }
 
     /// Enumerate every recorded crate.  Used by the catalog rebuilder.
     pub async fn list_all(&self) -> Result<Vec<FreshnessEntry>> {
         let mut out = Vec::new();
-        let keys = self.r2.list_prefix("rust/_index/").await?;
+        let keys = self.r2.list_prefix("rust/_index/by-version/").await?;
         for key in keys {
-            if !is_per_crate_freshness_key(&key) {
+            if !is_version_freshness_key(&key) {
                 continue;
             }
             if let Some(entry) = read_json::<FreshnessEntry>(&self.r2, &key).await? {
@@ -171,11 +188,33 @@ impl FreshnessRegistry {
     }
 }
 
+fn should_replace_latest(current: Option<&FreshnessEntry>, candidate: &FreshnessEntry) -> bool {
+    let Some(current) = current else {
+        return true;
+    };
+    compare_versions_desc(&candidate.version, &current.version).is_le()
+}
+
+fn compare_versions_desc(left: &str, right: &str) -> std::cmp::Ordering {
+    match (Version::parse(left), Version::parse(right)) {
+        (Ok(left), Ok(right)) => right.cmp(&left),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => right.cmp(left),
+    }
+}
+
+#[cfg(test)]
 fn is_per_crate_freshness_key(key: &str) -> bool {
     key.starts_with("rust/_index/")
         && key.ends_with(".json")
         && key != INDEX_MANIFEST_KEY
         && !key.starts_with("rust/_index/_generations/")
+        && !key.starts_with("rust/_index/by-version/")
+}
+
+fn is_version_freshness_key(key: &str) -> bool {
+    key.starts_with("rust/_index/by-version/") && key.ends_with(".json")
 }
 
 #[cfg(test)]
@@ -189,6 +228,12 @@ mod tests {
         assert!(!is_per_crate_freshness_key(INDEX_MANIFEST_KEY));
         assert!(!is_per_crate_freshness_key(
             "rust/_index/_generations/gen/shards/00.json"
+        ));
+        assert!(!is_per_crate_freshness_key(
+            "rust/_index/by-version/serde/1.0.0.json"
+        ));
+        assert!(is_version_freshness_key(
+            "rust/_index/by-version/serde/1.0.0.json"
         ));
     }
 }

@@ -1,0 +1,767 @@
+import {
+	DurableObject,
+	WorkflowEntrypoint,
+	type WorkflowEvent,
+	type WorkflowStep,
+} from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
+import {
+	crateStatusTag,
+	isParseRequestMessage,
+	parseStatusObject,
+	parseWorkflowId,
+	type BeginParseResponse,
+	type ParseCompletionPayload,
+	type ParseRequestMessage,
+	type ParseStatusEvent,
+	type ParseWorkflowParams,
+	type StoredParseStatus,
+} from './lib/server/cloudflare/parse-contract';
+
+type ParseWorkerEnv = Env & {
+	CRATE_GRAPHS: R2Bucket;
+	PARSE_REQUESTS?: Queue<ParseRequestMessage>;
+	PARSE_STATUS: DurableObjectNamespace;
+	PARSE_WORKFLOW: Workflow<ParseWorkflowParams>;
+	GITHUB_TOKEN?: string;
+	GITHUB_REPO?: string;
+	GITHUB_REF?: string;
+	GITHUB_WORKFLOW_FILE?: string;
+	PARSE_CALLBACK_BASE_URL?: string;
+	PARSE_CALLBACK_SECRET?: string;
+	PARSE_DISPATCH_BURST?: string;
+	PARSE_DISPATCH_REFILL_SECONDS?: string;
+	DOCSRS_PARSE_BURST?: string;
+	DOCSRS_PARSE_REFILL_SECONDS?: string;
+	SYSROOT_PARSE_BURST?: string;
+	SYSROOT_PARSE_REFILL_SECONDS?: string;
+};
+
+type WebSocketAttachment = {
+	id: string;
+	tags: string[];
+};
+
+const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
+const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
+const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
+
+type RateBucketConfig = {
+	name: string;
+	capacity: number;
+	refillTokensPerSecond: number;
+	cost: number;
+};
+
+type RateBucketState = RateBucketConfig & {
+	tokens: number;
+};
+
+type LeaseResult =
+	| { leased: true }
+	| { leased: false; retryAfterSeconds: number };
+
+function json(value: unknown, init?: ResponseInit): Response {
+	const headers = new Headers(init?.headers);
+	headers.set('content-type', JSON_HEADERS['content-type']);
+	return new Response(JSON.stringify(value), {
+		...init,
+		headers,
+	});
+}
+
+async function readJson<T = unknown>(request: Request): Promise<T> {
+	return (await request.json()) as T;
+}
+
+function statusRowToObject(row: Record<string, unknown>): StoredParseStatus {
+	const action = typeof row.action === 'string' && row.action ? row.action : undefined;
+	const kind = row.kind === 'sysroot' ? 'sysroot' : 'crate';
+	return {
+		ecosystem: 'rust',
+		kind,
+		name: String(row.name),
+		version: String(row.version),
+		status: row.status as StoredParseStatus['status'],
+		step: typeof row.step === 'string' && row.step ? row.step : undefined,
+		error: typeof row.error === 'string' && row.error ? row.error : undefined,
+		action:
+			action === 'install_std_docs' || action === 'docs_unavailable'
+				? action
+				: undefined,
+		requestId: typeof row.request_id === 'string' && row.request_id ? row.request_id : undefined,
+		workflowId:
+			typeof row.workflow_id === 'string' && row.workflow_id ? row.workflow_id : undefined,
+		githubRunId:
+			typeof row.github_run_id === 'string' && row.github_run_id ? row.github_run_id : undefined,
+		githubRunUrl:
+			typeof row.github_run_url === 'string' && row.github_run_url ? row.github_run_url : undefined,
+		createdAt: String(row.created_at),
+		updatedAt: String(row.updated_at),
+		sequence: Number(row.sequence ?? 0),
+	};
+}
+
+function databaseNow(): string {
+	return new Date().toISOString();
+}
+
+function parsePositiveNumber(value: string | undefined, fallback: number): number {
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function schedulerBuckets(env: ParseWorkerEnv, message: ParseRequestMessage): RateBucketConfig[] {
+	const dispatchBurst = parsePositiveNumber(env.PARSE_DISPATCH_BURST, 2);
+	const dispatchRefillSeconds = parsePositiveNumber(env.PARSE_DISPATCH_REFILL_SECONDS, 45);
+	const buckets: RateBucketConfig[] = [
+		{
+			name: 'github-dispatch',
+			capacity: dispatchBurst,
+			refillTokensPerSecond: 1 / dispatchRefillSeconds,
+			cost: 1,
+		},
+	];
+
+	if (message.kind === 'sysroot') {
+		const sysrootBurst = parsePositiveNumber(env.SYSROOT_PARSE_BURST, 1);
+		const sysrootRefillSeconds = parsePositiveNumber(env.SYSROOT_PARSE_REFILL_SECONDS, 600);
+		buckets.push({
+			name: 'sysroot',
+			capacity: sysrootBurst,
+			refillTokensPerSecond: 1 / sysrootRefillSeconds,
+			cost: 1,
+		});
+	} else {
+		const docsrsBurst = parsePositiveNumber(env.DOCSRS_PARSE_BURST, 4);
+		const docsrsRefillSeconds = parsePositiveNumber(env.DOCSRS_PARSE_REFILL_SECONDS, 20);
+		buckets.push({
+			name: 'docsrs',
+			capacity: docsrsBurst,
+			refillTokensPerSecond: 1 / docsrsRefillSeconds,
+			cost: 1,
+		});
+	}
+
+	return buckets;
+}
+
+function githubApiHeaders(env: ParseWorkerEnv): HeadersInit {
+	if (!env.GITHUB_TOKEN) throw new Error('GITHUB_TOKEN is not configured');
+	return {
+		accept: 'application/vnd.github+json',
+		authorization: `Bearer ${env.GITHUB_TOKEN}`,
+		'content-type': 'application/json',
+		'user-agent': 'codeview-parse-worker',
+		'x-github-api-version': '2022-11-28',
+	};
+}
+
+function githubDispatchBody(env: ParseWorkerEnv, params: ParseWorkflowParams, workflowId: string) {
+	const callbackBase = env.PARSE_CALLBACK_BASE_URL ?? params.callbackBaseUrl;
+	return {
+		ref: env.GITHUB_REF ?? 'main',
+		inputs: {
+			crate: params.name,
+			version: params.version,
+			request_kind: params.kind,
+			toolchain: params.kind === 'sysroot' ? params.version : '',
+			parse_force: params.force ? 'true' : 'false',
+			workflow_id: workflowId,
+			request_id: params.requestId,
+			callback_url: callbackBase ? `${callbackBase.replace(/\/$/, '')}/api/parse/callback` : '',
+		},
+	};
+}
+
+async function dispatchGitHubParse(env: ParseWorkerEnv, params: ParseWorkflowParams, workflowId: string) {
+	const repo = env.GITHUB_REPO;
+	if (!repo) throw new Error('GITHUB_REPO is not configured');
+	const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
+	const url = `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/dispatches`;
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: githubApiHeaders(env),
+		body: JSON.stringify(githubDispatchBody(env, params, workflowId)),
+	});
+	if (!response.ok) {
+		const body = await response.text().catch(() => '');
+		throw new Error(`GitHub dispatch failed: ${response.status} ${response.statusText} ${body}`);
+	}
+	return { dispatchedAt: databaseNow(), workflowFile };
+}
+
+async function updateStatus(env: ParseWorkerEnv, event: ParseStatusEvent): Promise<StoredParseStatus> {
+	const response = await parseStatusObject(env.PARSE_STATUS).fetch('https://status/event', {
+		method: 'POST',
+		headers: JSON_HEADERS,
+		body: JSON.stringify(event),
+	});
+	if (!response.ok) throw new Error(`status update failed: ${response.status}`);
+	return (await response.json()) as StoredParseStatus;
+}
+
+async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: string): Promise<void> {
+	const refs = await env.CRATE_GRAPHS.get(`rust/_refs/${name}.json`);
+	if (!refs) throw new Error(`missing R2 refs for ${name}`);
+	const parsed = (await refs.json()) as {
+		storageName?: string;
+		aliases?: Record<string, { version?: string; graphHash?: string } | undefined>;
+		versions?: Array<{ version?: string; graphHash?: string }>;
+	};
+	const target = VERSION_ALIASES.has(version)
+		? parsed.aliases?.[version]
+		: parsed.versions?.find((entry) => entry.version === version);
+	if (!target?.version || !target.graphHash) throw new Error(`R2 refs do not include ${name}@${version}`);
+	const storageName = parsed.storageName || name;
+	const meta = await env.CRATE_GRAPHS.get(`rust/${storageName}/${target.version}/site/meta.json`);
+	if (!meta) throw new Error(`missing hosted metadata for ${name}@${version}`);
+}
+
+export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
+	constructor(ctx: DurableObjectState, env: ParseWorkerEnv) {
+		super(ctx, env);
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS statuses (
+				ecosystem TEXT NOT NULL,
+				kind TEXT NOT NULL DEFAULT 'crate',
+				name TEXT NOT NULL,
+				version TEXT NOT NULL,
+				status TEXT NOT NULL,
+				step TEXT,
+				error TEXT,
+				action TEXT,
+				request_id TEXT,
+				workflow_id TEXT,
+				github_run_id TEXT,
+				github_run_url TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				sequence INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (ecosystem, name, version)
+			);
+		`);
+		this.trySql(`ALTER TABLE statuses ADD COLUMN kind TEXT NOT NULL DEFAULT 'crate'`);
+		this.ctx.storage.sql.exec(`
+			CREATE INDEX IF NOT EXISTS statuses_processing_idx
+			ON statuses (ecosystem, status, updated_at DESC);
+		`);
+		this.ctx.storage.sql.exec(`
+			CREATE TABLE IF NOT EXISTS rate_buckets (
+				name TEXT PRIMARY KEY,
+				tokens REAL NOT NULL,
+				updated_at_ms INTEGER NOT NULL
+			);
+		`);
+	}
+
+	async fetch(request: Request): Promise<Response> {
+		const url = new URL(request.url);
+		if (url.pathname === '/ws' || url.pathname === '/api/events/ws') {
+			return this.handleWebSocket(request);
+		}
+		if (url.pathname === '/begin' && request.method === 'POST') {
+			return json(await this.beginParse(await readJson<ParseRequestMessage>(request)));
+		}
+		if (url.pathname === '/event' && request.method === 'POST') {
+			return json(await this.recordEvent(await readJson<ParseStatusEvent>(request)));
+		}
+		if (url.pathname === '/status' && request.method === 'GET') {
+			const name = url.searchParams.get('name') ?? '';
+			const version = url.searchParams.get('version') ?? '';
+			return json(this.getStatus(name, version));
+		}
+		if (url.pathname === '/processing' && request.method === 'GET') {
+			const limit = Number(url.searchParams.get('limit') ?? '20');
+			return json(this.processing(Number.isFinite(limit) ? limit : 20));
+		}
+		return new Response('Not found', { status: 404 });
+	}
+
+	webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void | Promise<void> {
+		const raw = typeof message === 'string' ? message : new TextDecoder().decode(message);
+		let parsed: { action?: string; tags?: string[] };
+		try {
+			parsed = JSON.parse(raw) as { action?: string; tags?: string[] };
+		} catch {
+			return;
+		}
+		if (parsed.action === 'ping') {
+			ws.send(JSON.stringify({ type: 'pong' }));
+			return;
+		}
+
+		const attachment = this.attachmentFor(ws);
+		if (parsed.action === 'subscribe' && parsed.tags?.length) {
+			const tags = new Set(attachment.tags);
+			for (const tag of parsed.tags) tags.add(tag);
+			this.setAttachment(ws, { ...attachment, tags: [...tags] });
+			for (const tag of parsed.tags) this.sendInitial(ws, tag);
+			return;
+		}
+		if (parsed.action === 'unsubscribe' && parsed.tags?.length) {
+			const remove = new Set(parsed.tags);
+			this.setAttachment(ws, {
+				...attachment,
+				tags: attachment.tags.filter((tag) => !remove.has(tag)),
+			});
+		}
+	}
+
+	private handleWebSocket(request: Request): Response {
+		if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+			return new Response('Expected WebSocket upgrade', { status: 426 });
+		}
+		const pair = new WebSocketPair();
+		const [client, server] = Object.values(pair);
+		const id = crypto.randomUUID();
+		this.ctx.acceptWebSocket(server);
+		this.setAttachment(server, { id, tags: [] });
+		server.send(JSON.stringify({ type: 'connected', connectionId: id }));
+		return new Response(null, { status: 101, webSocket: client });
+	}
+
+	private attachmentFor(ws: WebSocket): WebSocketAttachment {
+		const attachment = ws.deserializeAttachment() as Partial<WebSocketAttachment> | null;
+		return {
+			id: typeof attachment?.id === 'string' ? attachment.id : crypto.randomUUID(),
+			tags: Array.isArray(attachment?.tags)
+				? attachment.tags.filter((tag): tag is string => typeof tag === 'string')
+				: [],
+		};
+	}
+
+	private setAttachment(ws: WebSocket, attachment: WebSocketAttachment): void {
+		ws.serializeAttachment(attachment);
+	}
+
+	private sendInitial(ws: WebSocket, tag: string): void {
+		if (tag.startsWith('rust:')) {
+			const [, name, version] = tag.split(':');
+			if (!name || !version) return;
+			const status = this.getStatus(name, version);
+			if (status) ws.send(JSON.stringify({ tag, data: status }));
+			return;
+		}
+		if (tag === 'processing:rust') {
+			ws.send(
+				JSON.stringify({
+					tag,
+					data: { type: 'processing', count: this.processing(100).length },
+				}),
+			);
+		}
+	}
+
+	private broadcast(tag: string, data: unknown): void {
+		for (const ws of this.ctx.getWebSockets()) {
+			const attachment = this.attachmentFor(ws);
+			if (attachment.tags.includes(tag)) {
+				ws.send(JSON.stringify({ tag, data }));
+			}
+		}
+	}
+
+	private trySql(sql: string): void {
+		try {
+			this.ctx.storage.sql.exec(sql);
+		} catch {
+			// Existing Durable Objects may already have the column.
+		}
+	}
+
+	private getStatus(name: string, version: string): StoredParseStatus | null {
+		const row = this.ctx.storage.sql.exec(
+			`SELECT * FROM statuses WHERE ecosystem = ? AND name = ? AND version = ? LIMIT 1`,
+			'rust',
+			name,
+			version,
+		).toArray()[0] as Record<string, unknown> | undefined;
+		return row ? statusRowToObject(row) : null;
+	}
+
+	private processing(limit: number): StoredParseStatus[] {
+		return this.ctx.storage.sql.exec(
+			`SELECT * FROM statuses
+			 WHERE ecosystem = ? AND status = ?
+			 ORDER BY updated_at DESC
+			 LIMIT ?`,
+			'rust',
+			'processing',
+			Math.max(1, Math.min(limit, 100)),
+		).toArray().map((row) => statusRowToObject(row as Record<string, unknown>));
+	}
+
+	private readBucket(config: RateBucketConfig, nowMs: number): RateBucketState {
+		const row = this.ctx.storage.sql.exec(
+			`SELECT * FROM rate_buckets WHERE name = ? LIMIT 1`,
+			config.name,
+		).toArray()[0] as Record<string, unknown> | undefined;
+		if (!row) return { ...config, tokens: config.capacity };
+
+		const previousTokens = Number(row.tokens);
+		const previousUpdatedAt = Number(row.updated_at_ms);
+		const elapsedSeconds = Math.max(0, nowMs - previousUpdatedAt) / 1000;
+		const tokens = Math.min(
+			config.capacity,
+			(Number.isFinite(previousTokens) ? previousTokens : config.capacity) +
+				elapsedSeconds * config.refillTokensPerSecond,
+		);
+		return { ...config, tokens };
+	}
+
+	private writeBucket(state: RateBucketState, nowMs: number): void {
+		this.ctx.storage.sql.exec(
+			`INSERT INTO rate_buckets (name, tokens, updated_at_ms)
+			 VALUES (?, ?, ?)
+			 ON CONFLICT(name) DO UPDATE SET
+				tokens = excluded.tokens,
+				updated_at_ms = excluded.updated_at_ms`,
+			state.name,
+			Math.max(0, Math.min(state.capacity, state.tokens)),
+			nowMs,
+		);
+	}
+
+	private tryLease(message: ParseRequestMessage): LeaseResult {
+		const nowMs = Date.now();
+		const states = schedulerBuckets(this.env, message).map((config) =>
+			this.readBucket(config, nowMs),
+		);
+		const waitSeconds = states.map((state) => {
+			if (state.tokens >= state.cost) return 0;
+			return Math.ceil((state.cost - state.tokens) / state.refillTokensPerSecond);
+		});
+		const retryAfterSeconds = Math.max(...waitSeconds);
+		if (retryAfterSeconds > 0) {
+			for (const state of states) this.writeBucket(state, nowMs);
+			return { leased: false, retryAfterSeconds: Math.min(Math.max(1, retryAfterSeconds), 900) };
+		}
+
+		for (const state of states) this.writeBucket({ ...state, tokens: state.tokens - state.cost }, nowMs);
+		return { leased: true };
+	}
+
+	private beginParse(message: ParseRequestMessage): BeginParseResponse {
+		if (!isParseRequestMessage(message)) throw new Error('invalid parse request');
+		const existing = this.getStatus(message.name, message.version);
+		if (!message.force && existing?.status === 'ready') {
+			return {
+				accepted: false,
+				leased: false,
+				workflowId: existing.workflowId ?? parseWorkflowId(message.requestId),
+				status: existing,
+			};
+		}
+		if (
+			!message.force &&
+			existing?.status === 'processing' &&
+			existing.requestId &&
+			existing.requestId !== message.requestId
+		) {
+			return {
+				accepted: false,
+				leased: false,
+				workflowId: existing.workflowId ?? parseWorkflowId(message.requestId),
+				status: existing,
+			};
+		}
+
+		const workflowId = parseWorkflowId(message.requestId);
+		const now = databaseNow();
+		this.ctx.storage.sql.exec(
+			`INSERT INTO statuses (
+				ecosystem, kind, name, version, status, step, error, action,
+				request_id, workflow_id, created_at, updated_at, sequence
+			)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, 1)
+			ON CONFLICT(ecosystem, name, version) DO UPDATE SET
+				kind = excluded.kind,
+				status = excluded.status,
+				step = excluded.step,
+				error = NULL,
+				action = NULL,
+				request_id = excluded.request_id,
+				workflow_id = excluded.workflow_id,
+				updated_at = excluded.updated_at,
+				sequence = statuses.sequence + 1`,
+			'rust',
+			message.kind,
+			message.name,
+			message.version,
+			'processing',
+			'queued',
+			message.requestId,
+			workflowId,
+			now,
+			now,
+		);
+
+		const lease = this.tryLease(message);
+		if (!lease.leased) {
+			const status = this.recordEvent({
+				kind: message.kind,
+				name: message.name,
+				version: message.version,
+				status: 'processing',
+				step: 'waiting-rate-limit',
+				requestId: message.requestId,
+				workflowId,
+			});
+			return {
+				accepted: true,
+				leased: false,
+				workflowId,
+				retryAfterSeconds: lease.retryAfterSeconds,
+				status,
+			};
+		}
+
+		const status = this.recordEvent({
+			kind: message.kind,
+			name: message.name,
+			version: message.version,
+			status: 'processing',
+			step: 'workflow-started',
+			requestId: message.requestId,
+			workflowId,
+		});
+		if (!status) throw new Error('failed to write parse status');
+		return { accepted: true, leased: true, workflowId, status };
+	}
+
+	private recordEvent(event: ParseStatusEvent): StoredParseStatus {
+		const now = databaseNow();
+		this.ctx.storage.sql.exec(
+			`INSERT INTO statuses (
+				ecosystem, kind, name, version, status, step, error, action,
+				request_id, workflow_id, github_run_id, github_run_url,
+				created_at, updated_at, sequence
+			)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+			ON CONFLICT(ecosystem, name, version) DO UPDATE SET
+				kind = excluded.kind,
+				status = excluded.status,
+				step = excluded.step,
+				error = excluded.error,
+				action = excluded.action,
+				request_id = COALESCE(excluded.request_id, statuses.request_id),
+				workflow_id = COALESCE(excluded.workflow_id, statuses.workflow_id),
+				github_run_id = COALESCE(excluded.github_run_id, statuses.github_run_id),
+				github_run_url = COALESCE(excluded.github_run_url, statuses.github_run_url),
+				updated_at = excluded.updated_at,
+				sequence = statuses.sequence + 1`,
+			'rust',
+			event.kind ?? 'crate',
+			event.name,
+			event.version,
+			event.status,
+			event.step ?? null,
+			event.error ?? null,
+			event.action ?? null,
+			event.requestId ?? null,
+			event.workflowId ?? null,
+			event.githubRunId ?? null,
+			event.githubRunUrl ?? null,
+			now,
+			now,
+		);
+		const status = this.getStatus(event.name, event.version);
+		if (!status) throw new Error('failed to write parse status');
+		this.broadcast(crateStatusTag(event.name, event.version), status);
+		this.broadcast('processing:rust', { type: 'processing', count: this.processing(100).length });
+		return status;
+	}
+}
+
+export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, ParseWorkflowParams> {
+	async run(event: WorkflowEvent<ParseWorkflowParams>, step: WorkflowStep): Promise<unknown> {
+		const params = event.payload;
+		if (!params) throw new NonRetryableError('missing parse workflow payload');
+		const workflowId = parseWorkflowId(params.requestId);
+
+		await step.do('mark workflow started', async () => {
+			await updateStatus(this.env, {
+				kind: params.kind,
+				name: params.name,
+				version: params.version,
+				status: 'processing',
+				step: 'workflow-started',
+				requestId: params.requestId,
+				workflowId,
+			});
+		});
+
+		const dispatch = await step.do(
+			'dispatch github action',
+			{ retries: { limit: 3, delay: '30 seconds', backoff: 'exponential' }, timeout: '2 minutes' },
+			async () => dispatchGitHubParse(this.env, params, workflowId),
+		);
+
+		await step.do('mark github running', async () => {
+			await updateStatus(this.env, {
+				kind: params.kind,
+				name: params.name,
+				version: params.version,
+				status: 'processing',
+				step: 'github-running',
+				requestId: params.requestId,
+				workflowId,
+			});
+			return dispatch;
+		});
+
+		const completion = await step.waitForEvent<ParseCompletionPayload>('wait for github', {
+			type: 'github-complete',
+			timeout: '6 hours',
+		});
+		const payload = completion.payload;
+		if (!payload?.ok) {
+			await step.do('mark failed', async () => {
+				await updateStatus(this.env, {
+					kind: params.kind,
+					name: params.name,
+					version: params.version,
+					status: 'failed',
+					step: 'failed',
+					error: payload?.error ?? 'GitHub parse workflow failed',
+					requestId: params.requestId,
+					workflowId,
+					githubRunId: payload?.runId,
+					githubRunUrl: payload?.runUrl,
+				});
+			});
+			return { ok: false };
+		}
+
+		await step.do(
+			'verify r2 artifacts',
+			{ retries: { limit: 5, delay: '20 seconds', backoff: 'linear' }, timeout: '2 minutes' },
+			async () => verifyArtifacts(this.env, params.name, params.version),
+		);
+
+		await step.do('mark ready', async () => {
+			await updateStatus(this.env, {
+				kind: params.kind,
+				name: params.name,
+				version: params.version,
+				status: 'ready',
+				requestId: params.requestId,
+				workflowId,
+				githubRunId: payload.runId,
+				githubRunUrl: payload.runUrl,
+			});
+		});
+		return { ok: true };
+	}
+}
+
+async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv): Promise<void> {
+	if (!isParseRequestMessage(message.body)) {
+		message.ack();
+		return;
+	}
+	const beginResponse = await parseStatusObject(env.PARSE_STATUS).fetch('https://status/begin', {
+		method: 'POST',
+		headers: JSON_HEADERS,
+		body: JSON.stringify(message.body),
+	});
+	if (!beginResponse.ok) {
+		message.retry({ delaySeconds: 30 });
+		return;
+	}
+	const begin = (await beginResponse.json()) as BeginParseResponse;
+	if (!begin.accepted) {
+		message.ack();
+		return;
+	}
+	if (!begin.leased) {
+		const retryAfterSeconds = Math.min(
+			900,
+			Math.max(1, begin.retryAfterSeconds ?? 30) + Math.floor(Math.random() * 5),
+		);
+		if (env.PARSE_REQUESTS) {
+			await env.PARSE_REQUESTS.send(message.body, { delaySeconds: retryAfterSeconds });
+			message.ack();
+		} else {
+			message.retry({ delaySeconds: retryAfterSeconds });
+		}
+		return;
+	}
+	try {
+		await env.PARSE_WORKFLOW.create({
+			id: begin.workflowId,
+			params: {
+				...message.body,
+				callbackBaseUrl: env.PARSE_CALLBACK_BASE_URL,
+			},
+			retention: {
+				successRetention: '7 days',
+				errorRetention: '14 days',
+			},
+		});
+		message.ack();
+	} catch (err) {
+		const text = err instanceof Error ? err.message : String(err);
+		if (text.includes('already exists')) {
+			message.ack();
+			return;
+		}
+		await updateStatus(env, {
+			name: message.body.name,
+			version: message.body.version,
+			kind: message.body.kind,
+			status: 'failed',
+			step: 'workflow-create',
+			error: text,
+			requestId: message.body.requestId,
+			workflowId: begin.workflowId,
+		});
+		message.retry({ delaySeconds: 60 });
+	}
+}
+
+async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Response> {
+	if (env.PARSE_CALLBACK_SECRET) {
+		const auth = request.headers.get('authorization') ?? '';
+		const headerSecret = request.headers.get('x-codeview-callback-secret') ?? '';
+		const bearer = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : '';
+		if (bearer !== env.PARSE_CALLBACK_SECRET && headerSecret !== env.PARSE_CALLBACK_SECRET) {
+			return json({ error: 'unauthorized' }, { status: 401 });
+		}
+	}
+	const payload = await readJson<ParseCompletionPayload>(request);
+	if (!payload.workflowId || !payload.requestId || !payload.name || !payload.version) {
+		return json({ error: 'invalid callback payload' }, { status: 400 });
+	}
+	await updateStatus(env, {
+		kind: payload.kind,
+		name: payload.name,
+		version: payload.version,
+		status: payload.ok ? 'processing' : 'failed',
+		step: payload.ok ? 'finalizing' : 'failed',
+		error: payload.error,
+		requestId: payload.requestId,
+		workflowId: payload.workflowId,
+		githubRunId: payload.runId,
+		githubRunUrl: payload.runUrl,
+	});
+	const instance = await env.PARSE_WORKFLOW.get(payload.workflowId);
+	await instance.sendEvent({ type: 'github-complete', payload });
+	return json({ ok: true });
+}
+
+export default {
+	async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
+		await Promise.all(batch.messages.map((message) => handleQueueMessage(message, env)));
+	},
+
+	async fetch(request: Request, env: ParseWorkerEnv): Promise<Response> {
+		const url = new URL(request.url);
+		if (url.pathname === '/api/parse/callback' && request.method === 'POST') {
+			return handleCallback(request, env);
+		}
+		if (url.pathname === '/health') return json({ ok: true });
+		return new Response('Not found', { status: 404 });
+	},
+} satisfies ExportedHandler<ParseWorkerEnv, unknown>;

@@ -1,4 +1,4 @@
-import type { Node, NodeSummary } from '$lib/schema';
+import type { CrateGraph, CrateTree, Edge, Node, NodeSummary } from '$lib/schema';
 
 export function summarizeNode(node: Node): NodeSummary {
 	return {
@@ -15,5 +15,20 @@ export function summarizeNode(node: Node): NodeSummary {
 					generics: node.generics,
 				}
 			: {}),
+	};
+}
+
+export function buildCrateTree(graph: Pick<CrateGraph, 'nodes' | 'edges'>): CrateTree {
+	const internalNodes = graph.nodes.filter((node) => !node.is_external);
+	const internalIds = new Set(internalNodes.map((node) => node.id));
+	const structuralEdges = graph.edges.filter(
+		(edge): edge is Edge =>
+			(edge.kind === 'Contains' || edge.kind === 'Defines') &&
+			internalIds.has(edge.from) &&
+			internalIds.has(edge.to),
+	);
+	return {
+		nodes: internalNodes.map(summarizeNode),
+		edges: structuralEdges,
 	};
 }

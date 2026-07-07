@@ -13,8 +13,11 @@
 	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import Icon from '$lib/components/design/Icon.svelte';
 	import GraphNodePillFlow from './GraphNodePillFlow.svelte';
+	import RelationshipLabelFlow from './RelationshipLabelFlow.svelte';
 	import RelationshipEdge from './RelationshipEdge.svelte';
+	import { DISABLED_FLOW_SHORTCUTS } from './flow-shortcuts';
 	import type {
+		FocusGraphFlowNode,
 		GraphNodePillFlowData,
 		GraphNodePillFlowNode,
 		RelationshipFlowEdge,
@@ -61,7 +64,7 @@
 		compact?: boolean;
 	} = $props();
 
-	const nodeTypes = { graphNodePill: GraphNodePillFlow };
+	const nodeTypes = { graphNodePill: GraphNodePillFlow, relationshipLabel: RelationshipLabelFlow };
 	const edgeTypes = { relationship: RelationshipEdge };
 
 	let containerWidth = $state(900);
@@ -103,8 +106,11 @@
 	const hoveredNode = $derived(
 		hoveredNodeId ? layout.nodes.find((node) => node.id === hoveredNodeId) : null,
 	);
-	const flowNodes = $derived.by<GraphNodePillFlowNode[]>(() =>
-		layout.nodes.map((node) => {
+	let flowNodes = $state.raw<FocusGraphFlowNode[]>([]);
+	let flowEdges = $state.raw<RelationshipFlowEdge[]>([]);
+
+	$effect(() => {
+		const graphNodes: GraphNodePillFlowNode[] = layout.nodes.map((node) => {
 			const dim =
 				(hoveredNodeId != null && node.id !== hoveredNodeId) ||
 				(hoveredRel != null && node.rel !== hoveredRel && !node.isFocus);
@@ -113,7 +119,7 @@
 				id: node.id,
 				type: 'graphNodePill',
 				position: { x: node.x, y: node.y },
-				draggable: false,
+				draggable: true,
 				selectable: false,
 				connectable: false,
 				focusable: false,
@@ -129,13 +135,30 @@
 					height: node.height,
 					inCount: node.inCount,
 					outCount: node.outCount,
-					onEscape: clearPeek,
+					direction: node.direction,
 				} satisfies GraphNodePillFlowData,
 			};
-		}),
-	);
-	const flowEdges = $derived.by<RelationshipFlowEdge[]>(() =>
-		layout.edges.map((edge) => {
+		});
+		const labelNodes: FocusGraphFlowNode[] = layout.labels.map((label) => ({
+			id: `label:${label.id}`,
+			type: 'relationshipLabel',
+			position: { x: label.x - label.width / 2, y: label.y - 10 },
+			draggable: false,
+			selectable: false,
+			connectable: false,
+			focusable: false,
+			ariaRole: 'presentation',
+			data: {
+				text: label.text,
+				count: label.count,
+				color: label.color,
+				width: label.width,
+				dim: hoveredRel != null && hoveredRel !== label.rel,
+				active: hoveredRel === label.rel,
+			},
+		}));
+		flowNodes = [...graphNodes, ...labelNodes];
+		flowEdges = layout.edges.map((edge) => {
 			const dim =
 				(hoveredNodeId != null && !edge.activeNodeIds.includes(hoveredNodeId)) ||
 				(hoveredRel != null && edge.rel !== hoveredRel);
@@ -160,15 +183,16 @@
 					active,
 				},
 			};
-		}),
-	);
+		});
+	});
 
 	function handleNodeEnter({
 		node,
 	}: {
-		node: GraphNodePillFlowNode;
+		node: FocusGraphFlowNode;
 		event: PointerEvent;
 	}) {
+		if (node.type !== 'graphNodePill') return;
 		hoveredNodeId = node.id;
 	}
 
@@ -417,29 +441,30 @@
 			edges={flowEdges}
 			{nodeTypes}
 			{edgeTypes}
-			width={layout.width}
-			height={layout.height}
-			nodesDraggable={false}
+			width={graphSize.width}
+			height={height}
+			nodesDraggable={true}
 			nodesConnectable={false}
 			elementsSelectable={false}
 			nodesFocusable={false}
 			edgesFocusable={false}
-			autoPanOnNodeFocus={false}
-			panOnDrag={false}
+			autoPanOnNodeFocus={true}
+			fitView={true}
+			fitViewOptions={{ padding: 0.14, minZoom: 0.35, maxZoom: 1 }}
+			panOnDrag={true}
 			panOnScroll={false}
-			zoomOnScroll={false}
-			zoomOnDoubleClick={false}
-			zoomOnPinch={false}
-			preventScrolling={false}
-			deleteKey={null}
-			selectionKey={null}
-			multiSelectionKey={null}
-			panActivationKey={null}
-			zoomActivationKey={null}
+			zoomOnScroll={true}
+			zoomOnDoubleClick={true}
+			zoomOnPinch={true}
+			preventScrolling={true}
+			deleteKey={DISABLED_FLOW_SHORTCUTS}
+			selectionKey={DISABLED_FLOW_SHORTCUTS}
+			multiSelectionKey={DISABLED_FLOW_SHORTCUTS}
+			panActivationKey={DISABLED_FLOW_SHORTCUTS}
+			zoomActivationKey={DISABLED_FLOW_SHORTCUTS}
 			onlyRenderVisibleElements={true}
-			minZoom={1}
-			maxZoom={1}
-			viewport={{ x: 0, y: 0, zoom: 1 }}
+			minZoom={0.35}
+			maxZoom={2}
 			onnodepointerenter={handleNodeEnter}
 			onnodepointerleave={handleNodeLeave}
 			onpaneclick={clearPeek}
@@ -449,16 +474,6 @@
 			Preparing relationship graph...
 		</div>
 	{/if}
-
-	{#each flowReady ? layout.labels : [] as label (label.id)}
-		<div
-			class="pointer-events-none absolute flex h-5 items-center justify-center rounded-full border bg-(--panel-solid) px-2"
-			style={`left: ${label.x - label.width / 2}px; top: ${label.y - 10}px; width: ${label.width}px; border-color: ${label.color}; color: ${label.color}`}
-		>
-			<span class="mono truncate text-[10.5px] font-semibold">{label.text}</span>
-			<span class="mono ml-2 text-[9.5px] font-bold opacity-75">{label.count}</span>
-		</div>
-	{/each}
 
 	{#if flowReady && hoveredNode}
 		{@const pos = peekPosition(layout)}

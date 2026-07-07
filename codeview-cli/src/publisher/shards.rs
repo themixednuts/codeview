@@ -5,7 +5,7 @@
 //!
 //! - `manifest.json` — top-level (kind counts, roots, populated shards)
 //! - `nodes/{bucket}.json` — sharded full Node payloads (FNV-1a × 128)
-//! - `node-details/{bucket}.json` — incoming/outgoing edges + ancestors
+//! - `node-details/{bucket}.json` — local-page incoming/outgoing edges + ancestors
 //! - `tree-children/{bucket}.json` — parent → children for lazy tree
 //! - `search-manifest.json` + `search/{prefix}.json` — two-letter prefix
 //! - `aliases.json` — public-path → canonical-id map
@@ -15,7 +15,7 @@
 //! `codeview-ui/scripts/static-artifacts.ts`.  Wire-format identical so
 //! existing artifacts read cleanly under the new code.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use codeview_core::{CrateGraph, Edge, Node, NodeKind, Visibility};
 use serde::{Deserialize, Serialize};
@@ -26,8 +26,8 @@ pub const TREE_CHILDREN_BUCKETS: u32 = 128;
 
 // ─── Bucket hash ──────────────────────────────────────────────────────
 
-/// FNV-1a 32-bit. Identical to the TS `fnv1a32` so existing artifacts
-/// hash to the same buckets after migration.
+/// FNV-1a 32-bit. Matches the worker `fnv1a32` so Rust and TypeScript
+/// read the same bucket keys.
 pub fn fnv1a32(s: &str) -> u32 {
     let mut hash: u32 = 0x811c_9dc5;
     for b in s.bytes() {
@@ -78,7 +78,13 @@ pub fn search_prefix(name: &str) -> String {
         .trim()
         .to_ascii_lowercase()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let mut chars = normalised.chars();
     let c0 = chars.next().unwrap_or('_');
@@ -161,8 +167,8 @@ pub struct StaticCrateManifest {
     pub roots: Vec<TreeNodeDto>,
     #[serde(rename = "rootChildren")]
     pub root_children: BTreeMap<String, Vec<TreeNodeDto>>,
-    #[serde(rename = "populatedShards", skip_serializing_if = "Option::is_none")]
-    pub populated_shards: Option<PopulatedShards>,
+    #[serde(rename = "populatedShards")]
+    pub populated_shards: PopulatedShards,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,7 +233,7 @@ pub struct StaticTreeChildrenShard {
 // ─── Tree construction ────────────────────────────────────────────────
 
 /// Walk Contains/Defines edges to build the parent→children map.
-fn build_tree_relations(
+pub(crate) fn build_tree_relations(
     graph: &CrateGraph,
 ) -> (HashMap<String, Vec<String>>, HashMap<String, String>) {
     let mut children: HashMap<String, Vec<String>> = HashMap::new();
@@ -247,7 +253,7 @@ fn build_tree_relations(
     (children, parents)
 }
 
-fn summarise_node(n: &Node) -> NodeSummary {
+pub(crate) fn summarise_node(n: &Node) -> NodeSummary {
     NodeSummary {
         id: n.id.clone(),
         name: n.name.clone(),
@@ -261,40 +267,147 @@ fn summarise_node(n: &Node) -> NodeSummary {
     }
 }
 
-fn kind_counts(nodes: &[Node]) -> BTreeMap<String, u32> {
-    let mut counts: BTreeMap<String, u32> = BTreeMap::new();
-    for n in nodes {
-        *counts
-            .entry(format!("{:?}", n.kind))
-            .or_insert(0) += 1;
-    }
-    counts
+pub(crate) struct EdgeLookup<'a> {
+    incoming: HashMap<&'a str, Vec<&'a Edge>>,
+    outgoing: HashMap<&'a str, Vec<&'a Edge>>,
 }
 
-fn compute_roots(
-    nodes: &[Node],
+impl<'a> EdgeLookup<'a> {
+    pub(crate) fn new(edges: &'a [Edge]) -> Self {
+        let mut incoming: HashMap<&str, Vec<&Edge>> = HashMap::new();
+        let mut outgoing: HashMap<&str, Vec<&Edge>> = HashMap::new();
+        for edge in edges {
+            incoming.entry(&edge.to).or_default().push(edge);
+            outgoing.entry(&edge.from).or_default().push(edge);
+        }
+        Self { incoming, outgoing }
+    }
+
+    pub(crate) fn incoming_count(&self, node_id: &str) -> usize {
+        self.incoming.get(node_id).map_or(0, Vec::len)
+    }
+
+    pub(crate) fn outgoing_count(&self, node_id: &str) -> usize {
+        self.outgoing.get(node_id).map_or(0, Vec::len)
+    }
+
+    pub(crate) fn cloned_edges(&self, node_id: &str) -> Vec<Edge> {
+        let outgoing = self.outgoing.get(node_id);
+        let incoming = self.incoming.get(node_id);
+        let capacity = outgoing.map_or(0, Vec::len) + incoming.map_or(0, Vec::len);
+        let mut edges = Vec::with_capacity(capacity);
+        if let Some(outgoing) = outgoing {
+            edges.extend(outgoing.iter().map(|edge| (*edge).clone()));
+        }
+        if let Some(incoming) = incoming {
+            edges.extend(incoming.iter().map(|edge| (*edge).clone()));
+        }
+        edges
+    }
+}
+
+pub(crate) fn collect_related<T>(
+    selected_id: &str,
+    edges: &[Edge],
+    mut map: impl FnMut(&str) -> Option<T>,
+) -> Vec<T> {
+    let mut seen = HashSet::with_capacity(edges.len().saturating_mul(2));
+    let mut related = Vec::new();
+    for edge in edges {
+        for endpoint in [&edge.from, &edge.to] {
+            if endpoint == selected_id || !seen.insert(endpoint.as_str()) {
+                continue;
+            }
+            if let Some(value) = map(endpoint) {
+                related.push(value);
+            }
+        }
+    }
+    related
+}
+
+pub(crate) fn ancestor_summaries(
+    node_id: &str,
     parents: &HashMap<String, String>,
-) -> Vec<String> {
+    nodes_by_id: &HashMap<&str, &Node>,
+) -> Vec<NodeSummary> {
+    let mut ancestors = Vec::new();
+    let mut cursor = parents.get(node_id);
+    while let Some(parent_id) = cursor {
+        if let Some(parent_node) = nodes_by_id.get(parent_id.as_str()) {
+            ancestors.push(summarise_node(parent_node));
+        }
+        cursor = parents.get(parent_id);
+        if ancestors.len() > 64 {
+            break;
+        }
+    }
+    ancestors.reverse();
+    ancestors
+}
+
+pub(crate) fn is_local_page_node(node: &Node) -> bool {
+    !node.is_external
+}
+
+pub(crate) fn is_searchable_node(node: &Node) -> bool {
+    is_local_page_node(node) && node.kind != NodeKind::Impl
+}
+
+pub(crate) fn has_local_tree_children(
+    node_id: &str,
+    children_map: &HashMap<String, Vec<String>>,
+    nodes_by_id: &HashMap<&str, &Node>,
+) -> bool {
+    children_map.get(node_id).is_some_and(|children| {
+        children.iter().any(|child_id| {
+            nodes_by_id
+                .get(child_id.as_str())
+                .is_some_and(|node| is_local_page_node(node))
+        })
+    })
+}
+
+pub(crate) fn compute_roots(nodes: &[Node], parents: &HashMap<String, String>) -> Vec<String> {
+    let local_ids: HashSet<&str> = nodes
+        .iter()
+        .filter(|node| is_local_page_node(node))
+        .map(|node| node.id.as_str())
+        .collect();
+
     nodes
         .iter()
-        .filter(|n| !parents.contains_key(&n.id))
+        .filter(|n| {
+            if !is_local_page_node(n) {
+                return false;
+            }
+            match parents.get(&n.id) {
+                Some(parent_id) => !local_ids.contains(parent_id.as_str()),
+                None => true,
+            }
+        })
         .map(|n| n.id.clone())
         .collect()
 }
 
 // ─── Per-artifact builders ────────────────────────────────────────────
 
-pub fn build_node_shards(graph: &CrateGraph, storage_name: &str) -> BTreeMap<String, StaticNodeShard> {
+pub fn build_node_shards(
+    graph: &CrateGraph,
+    storage_name: &str,
+) -> BTreeMap<String, StaticNodeShard> {
     let mut shards: BTreeMap<String, StaticNodeShard> = BTreeMap::new();
     for node in &graph.nodes {
         let bucket = node_view_bucket(&node.id, NODE_VIEW_BUCKETS);
-        let shard = shards.entry(bucket.clone()).or_insert_with(|| StaticNodeShard {
-            schema_version: STATIC_SCHEMA_VERSION,
-            name: storage_name.to_string(),
-            version: graph.version.clone(),
-            bucket: bucket.clone(),
-            nodes: BTreeMap::new(),
-        });
+        let shard = shards
+            .entry(bucket.clone())
+            .or_insert_with(|| StaticNodeShard {
+                schema_version: STATIC_SCHEMA_VERSION,
+                name: storage_name.to_string(),
+                version: graph.version.clone(),
+                bucket: bucket.clone(),
+                nodes: BTreeMap::new(),
+            });
         shard.nodes.insert(node.id.clone(), node.clone());
     }
     shards
@@ -308,6 +421,29 @@ pub fn build_tree_children_shards(
 ) -> BTreeMap<String, StaticTreeChildrenShard> {
     let mut shards: BTreeMap<String, StaticTreeChildrenShard> = BTreeMap::new();
     for (parent_id, child_ids) in children_map {
+        let Some(parent_node) = nodes_by_id.get(parent_id.as_str()) else {
+            continue;
+        };
+        if !is_local_page_node(parent_node) {
+            continue;
+        }
+        let children: Vec<TreeNodeDto> = child_ids
+            .iter()
+            .filter_map(|cid| {
+                nodes_by_id.get(cid.as_str()).and_then(|n| {
+                    if !is_local_page_node(n) {
+                        return None;
+                    }
+                    Some(TreeNodeDto {
+                        node: summarise_node(n),
+                        has_children: has_local_tree_children(cid, children_map, nodes_by_id),
+                    })
+                })
+            })
+            .collect();
+        if children.is_empty() {
+            continue;
+        }
         let bucket = tree_children_bucket(parent_id, TREE_CHILDREN_BUCKETS);
         let shard = shards
             .entry(bucket.clone())
@@ -318,13 +454,6 @@ pub fn build_tree_children_shards(
                 bucket: bucket.clone(),
                 parents: BTreeMap::new(),
             });
-        let children: Vec<TreeNodeDto> = child_ids
-            .iter()
-            .filter_map(|cid| nodes_by_id.get(cid.as_str()).map(|n| TreeNodeDto {
-                node: summarise_node(n),
-                has_children: children_map.get(cid).is_some_and(|c| !c.is_empty()),
-            }))
-            .collect();
         shard
             .parents
             .insert(parent_id.clone(), TreeChildrenParentEntry { children });
@@ -338,54 +467,16 @@ pub fn build_node_detail_shards(
     parents: &HashMap<String, String>,
     nodes_by_id: &HashMap<&str, &Node>,
 ) -> BTreeMap<String, StaticNodeDetailShard> {
-    // Group edges by both endpoints for quick lookup.
-    let mut incoming: HashMap<&str, Vec<&Edge>> = HashMap::new();
-    let mut outgoing: HashMap<&str, Vec<&Edge>> = HashMap::new();
-    for e in &graph.edges {
-        incoming.entry(&e.to).or_default().push(e);
-        outgoing.entry(&e.from).or_default().push(e);
-    }
+    let edge_lookup = EdgeLookup::new(&graph.edges);
 
     let mut shards: BTreeMap<String, StaticNodeDetailShard> = BTreeMap::new();
-    for node in &graph.nodes {
+    for node in graph.nodes.iter().filter(|node| is_local_page_node(node)) {
         let bucket = node_view_bucket(&node.id, NODE_VIEW_BUCKETS);
-
-        // Combine incoming + outgoing edges, preserving order for stable output.
-        let mut edges: Vec<Edge> = Vec::new();
-        if let Some(out) = outgoing.get(node.id.as_str()) {
-            edges.extend(out.iter().map(|&e| e.clone()));
-        }
-        if let Some(inc) = incoming.get(node.id.as_str()) {
-            edges.extend(inc.iter().map(|&e| e.clone()));
-        }
-
-        // Related IDs = every distinct node touched by edges, excluding self.
-        let mut seen: HashMap<&str, ()> = HashMap::new();
-        let mut related_ids: Vec<String> = Vec::new();
-        for e in &edges {
-            for endpoint in [&e.from, &e.to] {
-                if endpoint == &node.id {
-                    continue;
-                }
-                if seen.insert(endpoint.as_str(), ()).is_none() {
-                    related_ids.push(endpoint.clone());
-                }
-            }
-        }
-
-        // Ancestor chain via parents map.
-        let mut ancestors: Vec<NodeSummary> = Vec::new();
-        let mut cursor: Option<&String> = parents.get(&node.id);
-        while let Some(parent_id) = cursor {
-            if let Some(parent_node) = nodes_by_id.get(parent_id.as_str()) {
-                ancestors.push(summarise_node(parent_node));
-            }
-            cursor = parents.get(parent_id);
-            if ancestors.len() > 64 {
-                break; // pathological loop guard
-            }
-        }
-        ancestors.reverse();
+        let edges = edge_lookup.cloned_edges(node.id.as_str());
+        let related_ids = collect_related(node.id.as_str(), &edges, |endpoint| {
+            Some(endpoint.to_string())
+        });
+        let ancestors = ancestor_summaries(node.id.as_str(), parents, nodes_by_id);
 
         let shard = shards
             .entry(bucket.clone())
@@ -414,7 +505,7 @@ pub fn build_search_shards(
     storage_name: &str,
 ) -> (StaticSearchManifest, BTreeMap<String, StaticSearchShard>) {
     let mut shards: BTreeMap<String, StaticSearchShard> = BTreeMap::new();
-    for node in &graph.nodes {
+    for node in graph.nodes.iter().filter(|node| is_searchable_node(node)) {
         let prefix = search_prefix(&node.name);
         let shard = shards
             .entry(prefix.clone())
@@ -442,15 +533,23 @@ pub fn build_manifest(
     populated: PopulatedShards,
 ) -> StaticCrateManifest {
     let (children_map, parents) = build_tree_relations(graph);
-    let nodes_by_id: HashMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let nodes_by_id: HashMap<&str, &Node> =
+        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
 
+    let local_nodes: Vec<&Node> = graph
+        .nodes
+        .iter()
+        .filter(|node| is_local_page_node(node))
+        .collect();
     let root_ids = compute_roots(&graph.nodes, &parents);
     let roots: Vec<TreeNodeDto> = root_ids
         .iter()
-        .filter_map(|id| nodes_by_id.get(id.as_str()).map(|n| TreeNodeDto {
-            node: summarise_node(n),
-            has_children: children_map.get(id).is_some_and(|c| !c.is_empty()),
-        }))
+        .filter_map(|id| {
+            nodes_by_id.get(id.as_str()).map(|n| TreeNodeDto {
+                node: summarise_node(n),
+                has_children: has_local_tree_children(id, &children_map, &nodes_by_id),
+            })
+        })
         .collect();
 
     let mut root_children: BTreeMap<String, Vec<TreeNodeDto>> = BTreeMap::new();
@@ -458,10 +557,17 @@ pub fn build_manifest(
         if let Some(child_ids) = children_map.get(r) {
             let entries: Vec<TreeNodeDto> = child_ids
                 .iter()
-                .filter_map(|cid| nodes_by_id.get(cid.as_str()).map(|n| TreeNodeDto {
-                    node: summarise_node(n),
-                    has_children: children_map.get(cid).is_some_and(|c| !c.is_empty()),
-                }))
+                .filter_map(|cid| {
+                    nodes_by_id.get(cid.as_str()).and_then(|n| {
+                        if !is_local_page_node(n) {
+                            return None;
+                        }
+                        Some(TreeNodeDto {
+                            node: summarise_node(n),
+                            has_children: has_local_tree_children(cid, &children_map, &nodes_by_id),
+                        })
+                    })
+                })
                 .collect();
             root_children.insert(r.clone(), entries);
         }
@@ -483,12 +589,18 @@ pub fn build_manifest(
         name: storage_name.to_string(),
         version: graph.version.clone(),
         index,
-        node_count: graph.nodes.len(),
+        node_count: local_nodes.len(),
         edge_count: graph.edges.len(),
-        kind_counts: kind_counts(&graph.nodes),
+        kind_counts: {
+            let mut counts: BTreeMap<String, u32> = BTreeMap::new();
+            for node in local_nodes {
+                *counts.entry(format!("{:?}", node.kind)).or_insert(0) += 1;
+            }
+            counts
+        },
         roots,
         root_children,
-        populated_shards: Some(populated),
+        populated_shards: populated,
     }
 }
 
@@ -508,7 +620,7 @@ const JSON: &str = "application/json; charset=utf-8";
 /// uploads them via the `R2` trait.
 ///
 /// Validation: refuses to publish empty-graph or graph-with-only-external
-/// nodes — matches the old TS guardrail.
+/// nodes.
 pub fn build_all(
     graph: &CrateGraph,
     storage_name: &str,
@@ -517,15 +629,14 @@ pub fn build_all(
     validate(graph)?;
 
     let prefix = format!("rust/{storage_name}/{}", graph.version);
-    let nodes_by_id: HashMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let nodes_by_id: HashMap<&str, &Node> =
+        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
     let (children_map, parents) = build_tree_relations(graph);
 
     // Build shards first so the manifest can record populated lists.
     let node_shards = build_node_shards(graph, storage_name);
-    let detail_shards =
-        build_node_detail_shards(graph, storage_name, &parents, &nodes_by_id);
-    let tree_shards =
-        build_tree_children_shards(graph, storage_name, &children_map, &nodes_by_id);
+    let detail_shards = build_node_detail_shards(graph, storage_name, &parents, &nodes_by_id);
+    let tree_shards = build_tree_children_shards(graph, storage_name, &children_map, &nodes_by_id);
 
     let populated = PopulatedShards {
         nodes: node_shards.keys().cloned().collect(),
@@ -659,7 +770,11 @@ fn canonical_hash<H: sha2::Digest>(value: &serde_json::Value, h: &mut H) {
     use serde_json::Value::*;
     match value {
         Null => h.update(b"null"),
-        Bool(b) => h.update(if *b { b"true" as &[_] } else { b"false" as &[_] }),
+        Bool(b) => h.update(if *b {
+            b"true" as &[_]
+        } else {
+            b"false" as &[_]
+        }),
         Number(n) => h.update(n.to_string().as_bytes()),
         String(s) => {
             h.update(b"\"");
@@ -697,7 +812,61 @@ fn canonical_hash<H: sha2::Digest>(value: &serde_json::Value, h: &mut H) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use codeview_core::{Confidence, EdgeKind, Visibility};
+
     use super::*;
+
+    fn node(id: &str, name: &str, kind: NodeKind) -> Node {
+        Node::new(id, name, kind, Visibility::Public)
+    }
+
+    fn external_node(id: &str, name: &str, kind: NodeKind) -> Node {
+        let mut node = node(id, name, kind);
+        node.is_external = true;
+        node
+    }
+
+    fn edge(from: &str, to: &str, kind: EdgeKind) -> Edge {
+        Edge {
+            from: from.to_string(),
+            to: to.to_string(),
+            kind,
+            confidence: Confidence::Static,
+            occurrences: Vec::new(),
+            is_glob: false,
+        }
+    }
+
+    fn graph_with_external_and_impls() -> CrateGraph {
+        CrateGraph {
+            id: "demo".to_string(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            nodes: vec![
+                node("demo", "demo", NodeKind::Crate),
+                node("demo::Thing", "Thing", NodeKind::Struct),
+                node("demo::make", "make", NodeKind::Function),
+                node("demo::impl-1", "impl Clone for Thing", NodeKind::Impl),
+                node("demo::Wrapper", "Wrapper", NodeKind::Module),
+                node("demo::Adopted", "Adopted", NodeKind::Struct),
+                external_node("core", "core", NodeKind::Crate),
+                external_node("core::clone::Clone", "Clone", NodeKind::Trait),
+            ],
+            edges: vec![
+                edge("demo", "demo::Thing", EdgeKind::Defines),
+                edge("demo", "demo::make", EdgeKind::Defines),
+                edge("demo", "demo::Wrapper", EdgeKind::Defines),
+                edge("demo::Thing", "demo::impl-1", EdgeKind::Defines),
+                edge("demo::Wrapper", "core::clone::Clone", EdgeKind::Defines),
+                edge("core", "demo::Adopted", EdgeKind::Defines),
+                edge("demo::impl-1", "core::clone::Clone", EdgeKind::Implements),
+                edge("demo::make", "core::clone::Clone", EdgeKind::UsesType),
+            ],
+            aliases: HashMap::new(),
+        }
+    }
 
     #[test]
     fn fnv1a64_matches_known_vector() {
@@ -728,6 +897,140 @@ mod tests {
         let min = buckets.iter().copied().min().unwrap_or_default();
         let max = buckets.iter().copied().max().unwrap_or_default();
         assert!(min > 200, "bucket distribution too sparse: {buckets:?}");
-        assert!(max < 320, "bucket distribution too concentrated: {buckets:?}");
+        assert!(
+            max < 320,
+            "bucket distribution too concentrated: {buckets:?}"
+        );
+    }
+
+    #[test]
+    fn static_node_details_skip_external_page_entries_but_keep_related_ids() {
+        let graph = graph_with_external_and_impls();
+        let nodes_by_id: HashMap<&str, &Node> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let (_children, parents) = build_tree_relations(&graph);
+        let detail_shards = build_node_detail_shards(&graph, "demo", &parents, &nodes_by_id);
+
+        let external_bucket = node_view_bucket("core::clone::Clone", NODE_VIEW_BUCKETS);
+        assert!(
+            !detail_shards
+                .get(&external_bucket)
+                .is_some_and(|shard| shard.details.contains_key("core::clone::Clone")),
+            "external nodes should remain related data, not page detail entries"
+        );
+
+        let local_bucket = node_view_bucket("demo::make", NODE_VIEW_BUCKETS);
+        let local_entry = detail_shards
+            .get(&local_bucket)
+            .and_then(|shard| shard.details.get("demo::make"))
+            .expect("local node detail entry");
+        assert!(
+            local_entry
+                .related_ids
+                .contains(&"core::clone::Clone".to_string()),
+            "local pages still need external related nodes"
+        );
+    }
+
+    #[test]
+    fn static_node_details_keep_full_high_fanout_edges() {
+        let mut graph = graph_with_external_and_impls();
+        let extra_callers = 144;
+        for index in 0..extra_callers {
+            let id = format!("demo::caller_{index:03}");
+            graph.nodes.push(node(&id, "caller", NodeKind::Function));
+            graph
+                .edges
+                .push(edge(&id, "demo::Thing", EdgeKind::UsesType));
+        }
+        let nodes_by_id: HashMap<&str, &Node> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let (_children, parents) = build_tree_relations(&graph);
+        let detail_shards = build_node_detail_shards(&graph, "demo", &parents, &nodes_by_id);
+        let bucket = node_view_bucket("demo::Thing", NODE_VIEW_BUCKETS);
+        let entry = detail_shards
+            .get(&bucket)
+            .and_then(|shard| shard.details.get("demo::Thing"))
+            .expect("high-fanout node detail");
+
+        assert_eq!(
+            entry.edges.len(),
+            1 + 1 + extra_callers,
+            "one outgoing impl edge, one crate parent edge, and all incoming references"
+        );
+        assert!(
+            entry.related_ids.contains(&"demo::caller_143".to_string()),
+            "related ids should be derived from the complete edge set"
+        );
+    }
+
+    #[test]
+    fn static_tree_manifest_and_search_are_local_page_surfaces() {
+        let graph = graph_with_external_and_impls();
+        let nodes_by_id: HashMap<&str, &Node> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+        let (children, _parents) = build_tree_relations(&graph);
+
+        let tree_shards = build_tree_children_shards(&graph, "demo", &children, &nodes_by_id);
+        assert!(tree_shards.values().all(|shard| !shard.parents.is_empty()));
+        assert!(
+            tree_shards.values().all(|shard| {
+                !shard.parents.contains_key("core")
+                    && !shard.parents.contains_key("demo::Wrapper")
+                    && shard
+                        .parents
+                        .values()
+                        .all(|entry| entry.children.iter().all(|child| !child.node.is_external))
+            }),
+            "tree shards should not expose external nodes as crate navigation"
+        );
+
+        let manifest = build_manifest(
+            &graph,
+            "demo",
+            PopulatedShards {
+                nodes: Vec::new(),
+                node_details: Vec::new(),
+                tree_children: Vec::new(),
+            },
+        );
+        assert_eq!(manifest.node_count, 6);
+        assert!(manifest.roots.iter().all(|root| !root.node.is_external));
+        assert!(
+            manifest
+                .roots
+                .iter()
+                .any(|root| root.node.id == "demo::Adopted"),
+            "local nodes with only external parents should become roots"
+        );
+        let demo_children = manifest
+            .root_children
+            .get("demo")
+            .expect("demo root children");
+        assert!(
+            demo_children
+                .iter()
+                .any(|child| child.node.id == "demo::Wrapper" && !child.has_children),
+            "external-only children should not make hasChildren true"
+        );
+        assert!(!manifest.kind_counts.contains_key("Trait"));
+
+        let (_search_manifest, search_shards) = build_search_shards(&graph, "demo");
+        let search_ids: Vec<&str> = search_shards
+            .values()
+            .flat_map(|shard| shard.entries.iter().map(|entry| entry.id.as_str()))
+            .collect();
+        assert!(!search_ids.contains(&"core::clone::Clone"));
+        assert!(!search_ids.contains(&"demo::impl-1"));
+        assert!(search_ids.contains(&"demo::Thing"));
     }
 }

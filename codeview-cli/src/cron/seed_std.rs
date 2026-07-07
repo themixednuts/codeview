@@ -1,16 +1,15 @@
 //! `codeview cron seed-std` — populate R2 with std crate artifacts.
 //!
 //! `std`, `core`, `alloc`, `proc_macro`, and `test` aren't on docs.rs;
-//! their rustdoc JSON ships via the `rust-docs-json` rustup component,
-//! which is nightly-only.  This subcommand:
+//! their rustdoc JSON ships via the `rust-docs-json` rustup component.
+//! This subcommand:
 //!
 //! 1. Detects a rustup-installed toolchain's sysroot (`rustc +<tc> --print sysroot`).
 //! 2. Reads `share/doc/rust/json/{crate}.json` for each shipped std crate.
 //! 3. Runs the same `publish_one` pipeline `cron parse-one` uses, with
 //!    `CrateSource::LocalFile` instead of a docs.rs fetch.
-//! 4. For the bare `nightly` toolchain, also writes channel-alias pointers
-//!    (`stable`, `beta`, `latest`) → the nightly toolchain version, so
-//!    `/std/stable` URLs resolve until per-channel parsing exists.
+//! 4. Writes channel-alias pointers for the matching toolchain. `stable`
+//!    also serves `latest`; `beta` and `nightly` remain distinct.
 //!
 //! Idempotent: `--if-missing` skips when `rust/alloc/stable.json` is
 //! already present in R2.  Used by `cf:dev` to auto-seed on first run.
@@ -22,7 +21,7 @@
 use anyhow::{Context, Result};
 use clap::Args;
 
-use crate::publisher::artifacts::{CrateSource, PublishOptions, Outcome, publish_one};
+use crate::publisher::artifacts::{CrateSource, Outcome, PublishOptions, publish_one};
 use crate::publisher::freshness::Source;
 use crate::sysroot::{STD_JSON_CRATES, aliases_for_toolchain, detect_sysroot};
 
@@ -31,8 +30,8 @@ use super::CronContext;
 #[derive(Debug, Args)]
 pub struct SeedStd {
     /// Comma-separated toolchains to seed (default `nightly`).  Each
-    /// must have `rust-docs-json` installed; for the bare `nightly`
-    /// toolchain we additionally write `stable`/`beta`/`latest` aliases.
+    /// must have `rust-docs-json` installed. Bare channel names publish
+    /// matching channel aliases.
     #[arg(long, default_value = "nightly")]
     pub toolchains: String,
 
@@ -110,7 +109,6 @@ pub async fn run(args: SeedStd) -> Result<()> {
             continue;
         }
 
-        // For bare `nightly`, alias to stable/beta/latest too.
         let alias_strs = aliases_for_toolchain(toolchain);
         let aliases: Vec<&str> = alias_strs.iter().copied().collect();
 
@@ -123,6 +121,7 @@ pub async fn run(args: SeedStd) -> Result<()> {
 
             eprintln!("\n[seed-std] {crate_name}@{}", info.toolchain_version);
             let outcome = publish_one(PublishOptions {
+                package_name: crate_name,
                 name: crate_name,
                 version: &info.toolchain_version,
                 storage_name: crate_name,
@@ -162,9 +161,7 @@ pub async fn run(args: SeedStd) -> Result<()> {
         }
     }
 
-    eprintln!(
-        "\n── seed-std summary ──────────────────────────────────"
-    );
+    eprintln!("\n── seed-std summary ──────────────────────────────────");
     eprintln!("published={total_published} skipped={total_skipped} failed={total_failed}");
 
     if total_failed > 0 {

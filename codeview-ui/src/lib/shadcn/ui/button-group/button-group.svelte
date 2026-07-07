@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { HTMLAttributes } from 'svelte/elements';
-	import { cn, type WithElementRef } from '$lib/shadcn/utils.js';
+	import { cn, refAttachment, type WithElementRef } from '$lib/shadcn/utils.js';
 
 	let {
 		ref = $bindable(null),
@@ -8,10 +8,12 @@
 		children,
 		...restProps
 	}: WithElementRef<HTMLAttributes<HTMLDivElement>> = $props();
+
+	const attachRef = refAttachment<HTMLDivElement>((node) => (ref = node));
 </script>
 
 <div
-	bind:this={ref}
+	{@attach attachRef}
 	data-slot="button-group"
 	role="group"
 	class={cn(

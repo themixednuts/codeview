@@ -31,7 +31,7 @@
 </script>
 
 <div
-	class="doc-classic mx-auto grid min-h-full w-full max-w-[1180px] grid-cols-1 gap-8 px-5 py-6 xl:grid-cols-[minmax(0,1fr)_220px] xl:px-8"
+	class="doc-classic mx-auto grid min-h-full w-full max-w-[1180px] grid-cols-1 gap-8 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr)_220px]"
 >
 	<article class="min-w-0">
 		<DocArticle
@@ -43,6 +43,7 @@
 			{crateName}
 			{crateVersion}
 			{crateVersions}
+			className="doc-article--classic"
 		/>
 	</article>
 
@@ -56,3 +57,9 @@
 		/>
 	</aside>
 </div>
+
+<style>
+	.doc-classic :global(.doc-article--classic > .max-w-3xl) {
+		max-width: none;
+	}
+</style>

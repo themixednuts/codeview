@@ -3,7 +3,7 @@ import type { RegistryAdapter, PackageMetadata } from './types';
 import { FetchError, JsonParseError } from '../errors';
 
 const CRATES_IO_API = 'https://crates.io/api/v1';
-const USER_AGENT = 'codeview (https://github.com/nicksenger/codeview)';
+const USER_AGENT = 'codeview (https://github.com/themixednuts/codeview)';
 
 interface CratesIoVersion {
 	num: string;
@@ -61,6 +61,10 @@ function extractGitHubRepo(url: string | null | undefined): string | undefined {
 	return match?.[1];
 }
 
+function canonicalCrateName(crate_: CratesIoCrate | undefined, fallback: string): string {
+	return crate_?.name || crate_?.id || fallback;
+}
+
 export function createCratesIoAdapter(): RegistryAdapter {
 	const adapter: RegistryAdapter = {
 		async resolve(name, version) {
@@ -89,7 +93,7 @@ export function createCratesIoAdapter(): RegistryAdapter {
 
 			return {
 				ecosystem: 'rust',
-				name,
+				name: canonicalCrateName(data.crate, data.version.crate ?? name),
 				version: data.version.num,
 				description: data.crate?.description,
 				repository: extractGitHubRepo(data.crate?.repository),
@@ -116,7 +120,7 @@ export function createCratesIoAdapter(): RegistryAdapter {
 
 		async listTop(limit = 10) {
 			const result = await fetchJson<{ crates: CratesIoCrate[] }>(
-				`${CRATES_IO_API}/crates?sort=recent-downloads&per_page=${limit}`,
+				`${CRATES_IO_API}/crates?sort=downloads&per_page=${limit}`,
 			);
 			if (result.isErr()) return [];
 			return result.value.crates.map((c) => ({

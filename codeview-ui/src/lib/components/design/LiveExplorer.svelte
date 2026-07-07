@@ -13,7 +13,8 @@
 	} from '$lib/schema';
 	import type { CrateStatusValue } from '$lib/context';
 	import { SvelteSet } from 'svelte/reactivity';
-	import { onMount } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
+	import type { Attachment } from 'svelte/attachments';
 	import { resolveAppPath } from '$lib/app-paths';
 	import {
 		crateVersionsCtx,
@@ -27,13 +28,20 @@
 	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
 	import { isHosted } from '$lib/platform';
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
-	import { parseExplorerState, serializeExplorerState, type ExplorerViewState } from '$lib/url-state';
+	import {
+		parseExplorerState,
+		serializeExplorerState,
+		type ExplorerDocLayout,
+		type ExplorerViewState,
+		type ExplorerViewMode,
+	} from '$lib/url-state';
 	import DetailView from '$lib/components/DetailView.svelte';
 	import SkeletonTree from '$lib/components/SkeletonTree.svelte';
 	import DocClassic from '$lib/components/design/docs/DocClassic.svelte';
 	import DocReading from '$lib/components/design/docs/DocReading.svelte';
 	import DocSplit from '$lib/components/design/docs/DocSplit.svelte';
 	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
+	import * as Resizable from '$lib/shadcn/ui/resizable/index.js';
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import Signature from './Signature.svelte';
@@ -49,10 +57,11 @@
 	let {
 		crateName,
 		version,
-		workspaceCrateCount,
+		crateListCount,
 		crateVersionOptions,
-		workspaceCrates,
-		loadingWorkspaceCrates,
+		crateList,
+		crateSwitcherLabel,
+		loadingCrateSwitcher,
 		onVersionChange,
 		debugInfo = null,
 		filter,
@@ -77,10 +86,11 @@
 	}: {
 		crateName: string | undefined;
 		version: string | undefined;
-		workspaceCrateCount: number | null;
+		crateListCount: number | null;
 		crateVersionOptions: string[];
-		workspaceCrates: Array<{ id: string; name?: string; version: string }>;
-		loadingWorkspaceCrates: boolean;
+		crateList: Array<{ id: string; name?: string; version: string }>;
+		crateSwitcherLabel: string;
+		loadingCrateSwitcher: boolean;
 		onVersionChange: (e: Event) => void;
 		debugInfo?: {
 			statusDebugKey: string;
@@ -118,16 +128,53 @@
 	let lastReadyExpandKey = '';
 	let lastReadyKey = '';
 	let observedNonReady = false;
+	let useWidePanes = $state(false);
+	let treeFilterInput = $state<HTMLInputElement | null>(null);
+	let localViewOverride = $state<ExplorerViewMode | null>(null);
+	let localDocLayoutOverride = $state<ExplorerDocLayout | null>(null);
+	let localOverrideRouteKey = $state<string | null>(null);
+	let treeNavigationTimer: ReturnType<typeof setTimeout> | null = null;
+
+	const attachTreeFilterInput: Attachment<HTMLInputElement> = (node) => {
+		treeFilterInput = node;
+		return () => {
+			if (treeFilterInput === node) treeFilterInput = null;
+		};
+	};
+
+	function handleDocLayoutPreferenceEvent(event: Event) {
+		const nextLayout = (event as CustomEvent<ExplorerDocLayout>).detail;
+		if (!nextLayout) return;
+		localViewOverride = 'docs';
+		localDocLayoutOverride = nextLayout;
+	}
 
 	onMount(() => {
 		hydrated = true;
+		const query = window.matchMedia('(min-width: 1024px)');
+		const syncWidePanes = () => {
+			useWidePanes = query.matches;
+		};
+		syncWidePanes();
+		query.addEventListener('change', syncWidePanes);
+		window.addEventListener('keydown', handleExplorerKeydown);
+		window.addEventListener('codeview-doc-layout-change', handleDocLayoutPreferenceEvent);
+		return () => {
+			query.removeEventListener('change', syncWidePanes);
+			window.removeEventListener('keydown', handleExplorerKeydown);
+			window.removeEventListener('codeview-doc-layout-change', handleDocLayoutPreferenceEvent);
+		};
+	});
+
+	onDestroy(() => {
+		clearTreeNavigationTimer();
 	});
 
 	const viewState = $derived(parseExplorerState(page.url));
-	const mode = $derived(viewState.view);
+	const mode = $derived(localViewOverride ?? viewState.view);
 	const expandPath = $derived(expandPathCtx.getOr(null));
 	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
-	const docLayout = $derived(viewState.layout ?? preferredDocLayout);
+	const docLayout = $derived(localDocLayoutOverride ?? viewState.layout ?? preferredDocLayout);
 	const theme = $derived(resolvedThemeCtx.getOr('light'));
 	const crateVersions = $derived(crateVersionsCtx.getOr({}));
 
@@ -155,8 +202,50 @@
 	);
 	const docSummary = $derived(docsSummary(selected?.docs));
 
+	$effect(() => {
+		const key = `${canonicalCrateName ?? crateName ?? ''}:${version ?? ''}:${selectedNodeId}`;
+		if (localOverrideRouteKey === null) {
+			localOverrideRouteKey = key;
+			return;
+		}
+		if (key === localOverrideRouteKey) return;
+		localOverrideRouteKey = key;
+		localViewOverride = null;
+		localDocLayoutOverride = null;
+	});
+
 	function loadTreeChildren(input: { name: string; version?: string; nodeId: string }) {
 		return isHosted ? getStaticTreeChildren(input) : getTreeChildren(input);
+	}
+
+	type TreeChildrenResource =
+		| Promise<unknown>
+		| {
+				run?: () => Promise<unknown>;
+				current?: unknown;
+		  };
+
+	function isTreeNodeDto(value: unknown): value is TreeNodeDTO {
+		if (!value || typeof value !== 'object') return false;
+		const node = (value as { node?: unknown }).node;
+		return Boolean(node && typeof node === 'object' && typeof (node as { id?: unknown }).id === 'string');
+	}
+
+	function treeNodeDtos(value: unknown): TreeNodeDTO[] {
+		return Array.isArray(value) ? value.filter(isTreeNodeDto) : [];
+	}
+
+	async function resolveTreeChildren(input: {
+		name: string;
+		version?: string;
+		nodeId: string;
+	}): Promise<TreeNodeDTO[]> {
+		const resource = loadTreeChildren(input) as TreeChildrenResource;
+		const value =
+			resource && typeof (resource as { run?: unknown }).run === 'function'
+				? await (resource as { run: () => Promise<unknown> }).run()
+				: await resource;
+		return treeNodeDtos(value);
 	}
 
 	async function loadChildrenBatch(
@@ -168,7 +257,7 @@
 		return Promise.all(
 			unique.map(async (id) => ({
 				id,
-				children: await loadTreeChildren({ name: crate, version: ver, nodeId: id }),
+				children: await resolveTreeChildren({ name: crate, version: ver, nodeId: id }),
 			})),
 		);
 	}
@@ -176,13 +265,14 @@
 	function seedServerChildren(bumpVersion: boolean) {
 		let changed = false;
 		if (rootChildren?.id) {
+			const children = treeNodeDtos(rootChildren.children);
 			const cached = childrenCache.get(rootChildren.id);
 			const shouldRefresh =
 				!cached ||
-				rootChildren.children.length > cached.length ||
-				(status === 'ready' && cached.length === 0 && rootChildren.children.length > 0);
+				children.length > cached.length ||
+				(status === 'ready' && cached.length === 0 && children.length > 0);
 			if (shouldRefresh) {
-				childrenCache.set(rootChildren.id, rootChildren.children);
+				childrenCache.set(rootChildren.id, children);
 				changed = true;
 			}
 			if (!collapsedIds.has(rootChildren.id) && !expandedIds.has(rootChildren.id)) {
@@ -193,8 +283,14 @@
 
 		for (const seed of prefetchedTreeChildren ?? []) {
 			if (!seed.id) continue;
-			if (childrenCache.get(seed.id) !== seed.children) {
-				childrenCache.set(seed.id, seed.children);
+			const children = treeNodeDtos(seed.children);
+			const cached = childrenCache.get(seed.id);
+			const shouldRefresh =
+				!cached ||
+				children.length > cached.length ||
+				(status === 'ready' && cached.length === 0 && children.length > 0);
+			if (shouldRefresh) {
+				childrenCache.set(seed.id, children);
 				changed = true;
 			}
 			if (!collapsedIds.has(seed.id) && !expandedIds.has(seed.id)) {
@@ -223,9 +319,10 @@
 		return !isBlanketImplNode(node);
 	}
 
-	function visibleTreeDtos(items: TreeNodeDTO[]): TreeNodeDTO[] {
-		if (showGraphBlanketImpls) return items;
-		return items.filter((dto) => shouldIncludeTreeNode(dto.node));
+	function visibleTreeDtos(items: unknown): TreeNodeDTO[] {
+		const dtos = treeNodeDtos(items);
+		if (showGraphBlanketImpls) return dtos;
+		return dtos.filter((dto) => shouldIncludeTreeNode(dto.node));
 	}
 
 	function dtoToTreeNode(dto: TreeNodeDTO): TreeNode {
@@ -250,7 +347,7 @@
 		void cacheVersion;
 		const map = new Map<string, string>();
 		for (const [parentId, children] of childrenCache) {
-			for (const child of children) map.set(child.node.id, parentId);
+			for (const child of treeNodeDtos(children)) map.set(child.node.id, parentId);
 		}
 		return map;
 	});
@@ -423,7 +520,7 @@
 		if (idsToFetch.length > 0) {
 			try {
 				const results = await loadChildrenBatch(crate, ver, idsToFetch);
-				for (const { id, children } of results) childrenCache.set(id, children);
+				for (const { id, children } of results) childrenCache.set(id, treeNodeDtos(children));
 			} catch {
 				return;
 			}
@@ -438,7 +535,7 @@
 	async function expandAndFetch(id: string) {
 		if (!childrenCache.has(id) && canonicalCrateName && version) {
 			try {
-				const children = await loadTreeChildren({
+				const children = await resolveTreeChildren({
 					name: canonicalCrateName,
 					version,
 					nodeId: id,
@@ -469,6 +566,35 @@
 		}
 	}
 
+	function toggleTreeRowFromDoubleClick(row: FlatTreeNode, event: MouseEvent) {
+		if (!row.hasChildren) return;
+		event.preventDefault();
+		event.stopPropagation();
+		clearTreeNavigationTimer();
+		toggleExpand(row.treeNode.node.id);
+	}
+
+	function clearTreeNavigationTimer() {
+		if (!treeNavigationTimer) return;
+		clearTimeout(treeNavigationTimer);
+		treeNavigationTimer = null;
+	}
+
+	function handleTreeRowLinkClick(row: FlatTreeNode, href: string, event: MouseEvent) {
+		if (!row.hasChildren) return;
+		if (event.defaultPrevented || event.button !== 0) return;
+		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		event.preventDefault();
+		clearTreeNavigationTimer();
+		treeNavigationTimer = setTimeout(() => {
+			treeNavigationTimer = null;
+			void goto(href, {
+				noScroll: true,
+				keepFocus: true,
+			});
+		}, 180);
+	}
+
 	function collapseAll() {
 		expandedIds.clear();
 		collapsedIds.clear();
@@ -488,7 +614,15 @@
 	}
 
 	function updateExplorerState(patch: Partial<ExplorerViewState>) {
-		void goto(serializeExplorerState(page.url, patch), {
+		const nextUrl = serializeExplorerState(page.url, patch);
+		if (browser && (patch.view !== undefined || patch.layout !== undefined)) {
+			if (patch.view !== undefined) localViewOverride = patch.view;
+			if (patch.layout !== undefined) localDocLayoutOverride = patch.layout;
+			replaceState(nextUrl, page.state);
+			if (patch.layout) document.documentElement.dataset.docLayout = patch.layout;
+			return;
+		}
+		void goto(nextUrl, {
 			replaceState: true,
 			noScroll: true,
 			keepFocus: true,
@@ -536,6 +670,69 @@
 			.trim();
 		if (!first) return null;
 		return first.length > 220 ? `${first.slice(0, 217)}...` : first;
+	}
+
+	function isEditableTarget(target: EventTarget | null): boolean {
+		if (!(target instanceof HTMLElement)) return false;
+		const tag = target.tagName.toLowerCase();
+		return (
+			target.isContentEditable ||
+			tag === 'input' ||
+			tag === 'textarea' ||
+			tag === 'select' ||
+			target.closest('[role="textbox"]') !== null
+		);
+	}
+
+	function focusTreeFilter() {
+		treeFilterInput?.focus();
+		treeFilterInput?.select();
+	}
+
+	function setDocLayout(nextLayout: ExplorerDocLayout) {
+		updateExplorerState({ view: 'docs', layout: nextLayout });
+	}
+
+	function handleExplorerKeydown(event: KeyboardEvent) {
+		if (event.defaultPrevented || event.metaKey || event.ctrlKey) return;
+		if (isEditableTarget(event.target)) return;
+
+		const key = event.key.toLowerCase();
+		if (key === 's' || key === '/') {
+			event.preventDefault();
+			focusTreeFilter();
+			return;
+		}
+		if (key === 'g') {
+			event.preventDefault();
+			updateExplorerState({ view: 'graph' });
+			return;
+		}
+		if (key === 'd') {
+			event.preventDefault();
+			updateExplorerState({ view: 'docs' });
+			return;
+		}
+		if (event.key === '[') {
+			event.preventDefault();
+			window.history.back();
+			return;
+		}
+		if (event.key === ']') {
+			event.preventDefault();
+			window.history.forward();
+			return;
+		}
+		if (event.key === '1') {
+			event.preventDefault();
+			setDocLayout('classic');
+		} else if (event.key === '2') {
+			event.preventDefault();
+			setDocLayout('reading');
+		} else if (event.key === '3') {
+			event.preventDefault();
+			setDocLayout('split');
+		}
 	}
 </script>
 
@@ -590,10 +787,13 @@
 		aria-current={isSelected ? 'page' : undefined}
 		aria-selected={isSelected}
 		aria-expanded={row.hasChildren ? row.isExpanded : undefined}
+		data-tree-node-id={node.id}
+		tabindex="-1"
 		class="group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
 		style={`padding-left: ${8 + row.depth * 14}px`}
+		ondblclick={(event) => toggleTreeRowFromDoubleClick(row, event)}
 	>
 		{#if row.depth > 0}
 			<span
@@ -623,6 +823,8 @@
 			data-sveltekit-noscroll
 			data-sveltekit-keepfocus
 			class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left no-underline"
+			onclick={(event) => handleTreeRowLinkClick(row, href, event)}
+			ondblclick={(event) => toggleTreeRowFromDoubleClick(row, event)}
 		>
 			<KindBadge kind={node.kind} size={14} />
 			<span
@@ -694,6 +896,337 @@
 	</div>
 {/snippet}
 
+{#snippet treePane(frameClass: string)}
+	<aside
+		class={`flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
+		aria-label="Module tree"
+	>
+		<div class="border-b border-(--panel-border-soft) px-4 pt-4 pb-3">
+			<div class="mb-1 text-[10px] font-semibold tracking-[0.22em] text-(--muted-soft) uppercase">
+				Module tree
+			</div>
+			<div class="flex min-w-0 items-center gap-2">
+				<a
+					href={canonicalCrateName && version ? resolveAppPath(`/${canonicalCrateName}/${version}`) : '#'}
+					class="font-display min-w-0 truncate text-[15px] font-semibold text-(--ink)"
+				>
+					{canonicalCrateName ?? crateName ?? 'crate'}
+				</a>
+				{#if crateVersionOptions.length > 0}
+					<select
+						class="mono corner-squircle max-w-28 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-1.5 py-0.5 text-[10.5px] text-(--muted)"
+						aria-label="Crate version"
+						value={version}
+						onchange={onVersionChange}
+					>
+						{#each crateVersionOptions as option (option)}
+							<option value={option}>v{option}</option>
+						{/each}
+					</select>
+				{/if}
+			</div>
+			<div class="mono mt-0.5 text-[10.5px] text-(--muted-soft)">
+				{#if totalItems > 0}
+					{totalItems.toLocaleString()} items
+				{:else if crateListCount != null}
+					{crateListCount.toLocaleString()} crates
+				{:else if status === 'processing'}
+					{progressNodeCount.toLocaleString()} items discovered
+				{:else}
+					Index pending
+				{/if}
+			</div>
+			<form
+				method="get"
+				class="relative mt-3"
+				data-sveltekit-replacestate
+				data-sveltekit-keepfocus
+				data-sveltekit-noscroll
+				onsubmit={submitFilter}
+			>
+				<input
+					{@attach attachTreeFilterInput}
+					type="search"
+					name="q"
+					placeholder="Filter items..."
+					value={filter}
+					class="mono w-full rounded-md border border-(--panel-border) bg-(--panel-solid) py-1.5 pr-12 pl-7 text-[11.5px] text-(--ink) outline-none focus:border-(--accent) focus:ring-1 focus:ring-(--accent)"
+				/>
+				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
+					<Icon name="search" size={12} />
+				</span>
+				<span class="kbd absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">S</span>
+				{#each kindParams as kind (kind)}
+					<input type="hidden" name="k" value={kind} />
+				{/each}
+				{#if showGraphBlanketImpls}
+					<input type="hidden" name="gbi" value="1" />
+				{/if}
+			</form>
+			{#if populatedKinds.length > 0}
+				<div class="mt-2 flex flex-wrap gap-1">
+					{#each populatedKinds as facet (facet.kind)}
+						{@const isActive = activeKinds.has(facet.kind)}
+						<button
+							type="button"
+							class="badge badge-sm transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+							class:badge-accent={isActive}
+							aria-pressed={isActive}
+							onclick={() => onToggleKind(facet.kind)}
+						>
+							{facet.label}
+						</button>
+					{/each}
+				</div>
+			{/if}
+			{#if debugInfo}
+				<div class="mono mt-2 rounded-sm border border-(--panel-border) bg-(--panel-solid) px-2 py-1 text-[10px] text-(--muted)">
+					<div>{debugInfo.statusDebugKey}</div>
+					<div>{debugInfo.progressDebugKey}</div>
+				</div>
+			{/if}
+		</div>
+
+		<div class="flex min-h-0 flex-1 flex-col">
+			{#if filter && searchQuery}
+				<svelte:boundary>
+					{@const results = await searchQuery}
+					<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
+						<div class="mono mb-1 px-2 text-[10.5px] text-(--muted-soft)">
+							{results.length} result{results.length === 1 ? '' : 's'}
+						</div>
+						{#each results as node (node.id)}
+							{@render searchResultRow(node)}
+						{:else}
+							<p class="px-2 py-3 text-sm text-(--muted)">No results for "{filter}"</p>
+						{/each}
+					</div>
+					{#snippet pending()}
+						<SkeletonTree count={8} showKindBadges={true} />
+					{/snippet}
+					{#snippet failed(_error, reset)}
+						<div class="p-4 text-sm text-(--danger)">
+							<p class="font-medium">Search failed</p>
+							<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={reset}>
+								Try again
+							</button>
+						</div>
+					{/snippet}
+				</svelte:boundary>
+			{:else if treeRoots && treeRoots.length > 0}
+				<div
+					class="flex items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"
+					aria-label="Tree actions"
+				>
+					<button
+						type="button"
+						class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
+						onclick={collapseAll}
+					>
+						Collapse
+					</button>
+					<button
+						type="button"
+						class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
+						onclick={expandLoaded}
+					>
+						Expand loaded
+					</button>
+				</div>
+				<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3" role="tree" aria-label="Crate modules">
+					{#each flatTree as row (`${row.parentId ?? 'root'}::${row.treeNode.node.id}`)}
+						{@render treeRow(row)}
+					{:else}
+						<p class="p-4 text-center text-sm text-(--muted)">
+							{filter || kindFilter.size > 0 ? 'No matching items' : 'No items to display'}
+						</p>
+					{/each}
+				</div>
+			{:else if status === 'processing' || status === 'unknown'}
+				<SkeletonTree count={progressNodeCount || 24} showKindBadges={false} />
+			{:else}
+				<div class="p-8 text-center">
+					<div class="text-sm font-medium text-(--ink)">No data available</div>
+					<div class="mt-1 text-xs text-(--muted)">This crate's tree has not loaded yet.</div>
+					{#if onRetryTree}
+						<button type="button" class="mt-3 text-sm text-(--accent) hover:underline" onclick={() => onRetryTree?.(() => {})}>
+							Try again
+						</button>
+					{/if}
+				</div>
+			{/if}
+		</div>
+
+		{#if crateList.length > 0 || loadingCrateSwitcher}
+			<div class="border-t border-(--panel-border-soft) px-4 py-3">
+				<div class="mb-2 flex items-center gap-2">
+					<span class="text-[9.5px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
+						{crateSwitcherLabel}
+					</span>
+					<span class="h-px flex-1 bg-(--panel-border-soft)"></span>
+				</div>
+				{#if loadingCrateSwitcher}
+					<p class="mono text-[11px] text-(--muted-soft)">Loading crates...</p>
+				{:else}
+					<div class="max-h-24 overflow-y-auto">
+						{#each crateList.slice(0, 6) as item (item.id)}
+							<a
+								href={resolveAppPath(`/${item.id}/${item.version}`)}
+								class="mono block truncate rounded px-1.5 py-1 text-[11px] text-(--muted) hover:bg-(--panel-muted) hover:text-(--ink)"
+							>
+								{item.name ?? item.id}@{item.version}
+							</a>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</aside>
+{/snippet}
+
+{#snippet nodeContentPane(frameClass: string)}
+	<section
+		class={`relative h-full min-h-0 overflow-auto bg-(--bg) ${frameClass}`}
+		aria-label="Node content"
+	>
+		{#if mode === 'graph' && detail}
+			<FocusGraphFlow
+				{detail}
+				{ancestors}
+				crateName={canonicalCrateName ?? crateName ?? ''}
+				crateVersion={version ?? ''}
+				{getNodeUrl}
+				height={620}
+			/>
+		{:else if detail && selected && selected.kind !== 'Crate'}
+			{#if docLayout === 'reading'}
+				<DocReading
+					{detail}
+					{ancestors}
+					model={detailModel}
+					{theme}
+					{getNodeUrl}
+					crateName={canonicalCrateName ?? crateName}
+					crateVersion={version}
+					{crateVersions}
+				/>
+			{:else if docLayout === 'split'}
+				<DocSplit
+					{detail}
+					{ancestors}
+					model={detailModel}
+					{theme}
+					{getNodeUrl}
+					crateName={canonicalCrateName ?? crateName}
+					crateVersion={version}
+					{crateVersions}
+				/>
+			{:else}
+				<DocClassic
+					{detail}
+					{ancestors}
+					model={detailModel}
+					{theme}
+					{getNodeUrl}
+					crateName={canonicalCrateName ?? crateName}
+					crateVersion={version}
+					{crateVersions}
+				/>
+			{/if}
+		{:else}
+			<DetailView {nodeId} embedded />
+		{/if}
+	</section>
+{/snippet}
+
+{#snippet detailPane(frameClass: string)}
+	<aside
+		class={`flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
+		aria-label="Selected item details"
+	>
+		{#if selected && selectedDesign}
+			<div class="border-b border-(--panel-border-soft) px-5 pt-5 pb-4">
+				<div class="mb-2 flex items-center gap-2">
+					<span
+						class="mono rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] uppercase"
+						style="background: var(--accent-soft); color: var(--accent-strong)"
+					>
+						{selectedDesign.kindLabel}
+					</span>
+					{#if selectedDesign.external}
+						<span class="mono rounded bg-(--panel-muted) px-1.5 py-0.5 text-[10px] text-(--muted)">
+							external
+						</span>
+					{/if}
+					<span class="mono ml-auto text-[10.5px] text-(--muted-soft)">
+						{visibilityLabel(selected.visibility)}
+					</span>
+				</div>
+				<h2
+					class="font-display truncate text-[26px] leading-none font-semibold tracking-tight text-(--ink)"
+					title={selected.name}
+				>
+					{selected.name}
+				</h2>
+				<div class="mono mt-2 truncate text-[11px] text-(--muted-soft)" title={selectedPath}>
+					{selectedPath}
+				</div>
+				{#if docSummary}
+					<p class="mt-3 line-clamp-4 text-[13px] leading-relaxed text-(--muted)">
+						{docSummary}
+					</p>
+				{/if}
+				{#if selected.signature}
+					<div class="mt-3 overflow-hidden rounded-md border border-(--panel-border-soft)">
+						<Signature node={selected} form="multiline" variant="flat" />
+					</div>
+				{/if}
+				<div class="mt-4 grid grid-cols-2 gap-2">
+					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2">
+						<div class="mono text-[10px] text-(--muted-soft)">outgoing</div>
+						<div class="mono text-[18px] font-semibold text-(--ink)">
+							{selectedEdges.outgoing.length}
+						</div>
+					</div>
+					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2">
+						<div class="mono text-[10px] text-(--muted-soft)">incoming</div>
+						<div class="mono text-[18px] font-semibold text-(--ink)">
+							{selectedEdges.incoming.length}
+						</div>
+					</div>
+				</div>
+			</div>
+			<div class="min-h-0 flex-1 overflow-y-auto px-3.5 py-4">
+				{@render relationshipList('Outgoing', selectedEdges.outgoing.length, relationshipGroups.outgoing)}
+				<div class="mt-5">
+					{@render relationshipList('Incoming', selectedEdges.incoming.length, relationshipGroups.incoming)}
+				</div>
+			</div>
+			<div class="flex items-center gap-2 border-t border-(--panel-border-soft) px-5 py-3">
+				<button
+					type="button"
+					class="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-(--accent) py-1.5 text-[12px] font-medium text-(--on-accent)"
+					onclick={() => updateExplorerState({ view: 'docs' })}
+				>
+					Open docs
+					<Icon name="arrow-right" size={11} />
+				</button>
+				<a
+					href={resolveAppPath(getNodeUrl(selected.id))}
+					data-sveltekit-noscroll
+					class="rounded-md border border-(--panel-border) bg-(--panel-solid) px-3 py-1.5 text-[12px] text-(--ink-soft)"
+				>
+					Permalink
+				</a>
+			</div>
+		{:else}
+			<div class="flex h-full items-center justify-center p-6 text-center text-sm text-(--muted)">
+				Selected item details are unavailable.
+			</div>
+		{/if}
+	</aside>
+{/snippet}
+
 <div class="live-explorer flex min-h-0 flex-1 flex-col overflow-hidden bg-(--bg)">
 	<div
 		class="flex min-h-12 items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-4"
@@ -734,325 +1267,55 @@
 		</div>
 	</div>
 
-	<div class="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)_344px]">
-		<aside
-			class="flex min-h-0 flex-col overflow-hidden border-b border-(--panel-border-soft) bg-(--panel) lg:border-r lg:border-b-0"
-			aria-label="Module tree"
-		>
-			<div class="border-b border-(--panel-border-soft) px-4 pt-4 pb-3">
-				<div class="mb-1 text-[10px] font-semibold tracking-[0.22em] text-(--muted-soft) uppercase">
-					Module tree
-				</div>
-				<div class="flex min-w-0 items-center gap-2">
-					<a
-						href={canonicalCrateName && version ? resolveAppPath(`/${canonicalCrateName}/${version}`) : '#'}
-						class="font-display min-w-0 truncate text-[15px] font-semibold text-(--ink)"
-					>
-						{canonicalCrateName ?? crateName ?? 'crate'}
-					</a>
-					{#if crateVersionOptions.length > 0}
-						<select
-							class="mono corner-squircle max-w-28 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-1.5 py-0.5 text-[10.5px] text-(--muted)"
-							aria-label="Crate version"
-							value={version}
-							onchange={onVersionChange}
-						>
-							{#each crateVersionOptions as option (option)}
-								<option value={option}>v{option}</option>
-							{/each}
-						</select>
-					{/if}
-				</div>
-				<div class="mono mt-0.5 text-[10.5px] text-(--muted-soft)">
-					{#if totalItems > 0}
-						{totalItems.toLocaleString()} items
-					{:else if workspaceCrateCount != null}
-						{workspaceCrateCount.toLocaleString()} workspace crates
-					{:else if status === 'processing'}
-						{progressNodeCount.toLocaleString()} items discovered
-					{:else}
-						Index pending
-					{/if}
-				</div>
-				<form
-					method="get"
-					class="relative mt-3"
-					data-sveltekit-replacestate
-					data-sveltekit-keepfocus
-					data-sveltekit-noscroll
-					onsubmit={submitFilter}
+	<div class="min-h-0 flex-1 overflow-hidden">
+		{#if useWidePanes}
+			{#if mode === 'graph'}
+				<Resizable.PaneGroup
+					direction="horizontal"
+					autoSaveId="codeview-explorer-graph"
+					class="codeview-resizable-group"
 				>
-					<input
-						type="search"
-						name="q"
-						placeholder="Filter items..."
-						value={filter}
-						class="mono w-full rounded-md border border-(--panel-border) bg-(--panel-solid) py-1.5 pr-2 pl-7 text-[11.5px] text-(--ink) outline-none focus:border-(--accent) focus:ring-1 focus:ring-(--accent)"
-					/>
-					<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
-						<Icon name="search" size={12} />
-					</span>
-					{#each kindParams as kind (kind)}
-						<input type="hidden" name="k" value={kind} />
-					{/each}
-					{#if showGraphBlanketImpls}
-						<input type="hidden" name="gbi" value="1" />
+					<Resizable.Pane defaultSize={20} minSize={15} maxSize={34} order={1}>
+						{@render treePane('border-r border-(--panel-border-soft)')}
+					</Resizable.Pane>
+					<Resizable.Handle withHandle class="codeview-resize-handle" />
+					<Resizable.Pane defaultSize={55} minSize={34} order={2}>
+						{@render nodeContentPane('')}
+					</Resizable.Pane>
+					<Resizable.Handle withHandle class="codeview-resize-handle" />
+					<Resizable.Pane defaultSize={25} minSize={18} maxSize={38} order={3}>
+						{@render detailPane('border-l border-(--panel-border-soft)')}
+					</Resizable.Pane>
+				</Resizable.PaneGroup>
+			{:else if docLayout === 'classic'}
+				<Resizable.PaneGroup
+					direction="horizontal"
+					autoSaveId="codeview-doc-classic"
+					class="codeview-resizable-group"
+				>
+					<Resizable.Pane defaultSize={21} minSize={15} maxSize={32} order={1}>
+						{@render treePane('border-r border-(--panel-border-soft)')}
+					</Resizable.Pane>
+					<Resizable.Handle withHandle class="codeview-resize-handle" />
+					<Resizable.Pane defaultSize={79} minSize={58} order={2}>
+						{@render nodeContentPane('')}
+					</Resizable.Pane>
+				</Resizable.PaneGroup>
+			{:else}
+				{@render nodeContentPane('')}
+			{/if}
+		{:else}
+			<div class="grid h-full min-h-0 grid-cols-1 overflow-auto">
+				{#if mode === 'docs' && docLayout !== 'classic'}
+					{@render nodeContentPane('')}
+				{:else}
+					{@render treePane('min-h-[260px] border-b border-(--panel-border-soft)')}
+					{@render nodeContentPane('min-h-[520px]')}
+					{#if mode === 'graph'}
+						{@render detailPane('min-h-[420px] border-t border-(--panel-border-soft)')}
 					{/if}
-				</form>
-				{#if populatedKinds.length > 0}
-					<div class="mt-2 flex flex-wrap gap-1">
-						{#each populatedKinds as facet (facet.kind)}
-							{@const isActive = activeKinds.has(facet.kind)}
-							<button
-								type="button"
-								class="badge badge-sm transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
-								class:badge-accent={isActive}
-								aria-pressed={isActive}
-								onclick={() => onToggleKind(facet.kind)}
-							>
-								{facet.label}
-							</button>
-						{/each}
-					</div>
-				{/if}
-				{#if debugInfo}
-					<div class="mono mt-2 rounded-sm border border-(--panel-border) bg-(--panel-solid) px-2 py-1 text-[10px] text-(--muted)">
-						<div>{debugInfo.statusDebugKey}</div>
-						<div>{debugInfo.progressDebugKey}</div>
-					</div>
 				{/if}
 			</div>
-
-			<div class="flex min-h-0 flex-1 flex-col">
-				{#if filter && searchQuery}
-					<svelte:boundary>
-						{@const results = await searchQuery}
-						<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
-							<div class="mono mb-1 px-2 text-[10.5px] text-(--muted-soft)">
-								{results.length} result{results.length === 1 ? '' : 's'}
-							</div>
-							{#each results as node (node.id)}
-								{@render searchResultRow(node)}
-							{:else}
-								<p class="px-2 py-3 text-sm text-(--muted)">No results for "{filter}"</p>
-							{/each}
-						</div>
-						{#snippet pending()}
-							<SkeletonTree count={8} showKindBadges={true} />
-						{/snippet}
-						{#snippet failed(_error, reset)}
-							<div class="p-4 text-sm text-(--danger)">
-								<p class="font-medium">Search failed</p>
-								<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={reset}>
-									Try again
-								</button>
-							</div>
-						{/snippet}
-					</svelte:boundary>
-				{:else if treeRoots && treeRoots.length > 0}
-					<div
-						class="flex items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"
-						aria-label="Tree actions"
-					>
-						<button
-							type="button"
-							class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
-							onclick={collapseAll}
-						>
-							Collapse
-						</button>
-						<button
-							type="button"
-							class="badge badge-sm transition-colors hover:bg-(--panel-strong)"
-							onclick={expandLoaded}
-						>
-							Expand loaded
-						</button>
-					</div>
-					<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3" role="tree" aria-label="Crate modules">
-						{#each flatTree as row (`${row.parentId ?? 'root'}::${row.treeNode.node.id}`)}
-							{@render treeRow(row)}
-						{:else}
-							<p class="p-4 text-center text-sm text-(--muted)">
-								{filter || kindFilter.size > 0 ? 'No matching items' : 'No items to display'}
-							</p>
-						{/each}
-					</div>
-				{:else if status === 'processing' || status === 'unknown'}
-					<SkeletonTree count={progressNodeCount || 24} showKindBadges={false} />
-				{:else}
-					<div class="p-8 text-center">
-						<div class="text-sm font-medium text-(--ink)">No data available</div>
-						<div class="mt-1 text-xs text-(--muted)">This crate's tree has not loaded yet.</div>
-						{#if onRetryTree}
-							<button type="button" class="mt-3 text-sm text-(--accent) hover:underline" onclick={() => onRetryTree?.(() => {})}>
-								Try again
-							</button>
-						{/if}
-					</div>
-				{/if}
-			</div>
-
-			{#if workspaceCrates.length > 0 || loadingWorkspaceCrates}
-				<div class="border-t border-(--panel-border-soft) px-4 py-3">
-					<div class="mb-2 flex items-center gap-2">
-						<span class="text-[9.5px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
-							Workspace
-						</span>
-						<span class="h-px flex-1 bg-(--panel-border-soft)"></span>
-					</div>
-					{#if loadingWorkspaceCrates}
-						<p class="mono text-[11px] text-(--muted-soft)">Loading crates...</p>
-					{:else}
-						<div class="max-h-24 overflow-y-auto">
-							{#each workspaceCrates.slice(0, 6) as item (item.id)}
-								<a
-									href={resolveAppPath(`/${item.id}/${item.version}`)}
-									class="mono block truncate rounded px-1.5 py-1 text-[11px] text-(--muted) hover:bg-(--panel-muted) hover:text-(--ink)"
-								>
-									{item.name ?? item.id}@{item.version}
-								</a>
-							{/each}
-						</div>
-					{/if}
-				</div>
-			{/if}
-		</aside>
-
-		<section class="relative min-h-0 overflow-auto bg-(--bg)" aria-label="Node content">
-			{#if mode === 'graph' && detail}
-				<FocusGraphFlow
-					{detail}
-					{ancestors}
-					crateName={canonicalCrateName ?? crateName ?? ''}
-					crateVersion={version ?? ''}
-					{getNodeUrl}
-					height={620}
-				/>
-			{:else if detail && selected && selected.kind !== 'Crate'}
-				{#if docLayout === 'reading'}
-					<DocReading
-						{detail}
-						{ancestors}
-						model={detailModel}
-						{theme}
-						{getNodeUrl}
-						crateName={canonicalCrateName ?? crateName}
-						crateVersion={version}
-						{crateVersions}
-					/>
-				{:else if docLayout === 'split'}
-					<DocSplit
-						{detail}
-						{ancestors}
-						model={detailModel}
-						{theme}
-						{getNodeUrl}
-						crateName={canonicalCrateName ?? crateName}
-						crateVersion={version}
-						{crateVersions}
-					/>
-				{:else}
-					<DocClassic
-						{detail}
-						{ancestors}
-						model={detailModel}
-						{theme}
-						{getNodeUrl}
-						crateName={canonicalCrateName ?? crateName}
-						crateVersion={version}
-						{crateVersions}
-					/>
-				{/if}
-			{:else}
-				<DetailView {nodeId} embedded />
-			{/if}
-		</section>
-
-		<aside
-			class="hidden min-h-0 flex-col overflow-hidden border-l border-(--panel-border-soft) bg-(--panel) lg:flex"
-			aria-label="Selected item details"
-		>
-			{#if selected && selectedDesign}
-				<div class="border-b border-(--panel-border-soft) px-5 pt-5 pb-4">
-					<div class="mb-2 flex items-center gap-2">
-						<span
-							class="mono rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] uppercase"
-							style="background: var(--accent-soft); color: var(--accent-strong)"
-						>
-							{selectedDesign.kindLabel}
-						</span>
-						{#if selectedDesign.external}
-							<span class="mono rounded bg-(--panel-muted) px-1.5 py-0.5 text-[10px] text-(--muted)">
-								external
-							</span>
-						{/if}
-						<span class="mono ml-auto text-[10.5px] text-(--muted-soft)">
-							{visibilityLabel(selected.visibility)}
-						</span>
-					</div>
-					<h2
-						class="font-display truncate text-[26px] leading-none font-semibold tracking-tight text-(--ink)"
-						title={selected.name}
-					>
-						{selected.name}
-					</h2>
-					<div class="mono mt-2 truncate text-[11px] text-(--muted-soft)" title={selectedPath}>
-						{selectedPath}
-					</div>
-					{#if docSummary}
-						<p class="mt-3 line-clamp-4 text-[13px] leading-relaxed text-(--muted)">
-							{docSummary}
-						</p>
-					{/if}
-					{#if selected.signature}
-						<div class="mt-3 overflow-hidden rounded-md border border-(--panel-border-soft)">
-							<Signature node={selected} form="multiline" variant="flat" />
-						</div>
-					{/if}
-					<div class="mt-4 grid grid-cols-2 gap-2">
-						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2">
-							<div class="mono text-[10px] text-(--muted-soft)">outgoing</div>
-							<div class="mono text-[18px] font-semibold text-(--ink)">
-								{selectedEdges.outgoing.length}
-							</div>
-						</div>
-						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2">
-							<div class="mono text-[10px] text-(--muted-soft)">incoming</div>
-							<div class="mono text-[18px] font-semibold text-(--ink)">
-								{selectedEdges.incoming.length}
-							</div>
-						</div>
-					</div>
-				</div>
-				<div class="min-h-0 flex-1 overflow-y-auto px-3.5 py-4">
-					{@render relationshipList('Outgoing', selectedEdges.outgoing.length, relationshipGroups.outgoing)}
-					<div class="mt-5">
-						{@render relationshipList('Incoming', selectedEdges.incoming.length, relationshipGroups.incoming)}
-					</div>
-				</div>
-				<div class="flex items-center gap-2 border-t border-(--panel-border-soft) px-5 py-3">
-					<button
-						type="button"
-						class="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-(--accent) py-1.5 text-[12px] font-medium text-(--on-accent)"
-						onclick={() => updateExplorerState({ view: 'docs' })}
-					>
-						Open docs
-						<Icon name="arrow-right" size={11} />
-					</button>
-					<a
-						href={resolveAppPath(getNodeUrl(selected.id))}
-						data-sveltekit-noscroll
-						class="rounded-md border border-(--panel-border) bg-(--panel-solid) px-3 py-1.5 text-[12px] text-(--ink-soft)"
-					>
-						Permalink
-					</a>
-				</div>
-			{:else}
-				<div class="flex h-full items-center justify-center p-6 text-center text-sm text-(--muted)">
-					Selected item details are unavailable.
-				</div>
-			{/if}
-		</aside>
+		{/if}
 	</div>
 </div>

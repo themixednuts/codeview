@@ -22,10 +22,10 @@ use anyhow::{Context, Result};
 use codeview_rustdoc::{RustdocError, RustdocFormatPolicy};
 use sha2::{Digest as _, Sha256};
 
-use super::docs_rs;
 use super::freshness::{FreshnessEntry, FreshnessRegistry, Source};
 use super::r2::R2;
 use super::shards;
+use super::{docs_rs, hosted_artifacts};
 
 /// Outcome of `publish_one` — distinguishes a no-op skip from real work
 /// so the CLI logs read cleanly.
@@ -62,6 +62,9 @@ impl PublishError {
 }
 
 pub struct PublishOptions<'a> {
+    /// Original package name used by registries/docs.rs, e.g. `windows-sys`.
+    pub package_name: &'a str,
+    /// Canonical Rust crate id used by rustdoc and internal graph ids, e.g. `windows_sys`.
     pub name: &'a str,
     pub version: &'a str,
     pub storage_name: &'a str,
@@ -105,6 +108,7 @@ impl Default for CrateSource<'_> {
 
 pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishError> {
     let PublishOptions {
+        package_name,
         name,
         version,
         storage_name,
@@ -124,57 +128,69 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
             .await
             .map_err(PublishError::Transient)?;
         if !staleness.is_stale() {
-            return Ok(Outcome::AlreadyFresh);
+            if hosted_artifacts_exist(&r2, storage_name, version)
+                .await
+                .map_err(PublishError::Transient)?
+            {
+                return Ok(Outcome::AlreadyFresh);
+            }
+            eprintln!("[parse-one] stale: hosted artifacts missing");
+        } else {
+            eprintln!("[parse-one] stale: {}", staleness.describe());
         }
-        eprintln!("[parse-one] stale: {}", staleness.describe());
     } else {
         eprintln!("[parse-one] force: skipping freshness check");
     }
 
     // ─── 2. Load rustdoc JSON ────────────────────────────────────
-    let (json_bytes, recorded_source) = match source {
-        CrateSource::DocsRs {
-            target: docsrs_target,
-        } => {
-            let http = docs_rs::http_client().map_err(PublishError::Transient)?;
-            let download =
-                match docs_rs::fetch_rustdoc_json(&http, name, version, docsrs_target).await {
-                    Ok(d) => d,
-                    Err(docs_rs::DocsRsError::Permanent { status, url }) => {
-                        return Err(PublishError::Permanent(format!(
-                            "docs.rs {url} returned {status}"
-                        )));
-                    }
-                    Err(docs_rs::DocsRsError::Corrupt(e)) => {
-                        return Err(PublishError::Permanent(format!("docs.rs artifact: {e:#}")));
-                    }
-                    Err(docs_rs::DocsRsError::Transient(e)) => {
-                        return Err(PublishError::Transient(e));
-                    }
-                };
-            eprintln!(
-                "[parse-one] docs.rs JSON: {:.2} MB {} → {:.2} MB raw",
-                download.compressed_bytes as f64 / 1024.0 / 1024.0,
-                download.encoding,
-                download.json.len() as f64 / 1024.0 / 1024.0,
-            );
-            (download.json, Source::DocsRs)
-        }
-        CrateSource::LocalFile {
-            path,
-            freshness_source,
-        } => {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("read rustdoc JSON from {}", path.display()))
-                .map_err(PublishError::Transient)?;
-            eprintln!(
-                "[parse-one] local JSON: {} ({:.2} MB)",
-                path.display(),
-                bytes.len() as f64 / 1024.0 / 1024.0,
-            );
-            (bytes, freshness_source)
-        }
-    };
+    let (json_bytes, recorded_source) =
+        match source {
+            CrateSource::DocsRs {
+                target: docsrs_target,
+            } => {
+                let http = docs_rs::http_client().map_err(PublishError::Transient)?;
+                let download =
+                    match docs_rs::fetch_rustdoc_json(&http, package_name, version, docsrs_target)
+                        .await
+                    {
+                        Ok(d) => d,
+                        Err(docs_rs::DocsRsError::Permanent { status, url }) => {
+                            return Err(PublishError::Permanent(format!(
+                                "docs.rs {url} returned {status}"
+                            )));
+                        }
+                        Err(docs_rs::DocsRsError::Corrupt(e)) => {
+                            return Err(PublishError::Permanent(format!(
+                                "docs.rs artifact: {e:#}"
+                            )));
+                        }
+                        Err(docs_rs::DocsRsError::Transient(e)) => {
+                            return Err(PublishError::Transient(e));
+                        }
+                    };
+                eprintln!(
+                    "[parse-one] docs.rs JSON: {:.2} MB {} → {:.2} MB raw",
+                    download.compressed_bytes as f64 / 1024.0 / 1024.0,
+                    download.encoding,
+                    download.json.len() as f64 / 1024.0 / 1024.0,
+                );
+                (download.json, Source::DocsRs)
+            }
+            CrateSource::LocalFile {
+                path,
+                freshness_source,
+            } => {
+                let bytes = std::fs::read(path)
+                    .with_context(|| format!("read rustdoc JSON from {}", path.display()))
+                    .map_err(PublishError::Transient)?;
+                eprintln!(
+                    "[parse-one] local JSON: {} ({:.2} MB)",
+                    path.display(),
+                    bytes.len() as f64 / 1024.0 / 1024.0,
+                );
+                (bytes, freshness_source)
+            }
+        };
 
     // ─── 3. Parse via codeview-rustdoc ───────────────────────────
     let rustdoc_hash = hex::encode(Sha256::digest(&json_bytes));
@@ -236,24 +252,48 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         && existing.graph_hash == graph_hash
         && existing.version == version
     {
-        eprintln!("[parse-one] graph unchanged — refreshing registry only");
-        let refreshed = FreshnessEntry {
-            parsed_at: chrono::Utc::now().to_rfc3339(),
-            parser_revision: parser_revision.to_string(),
-            schema_version,
-            rustdoc_hash: Some(rustdoc_hash),
-            ..existing
-        };
-        freshness
-            .record(&refreshed)
+        if !hosted_artifacts_exist(&r2, storage_name, version)
             .await
-            .map_err(PublishError::Transient)?;
-        return Ok(Outcome::ParserBumpedSameOutput);
+            .map_err(PublishError::Transient)?
+        {
+            eprintln!(
+                "[parse-one] graph unchanged but hosted artifacts missing; rebuilding artifacts"
+            );
+        } else {
+            eprintln!("[parse-one] graph unchanged — refreshing registry only");
+            let refreshed = FreshnessEntry {
+                parsed_at: chrono::Utc::now().to_rfc3339(),
+                parser_revision: parser_revision.to_string(),
+                schema_version,
+                rustdoc_hash: Some(rustdoc_hash),
+                ..existing
+            };
+            freshness
+                .record(&refreshed)
+                .await
+                .map_err(PublishError::Transient)?;
+            return Ok(Outcome::ParserBumpedSameOutput);
+        }
     }
 
     // ─── 5. Build artifacts ──────────────────────────────────────
-    let artifacts = shards::build_all(&crate_graph, storage_name, aliases)
+    let mut artifacts = shards::build_all(&crate_graph, storage_name, aliases)
         .map_err(|e| PublishError::Permanent(format!("artifact build: {e:#}")))?;
+    let hosted_set = hosted_artifacts::build_all(&crate_graph, storage_name)
+        .map_err(|e| PublishError::Permanent(format!("hosted artifact build: {e:#}")))?;
+    eprintln!(
+        "[parse-one] hosted artifacts: entries={} buckets={} bytes={} largest={} id={}",
+        hosted_set.report.node_view_entries,
+        hosted_set.report.node_view_bucket_count,
+        hosted_set.report.artifact_total_raw_bytes,
+        hosted_set.report.node_view_largest_entry_raw_bytes,
+        hosted_set
+            .report
+            .node_view_largest_entry_id
+            .as_deref()
+            .unwrap_or("-"),
+    );
+    artifacts.extend(hosted_set.artifacts);
     eprintln!("[parse-one] artifacts: {}", artifacts.len());
 
     // ─── 6. Upload to R2 ─────────────────────────────────────────
@@ -311,6 +351,17 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         nodes: crate_graph.nodes.len(),
         edges: crate_graph.edges.len(),
     })
+}
+
+async fn hosted_artifacts_exist(
+    r2: &Arc<dyn R2>,
+    storage_name: &str,
+    version: &str,
+) -> anyhow::Result<bool> {
+    Ok(r2
+        .get(&hosted_artifacts::meta_key(storage_name, version))
+        .await?
+        .is_some())
 }
 
 /// crates.io and Rust both prefer hyphenated display names but the

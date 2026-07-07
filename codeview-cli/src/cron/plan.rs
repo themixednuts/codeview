@@ -25,7 +25,6 @@ use crate::publisher::shards;
 use super::CronContext;
 
 const DEFAULT_CHANNEL: &str = "default";
-
 #[derive(Debug, Args)]
 pub struct Plan {
     /// Scheduling mode.

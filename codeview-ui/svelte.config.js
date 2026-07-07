@@ -1,6 +1,11 @@
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 const isCloudflare = process.env.PUBLIC_CODEVIEW_PLATFORM === 'cloudflare';
+const appVersion =
+	process.env.CODEVIEW_VERSION ??
+	process.env.GITHUB_SHA ??
+	process.env.CF_VERSION_METADATA_ID ??
+	String(Date.now());
 
 const adapter = isCloudflare
 	? (await import('@sveltejs/adapter-cloudflare')).default({
@@ -30,6 +35,10 @@ const config = {
 		},
 		experimental: {
 			remoteFunctions: true,
+		},
+		version: {
+			name: appVersion,
+			pollInterval: 60_000,
 		},
 	},
 };

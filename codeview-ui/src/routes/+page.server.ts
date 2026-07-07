@@ -1,5 +1,6 @@
 import type { PageServerLoad } from './$types';
-import { initProvider } from '$lib/server/provider';
+import { hasLocalWorkspace, initProvider } from '$lib/server/provider';
+import { isHosted } from '$lib/platform';
 
 const TOP_CRATES_TTL_MS = 5 * 60 * 1000;
 
@@ -30,22 +31,22 @@ async function getTopCratesCached(
 
 export const load: PageServerLoad = async (event) => {
 	const provider = await initProvider(event);
-	const workspace = await provider.loadWorkspace();
-	const top = getTopCratesCached(provider).catch(() => [] as TopCrate[]);
+	const canLoadLocalWorkspace = !isHosted && hasLocalWorkspace(provider);
+	const workspace = canLoadLocalWorkspace ? await provider.loadWorkspace() : null;
+	const top = await getTopCratesCached(provider).catch(() => [] as TopCrate[]);
 
 	return {
-		workspaceCrates: (workspace?.crates ?? []).map((crate) => ({
+		hasLocalWorkspace: canLoadLocalWorkspace,
+		localCrates: (workspace?.crates ?? []).map((crate) => ({
 			id: crate.id,
 			name: crate.name,
 			version: crate.version,
 		})),
-		topCrates: top.then((items) =>
-			items.map((crate) => ({
-				id: crate.id ?? crate.name,
-				name: crate.name,
-				version: crate.version,
-				description: crate.description,
-			})),
-		),
+		topCrates: top.map((crate) => ({
+			id: crate.id ?? crate.name,
+			name: crate.name,
+			version: crate.version,
+			description: crate.description,
+		})),
 	};
 };

@@ -12,6 +12,7 @@
 	import { resolveAppPath } from '$lib/app-paths';
 	import { edgeKindToRelation, REL, REL_ORDER, type DesignRelation } from '$lib/design/live-node';
 	import CrateModuleNode from './CrateModuleNode.svelte';
+	import { DISABLED_FLOW_SHORTCUTS } from './flow-shortcuts';
 
 	type ModuleStats = {
 		incoming: number;
@@ -131,8 +132,11 @@
 		return ids;
 	});
 	const layout = $derived(layoutModules(cappedModuleNodes, containerWidth, height));
-	const flowNodes = $derived.by<CrateModuleFlowNode[]>(() =>
-		layout.modules.map(({ module, x, y }) => {
+	let flowNodes = $state.raw<CrateModuleFlowNode[]>([]);
+	let flowEdges = $state.raw<CrateFlowEdge[]>([]);
+
+	$effect(() => {
+		flowNodes = layout.modules.map(({ module, x, y }) => {
 			const stats: ModuleStats = statsByModule.get(module.id) ?? {
 				incoming: 0,
 				outgoing: 0,
@@ -144,7 +148,7 @@
 				id: module.id,
 				type: 'crateModule',
 				position: { x, y },
-				draggable: false,
+				draggable: true,
 				selectable: false,
 				connectable: false,
 				focusable: false,
@@ -165,12 +169,12 @@
 					sizePercent: Math.max(8, Math.round((module.totalNodeCount / maxNodeCount) * 100)),
 				},
 			};
-		}),
-	);
-	const flowEdges = $derived.by<CrateFlowEdge[]>(() => [
-		...buildHierarchyEdges(cappedModuleNodes, moduleById, hoveredModuleId, connectedIds),
-		...buildSemanticEdges(cappedSemanticEdges, hoveredModuleId, connectedIds),
-	]);
+		});
+		flowEdges = [
+			...buildHierarchyEdges(cappedModuleNodes, moduleById, hoveredModuleId, connectedIds),
+			...buildSemanticEdges(cappedSemanticEdges, hoveredModuleId, connectedIds),
+		];
+	});
 	const activeRelations = $derived.by(() => {
 		const relations = new Set<DesignRelation>();
 		for (const edge of cappedSemanticEdges) {
@@ -273,19 +277,21 @@
 		const depthCount = Math.max(...Array.from(byDepth.keys())) + 1;
 		const rowCount = Math.max(...Array.from(byDepth.values()).map((list) => list.length));
 		const nodeWidth = 220;
-		const colGap = 58;
-		const rowGap = 28;
-		const padX = 30;
-		const padY = 30;
+		const nodeHeight = 112;
+		const colGap = 82;
+		const rowGap = 34;
+		const padX = 36;
+		const padY = 36;
 		const colStep = nodeWidth + colGap;
-		const rowStep = 82 + rowGap;
+		const rowStep = nodeHeight + rowGap;
 		const width = Math.max(minWidth, padX * 2 + depthCount * nodeWidth + (depthCount - 1) * colGap);
-		const contentHeight = padY * 2 + rowCount * 82 + Math.max(0, rowCount - 1) * rowGap;
+		const contentHeight = padY * 2 + rowCount * nodeHeight + Math.max(0, rowCount - 1) * rowGap;
 		const graphHeight = Math.max(minHeight, contentHeight);
 		const positioned: PositionedModule[] = [];
 
 		for (const [depth, depthModules] of byDepth) {
-			const columnHeight = depthModules.length * 82 + Math.max(0, depthModules.length - 1) * rowGap;
+			const columnHeight =
+				depthModules.length * nodeHeight + Math.max(0, depthModules.length - 1) * rowGap;
 			const offsetY = Math.max(padY, (graphHeight - columnHeight) / 2);
 			for (let index = 0; index < depthModules.length; index += 1) {
 				positioned.push({
@@ -440,7 +446,7 @@
 		</div>
 	{:else}
 		<div
-			class="crate-overview-flow__viewport overflow-auto"
+			class="crate-overview-flow__viewport overflow-hidden"
 			style={`height: ${height}px`}
 			bind:clientWidth={containerWidth}
 		>
@@ -451,29 +457,30 @@
 						nodes={flowNodes}
 						edges={flowEdges}
 						{nodeTypes}
-						width={layout.width}
-						height={layout.height}
-						nodesDraggable={false}
+						width={containerWidth}
+						height={height}
+						nodesDraggable={true}
 						nodesConnectable={false}
 						elementsSelectable={false}
 						nodesFocusable={false}
 						edgesFocusable={false}
-						autoPanOnNodeFocus={false}
-						panOnDrag={false}
+						autoPanOnNodeFocus={true}
+						fitView={true}
+						fitViewOptions={{ padding: 0.12, minZoom: 0.28, maxZoom: 1 }}
+						panOnDrag={true}
 						panOnScroll={false}
-						zoomOnScroll={false}
-						zoomOnDoubleClick={false}
-						zoomOnPinch={false}
-						preventScrolling={false}
-						deleteKey={null}
-						selectionKey={null}
-						multiSelectionKey={null}
-						panActivationKey={null}
-						zoomActivationKey={null}
+						zoomOnScroll={true}
+						zoomOnDoubleClick={true}
+						zoomOnPinch={true}
+						preventScrolling={true}
+						deleteKey={DISABLED_FLOW_SHORTCUTS}
+						selectionKey={DISABLED_FLOW_SHORTCUTS}
+						multiSelectionKey={DISABLED_FLOW_SHORTCUTS}
+						panActivationKey={DISABLED_FLOW_SHORTCUTS}
+						zoomActivationKey={DISABLED_FLOW_SHORTCUTS}
 						onlyRenderVisibleElements={true}
-						minZoom={1}
-						maxZoom={1}
-						viewport={{ x: 0, y: 0, zoom: 1 }}
+						minZoom={0.28}
+						maxZoom={2}
 						onnodepointerenter={handleNodeEnter}
 						onnodepointerleave={clearHover}
 						onpaneclick={clearHover}

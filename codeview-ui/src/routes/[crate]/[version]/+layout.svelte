@@ -16,7 +16,7 @@
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/environment';
 	import type { Snippet } from 'svelte';
-	import { getCrates } from '$lib/rpc/crate.remote';
+	import { getLocalCrates } from '$lib/rpc/crate.remote';
 	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
 	import { getStaticTreeRoots, getTreeRoots } from '$lib/rpc/roots.remote';
 	import { searchNodes } from '$lib/rpc/search.remote';
@@ -33,6 +33,10 @@
 	import { nodeKindOrder } from '$lib/display-names';
 	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 	import { isHosted } from '$lib/platform';
+	import {
+		clearParseToastTarget,
+		showParseToastTarget,
+	} from '$lib/toast/parse-toast.svelte';
 
 	const log = getLogger('layout');
 
@@ -70,6 +74,7 @@
 	let wasHidden = false;
 	let metaRefreshInFlight: Promise<void> | null = null;
 	let clientReady = $state(false);
+	let routeParseToastKey = '';
 
 	function refreshRemote(resource: unknown): Promise<unknown> {
 		const refresh = (resource as { refresh?: () => Promise<unknown> } | null | undefined)?.refresh;
@@ -114,26 +119,23 @@
 		if (metaRefreshInFlight) return metaRefreshInFlight;
 		if (!force && metaProxy?.current) return Promise.resolve();
 		const t0 = performance.now();
-		const refreshPath = page.url.pathname + page.url.search;
-		log.debug`meta refresh start ${canonicalCrateName}@${version} reason=${reason}`;
-		metaRefreshInFlight = Promise.all([refreshRemote(metaProxy), refreshRemote(rootsProxy)])
+		const routeLabel = `${canonicalCrateName}@${version}`;
+		const metaResource = metaProxy;
+		const rootsResource = rootsProxy;
+		log.debug`meta refresh start ${routeLabel} reason=${reason}`;
+		metaRefreshInFlight = Promise.all([refreshRemote(metaResource), refreshRemote(rootsResource)])
 			.then(() => {
 				const ms = Math.round(performance.now() - t0);
-				const metaCurrent = metaProxy?.current;
-				const v = metaCurrent?.versions.length ?? 0;
-				const k = metaCurrent ? Object.keys(metaCurrent.kindCounts).length : 0;
-				const r = rootsProxy?.current?.length ?? 0;
-				log.debug`meta refresh done ${canonicalCrateName}@${version} in ${ms}ms (${v}v ${k}k ${r}r) reason=${reason}`;
+				log.debug`meta refresh done ${routeLabel} in ${ms}ms reason=${reason}`;
 			})
 			.catch((err: unknown) => {
 				const errText = String(err);
-				const currentPath = page.url.pathname + page.url.search;
 				const cancelledPrimeRequest = reason === 'prime' && errText.includes('Failed to fetch');
-				if (currentPath !== refreshPath || cancelledPrimeRequest) {
-					log.debug`meta refresh cancelled ${canonicalCrateName}@${version} reason=${reason} from=${refreshPath} to=${currentPath}`;
+				if (cancelledPrimeRequest) {
+					log.debug`meta refresh cancelled ${routeLabel} reason=${reason}`;
 					return;
 				}
-				log.warn`meta refresh failed ${canonicalCrateName}@${version} reason=${reason}: ${errText}`;
+				log.warn`meta refresh failed ${routeLabel} reason=${reason}: ${errText}`;
 			})
 			.finally(() => {
 				metaRefreshInFlight = null;
@@ -164,12 +166,10 @@
 			wasReady = true;
 		}
 
-		if (isHosted) return;
 		statusConn.connect(canonicalCrateName, version);
 	}
 
 	function connectProgressForCurrentRoute() {
-		if (isHosted) return;
 		if (!browser || !canonicalCrateName || !version || !canQueryCrate) return;
 		if (effectiveCrateStatus !== 'processing') return;
 		const nextKey = `${canonicalCrateName}@${version}`;
@@ -289,10 +289,9 @@
 
 	// --- Queries ---
 
-	// Load workspace crate list (for switcher + version map).
-	// Load workspace crate list (client-only: getCrates is a query proxy).
-	const workspaceCratesQuery = $derived(clientReady ? getCrates() : null);
-	const workspaceCrates = $derived(workspaceCratesQuery?.current ?? null);
+	// Local CLI workspace list. Hosted mode uses the crate index instead.
+	const localCratesQuery = $derived(clientReady && !isHosted ? getLocalCrates() : null);
+	const localCrates = $derived(localCratesQuery?.current ?? null);
 
 	// Client-side remote resources. Hosted/static reads use prerender remotes for
 	// browser cache persistence; local keeps queries so parse-progress refreshes work.
@@ -326,8 +325,8 @@
 
 	const crateVersions = $derived.by(() => {
 		const map: Record<string, string> = {};
-		if (workspaceCrates && workspaceCrates.length > 0) {
-			for (const c of workspaceCrates) {
+		if (localCrates && localCrates.length > 0) {
+			for (const c of localCrates) {
 				map[c.id] = c.version;
 				if (c.name && c.name !== c.id) map[c.name] = c.version;
 			}
@@ -425,15 +424,15 @@
 
 	const showPerfDebug = $derived(browser ? page.url.searchParams.has('perf') : false);
 
-	function buildWorkspaceCrates(
-		workspace: Array<{ id: string; name?: string; version: string }> | null,
+	function buildCrateSwitcherItems(
+		local: Array<{ id: string; name?: string; version: string }> | null,
 		index: {
 			crates: Array<{ id: string; name?: string; version: string; is_external?: boolean }>;
 		} | null,
 		currentCrate: string | undefined,
 	): Array<{ id: string; name?: string; version: string }> {
-		if (workspace && workspace.length > 0) {
-			return workspace.filter((c) => c.id !== currentCrate && c.name !== currentCrate);
+		if (local && local.length > 0) {
+			return local.filter((c) => c.id !== currentCrate && c.name !== currentCrate);
 		}
 		if (index?.crates) {
 			return index.crates.filter(
@@ -443,13 +442,17 @@
 		return [];
 	}
 
-	function buildWorkspaceCount(
-		workspace: Array<{ id: string; name?: string }> | null,
+	function buildCrateSwitcherCount(
+		local: Array<{ id: string; name?: string }> | null,
 		index: { crates: Array<{ id: string; name?: string; is_external?: boolean }> } | null,
 	): number | null {
-		if (workspace && workspace.length > 0) return workspace.length;
+		if (local && local.length > 0) return local.length;
 		if (index?.crates) return index.crates.filter((c) => !c.is_external).length;
 		return null;
+	}
+
+	function buildCrateSwitcherLabel(local: Array<{ id: string }> | null): string {
+		return local && local.length > 0 ? 'Workspace' : 'Crate index';
 	}
 
 	function buildCrateVersionOptions(
@@ -476,12 +479,30 @@
 	const versionsFromQuery = $derived(meta?.versions ?? []);
 	const hasTreeData = $derived(treeRoots != null && treeRoots.length > 0);
 	const kindFacets = $derived((meta?.kindFacets ?? []) as KindFacet[]);
-	const workspaceCrateCount = $derived(buildWorkspaceCount(workspaceCrates, indexFromQuery));
-	const workspaceCratesList = $derived(
-		buildWorkspaceCrates(workspaceCrates, indexFromQuery, crateName),
+	const crateSwitcherCount = $derived(buildCrateSwitcherCount(localCrates, indexFromQuery));
+	const crateSwitcherItems = $derived(
+		buildCrateSwitcherItems(localCrates, indexFromQuery, crateName),
 	);
+	const crateSwitcherLabel = $derived(buildCrateSwitcherLabel(localCrates));
 	const crateVersionOptions = $derived(buildCrateVersionOptions(versionsFromQuery, version));
-	const loadingWorkspaceCrates = $derived(!workspaceCrates && !indexFromQuery);
+	const loadingCrateSwitcher = $derived(!isHosted && !localCrates && !indexFromQuery);
+
+	$effect(() => {
+		if (!browser || !canonicalCrateName || !version) return;
+		const key = `${canonicalCrateName}@${version}`;
+		const showProgress =
+			effectiveCrateStatus === 'processing' ||
+			(effectiveCrateStatus === 'unknown' && !hasTreeData);
+		if (showProgress) {
+			routeParseToastKey = key;
+			showParseToastTarget(canonicalCrateName, version);
+			return;
+		}
+		if (routeParseToastKey === key) {
+			routeParseToastKey = '';
+			clearParseToastTarget(canonicalCrateName, version);
+		}
+	});
 </script>
 
 <CrateParseState
@@ -499,7 +520,7 @@
 		statusConn.step = 'resolving';
 		statusConn.action = undefined;
 		statusConn.error = null;
-		if (!isHosted) statusConn.connect(crateName, version);
+		statusConn.connect(crateName, version);
 	}}
 	onInstallError={(msg) => {
 		log.warn`std install failed ${crateName}@${version}: ${msg}`;
@@ -512,7 +533,7 @@
 		statusConn.step = 'resolving';
 		statusConn.action = undefined;
 		statusConn.error = null;
-		if (!isHosted) statusConn.connect(crateName, version);
+		statusConn.connect(crateName, version);
 		log.info`retry parse ${crateName}@${version}`;
 	}}
 	onRetryError={(msg) => {
@@ -520,20 +541,16 @@
 		statusConn.status = 'failed';
 		statusConn.error = msg;
 	}}
-	showProgress={effectiveCrateStatus === 'processing'}
-	progressStep={statusConn.step}
-	progressNodeCount={progressConn.nodeCount}
-	progressEdgeCount={progressConn.edgeCount}
-	progressTotalItems={progressConn.totalItems}
 >
 	<div class="flex min-h-0 flex-1 overflow-hidden">
 		<LiveExplorer
 			{crateName}
 			{version}
-			{workspaceCrateCount}
+			crateListCount={crateSwitcherCount}
 			{crateVersionOptions}
-			workspaceCrates={workspaceCratesList}
-			{loadingWorkspaceCrates}
+			crateList={crateSwitcherItems}
+			{crateSwitcherLabel}
+			{loadingCrateSwitcher}
 			{onVersionChange}
 			debugInfo={showPerfDebug && effectiveCrateStatus === 'processing'
 				? {

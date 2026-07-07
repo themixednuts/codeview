@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { NodeDetail, NodeSummary } from '$lib/schema';
+	import type { NodeDetail, NodeSummary, SourceResult } from '$lib/schema';
 	import type { MaterializedDetailDocModel } from '$lib/detail-model';
 	import { getSource } from '$lib/rpc/source.remote';
 	import { sourceProviderModeCtx } from '$lib/context';
@@ -30,14 +30,14 @@
 
 	const sourceProviderMode = $derived(sourceProviderModeCtx.getOr('auto'));
 	const span = $derived(detail.node.span ?? null);
-	const sourceRequest = $derived(
+	const sourceInput = $derived(
 		span?.file
-			? getSource({
+			? {
 					file: span.file,
 					crateName,
 					crateVersion,
 					sourceProvider: sourceProviderMode,
-				})
+				}
 			: null,
 	);
 	const displayFile = $derived(span?.file ? span.file.replace(/\\/g, '/') : '');
@@ -53,6 +53,43 @@
 		if (!span) return '';
 		const end = span.end_line ?? span.line;
 		return end === span.line ? `L${span.line}` : `L${span.line}-L${end}`;
+	});
+	let sourceResult = $state<SourceResult | null>(null);
+	let sourceLoaded = $state(false);
+	const sourceContent = $derived(sourceResult?.content ?? null);
+	const repoUrl = $derived(sourceResult?.repoUrl ?? null);
+
+	$effect(() => {
+		if (!sourceInput) {
+			sourceResult = null;
+			sourceLoaded = false;
+			return;
+		}
+
+		let cancelled = false;
+		sourceResult = null;
+		sourceLoaded = false;
+
+		void getSource(sourceInput)
+			.then((result) => {
+				if (cancelled) return;
+				sourceResult = result;
+				sourceLoaded = true;
+			})
+			.catch((error) => {
+				if (cancelled) return;
+				sourceResult = {
+					error: error instanceof Error ? error.message : String(error),
+					content: null,
+					absolutePath: null,
+					repoUrl: null,
+				};
+				sourceLoaded = true;
+			});
+
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	function langFromFile(file: string): 'rust' | 'toml' | 'json' | 'text' {
@@ -78,7 +115,7 @@
 
 {#snippet splitFrame(sourceContent: string | null, repoUrl: string | null)}
 	<div class="doc-split grid min-h-full grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(480px,44%)]">
-		<article class="min-w-0 overflow-y-auto px-6 py-7 xl:border-r xl:border-(--panel-border-soft) xl:px-8">
+		<article class="min-w-0 overflow-y-auto px-6 py-7 sm:px-8 xl:border-r xl:border-(--panel-border-soft)">
 			<DocArticle
 				{detail}
 				{ancestors}
@@ -159,21 +196,12 @@
 	</div>
 {/snippet}
 
-{#if !span?.file || !sourceRequest}
+{#if !span?.file || !sourceInput}
+	{@render classicFallback()}
+{:else if sourceLoaded && !sourceContent}
 	{@render classicFallback()}
 {:else}
-	<svelte:boundary>
-		{@const sourceResult = await sourceRequest}
-		{#if sourceResult?.content}
-			{@render splitFrame(sourceResult.content, sourceResult.repoUrl)}
-		{:else}
-			{@render classicFallback()}
-		{/if}
-
-		{#snippet pending()}
-			{@render splitFrame(null, null)}
-		{/snippet}
-	</svelte:boundary>
+	{@render splitFrame(sourceContent, repoUrl)}
 {/if}
 
 <style>
@@ -183,6 +211,10 @@
 
 	.doc-split :global(.doc-article--split .doc-section h2) {
 		font-size: 1.375rem;
+	}
+
+	.doc-split :global(.doc-article--split > .max-w-3xl) {
+		max-width: none;
 	}
 
 	.doc-split :global(.design-codeblock) {

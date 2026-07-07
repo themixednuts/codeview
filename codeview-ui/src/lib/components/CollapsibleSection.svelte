@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { slide } from 'svelte/transition';
 	import { untrack } from 'svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
@@ -7,16 +6,25 @@
 		title,
 		count = null,
 		defaultOpen = true,
+		forceOpen = null,
+		forceVersion = 0,
 		children,
 	} = $props<{
 		title: string;
 		count?: number | null;
 		defaultOpen?: boolean;
+		forceOpen?: boolean | null;
+		forceVersion?: number;
 		children: import('svelte').Snippet;
 	}>();
 
 	// Initialize state from prop using untrack to capture initial value only
 	let isOpen = $state(untrack(() => defaultOpen));
+
+	$effect(() => {
+		void forceVersion;
+		if (forceOpen !== null) isOpen = forceOpen;
+	});
 
 	export function setOpen(open: boolean) {
 		isOpen = open;
@@ -49,7 +57,7 @@
 	</button>
 
 	{#if isOpen}
-		<div class="px-4 pb-4" transition:slide={{ duration: 150 }}>
+		<div class="px-4 pb-4">
 			{@render children()}
 		</div>
 	{/if}
