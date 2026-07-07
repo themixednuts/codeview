@@ -11,32 +11,21 @@
 
 	let { data }: PageProps = $props();
 
-	type ActiveQueueRow =
-		| { type: 'run'; run: PageProps['data']['snapshot']['activeRuns'][number] }
-		| { type: 'entry'; entry: PageProps['data']['snapshot']['active'][number] };
-
 	const snapshot = $derived(data.snapshot);
 	const active = $derived(snapshot.active);
-	const activeRuns = $derived(snapshot.activeRuns);
 	const recent = $derived(snapshot.recent);
 	const planned = $derived(snapshot.planned);
-	const activeRows = $derived<ActiveQueueRow[]>([
-		...activeRuns.map((run) => ({ type: 'run' as const, run })),
-		...active.map((entry) => ({ type: 'entry' as const, entry })),
-	]);
 	const plannedItems = $derived(planned?.items ?? []);
 	const activeCount = $derived(active.length);
-	const activeRunCount = $derived(activeRuns.length);
-	const totalActiveCount = $derived(activeCount + activeRunCount);
 	const plannedCount = $derived(planned?.total ?? 0);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
 	let refreshPending = $state(false);
 	let activePage = $state(1);
 	let plannedPage = $state(1);
-	const activePageCount = $derived(Math.max(1, Math.ceil(activeRows.length / PAGE_SIZE)));
+	const activePageCount = $derived(Math.max(1, Math.ceil(active.length / PAGE_SIZE)));
 	const plannedPageCount = $derived(Math.max(1, Math.ceil(plannedItems.length / PAGE_SIZE)));
-	const visibleActiveRows = $derived(
-		activeRows.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
+	const visibleActiveEntries = $derived(
+		active.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
 	);
 	const visiblePlannedItems = $derived(
 		plannedItems.slice((plannedPage - 1) * PAGE_SIZE, plannedPage * PAGE_SIZE),
@@ -81,14 +70,6 @@
 
 	function pageEnd(page: number, total: number): number {
 		return Math.min(page * PAGE_SIZE, total);
-	}
-
-	function runStatusLabel(status: string): string {
-		if (status === 'in_progress') return 'Running';
-		if (status === 'queued') return 'Queued';
-		if (status === 'waiting') return 'Waiting';
-		if (status === 'requested') return 'Requested';
-		return status;
 	}
 
 	function actorLabel(actor: { login: string } | undefined): string {
@@ -148,7 +129,7 @@
 				<div class="grid gap-2 sm:grid-cols-3">
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Active</div>
-						<div class="mt-1 font-mono text-lg text-(--ink)">{totalActiveCount}</div>
+						<div class="mt-1 font-mono text-lg text-(--ink)">{activeCount}</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Planned</div>
@@ -170,88 +151,58 @@
 						<Icon name="clock" size={13} class="text-(--accent)" />
 						<h2 class="font-display text-[18px] font-semibold text-(--ink)">Active queue</h2>
 					</div>
-					<span class="font-mono text-[11px] text-(--muted-soft)">{totalActiveCount} running</span>
+					<span class="font-mono text-[11px] text-(--muted-soft)">{activeCount} running</span>
 				</div>
 
-				{#if visibleActiveRows.length > 0}
+				{#if visibleActiveEntries.length > 0}
 					<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
-						{#each visibleActiveRows as row (`${row.type}:${row.type === 'run' ? row.run.id : `${row.entry.name}@${row.entry.version}:${row.entry.requestId}`}`)}
-							{#if row.type === 'run'}
-								<a
-									href={row.run.url}
-									target="_blank"
-									rel="noreferrer"
-									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[96px_minmax(0,1fr)_220px]"
-								>
-									<div class="font-mono text-[11px] text-(--muted-soft)">#{row.run.id}</div>
-									<div class="min-w-0">
-										<div class="flex min-w-0 flex-wrap items-center gap-2">
-											<span class="badge badge-sm">batch</span>
-											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-												{row.run.title}
-											</span>
-											<span class="badge badge-sm text-(--accent)">{runStatusLabel(row.run.status)}</span>
-											{#if row.run.branch}
-												<span class="font-mono text-[10.5px] text-(--muted-soft)">{row.run.branch}</span>
-											{/if}
-										</div>
-										<div class="mt-1 text-[12px] text-(--muted)">{row.run.event}</div>
-									</div>
-									<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
-										<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
-											{absoluteTime(row.run.updatedAt)}
+						{#each visibleActiveEntries as entry (`${entry.name}@${entry.version}:${entry.requestId}`)}
+							<a
+								href={itemHref(entry.name, entry.version)}
+								data-sveltekit-preload-data="off"
+								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
+							>
+								<div class="font-mono text-[11px] text-(--muted-soft)">
+									#{entry.position ?? '-'}
+								</div>
+								<div class="min-w-0">
+									<div class="flex min-w-0 flex-wrap items-center gap-2">
+										<span class="badge badge-sm">{kindLabel(entry.kind)}</span>
+										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+											{entry.name}
 										</span>
-										<span class="badge badge-sm text-(--accent)">GitHub</span>
-									</div>
-								</a>
-							{:else}
-								<a
-									href={itemHref(row.entry.name, row.entry.version)}
-									data-sveltekit-preload-data="off"
-									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
-								>
-									<div class="font-mono text-[11px] text-(--muted-soft)">
-										#{row.entry.position ?? '-'}
-									</div>
-									<div class="min-w-0">
-										<div class="flex min-w-0 flex-wrap items-center gap-2">
-											<span class="badge badge-sm">{kindLabel(row.entry.kind)}</span>
-											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-												{row.entry.name}
-											</span>
-											<span class="font-mono text-[10.5px] text-(--muted-soft)">
-												{row.entry.version}
-											</span>
-											{#if row.entry.requestId}
-												<span class="font-mono text-[10px] text-(--muted-soft)">
-													{shortId(row.entry.requestId)}
-												</span>
-											{/if}
-											{#if row.entry.requestedBy}
-												<span class="badge badge-sm">{actorLabel(row.entry.requestedBy)}</span>
-											{/if}
-										</div>
-										<div class="mt-1 text-[12px] text-(--muted)">
-											{statusLabel(row.entry.status, row.entry.step)}
-										</div>
-									</div>
-									<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
-										<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
-											{absoluteTime(row.entry.updatedAt)}
+										<span class="font-mono text-[10.5px] text-(--muted-soft)">
+											{entry.version}
 										</span>
-										{#if row.entry.githubRunUrl}
-											<span class="badge badge-sm text-(--accent)">GitHub</span>
+										{#if entry.requestId}
+											<span class="font-mono text-[10px] text-(--muted-soft)">
+												{shortId(entry.requestId)}
+											</span>
+										{/if}
+										{#if entry.requestedBy}
+											<span class="badge badge-sm">{actorLabel(entry.requestedBy)}</span>
 										{/if}
 									</div>
-								</a>
-							{/if}
+									<div class="mt-1 text-[12px] text-(--muted)">
+										{statusLabel(entry.status, entry.step)}
+									</div>
+								</div>
+								<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
+									<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
+										{absoluteTime(entry.updatedAt)}
+									</span>
+									{#if entry.githubRunUrl}
+										<span class="badge badge-sm text-(--accent)">GitHub</span>
+									{/if}
+								</div>
+							</a>
 						{/each}
 					</div>
-					{#if activeRows.length > PAGE_SIZE}
+					{#if active.length > PAGE_SIZE}
 						<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
 							<div class="font-mono text-[11px] text-(--muted-soft)">
-								Showing {pageStart(activePage, activeRows.length)}-{pageEnd(activePage, activeRows.length)}
-								of {activeRows.length}
+								Showing {pageStart(activePage, active.length)}-{pageEnd(activePage, active.length)}
+								of {active.length}
 							</div>
 							<div class="flex items-center gap-2">
 								<button
