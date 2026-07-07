@@ -303,6 +303,58 @@ describe('createCloudflareProvider', () => {
 		]);
 	});
 
+	test('includes active GitHub parse workflow runs in queue snapshots', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input));
+				const status = url.searchParams.get('status');
+				return new Response(
+					JSON.stringify({
+						workflow_runs:
+							status === 'in_progress'
+								? [
+										{
+											id: 123,
+											name: 'parse',
+											display_title: 'parse hashbrown 0.17.1',
+											status: 'in_progress',
+											event: 'workflow_dispatch',
+											head_branch: 'main',
+											html_url: 'https://github.com/themixednuts/codeview/actions/runs/123',
+											created_at: '2026-07-07T12:00:00Z',
+											updated_at: '2026-07-07T12:05:00Z',
+										},
+									]
+								: [],
+					}),
+					{ status: 200, headers: { 'content-type': 'application/json' } },
+				);
+			}),
+		);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+			GITHUB_REPO: 'themixednuts/codeview',
+			GITHUB_WORKFLOW_FILE: 'parse.yml',
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.getParseQueue?.(10)).resolves.toMatchObject({
+			active: [],
+			activeRuns: [
+				{
+					id: '123',
+					title: 'parse hashbrown 0.17.1',
+					status: 'in_progress',
+					event: 'workflow_dispatch',
+					branch: 'main',
+					url: 'https://github.com/themixednuts/codeview/actions/runs/123',
+				},
+			],
+			recent: [],
+			planned: null,
+		});
+	});
+
 	test('enqueues hosted parse requests', async () => {
 		const objects = new Map<string, unknown>();
 		const sent: unknown[] = [];

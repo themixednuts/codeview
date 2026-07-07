@@ -10,9 +10,12 @@
 	const snapshot = $derived(data.snapshot);
 	const auth = $derived(data.auth);
 	const active = $derived(snapshot.active);
+	const activeRuns = $derived(snapshot.activeRuns);
 	const recent = $derived(snapshot.recent);
 	const planned = $derived(snapshot.planned);
 	const activeCount = $derived(active.length);
+	const activeRunCount = $derived(activeRuns.length);
+	const totalActiveCount = $derived(activeCount + activeRunCount);
 	const plannedCount = $derived(planned?.total ?? 0);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
 	const actionMessage = $derived(form?.message);
@@ -44,6 +47,14 @@
 
 	function shortId(value: string | undefined): string {
 		return value ? value.slice(0, 8) : '';
+	}
+
+	function runStatusLabel(status: string): string {
+		if (status === 'in_progress') return 'Running';
+		if (status === 'queued') return 'Queued';
+		if (status === 'waiting') return 'Waiting';
+		if (status === 'requested') return 'Requested';
+		return status;
 	}
 
 	function userLabel(): string {
@@ -107,7 +118,7 @@
 				<div class="grid gap-2 sm:grid-cols-3">
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Active</div>
-						<div class="mt-1 font-mono text-lg text-(--ink)">{activeCount}</div>
+						<div class="mt-1 font-mono text-lg text-(--ink)">{totalActiveCount}</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Planned</div>
@@ -250,40 +261,47 @@
 
 		<div class="mx-auto grid w-full max-w-[1180px] gap-8 px-4 py-8 sm:px-6 lg:px-8">
 			<section class="min-w-0">
-				<div class="mb-3 flex items-center gap-2">
-					<Icon name="filter" size={13} class="text-(--accent)" />
-					<h2 class="font-display text-[18px] font-semibold text-(--ink)">Queue policy</h2>
-				</div>
-				<div class="grid gap-2 md:grid-cols-3">
-					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-3">
-						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Batch ranking</div>
-						<p class="mt-1 text-sm text-(--ink)">
-							Forced and stale work ranks first, then newer versions, never-parsed crates, and download rank.
-						</p>
-					</div>
-					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-3">
-						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Live requests</div>
-						<p class="mt-1 text-sm text-(--ink)">
-							User requests enqueue exact crate versions and dispatch through rolling token buckets.
-						</p>
-					</div>
-					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-3">
-						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Force parse</div>
-						<p class="mt-1 text-sm text-(--ink)">
-							Admin force skips the ready-artifact short-circuit, then keeps the same docs.rs and sysroot limits.
-						</p>
-					</div>
-				</div>
-			</section>
-
-			<section class="min-w-0">
 				<div class="mb-3 flex items-center justify-between gap-3">
 					<div class="flex min-w-0 items-center gap-2">
 						<Icon name="clock" size={13} class="text-(--accent)" />
 						<h2 class="font-display text-[18px] font-semibold text-(--ink)">Active queue</h2>
 					</div>
-					<span class="font-mono text-[11px] text-(--muted-soft)">{activeCount} running</span>
+					<span class="font-mono text-[11px] text-(--muted-soft)">{totalActiveCount} running</span>
 				</div>
+
+				{#if activeRuns.length > 0}
+					<div class="mb-3 overflow-hidden rounded-md border border-(--panel-border-soft)">
+						{#each activeRuns as run (run.id)}
+							<a
+								href={run.url}
+								target="_blank"
+								rel="noreferrer"
+								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[96px_minmax(0,1fr)_220px]"
+							>
+								<div class="font-mono text-[11px] text-(--muted-soft)">#{run.id}</div>
+								<div class="min-w-0">
+									<div class="flex min-w-0 flex-wrap items-center gap-2">
+										<span class="badge badge-sm">batch</span>
+										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+											{run.title}
+										</span>
+										<span class="badge badge-sm text-(--accent)">{runStatusLabel(run.status)}</span>
+										{#if run.branch}
+											<span class="font-mono text-[10.5px] text-(--muted-soft)">{run.branch}</span>
+										{/if}
+									</div>
+									<div class="mt-1 text-[12px] text-(--muted)">{run.event}</div>
+								</div>
+								<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
+									<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
+										{absoluteTime(run.updatedAt)}
+									</span>
+									<span class="badge badge-sm text-(--accent)">GitHub</span>
+								</div>
+							</a>
+						{/each}
+					</div>
+				{/if}
 
 				{#if active.length > 0}
 					<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
@@ -329,7 +347,7 @@
 							</a>
 						{/each}
 					</div>
-				{:else}
+				{:else if activeRuns.length === 0}
 					<div
 						class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"
 					>

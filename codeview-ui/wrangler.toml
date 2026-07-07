@@ -8,7 +8,11 @@ assets = { directory = ".svelte-kit/cloudflare", binding = "ASSETS" }
 
 [vars]
 BETTER_AUTH_URL = "https://codeview.codes"
+GITHUB_OAUTH_CLIENT_ID = "Ov23liaAIxx0Vmp8F0zE"
 GITHUB_ADMIN_LOGINS = "themixednuts"
+GITHUB_REPO = "themixednuts/codeview"
+GITHUB_REF = "main"
+GITHUB_WORKFLOW_FILE = "parse.yml"
 
 [[routes]]
 pattern = "codeview.codes"

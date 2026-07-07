@@ -6,6 +6,7 @@ import { isValidCrateName, isValidVersion } from '$lib/server/validation';
 
 const emptySnapshot: ParseQueueSnapshot = {
 	active: [],
+	activeRuns: [],
 	recent: [],
 	planned: null,
 };

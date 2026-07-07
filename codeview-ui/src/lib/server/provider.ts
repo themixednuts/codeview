@@ -71,8 +71,20 @@ export interface PlannedParseRun {
 	items: PlannedParseItem[];
 }
 
+export interface ActiveParseRun {
+	id: string;
+	title: string;
+	status: string;
+	event: string;
+	branch?: string;
+	url: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
 export interface ParseQueueSnapshot {
 	active: ParseQueueEntry[];
+	activeRuns: ActiveParseRun[];
 	recent: ParseQueueEntry[];
 	planned: PlannedParseRun | null;
 }

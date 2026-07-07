@@ -23,6 +23,7 @@ import type {
 	CrateSummaryResult,
 	CrossEdgeData,
 	DataProvider,
+	ActiveParseRun,
 	ParseQueueEntry,
 	ParseQueueSnapshot,
 	PlannedParseItem,
@@ -80,6 +81,7 @@ type AppEnv = Env & {
 	GITHUB_ADMIN_LOGINS?: string;
 	GITHUB_REPO?: string;
 	GITHUB_REF?: string;
+	GITHUB_WORKFLOW_FILE?: string;
 	GITHUB_TOKEN?: string;
 };
 
@@ -87,6 +89,24 @@ type SearchEntry = NodeSummary & { score?: number };
 const NODE_VIEW_BUCKETS = 128;
 const DEFAULT_SITE_TREE_BUCKETS = 128;
 const DEFAULT_SITE_ALIAS_BUCKETS = 128;
+const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
+const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
+
+type GitHubWorkflowRun = {
+	id?: number;
+	name?: string;
+	display_title?: string;
+	status?: string;
+	event?: string;
+	head_branch?: string;
+	html_url?: string;
+	created_at?: string;
+	updated_at?: string;
+};
+
+type GitHubWorkflowRunsResponse = {
+	workflow_runs?: GitHubWorkflowRun[];
+};
 
 function registrySummary(result: PackageMetadata): CrateSummaryResult {
 	return {
@@ -1085,6 +1105,58 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return (await response.json()) as StoredParseQueueSnapshot;
 	}
 
+	function githubHeaders(): HeadersInit {
+		const headers: Record<string, string> = {
+			accept: 'application/vnd.github+json',
+			'user-agent': USER_AGENT,
+			'x-github-api-version': '2022-11-28',
+		};
+		if (env.GITHUB_TOKEN) headers.authorization = `Bearer ${env.GITHUB_TOKEN}`;
+		return headers;
+	}
+
+	function workflowRunToActiveRun(run: GitHubWorkflowRun): ActiveParseRun | null {
+		if (!run.id || !run.html_url || !run.created_at || !run.updated_at) return null;
+		return {
+			id: String(run.id),
+			title: run.display_title || run.name || 'parse',
+			status: run.status ?? 'unknown',
+			event: run.event ?? 'workflow',
+			branch: run.head_branch,
+			url: run.html_url,
+			createdAt: run.created_at,
+			updatedAt: run.updated_at,
+		};
+	}
+
+	async function listActiveGitHubParseRuns(limit: number): Promise<ActiveParseRun[]> {
+		const repo = env.GITHUB_REPO;
+		if (!repo) return [];
+		const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
+		const runs = await Promise.all(
+			ACTIVE_GITHUB_RUN_STATUSES.map(async (status) => {
+				const url = new URL(
+					`https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
+				);
+				url.searchParams.set('status', status);
+				url.searchParams.set('per_page', String(Math.max(1, Math.min(limit, 20))));
+				const response = await fetch(url, { headers: githubHeaders() });
+				if (!response.ok) {
+					log.warn`GitHub workflow run lookup failed status=${status} code=${String(response.status)}`;
+					return [];
+				}
+				const body = (await response.json()) as GitHubWorkflowRunsResponse;
+				return (body.workflow_runs ?? [])
+					.map(workflowRunToActiveRun)
+					.filter((run): run is ActiveParseRun => run !== null);
+			}),
+		);
+		return runs
+			.flat()
+			.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+			.slice(0, Math.max(1, Math.min(limit, 20)));
+	}
+
 	async function recordHostedParseEvent(event: ParseStatusEvent): Promise<void> {
 		if (!env.PARSE_STATUS) return;
 		const response = await parseStatusObject(env.PARSE_STATUS).fetch('https://status/event', {
@@ -1583,8 +1655,12 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 
 		async getParseQueue(limit = 50): Promise<ParseQueueSnapshot> {
 			const boundedLimit = Math.max(1, Math.min(limit, 100));
-			const [queue, planned] = await Promise.all([
+			const [queue, activeRuns, planned] = await Promise.all([
 				readHostedQueue(boundedLimit),
+				listActiveGitHubParseRuns(boundedLimit).catch((err) => {
+					log.warn`active GitHub parse run load failed: ${String(err)}`;
+					return [];
+				}),
 				loadLatestPlannedRun(boundedLimit).catch((err) => {
 					log.warn`planned parse run load failed: ${String(err)}`;
 					return null;
@@ -1592,6 +1668,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			]);
 			return {
 				active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
+				activeRuns,
 				recent: queue.recent.map((entry) => storedStatusToQueueEntry(entry)),
 				planned,
 			};
