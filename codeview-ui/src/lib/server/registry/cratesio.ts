@@ -3,7 +3,7 @@ import type { RegistryAdapter, PackageMetadata } from './types';
 import { FetchError, JsonParseError } from '../errors';
 
 const CRATES_IO_API = 'https://crates.io/api/v1';
-const USER_AGENT = 'codeview (https://github.com/nicksenger/codeview)';
+const USER_AGENT = 'codeview (https://github.com/themixednuts/codeview)';
 
 interface CratesIoVersion {
 	num: string;

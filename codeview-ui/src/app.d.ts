@@ -8,6 +8,8 @@ declare global {
 			server?: import('bun').Server;
 			env?: {
 				CRATE_GRAPHS?: R2Bucket;
+				PARSE_REQUESTS?: Queue;
+				PARSE_STATUS?: DurableObjectNamespace;
 				RATE_LIMIT_API?: RateLimit;
 				RATE_LIMIT_API_ANON?: RateLimit;
 				RATE_LIMIT_API_AUTH?: RateLimit;

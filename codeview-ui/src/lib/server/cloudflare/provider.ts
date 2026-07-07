@@ -24,7 +24,7 @@ import { getRegistry } from '../registry/index';
 import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
 import { fetchSourcesWithProviders } from '../sources/runner';
-import { NotAvailableError, ValidationError } from '../errors';
+import { NotAvailableError, RateLimitError, ValidationError } from '../errors';
 import {
 	crateNameVariants,
 	hyphenateCrateName,
@@ -33,6 +33,12 @@ import {
 	normalizeCrateName,
 } from '../validation';
 import { getLogger } from '$lib/log';
+import {
+	makeParseRequest,
+	parseStatusObject,
+	type ParseRequestMessage,
+	type StoredParseStatus,
+} from './parse-contract';
 import {
 	USER_AGENT,
 	SOURCE_MAX_BYTES,
@@ -47,6 +53,9 @@ const log = getLogger('cloudflare');
 
 type AppEnv = Env & {
 	CRATE_GRAPHS: R2Bucket;
+	PARSE_REQUESTS?: Queue<ParseRequestMessage>;
+	PARSE_STATUS?: DurableObjectNamespace;
+	RATE_LIMIT_API?: RateLimit;
 	GITHUB_REPO?: string;
 	GITHUB_REF?: string;
 	GITHUB_TOKEN?: string;
@@ -148,17 +157,6 @@ type ResolvedRefCacheEntry = {
 	expiresAt: number | null;
 };
 
-type ParseQueueItem = {
-	schemaVersion: 1;
-	name: string;
-	version: string;
-	force: boolean;
-	requestedAt: string;
-	source: 'hosted';
-};
-
-const PARSE_QUEUE_PENDING_PREFIX = 'rust/_queue/pending/';
-
 const resolvedRefCache = new Map<string, ResolvedRefCacheEntry>();
 
 function artifactPrefix(name: string, version: string): string {
@@ -167,10 +165,6 @@ function artifactPrefix(name: string, version: string): string {
 
 function refsKey(storageName: string): string {
 	return `rust/_refs/${storageName}.json`;
-}
-
-function queueMarkerKey(name: string, version: string): string {
-	return `${PARSE_QUEUE_PENDING_PREFIX}${hyphenateCrateName(name)}/${encodeURIComponent(version)}.json`;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -555,7 +549,7 @@ async function readArtifactJsonWithCache<T>(
 	return (await inflight) as T | null;
 }
 
-export function createCloudflareProvider(env: AppEnv): DataProvider {
+export function createCloudflareProvider(env: AppEnv, request?: Request): DataProvider {
 	function sourceCacheKey(
 		crateName: string,
 		crateVersion: string,
@@ -581,6 +575,21 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			if (oldestKey === undefined) break;
 			sourceFileCache.delete(oldestKey);
 		}
+	}
+
+	function parseRateLimitKey(): string {
+		const ip =
+			request?.headers.get('cf-connecting-ip') ??
+			request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
+			'anonymous';
+		return `parse:${ip}`;
+	}
+
+	async function checkParseRateLimit() {
+		if (!env.RATE_LIMIT_API) return null;
+		const outcome = await env.RATE_LIMIT_API.limit({ key: parseRateLimitKey() });
+		if (outcome.success) return null;
+		return new RateLimitError({ message: 'Too many parse requests. Try again shortly.' });
 	}
 
 	function readJson<T>(key: string): Promise<T | null> {
@@ -633,69 +642,6 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			return null;
 		}
 		return refs;
-	}
-
-	async function queueMarkerExists(name: string, version: string): Promise<boolean> {
-		try {
-			return Boolean(await env.CRATE_GRAPHS.head(queueMarkerKey(name, version)));
-		} catch (err) {
-			log.warn`queue marker head failed for ${name}@${version}: ${String(err)}`;
-			return false;
-		}
-	}
-
-	async function resolveQueueVersion(name: string, version: string): Promise<string | null> {
-		if (!VERSION_ALIASES.has(version)) return version;
-		const published = await resolveRefForArtifact(name, version);
-		if (published) return published.version;
-
-		const registryResult = getRegistry('rust');
-		if (registryResult.isErr()) return null;
-		for (const variant of uniqueCrateNameVariants(name)) {
-			const latest = await registryResult.value.getLatestVersion(variant);
-			if (latest) return latest;
-		}
-		return null;
-	}
-
-	async function writeQueueMarker(name: string, version: string, force: boolean): Promise<void> {
-		const item: ParseQueueItem = {
-			schemaVersion: 1,
-			name: hyphenateCrateName(name),
-			version,
-			force,
-			requestedAt: new Date().toISOString(),
-			source: 'hosted',
-		};
-		await env.CRATE_GRAPHS.put(queueMarkerKey(item.name, item.version), JSON.stringify(item), {
-			httpMetadata: {
-				contentType: 'application/json; charset=utf-8',
-			},
-		});
-	}
-
-	async function listQueuedMarkers(limit: number): Promise<CrateSummaryResult[]> {
-		const out: CrateSummaryResult[] = [];
-		let cursor: string | undefined;
-		do {
-			const page = await env.CRATE_GRAPHS.list({
-				prefix: PARSE_QUEUE_PENDING_PREFIX,
-				limit: Math.min(1000, Math.max(1, limit - out.length)),
-				cursor,
-			});
-			for (const object of page.objects) {
-				const item = await readJson<ParseQueueItem>(object.key);
-				if (!item) continue;
-				out.push({
-					id: hyphenateCrateName(item.name),
-					name: item.name,
-					version: item.version,
-				});
-				if (out.length >= limit) return out;
-			}
-			cursor = page.truncated ? page.cursor : undefined;
-		} while (cursor && out.length < limit);
-		return out;
 	}
 
 	async function resolveRefForArtifactUncached(
@@ -1034,6 +980,38 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		return (await listPublishedVersions(name, 1))[0] ?? null;
 	}
 
+	function storedStatusToCrateStatus(stored: StoredParseStatus) {
+		return {
+			status: stored.status,
+			error: stored.error,
+			step: stored.step,
+			action: stored.action,
+			installedVersion: stored.installedVersion,
+		};
+	}
+
+	async function readHostedParseStatus(
+		name: string,
+		version: string,
+	): Promise<StoredParseStatus | null> {
+		if (!env.PARSE_STATUS) return null;
+		const url = new URL('https://status/status');
+		url.searchParams.set('name', name);
+		url.searchParams.set('version', version);
+		const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+		if (!response.ok) return null;
+		return (await response.json()) as StoredParseStatus | null;
+	}
+
+	async function listHostedProcessing(limit: number): Promise<StoredParseStatus[]> {
+		if (!env.PARSE_STATUS) return [];
+		const url = new URL('https://status/processing');
+		url.searchParams.set('limit', String(limit));
+		const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+		if (!response.ok) return [];
+		return (await response.json()) as StoredParseStatus[];
+	}
+
 	let publishedCratesCache: Promise<CrateSummaryResult[]> | null = null;
 	async function listPublishedCrates(): Promise<CrateSummaryResult[]> {
 		if (!publishedCratesCache) {
@@ -1291,23 +1269,16 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				return { status: 'failed' as const, error: 'Invalid crate name or version' };
 			}
-			const concreteVersion = await resolveQueueVersion(name, version);
-			if (concreteVersion && (await queueMarkerExists(name, concreteVersion))) {
-				return { status: 'processing' as const, step: 'queued' };
-			}
 			const ref = await resolveRefForArtifact(name, version);
-			if (!ref) {
-				return {
-					status: 'failed' as const,
-					error: `No static graph is published for ${name}@${version}.`,
-					action: 'docs_unavailable' as const,
-				};
+			if (ref) {
+				const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
+				if (meta?.schema_version === 1 && meta.index) return { status: 'ready' as const };
 			}
-			const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
-			if (meta?.schema_version === 1 && meta.index) return { status: 'ready' as const };
+			const hostedStatus = await readHostedParseStatus(name, version);
+			if (hostedStatus) return storedStatusToCrateStatus(hostedStatus);
 			return {
 				status: 'failed' as const,
-				error: `No static graph is published for ${name}@${ref.version}.`,
+				error: `No static graph is published for ${name}@${version}.`,
 				action: 'docs_unavailable' as const,
 			};
 		},
@@ -1316,29 +1287,24 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 			if (!isValidCrateName(name) || !isValidVersion(version)) {
 				return Result.err(new ValidationError({ message: 'Invalid crate name or version' }));
 			}
-			if (isStdCrate(normalizeCrateName(name))) {
-				return Result.err(
-					new NotAvailableError({
-						message: 'std crate installation is not available in hosted mode',
-					}),
-				);
-			}
-			const concreteVersion = await resolveQueueVersion(name, version);
-			if (!concreteVersion || !isValidVersion(concreteVersion) || VERSION_ALIASES.has(concreteVersion)) {
-				return Result.err(
-					new NotAvailableError({
-						message: `Could not resolve ${name}@${version} to a concrete crates.io version.`,
-					}),
-				);
-			}
+			const requestKind = isStdCrate(normalizeCrateName(name)) ? 'sysroot' : 'crate';
 			if (!force) {
-				const ref = await resolveRefForArtifact(name, concreteVersion);
+				const ref = await resolveRefForArtifact(name, version);
 				if (ref) {
 					const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
 					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
 				}
 			}
-			await writeQueueMarker(name, concreteVersion, Boolean(force));
+			const rateLimitError = await checkParseRateLimit();
+			if (rateLimitError) return Result.err(rateLimitError);
+			if (!env.PARSE_REQUESTS) {
+				return Result.err(
+					new NotAvailableError({
+						message: 'Hosted parse queue is not configured',
+					}),
+				);
+			}
+			await env.PARSE_REQUESTS.send(makeParseRequest(name, version, !!force, 'ui', requestKind));
 			return Result.ok(undefined);
 		},
 
@@ -1390,7 +1356,12 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 		},
 
 		async getProcessingCrates(limit = 20) {
-			return listQueuedMarkers(limit);
+			return (await listHostedProcessing(limit)).map((entry) => ({
+				id: hyphenateCrateName(entry.name),
+				name: entry.name,
+				version: entry.version,
+				description: entry.step ?? 'Parsing',
+			}));
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
@@ -1407,10 +1378,15 @@ export function createCloudflareProvider(env: AppEnv): DataProvider {
 /** Build-time entry point imported through the `$provider` alias. */
 export function createProvider(event: RequestEvent): DataProvider {
 	const env = (event.platform as { env: AppEnv }).env;
-	return createCloudflareProvider(env);
+	return createCloudflareProvider(env, event.request);
 }
 
-/** Hosted mode has no realtime Durable Object; static artifacts are the source of truth. */
-export function handleWsUpgrade(_event?: RequestEvent): Response {
-	return new Response('Hosted realtime parsing is disabled', { status: 410 });
+/** Hosted mode uses the parser status Durable Object for realtime parse/status events. */
+export function handleWsUpgrade(event?: RequestEvent): Response | Promise<Response> {
+	if (!event) return new Response('Hosted realtime status requires a request event', { status: 500 });
+	const env = (event?.platform as { env?: AppEnv } | undefined)?.env;
+	if (!env?.PARSE_STATUS) {
+		return new Response('Hosted realtime status is not configured', { status: 503 });
+	}
+	return parseStatusObject(env.PARSE_STATUS).fetch(event.request);
 }

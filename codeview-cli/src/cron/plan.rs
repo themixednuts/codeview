@@ -25,15 +25,13 @@ use crate::publisher::shards;
 use super::CronContext;
 
 const DEFAULT_CHANNEL: &str = "default";
-const QUEUE_PENDING_PREFIX: &str = "rust/_queue/pending/";
-
 #[derive(Debug, Args)]
 pub struct Plan {
     /// Scheduling mode.
     #[arg(long, value_enum, default_value_t = PlanMode::Daily)]
     pub mode: PlanMode,
 
-    /// Corpus source: `queue`, `catalog`, `top:N`, `file:<path>`, `all`, or a file path.
+    /// Corpus source: `catalog`, `top:N`, `file:<path>`, `all`, or a file path.
     #[arg(long, default_value = "catalog")]
     pub corpus: String,
 
@@ -174,23 +172,10 @@ struct CatalogCrate {
     name: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct QueueItemFile {
-    #[serde(default)]
-    schema_version: u32,
-    name: String,
-    version: String,
-    #[serde(default)]
-    force: bool,
-}
-
 #[derive(Debug, Clone)]
 struct SelectedCandidate {
     candidate: CrateCandidate,
     forced: bool,
-    requested_version: Option<String>,
-    queued: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -199,7 +184,6 @@ struct EvaluatedCandidate {
     version: String,
     staleness: Staleness,
     forced: bool,
-    queued: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -268,7 +252,6 @@ impl PlanBuildConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PriorityTier {
     Forced,
-    Queued,
     TopDownloadStale,
     NewerVersion,
     CatalogStale,
@@ -281,7 +264,6 @@ impl PriorityTier {
     fn sort_rank(self) -> u8 {
         match self {
             Self::Forced => 0,
-            Self::Queued => 1,
             Self::TopDownloadStale => 2,
             Self::NewerVersion => 3,
             Self::CatalogStale => 4,
@@ -294,7 +276,6 @@ impl PriorityTier {
     fn as_str(self) -> &'static str {
         match self {
             Self::Forced => "forced",
-            Self::Queued => "queued",
             Self::TopDownloadStale => "top-download-stale",
             Self::NewerVersion => "newer-version",
             Self::CatalogStale => "catalog-stale",
@@ -387,24 +368,15 @@ pub(crate) async fn build_plan(ctx: &CronContext, config: PlanBuildConfig) -> Re
     }
 
     let corpus_names = resolve_corpus_names(&config, ctx, &snapshot).await?;
-    let mut selected = selected_candidates(
+    let selected = selected_candidates(
         &snapshot,
         &corpus_names,
         &config.force_names,
         config.force_all,
     );
-    if config.corpus == "queue" {
-        selected.extend(
-            resolve_queue_candidates(ctx, &snapshot, &config.force_names, config.force_all).await?,
-        );
-    }
     let mut evaluated = Vec::with_capacity(selected.len());
     for item in selected {
-        let Some(version) = item
-            .requested_version
-            .clone()
-            .or_else(|| item.candidate.newest_non_yanked.clone())
-        else {
+        let Some(version) = item.candidate.newest_non_yanked.clone() else {
             config.log(format!(
                 "[plan] snapshot has no non-yanked version: {}",
                 item.candidate.name
@@ -425,7 +397,6 @@ pub(crate) async fn build_plan(ctx: &CronContext, config: PlanBuildConfig) -> Re
             version,
             staleness,
             forced: item.forced,
-            queued: item.queued,
         });
     }
 
@@ -483,9 +454,6 @@ async fn resolve_corpus_names(
         };
     }
 
-    if config.corpus == "queue" {
-        return Ok(Vec::new());
-    }
     if config.corpus == "catalog" {
         let Some(catalog) = read_json::<CatalogFile>(&ctx.r2, r2::CATALOG_KEY).await? else {
             return Ok(Vec::new());
@@ -538,8 +506,6 @@ fn selected_candidates(
             selected.push(SelectedCandidate {
                 candidate: (*candidate).clone(),
                 forced: force_all || force_names.contains(&lookup),
-                requested_version: None,
-                queued: false,
             });
         }
     }
@@ -553,70 +519,11 @@ fn selected_candidates(
             selected.push(SelectedCandidate {
                 candidate: (*candidate).clone(),
                 forced: true,
-                requested_version: None,
-                queued: false,
             });
         }
     }
 
     selected
-}
-
-async fn resolve_queue_candidates(
-    ctx: &CronContext,
-    snapshot: &CrateCatalogSnapshot,
-    force_names: &HashSet<String>,
-    force_all: bool,
-) -> Result<Vec<SelectedCandidate>> {
-    let by_name: HashMap<String, &CrateCandidate> = snapshot
-        .crates
-        .iter()
-        .map(|candidate| (normalise_crate_name(&candidate.name), candidate))
-        .collect();
-    let mut keys = ctx.r2.list_prefix(QUEUE_PENDING_PREFIX).await?;
-    keys.retain(|key| key.ends_with(".json"));
-    keys.sort();
-
-    let mut seen = HashSet::<String>::new();
-    let mut selected = Vec::new();
-    for key in keys {
-        let Some(item) = read_json::<QueueItemFile>(&ctx.r2, &key).await? else {
-            continue;
-        };
-        if !is_valid_queue_item(&item) {
-            continue;
-        }
-        let lookup = normalise_crate_name(&item.name);
-        let dedupe_key = format!("{lookup}@{}", item.version);
-        if !seen.insert(dedupe_key) {
-            continue;
-        }
-
-        let candidate = by_name
-            .get(&lookup)
-            .map(|candidate| (*candidate).clone())
-            .unwrap_or_else(|| CrateCandidate {
-                name: item.name.clone(),
-                newest_non_yanked: Some(item.version.clone()),
-                newest_pubtime: None,
-                all_time_downloads: 0,
-                recent_downloads: None,
-                all_time_rank: None,
-                recent_rank: None,
-            });
-        selected.push(SelectedCandidate {
-            candidate,
-            forced: force_all || item.force || force_names.contains(&lookup),
-            requested_version: Some(item.version),
-            queued: true,
-        });
-    }
-    Ok(selected)
-}
-
-fn is_valid_queue_item(item: &QueueItemFile) -> bool {
-    let _schema = item.schema_version;
-    !item.name.trim().is_empty() && !item.version.trim().is_empty()
 }
 
 fn assemble_work_plan(
@@ -644,7 +551,7 @@ fn assemble_work_plan(
                 channel: DEFAULT_CHANNEL.to_string(),
                 priority_tier: priority.as_str().to_string(),
                 download_rank: item.candidate.all_time_rank,
-                reason: reason_for(item.forced, item.queued, &item.staleness),
+                reason: reason_for(item.forced, &item.staleness),
             },
         ));
     }
@@ -693,9 +600,6 @@ fn priority_for(item: &EvaluatedCandidate, mode: PlanMode) -> Option<PriorityTie
     if item.forced {
         return Some(PriorityTier::Forced);
     }
-    if item.queued && item.staleness.is_stale() {
-        return Some(PriorityTier::Queued);
-    }
 
     let is_top_download = item
         .candidate
@@ -723,11 +627,9 @@ fn priority_for(item: &EvaluatedCandidate, mode: PlanMode) -> Option<PriorityTie
     }
 }
 
-fn reason_for(forced: bool, queued: bool, staleness: &Staleness) -> String {
+fn reason_for(forced: bool, staleness: &Staleness) -> String {
     if forced {
         format!("forced (otherwise: {})", staleness.describe())
-    } else if queued {
-        format!("queued ({})", staleness.describe())
     } else {
         staleness.describe()
     }
@@ -916,7 +818,6 @@ mod tests {
                     version,
                     staleness,
                     forced: item.forced,
-                    queued: item.queued,
                 }
             })
             .collect();

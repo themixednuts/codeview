@@ -1,7 +1,7 @@
 //! Locate the `rust-docs-json` component on disk.
 //!
-//! `rust-docs-json` is a nightly-only rustup component that drops the
-//! rustdoc JSON for `std`, `core`, `alloc`, `proc_macro`, and `test`
+//! `rust-docs-json` is a rustup component that drops the rustdoc JSON for
+//! `std`, `core`, `alloc`, `proc_macro`, and `test`
 //! into `{sysroot}/share/doc/rust/json/{crate}.json`.  `cron seed-std`
 //! reads those files directly instead of fetching from docs.rs (which
 //! doesn't host std).
@@ -141,16 +141,15 @@ fn list_json_crates(json_dir: &Path) -> Result<Vec<String>> {
     Ok(out)
 }
 
-/// Channel aliases the seeder should write for a given toolchain string.
-/// Mirrors `stdAliasesForToolchain` in the deleted `publish-static-batch.ts`.
-///
-/// Bare `nightly` aliases as `[nightly, stable, beta, latest]` so URLs
-/// like `/std/stable` resolve until per-channel parsing exists.  Date-pinned
-/// nightlies (`nightly-2026-05-14`) stay as themselves — they're for
-/// reproducibility, not channel promotion.
+/// Channel aliases the seeder should publish for a requested toolchain.
+/// Aliases must describe the actual toolchain data that was parsed: stable
+/// may serve `latest`, beta serves `beta`, and nightly serves `nightly`.
+/// Date-pinned nightlies stay version-only for reproducible artifacts.
 pub fn aliases_for_toolchain(toolchain: &str) -> Vec<&'static str> {
     match toolchain {
-        "nightly" => vec!["nightly", "stable", "beta", "latest"],
+        "stable" => vec!["stable", "latest"],
+        "beta" => vec!["beta"],
+        "nightly" => vec!["nightly"],
         _ => Vec::new(),
     }
 }
@@ -176,11 +175,10 @@ mod tests {
     }
 
     #[test]
-    fn nightly_aliases_to_channels() {
-        assert_eq!(
-            aliases_for_toolchain("nightly"),
-            vec!["nightly", "stable", "beta", "latest"]
-        );
+    fn channel_aliases_match_requested_toolchain() {
+        assert_eq!(aliases_for_toolchain("stable"), vec!["stable", "latest"]);
+        assert_eq!(aliases_for_toolchain("beta"), vec!["beta"]);
+        assert_eq!(aliases_for_toolchain("nightly"), vec!["nightly"]);
     }
 
     #[test]

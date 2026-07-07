@@ -2,7 +2,9 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { createCloudflareProvider } from './provider';
 
 function jsonObject(value: unknown): R2ObjectBody {
-	return new Response(typeof value === 'string' ? value : JSON.stringify(value)) as unknown as R2ObjectBody;
+	return new Response(
+		typeof value === 'string' ? value : JSON.stringify(value),
+	) as unknown as R2ObjectBody;
 }
 
 function fakeBucket(objects: Map<string, unknown>): R2Bucket {
@@ -17,7 +19,10 @@ function fakeBucket(objects: Map<string, unknown>): R2Bucket {
 			} else if (value instanceof ReadableStream) {
 				objects.set(key, await new Response(value).text());
 			} else {
-				objects.set(key, new TextDecoder().decode(value instanceof ArrayBuffer ? value : value.buffer));
+				objects.set(
+					key,
+					new TextDecoder().decode(value instanceof ArrayBuffer ? value : value.buffer),
+				);
 			}
 			return null;
 		},
@@ -34,6 +39,14 @@ function fakeBucket(objects: Map<string, unknown>): R2Bucket {
 			} as unknown as R2Objects;
 		},
 	} as unknown as R2Bucket;
+}
+
+function fakeQueue(sent: unknown[]): Queue {
+	return {
+		async send(body: unknown) {
+			sent.push(body);
+		},
+	} as unknown as Queue;
 }
 
 function fnv1a32(value: string): number {
@@ -258,21 +271,22 @@ describe('createCloudflareProvider', () => {
 	test('uses live crates.io metadata for top crates', async () => {
 		vi.stubGlobal(
 			'fetch',
-			vi.fn(async () =>
-				new Response(
-					JSON.stringify({
-						crates: [
-							{
-								id: 'rand_core',
-								name: 'rand_core',
-								description: 'Core random number generator traits',
-								repository: 'https://github.com/rust-random/rand',
-								max_version: '0.9.3',
-							},
-						],
-					}),
-					{ status: 200, headers: { 'content-type': 'application/json' } },
-				),
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							crates: [
+								{
+									id: 'rand_core',
+									name: 'rand_core',
+									description: 'Core random number generator traits',
+									repository: 'https://github.com/rust-random/rand',
+									max_version: '0.9.3',
+								},
+							],
+						}),
+						{ status: 200, headers: { 'content-type': 'application/json' } },
+					),
 			),
 		);
 		const provider = createCloudflareProvider({
@@ -289,35 +303,54 @@ describe('createCloudflareProvider', () => {
 		]);
 	});
 
-	test('queues hosted parse requests in R2', async () => {
+	test('enqueues hosted parse requests', async () => {
 		const objects = new Map<string, unknown>();
+		const sent: unknown[] = [];
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
+			PARSE_REQUESTS: fakeQueue(sent),
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
 		const result = await provider.triggerParse('serde', '1.0.228');
-		expect(result.isOk()).toBe(true);
-
-		const key = 'rust/_queue/pending/serde/1.0.228.json';
-		expect(objects.has(key)).toBe(true);
-		expect(JSON.parse(objects.get(key) as string)).toMatchObject({
+		if (result.isErr()) throw result.error;
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({
 			schemaVersion: 1,
+			ecosystem: 'rust',
+			kind: 'crate',
 			name: 'serde',
 			version: '1.0.228',
 			force: false,
-			source: 'hosted',
+			source: 'ui',
 		});
 
 		await expect(provider.getCrateStatus('serde', '1.0.228')).resolves.toEqual({
-			status: 'processing',
-			step: 'queued',
+			status: 'failed',
+			error: 'No static graph is published for serde@1.0.228.',
+			action: 'docs_unavailable',
 		});
-		await expect(provider.getProcessingCrates(5)).resolves.toMatchObject([
-			{
-				id: 'serde',
-				name: 'serde',
-				version: '1.0.228',
-			},
-		]);
+		await expect(provider.getProcessingCrates(5)).resolves.toEqual([]);
+	});
+
+	test('enqueues hosted sysroot parse requests for std crates', async () => {
+		const objects = new Map<string, unknown>();
+		const sent: unknown[] = [];
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+			PARSE_REQUESTS: fakeQueue(sent),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const result = await provider.triggerParse('std', 'nightly');
+		if (result.isErr()) throw result.error;
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({
+			schemaVersion: 1,
+			ecosystem: 'rust',
+			kind: 'sysroot',
+			name: 'std',
+			version: 'nightly',
+			force: false,
+			source: 'ui',
+		});
 	});
 });

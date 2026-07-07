@@ -1,11 +1,12 @@
 name: parse
 
-# Bounded hosted parser queue.
+# Bounded static R2 artifact publisher.
 #
 # The site build only builds the Cloudflare Worker/Svelte app. Parsing is
-# handled here on GitHub-hosted runners:
+# handled offline on GitHub-hosted runners:
 #
-#   plan            -> read queued work and write one deterministic work plan to R2
+#   parse-one       -> exact crate/version request from the hosted queue
+#   plan            -> read requested work and write one deterministic work plan to R2
 #   parse-shard     -> drain bounded shards with docs.rs request delays
 #   freshness-merge -> single-writer index/catalog/ref finalizer
 #
@@ -20,16 +21,48 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
-      corpus:
-        description: "`queue`, `catalog`, `top:N`, `file:<path>`, or `all`"
+      crate:
+        description: 'Exact crate name for a queued hosted parse request'
         required: false
-        default: 'queue'
+        default: ''
+      version:
+        description: 'Exact crate version or std toolchain/channel for a queued hosted parse request'
+        required: false
+        default: ''
+      request_kind:
+        description: '`crate` for docs.rs JSON, `sysroot` for std/core/alloc/proc_macro/test'
+        required: false
+        default: 'crate'
+      toolchain:
+        description: 'Rust toolchain for sysroot requests; defaults to version'
+        required: false
+        default: ''
+      parse_force:
+        description: 'Force exact crate/version reparse'
+        required: false
+        default: 'false'
+      workflow_id:
+        description: 'Cloudflare Workflow instance id to notify'
+        required: false
+        default: ''
+      request_id:
+        description: 'Hosted parse request id'
+        required: false
+        default: ''
+      callback_url:
+        description: 'Cloudflare parser callback URL'
+        required: false
+        default: ''
+      corpus:
+        description: "`catalog`, `top:N`, `file:<path>`, or `all`"
+        required: false
+        default: 'catalog'
       max_total:
         description: 'Maximum crates in this run'
         required: false
         default: '20'
       shard_count:
-        description: 'Deterministic queue shards'
+        description: 'Deterministic publish shards'
         required: false
         default: '8'
       max_per_shard:
@@ -52,7 +85,6 @@ on:
         description: 'Initialize the aggregate index from per-version freshness records'
         required: false
         default: 'false'
-
 env:
   R2_BUCKET: crate-graphs
   STATIC_R2_TARGET: remote
@@ -63,12 +95,108 @@ env:
   CODEVIEW_SKIP_SIDECAR: '1'
 
 concurrency:
-  group: codeview-parse-queue
+  group: codeview-static-publish
   cancel-in-progress: false
 
 jobs:
+  parse_one:
+    name: parse exact crate
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.request_kind == '' || inputs.request_kind == 'crate') && inputs.crate != '' && inputs.version != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cron-release
+
+      - name: Build codeview-cli
+        run: cargo build --release -p codeview-cli
+
+      - name: Parse and publish exact crate
+        env:
+          NAME: ${{ inputs.crate }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          FORCE_FLAG=""
+          if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
+            FORCE_FLAG="--force"
+          fi
+          target/release/codeview cron parse-one \
+            --name "$NAME" \
+            --version "$VERSION" \
+            $FORCE_FLAG \
+            --bucket "$R2_BUCKET"
+
+      - name: Refresh hosted refs and catalog
+        run: |
+          RUN_ID="direct-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          target/release/codeview cron freshness-merge \
+            --run-id "$RUN_ID" \
+            --write-catalog \
+            --bootstrap \
+            --bucket "$R2_BUCKET"
+
+  seed_sysroot:
+    name: seed std sysroot
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.request_kind == 'sysroot' && inputs.crate != '' && inputs.version != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable for codeview-cli
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cron-release
+
+      - name: Install requested rustdoc JSON toolchain
+        env:
+          REQUEST_VERSION: ${{ inputs.version }}
+          REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
+        run: |
+          TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
+          rustup toolchain install "$TOOLCHAIN" --profile minimal
+          rustup component add rust-docs-json --toolchain "$TOOLCHAIN"
+
+      - name: Build codeview-cli
+        run: cargo build --release -p codeview-cli
+
+      - name: Seed and publish std artifacts
+        env:
+          REQUEST_VERSION: ${{ inputs.version }}
+          REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
+        run: |
+          TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
+          FORCE_FLAG=""
+          if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
+            FORCE_FLAG="--force"
+          fi
+          target/release/codeview cron seed-std \
+            --toolchains "$TOOLCHAIN" \
+            $FORCE_FLAG \
+            --bucket "$R2_BUCKET"
+
+      - name: Refresh hosted refs and catalog
+        run: |
+          RUN_ID="sysroot-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          target/release/codeview cron freshness-merge \
+            --run-id "$RUN_ID" \
+            --write-catalog \
+            --bootstrap \
+            --bucket "$R2_BUCKET"
+
   plan:
-    name: plan queue
+    name: plan static publish
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.crate == '' }}
     runs-on: ubuntu-latest
     outputs:
       worker_matrix: ${{ steps.plan.outputs.worker_matrix }}
@@ -96,7 +224,7 @@ jobs:
           PLAN_KEY="rust/_runs/${RUN_ID}/plan.json"
           target/release/codeview cron plan \
             --mode daily \
-            --corpus "${{ inputs.corpus || 'queue' }}" \
+            --corpus "${{ inputs.corpus || 'catalog' }}" \
             --max-total "${{ inputs.max_total || '20' }}" \
             --max-per-shard "${{ inputs.max_per_shard || '3' }}" \
             --shard-count "${{ inputs.shard_count || '8' }}" \
@@ -175,9 +303,121 @@ jobs:
             $BOOTSTRAP_FLAG \
             --bucket "$R2_BUCKET"
 
+  notify_crate:
+    name: notify hosted crate workflow
+    needs: parse_one
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && (inputs.request_kind == '' || inputs.request_kind == 'crate') && inputs.callback_url != '' && inputs.workflow_id != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send callback
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.PARSE_CALLBACK_SECRET }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          REQUEST_KIND: crate
+          CRATE_NAME: ${{ inputs.crate }}
+          CRATE_VERSION: ${{ inputs.version }}
+          JOB_RESULT: ${{ needs.parse_one.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          OK=false
+          ERROR=""
+          if [[ "$JOB_RESULT" == "success" ]]; then
+            OK=true
+          else
+            ERROR="GitHub parse job result: $JOB_RESULT"
+          fi
+          jq -n \
+            --arg kind "$REQUEST_KIND" \
+            --arg workflowId "$WORKFLOW_ID" \
+            --arg requestId "$REQUEST_ID" \
+            --arg name "$CRATE_NAME" \
+            --arg version "$CRATE_VERSION" \
+            --arg runId "$RUN_ID" \
+            --arg runUrl "$RUN_URL" \
+            --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg error "$ERROR" \
+            --argjson ok "$OK" \
+            '{
+              schemaVersion: 1,
+              kind: $kind,
+              workflowId: $workflowId,
+              requestId: $requestId,
+              name: $name,
+              version: $version,
+              ok: $ok,
+              runId: $runId,
+              runUrl: $runUrl,
+              error: (if $error == "" then null else $error end),
+              completedAt: $completedAt
+            }' > callback.json
+          curl -fsS \
+            -X POST "$CALLBACK_URL" \
+            -H "content-type: application/json" \
+            -H "authorization: Bearer $CALLBACK_SECRET" \
+            --data-binary @callback.json
+
+  notify_sysroot:
+    name: notify hosted sysroot workflow
+    needs: seed_sysroot
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.request_kind == 'sysroot' && inputs.callback_url != '' && inputs.workflow_id != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send callback
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_SECRET: ${{ secrets.PARSE_CALLBACK_SECRET }}
+          WORKFLOW_ID: ${{ inputs.workflow_id }}
+          REQUEST_ID: ${{ inputs.request_id }}
+          REQUEST_KIND: sysroot
+          CRATE_NAME: ${{ inputs.crate }}
+          CRATE_VERSION: ${{ inputs.version }}
+          JOB_RESULT: ${{ needs.seed_sysroot.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          OK=false
+          ERROR=""
+          if [[ "$JOB_RESULT" == "success" ]]; then
+            OK=true
+          else
+            ERROR="GitHub sysroot seed job result: $JOB_RESULT"
+          fi
+          jq -n \
+            --arg kind "$REQUEST_KIND" \
+            --arg workflowId "$WORKFLOW_ID" \
+            --arg requestId "$REQUEST_ID" \
+            --arg name "$CRATE_NAME" \
+            --arg version "$CRATE_VERSION" \
+            --arg runId "$RUN_ID" \
+            --arg runUrl "$RUN_URL" \
+            --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg error "$ERROR" \
+            --argjson ok "$OK" \
+            '{
+              schemaVersion: 1,
+              kind: $kind,
+              workflowId: $workflowId,
+              requestId: $requestId,
+              name: $name,
+              version: $version,
+              ok: $ok,
+              runId: $runId,
+              runUrl: $runUrl,
+              error: (if $error == "" then null else $error end),
+              completedAt: $completedAt
+            }' > callback.json
+          curl -fsS \
+            -X POST "$CALLBACK_URL" \
+            -H "content-type: application/json" \
+            -H "authorization: Bearer $CALLBACK_SECRET" \
+            --data-binary @callback.json
+
   summary:
     name: parse summary
-    needs: [plan, parse, finalize]
+    needs: [plan, parse, finalize, parse_one, seed_sysroot, notify_crate, notify_sysroot]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -186,5 +426,9 @@ jobs:
           echo "run_id=${{ needs.plan.outputs.run_id }}"
           echo "shard_count=${{ needs.plan.outputs.shard_count }}"
           echo "matrix=${{ needs.plan.outputs.worker_matrix }}"
+          echo "parse_one_result=${{ needs.parse_one.result }}"
+          echo "seed_sysroot_result=${{ needs.seed_sysroot.result }}"
+          echo "notify_crate_result=${{ needs.notify_crate.result }}"
+          echo "notify_sysroot_result=${{ needs.notify_sysroot.result }}"
           echo "parse_result=${{ needs.parse.result }}"
           echo "finalize_result=${{ needs.finalize.result }}"

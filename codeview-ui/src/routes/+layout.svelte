@@ -3,7 +3,7 @@
 	import { browser } from '$app/environment';
 	import { afterNavigate, goto, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { page } from '$app/state';
+	import { page, updated } from '$app/state';
 	import { getProcessingCrates } from '$lib/rpc/crate.remote';
 	import {
 		CrateStatusConnection,
@@ -72,6 +72,7 @@
 		parseToastTarget,
 	} from '$lib/toast/parse-toast.svelte';
 	import { toast } from 'svelte-sonner';
+	import { forceRefreshClient } from '$lib/client/invalidation';
 
 	type ProcessingCrateItem = {
 		id?: string;
@@ -141,6 +142,7 @@
 	let activeParseToastKey = '';
 	let parseToastShownAt = 0;
 	let parseToastDismissTimer: ReturnType<typeof setTimeout> | null = null;
+	let appRefreshStarted = false;
 
 	function openProcessingPopover() {
 		showProcessing = true;
@@ -207,7 +209,14 @@
 	}
 
 	$effect(() => {
-		if (!browser || isHosted) return;
+		if (!browser) return;
+		if (appRefreshStarted || !updated.current) return;
+		appRefreshStarted = true;
+		void forceRefreshClient();
+	});
+
+	$effect(() => {
+		if (!browser) return;
 
 		const count = processingCount;
 		if (count <= 0) {
@@ -283,7 +292,7 @@
 	}
 
 	$effect(() => {
-		if (!browser || isHosted) return;
+		if (!browser) return;
 
 		const crate = activeParseCrate;
 		const name = crate?.name ?? '';
@@ -341,7 +350,7 @@
 	});
 
 	onMount(() => {
-		if (!browser || isHosted) return () => processingConn.destroy();
+		if (!browser) return () => processingConn.destroy();
 		let processingPollTimer: ReturnType<typeof setInterval> | null = null;
 		const pollProcessingCrates = () => {
 			if (document.visibilityState !== 'visible') return;
@@ -356,6 +365,7 @@
 			}
 		};
 		syncProcessingStream();
+		void updated.check();
 		processingPollTimer = setInterval(pollProcessingCrates, 2_000);
 		document.addEventListener('visibilitychange', syncProcessingStream);
 		return () => {
@@ -656,7 +666,7 @@
 
 		<div class="flex items-center justify-end gap-2">
 			<a
-				href="https://github.com/jonfontaine/codeview"
+				href="https://github.com/themixednuts/codeview"
 				target="_blank"
 				rel="noopener noreferrer"
 				class="grid size-7 place-items-center rounded-md text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"

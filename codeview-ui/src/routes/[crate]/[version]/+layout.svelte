@@ -166,12 +166,10 @@
 			wasReady = true;
 		}
 
-		if (isHosted) return;
 		statusConn.connect(canonicalCrateName, version);
 	}
 
 	function connectProgressForCurrentRoute() {
-		if (isHosted) return;
 		if (!browser || !canonicalCrateName || !version || !canQueryCrate) return;
 		if (effectiveCrateStatus !== 'processing') return;
 		const nextKey = `${canonicalCrateName}@${version}`;
@@ -490,7 +488,7 @@
 	const loadingCrateSwitcher = $derived(!isHosted && !localCrates && !indexFromQuery);
 
 	$effect(() => {
-		if (!browser || isHosted || !canonicalCrateName || !version) return;
+		if (!browser || !canonicalCrateName || !version) return;
 		const key = `${canonicalCrateName}@${version}`;
 		const showProgress =
 			effectiveCrateStatus === 'processing' ||
@@ -522,7 +520,7 @@
 		statusConn.step = 'resolving';
 		statusConn.action = undefined;
 		statusConn.error = null;
-		if (!isHosted) statusConn.connect(crateName, version);
+		statusConn.connect(crateName, version);
 	}}
 	onInstallError={(msg) => {
 		log.warn`std install failed ${crateName}@${version}: ${msg}`;
@@ -535,7 +533,7 @@
 		statusConn.step = 'resolving';
 		statusConn.action = undefined;
 		statusConn.error = null;
-		if (!isHosted) statusConn.connect(crateName, version);
+		statusConn.connect(crateName, version);
 		log.info`retry parse ${crateName}@${version}`;
 	}}
 	onRetryError={(msg) => {

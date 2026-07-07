@@ -1,5 +1,6 @@
 import type { Cookies, Handle } from '@sveltejs/kit';
 import { setupLogging } from '$lib/log';
+import { handleWsUpgrade } from '$provider';
 import {
 	ACCENT_KEY,
 	ACCENT_VALUES,
@@ -22,10 +23,17 @@ await setupLogging();
 type HtmlDataAttributes = Record<`data-${string}`, string>;
 
 export const handle: Handle = async ({ event, resolve }) => {
+	if (event.url.pathname === '/api/events/ws') {
+		if (event.request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
+			return new Response('Expected WebSocket upgrade', { status: 426 });
+		}
+		return handleWsUpgrade(event);
+	}
+
 	const htmlAttributes = getHtmlDataAttributes(event.cookies);
 	let appliedHtmlAttributes = false;
 
-	return resolve(event, {
+	const response = await resolve(event, {
 		transformPageChunk: ({ html }) => {
 			if (appliedHtmlAttributes) return html;
 
@@ -34,7 +42,27 @@ export const handle: Handle = async ({ event, resolve }) => {
 			return nextHtml;
 		},
 	});
+	return withDynamicCachePolicy(event.url.pathname, response);
 };
+
+function withDynamicCachePolicy(pathname: string, response: Response): Response {
+	if (pathname.startsWith('/_app/immutable/') && !response.ok) {
+		return withCacheControl(response, 'no-store');
+	}
+	if (response.headers.has('Cache-Control')) return response;
+	if (pathname.startsWith('/_app/immutable/') || pathname.startsWith('/favicon')) return response;
+	return withCacheControl(response, 'no-store');
+}
+
+function withCacheControl(response: Response, value: string): Response {
+	const headers = new Headers(response.headers);
+	headers.set('Cache-Control', value);
+	return new Response(response.body, {
+		status: response.status,
+		statusText: response.statusText,
+		headers,
+	});
+}
 
 function getHtmlDataAttributes(cookies: Cookies): HtmlDataAttributes {
 	const themePref = readAllowedPreference(cookies.get(THEME_KEY), THEME_VALUES, 'light');

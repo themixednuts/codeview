@@ -1,0 +1,45 @@
+name = "codeview-parser"
+account_id = "8ce8bd9cb4d667a578aee91aa8dc5edd"
+compatibility_date = "2026-07-07"
+compatibility_flags = ["nodejs_compat"]
+main = "src/parse-worker.ts"
+
+[vars]
+GITHUB_REPO = "themixednuts/codeview"
+GITHUB_REF = "main"
+GITHUB_WORKFLOW_FILE = "parse.yml"
+PARSE_CALLBACK_BASE_URL = "https://codeview-parser.jonfonts.workers.dev"
+PARSE_DISPATCH_BURST = "2"
+PARSE_DISPATCH_REFILL_SECONDS = "45"
+DOCSRS_PARSE_BURST = "4"
+DOCSRS_PARSE_REFILL_SECONDS = "20"
+SYSROOT_PARSE_BURST = "1"
+SYSROOT_PARSE_REFILL_SECONDS = "600"
+
+[[r2_buckets]]
+binding = "CRATE_GRAPHS"
+bucket_name = "crate-graphs"
+
+[[queues.consumers]]
+queue = "codeview-parse-requests"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+dead_letter_queue = "codeview-parse-dead"
+
+[[queues.producers]]
+binding = "PARSE_REQUESTS"
+queue = "codeview-parse-requests"
+
+[[workflows]]
+name = "codeview-parse"
+binding = "PARSE_WORKFLOW"
+class_name = "ParseCrateWorkflow"
+
+[[durable_objects.bindings]]
+name = "PARSE_STATUS"
+class_name = "ParseStatusDurableObject"
+
+[[migrations]]
+tag = "v1_parse_status_sqlite"
+new_sqlite_classes = ["ParseStatusDurableObject"]
