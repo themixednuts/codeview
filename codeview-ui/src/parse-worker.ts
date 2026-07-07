@@ -97,6 +97,21 @@ function statusRowToObject(row: Record<string, unknown>): StoredParseStatus {
 			typeof row.github_run_id === 'string' && row.github_run_id ? row.github_run_id : undefined,
 		githubRunUrl:
 			typeof row.github_run_url === 'string' && row.github_run_url ? row.github_run_url : undefined,
+		requestedBy:
+			typeof row.requested_by_id === 'string' &&
+			row.requested_by_id &&
+			typeof row.requested_by_login === 'string' &&
+			row.requested_by_login
+				? {
+						provider: 'github',
+						id: row.requested_by_id,
+						login: row.requested_by_login,
+						avatarUrl:
+							typeof row.requested_by_avatar_url === 'string' && row.requested_by_avatar_url
+								? row.requested_by_avatar_url
+								: undefined,
+					}
+				: undefined,
 		createdAt: String(row.created_at),
 		updatedAt: String(row.updated_at),
 		sequence: Number(row.sequence ?? 0),
@@ -236,6 +251,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 				workflow_id TEXT,
 				github_run_id TEXT,
 				github_run_url TEXT,
+				requested_by_provider TEXT,
+				requested_by_id TEXT,
+				requested_by_login TEXT,
+				requested_by_avatar_url TEXT,
 				created_at TEXT NOT NULL,
 				updated_at TEXT NOT NULL,
 				sequence INTEGER NOT NULL DEFAULT 0,
@@ -243,6 +262,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			);
 		`);
 		this.trySql(`ALTER TABLE statuses ADD COLUMN kind TEXT NOT NULL DEFAULT 'crate'`);
+		this.trySql(`ALTER TABLE statuses ADD COLUMN requested_by_provider TEXT`);
+		this.trySql(`ALTER TABLE statuses ADD COLUMN requested_by_id TEXT`);
+		this.trySql(`ALTER TABLE statuses ADD COLUMN requested_by_login TEXT`);
+		this.trySql(`ALTER TABLE statuses ADD COLUMN requested_by_avatar_url TEXT`);
 		this.ctx.storage.sql.exec(`
 			CREATE INDEX IF NOT EXISTS statuses_processing_idx
 			ON statuses (ecosystem, status, updated_at DESC);
@@ -496,9 +519,11 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		this.ctx.storage.sql.exec(
 			`INSERT INTO statuses (
 				ecosystem, kind, name, version, status, step, error, action,
-				request_id, workflow_id, created_at, updated_at, sequence
+				request_id, workflow_id,
+				requested_by_provider, requested_by_id, requested_by_login, requested_by_avatar_url,
+				created_at, updated_at, sequence
 			)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, 1)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 			ON CONFLICT(ecosystem, name, version) DO UPDATE SET
 				kind = excluded.kind,
 				status = excluded.status,
@@ -507,6 +532,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 				action = NULL,
 				request_id = excluded.request_id,
 				workflow_id = excluded.workflow_id,
+				requested_by_provider = excluded.requested_by_provider,
+				requested_by_id = excluded.requested_by_id,
+				requested_by_login = excluded.requested_by_login,
+				requested_by_avatar_url = excluded.requested_by_avatar_url,
 				updated_at = excluded.updated_at,
 				sequence = statuses.sequence + 1`,
 			'rust',
@@ -517,6 +546,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			'queued',
 			message.requestId,
 			workflowId,
+			message.requestedBy?.provider ?? null,
+			message.requestedBy?.id ?? null,
+			message.requestedBy?.login ?? null,
+			message.requestedBy?.avatarUrl ?? null,
 			now,
 			now,
 		);
@@ -531,6 +564,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 				step: 'waiting-rate-limit',
 				requestId: message.requestId,
 				workflowId,
+				requestedBy: message.requestedBy,
 			});
 			return {
 				accepted: true,
@@ -549,6 +583,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			step: 'workflow-started',
 			requestId: message.requestId,
 			workflowId,
+			requestedBy: message.requestedBy,
 		});
 		if (!status) throw new Error('failed to write parse status');
 		return { accepted: true, leased: true, workflowId, status };
@@ -560,9 +595,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			`INSERT INTO statuses (
 				ecosystem, kind, name, version, status, step, error, action,
 				request_id, workflow_id, github_run_id, github_run_url,
+				requested_by_provider, requested_by_id, requested_by_login, requested_by_avatar_url,
 				created_at, updated_at, sequence
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
 			ON CONFLICT(ecosystem, name, version) DO UPDATE SET
 				kind = excluded.kind,
 				status = excluded.status,
@@ -573,6 +609,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 				workflow_id = COALESCE(excluded.workflow_id, statuses.workflow_id),
 				github_run_id = COALESCE(excluded.github_run_id, statuses.github_run_id),
 				github_run_url = COALESCE(excluded.github_run_url, statuses.github_run_url),
+				requested_by_provider = COALESCE(excluded.requested_by_provider, statuses.requested_by_provider),
+				requested_by_id = COALESCE(excluded.requested_by_id, statuses.requested_by_id),
+				requested_by_login = COALESCE(excluded.requested_by_login, statuses.requested_by_login),
+				requested_by_avatar_url = COALESCE(excluded.requested_by_avatar_url, statuses.requested_by_avatar_url),
 				updated_at = excluded.updated_at,
 				sequence = statuses.sequence + 1`,
 			'rust',
@@ -587,6 +627,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			event.workflowId ?? null,
 			event.githubRunId ?? null,
 			event.githubRunUrl ?? null,
+			event.requestedBy?.provider ?? null,
+			event.requestedBy?.id ?? null,
+			event.requestedBy?.login ?? null,
+			event.requestedBy?.avatarUrl ?? null,
 			now,
 			now,
 		);

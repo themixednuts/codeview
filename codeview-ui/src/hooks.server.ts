@@ -1,6 +1,7 @@
 import type { Cookies, Handle } from '@sveltejs/kit';
 import { setupLogging } from '$lib/log';
 import { handleWsUpgrade } from '$provider';
+import { getAuthState, handleAuthRequest } from '$lib/server/auth';
 import {
 	ACCENT_KEY,
 	ACCENT_VALUES,
@@ -28,6 +29,14 @@ export const handle: Handle = async ({ event, resolve }) => {
 			return new Response('Expected WebSocket upgrade', { status: 426 });
 		}
 		return handleWsUpgrade(event);
+	}
+
+	event.locals.auth = await getAuthState(event);
+	event.locals.user = event.locals.auth.user;
+	event.locals.session = event.locals.auth.session;
+
+	if (event.url.pathname === '/api/auth' || event.url.pathname.startsWith('/api/auth/')) {
+		return withDynamicCachePolicy(event.url.pathname, await handleAuthRequest(event));
 	}
 
 	const htmlAttributes = getHtmlDataAttributes(event.cookies);

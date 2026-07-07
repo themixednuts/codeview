@@ -7,6 +7,13 @@ export type ParseRequestKind = 'crate' | 'sysroot';
 
 export type ParseRequestSource = 'ui' | 'manual';
 
+export type ParseRequestActor = {
+	provider: 'github';
+	id: string;
+	login: string;
+	avatarUrl?: string;
+};
+
 export type ParseRequestMessage = {
 	schemaVersion: typeof PARSE_REQUEST_SCHEMA_VERSION;
 	ecosystem: 'rust';
@@ -17,6 +24,7 @@ export type ParseRequestMessage = {
 	requestId: string;
 	requestedAt: string;
 	source: ParseRequestSource;
+	requestedBy?: ParseRequestActor;
 };
 
 export type ParseWorkflowParams = ParseRequestMessage & {
@@ -46,6 +54,7 @@ export type StoredParseStatus = CrateStatus & {
 	workflowId?: string;
 	githubRunId?: string;
 	githubRunUrl?: string;
+	requestedBy?: ParseRequestActor;
 	createdAt: string;
 	updatedAt: string;
 	sequence: number;
@@ -76,6 +85,7 @@ export type ParseStatusEvent = {
 	workflowId?: string;
 	githubRunId?: string;
 	githubRunUrl?: string;
+	requestedBy?: ParseRequestActor;
 };
 
 export function crateStatusTag(name: string, version: string): string {
@@ -97,6 +107,7 @@ export function makeParseRequest(
 	force: boolean,
 	source: ParseRequestSource = 'ui',
 	kind: ParseRequestKind = 'crate',
+	requestedBy?: ParseRequestActor,
 ): ParseRequestMessage {
 	const requestId =
 		typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -112,6 +123,7 @@ export function makeParseRequest(
 		requestId,
 		requestedAt: new Date().toISOString(),
 		source,
+		requestedBy,
 	};
 }
 
@@ -130,6 +142,20 @@ export function isParseRequestMessage(value: unknown): value is ParseRequestMess
 		typeof candidate.requestId === 'string' &&
 		candidate.requestId.length > 0 &&
 		typeof candidate.requestedAt === 'string' &&
-		(candidate.source === 'ui' || candidate.source === 'manual')
+		(candidate.source === 'ui' || candidate.source === 'manual') &&
+		(candidate.requestedBy === undefined || isParseRequestActor(candidate.requestedBy))
+	);
+}
+
+function isParseRequestActor(value: unknown): value is ParseRequestActor {
+	if (typeof value !== 'object' || value === null) return false;
+	const candidate = value as Partial<ParseRequestActor>;
+	return (
+		candidate.provider === 'github' &&
+		typeof candidate.id === 'string' &&
+		candidate.id.length > 0 &&
+		typeof candidate.login === 'string' &&
+		candidate.login.length > 0 &&
+		(candidate.avatarUrl === undefined || typeof candidate.avatarUrl === 'string')
 	);
 }

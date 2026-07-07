@@ -40,6 +40,12 @@ export interface ParseQueueEntry {
 	workflowId?: string;
 	githubRunId?: string;
 	githubRunUrl?: string;
+	requestedBy?: {
+		provider: 'github';
+		id: string;
+		login: string;
+		avatarUrl?: string;
+	};
 	requestedAt: string;
 	updatedAt: string;
 	position?: number;

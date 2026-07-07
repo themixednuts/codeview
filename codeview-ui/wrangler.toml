@@ -6,6 +6,10 @@ main = ".svelte-kit/cloudflare/_worker.js"
 workers_dev = false
 assets = { directory = ".svelte-kit/cloudflare", binding = "ASSETS" }
 
+[vars]
+BETTER_AUTH_URL = "https://codeview.codes"
+GITHUB_ADMIN_LOGINS = "themixednuts"
+
 [[routes]]
 pattern = "codeview.codes"
 custom_domain = true
@@ -16,6 +20,13 @@ enabled = true
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"
 bucket_name = "crate-graphs"
+
+[[d1_databases]]
+binding = "AUTH_DB"
+database_name = "codeview-auth"
+database_id = "313f9934-026b-4c49-9e8c-986986bfa433"
+migrations_dir = "src/lib/server/db/auth-migrations"
+migrations_pattern = "src/lib/server/db/auth-migrations/*/migration.sql"
 
 [[queues.producers]]
 binding = "PARSE_REQUESTS"
@@ -30,3 +41,13 @@ script_name = "codeview-parser"
 name = "RATE_LIMIT_API"
 namespace_id = "1001"
 simple = { limit = 60, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_PARSE_ANON"
+namespace_id = "1002"
+simple = { limit = 12, period = 60 }
+
+[[ratelimits]]
+name = "RATE_LIMIT_PARSE_AUTH"
+namespace_id = "1003"
+simple = { limit = 120, period = 60 }

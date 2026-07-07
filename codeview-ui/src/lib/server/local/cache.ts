@@ -1,8 +1,8 @@
 /// <reference types="@types/bun" />
 import { Result } from 'better-result';
-import { formatToMillis, type MigrationMeta } from 'drizzle-orm/migrator';
-import type { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core/dialect';
-import type { SQLiteSession } from 'drizzle-orm/sqlite-core/session';
+import type { MigrationMeta } from 'drizzle-orm/migrator';
+import { formatToMillis } from 'drizzle-orm/migrator.utils';
+import { migrateSync } from 'drizzle-orm/sqlite-core';
 import { and, count, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -57,6 +57,7 @@ const migrations: MigrationMeta[] = Object.entries(sqlModules)
 			bps: true,
 			folderMillis: formatToMillis(folderName.slice(0, 14)),
 			hash: createHash('sha256').update(sql).digest('hex'),
+			name: folderName,
 		};
 	})
 	.sort((a, b) => a.folderMillis - b.folderMillis);
@@ -116,11 +117,8 @@ export class LocalCache {
 		client.exec('PRAGMA journal_mode = WAL;');
 		client.exec('PRAGMA busy_timeout = 5000;');
 		this.db = drizzle({ client });
-		const { dialect, session } = this.db as unknown as {
-			dialect: SQLiteSyncDialect;
-			session: SQLiteSession<'sync', unknown>;
-		};
-		dialect.migrate(migrations, session);
+		const { session } = this.db as unknown as { session: Parameters<typeof migrateSync>[1] };
+		migrateSync(migrations, session);
 
 		// Reset zombie statuses from a crashed/killed parse process.
 		// Keep "failed" rows so users see what failed and can retry explicitly.

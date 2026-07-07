@@ -41,6 +41,7 @@ import {
 	normalizeCrateName,
 } from '../validation';
 import { getLogger } from '$lib/log';
+import { actorFromUser, getAuthStateFromRequest } from '../auth';
 import {
 	makeParseRequest,
 	parseStatusObject,
@@ -67,6 +68,16 @@ type AppEnv = Env & {
 	PARSE_REQUESTS?: Queue<ParseRequestMessage>;
 	PARSE_STATUS?: DurableObjectNamespace;
 	RATE_LIMIT_API?: RateLimit;
+	RATE_LIMIT_API_ANON?: RateLimit;
+	RATE_LIMIT_API_AUTH?: RateLimit;
+	RATE_LIMIT_PARSE_ANON?: RateLimit;
+	RATE_LIMIT_PARSE_AUTH?: RateLimit;
+	AUTH_DB?: D1Database;
+	BETTER_AUTH_SECRET?: string;
+	BETTER_AUTH_URL?: string;
+	GITHUB_OAUTH_CLIENT_ID?: string;
+	GITHUB_OAUTH_CLIENT_SECRET?: string;
+	GITHUB_ADMIN_LOGINS?: string;
 	GITHUB_REPO?: string;
 	GITHUB_REF?: string;
 	GITHUB_TOKEN?: string;
@@ -616,19 +627,33 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		}
 	}
 
-	function parseRateLimitKey(): string {
+	function anonymousParseRateLimitKey(): string {
 		const ip =
 			request?.headers.get('cf-connecting-ip') ??
 			request?.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ??
 			'anonymous';
-		return `parse:${ip}`;
+		return `parse:anon:${ip}`;
 	}
 
-	async function checkParseRateLimit() {
-		if (!env.RATE_LIMIT_API) return null;
-		const outcome = await env.RATE_LIMIT_API.limit({ key: parseRateLimitKey() });
-		if (outcome.success) return null;
-		return new RateLimitError({ message: 'Too many parse requests. Try again shortly.' });
+	async function resolveParseRequestContext() {
+		const auth = request ? await getAuthStateFromRequest(request, env) : null;
+		const actor = actorFromUser(auth?.user ?? null);
+		const limiter = actor
+			? (env.RATE_LIMIT_PARSE_AUTH ?? env.RATE_LIMIT_API_AUTH ?? env.RATE_LIMIT_API)
+			: (env.RATE_LIMIT_PARSE_ANON ?? env.RATE_LIMIT_API_ANON ?? env.RATE_LIMIT_API);
+		if (!limiter) return { actor, rateLimitError: null };
+
+		const key = actor ? `parse:user:${actor.id}` : anonymousParseRateLimitKey();
+		const outcome = await limiter.limit({ key });
+		if (outcome.success) return { actor, rateLimitError: null };
+		return {
+			actor,
+			rateLimitError: new RateLimitError({
+				message: actor
+					? 'Too many signed-in parse requests. Try again shortly.'
+					: 'Too many anonymous parse requests. Sign in for a higher limit or try again shortly.',
+			}),
+		};
 	}
 
 	function readJson<T>(key: string): Promise<T | null> {
@@ -1087,6 +1112,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			workflowId: stored.workflowId,
 			githubRunId: stored.githubRunId,
 			githubRunUrl: stored.githubRunUrl,
+			requestedBy: stored.requestedBy,
 			requestedAt: stored.createdAt,
 			updatedAt: stored.updatedAt,
 			position,
@@ -1447,8 +1473,8 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
 				}
 			}
-			const rateLimitError = await checkParseRateLimit();
-			if (rateLimitError) return Result.err(rateLimitError);
+			const parseContext = await resolveParseRequestContext();
+			if (parseContext.rateLimitError) return Result.err(parseContext.rateLimitError);
 			if (!env.PARSE_REQUESTS) {
 				return Result.err(
 					new NotAvailableError({
@@ -1456,7 +1482,14 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					}),
 				);
 			}
-			const parseRequest = makeParseRequest(name, version, !!force, 'ui', requestKind);
+			const parseRequest = makeParseRequest(
+				name,
+				version,
+				!!force,
+				'ui',
+				requestKind,
+				parseContext.actor,
+			);
 			const workflowId = parseWorkflowId(parseRequest.requestId);
 			await recordHostedParseEvent({
 				kind: parseRequest.kind,
@@ -1466,6 +1499,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				step: 'queued',
 				requestId: parseRequest.requestId,
 				workflowId,
+				requestedBy: parseRequest.requestedBy,
 			}).catch((err) => {
 				log.warn`parse ledger queue write failed for ${name}@${version}: ${String(err)}`;
 			});
