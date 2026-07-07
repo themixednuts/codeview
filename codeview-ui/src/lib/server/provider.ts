@@ -29,6 +29,48 @@ export interface CrateSummaryResult {
 	description?: string;
 }
 
+export interface ParseQueueEntry {
+	kind: 'crate' | 'sysroot';
+	name: string;
+	version: string;
+	status: CrateStatusValue;
+	step?: string;
+	error?: string;
+	requestId?: string;
+	workflowId?: string;
+	githubRunId?: string;
+	githubRunUrl?: string;
+	requestedAt: string;
+	updatedAt: string;
+	position?: number;
+}
+
+export interface PlannedParseItem {
+	kind: 'crate' | 'sysroot';
+	name: string;
+	version: string;
+	channel: string;
+	priorityTier: string;
+	reason: string;
+	downloadRank?: number;
+	workId: string;
+}
+
+export interface PlannedParseRun {
+	runId: string;
+	generatedAt: string;
+	mode: string;
+	shardCount: number;
+	total: number;
+	items: PlannedParseItem[];
+}
+
+export interface ParseQueueSnapshot {
+	active: ParseQueueEntry[];
+	recent: ParseQueueEntry[];
+	planned: PlannedParseRun | null;
+}
+
 export interface CrossEdgeData {
 	edges: Edge[];
 	nodes: NodeSummary[];
@@ -101,6 +143,7 @@ export interface DataProvider {
 	searchRegistry(query: string): Promise<CrateSummaryResult[]>;
 	getTopCrates(limit?: number): Promise<CrateSummaryResult[]>;
 	getProcessingCrates(limit?: number): Promise<CrateSummaryResult[]>;
+	getParseQueue?(limit?: number): Promise<ParseQueueSnapshot>;
 	getCrateVersions(name: string, limit?: number): Promise<string[]>;
 
 	/** Resolve version aliases ("latest", channel names) to an actual semver.

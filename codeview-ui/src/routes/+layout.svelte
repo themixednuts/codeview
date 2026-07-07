@@ -666,6 +666,15 @@
 
 		<div class="flex items-center justify-end gap-2">
 			<a
+				href={resolve('/queue')}
+				class="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+				aria-label="Parse queue"
+				title="Parse queue"
+			>
+				<Icon name="clock" size={13} />
+				<span class="hidden sm:inline">Queue</span>
+			</a>
+			<a
 				href="https://github.com/themixednuts/codeview"
 				target="_blank"
 				rel="noopener noreferrer"

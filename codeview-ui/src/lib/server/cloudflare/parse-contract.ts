@@ -51,6 +51,11 @@ export type StoredParseStatus = CrateStatus & {
 	sequence: number;
 };
 
+export type ParseQueueSnapshot = {
+	active: StoredParseStatus[];
+	recent: StoredParseStatus[];
+};
+
 export type BeginParseResponse = {
 	accepted: boolean;
 	leased: boolean;

@@ -19,7 +19,15 @@ import type {
 } from '$lib/schema';
 import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
 import { isStdCrate } from '$lib/std';
-import type { CrateSummaryResult, CrossEdgeData, DataProvider } from '../provider';
+import type {
+	CrateSummaryResult,
+	CrossEdgeData,
+	DataProvider,
+	ParseQueueEntry,
+	ParseQueueSnapshot,
+	PlannedParseItem,
+	PlannedParseRun,
+} from '../provider';
 import { getRegistry } from '../registry/index';
 import { fetchSourceFileFromArchive } from '../parser/archive';
 import { getSourceAdapter } from '../sources/index';
@@ -36,7 +44,10 @@ import { getLogger } from '$lib/log';
 import {
 	makeParseRequest,
 	parseStatusObject,
+	parseWorkflowId,
 	type ParseRequestMessage,
+	type ParseStatusEvent,
+	type ParseQueueSnapshot as StoredParseQueueSnapshot,
 	type StoredParseStatus,
 } from './parse-contract';
 import {
@@ -150,6 +161,34 @@ type CrateRefFile = {
 	displayName?: string;
 	aliases: Partial<Record<VersionAlias, CrateRefTarget>>;
 	versions: CrateRefVersion[];
+};
+
+type WorkPlanArtifact = {
+	run_id?: string;
+	runId?: string;
+	generated_at?: string;
+	generatedAt?: string;
+	mode?: string;
+	shard_count?: number;
+	shardCount?: number;
+	work?: Array<{
+		work_id?: string;
+		workId?: string;
+		kind?: string;
+		name?: string;
+		version?: string;
+		channel?: string;
+		priority_tier?: string;
+		priorityTier?: string;
+		download_rank?: number;
+		downloadRank?: number;
+		reason?: string;
+	}>;
+};
+
+type PlanKeyCandidate = {
+	key: string;
+	uploaded?: string;
 };
 
 type ResolvedRefCacheEntry = {
@@ -1012,6 +1051,119 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return (await response.json()) as StoredParseStatus[];
 	}
 
+	async function readHostedQueue(limit: number): Promise<StoredParseQueueSnapshot> {
+		if (!env.PARSE_STATUS) return { active: [], recent: [] };
+		const url = new URL('https://status/queue');
+		url.searchParams.set('limit', String(limit));
+		const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+		if (!response.ok) return { active: [], recent: [] };
+		return (await response.json()) as StoredParseQueueSnapshot;
+	}
+
+	async function recordHostedParseEvent(event: ParseStatusEvent): Promise<void> {
+		if (!env.PARSE_STATUS) return;
+		const response = await parseStatusObject(env.PARSE_STATUS).fetch('https://status/event', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json; charset=utf-8' },
+			body: JSON.stringify(event),
+		});
+		if (!response.ok) {
+			throw new Error(`parse status update failed: ${response.status}`);
+		}
+	}
+
+	function storedStatusToQueueEntry(
+		stored: StoredParseStatus,
+		position?: number,
+	): ParseQueueEntry {
+		return {
+			kind: stored.kind,
+			name: stored.name,
+			version: stored.version,
+			status: stored.status,
+			step: stored.step,
+			error: stored.error,
+			requestId: stored.requestId,
+			workflowId: stored.workflowId,
+			githubRunId: stored.githubRunId,
+			githubRunUrl: stored.githubRunUrl,
+			requestedAt: stored.createdAt,
+			updatedAt: stored.updatedAt,
+			position,
+		};
+	}
+
+	function planItemFromArtifact(item: NonNullable<WorkPlanArtifact['work']>[number]): PlannedParseItem | null {
+		if (!item.name || !item.version) return null;
+		const kind = item.kind === 'std' ? 'sysroot' : 'crate';
+		return {
+			kind,
+			name: item.name,
+			version: item.version,
+			channel: item.channel ?? 'default',
+			priorityTier: item.priority_tier ?? item.priorityTier ?? 'unknown',
+			reason: item.reason ?? '',
+			downloadRank: item.download_rank ?? item.downloadRank,
+			workId: item.work_id ?? item.workId ?? `${kind}:${item.name}:${item.version}`,
+		};
+	}
+
+	function planFromArtifact(plan: WorkPlanArtifact, limit: number): PlannedParseRun | null {
+		const runId = plan.run_id ?? plan.runId;
+		const generatedAt = plan.generated_at ?? plan.generatedAt;
+		if (!runId || !generatedAt) return null;
+		const work = Array.isArray(plan.work) ? plan.work : [];
+		return {
+			runId,
+			generatedAt,
+			mode: plan.mode ?? 'unknown',
+			shardCount: plan.shard_count ?? plan.shardCount ?? 0,
+			total: work.length,
+			items: work
+				.map(planItemFromArtifact)
+				.filter((entry): entry is PlannedParseItem => entry !== null)
+				.slice(0, Math.max(1, limit)),
+		};
+	}
+
+	async function listPlanKeys(maxKeys = 5000): Promise<PlanKeyCandidate[]> {
+		const candidates: PlanKeyCandidate[] = [];
+		let cursor: string | undefined;
+		do {
+			const page = await env.CRATE_GRAPHS.list({
+				prefix: 'rust/_runs/',
+				limit: Math.min(1000, Math.max(1, maxKeys - candidates.length)),
+				cursor,
+			});
+			for (const object of page.objects) {
+				if (object.key.endsWith('/plan.json')) {
+					candidates.push({
+						key: object.key,
+						uploaded: object.uploaded?.toISOString(),
+					});
+				}
+				if (candidates.length >= maxKeys) break;
+			}
+			cursor = page.truncated ? page.cursor : undefined;
+		} while (cursor && candidates.length < maxKeys);
+		return candidates.sort(
+			(a, b) =>
+				(b.uploaded ?? '').localeCompare(a.uploaded ?? '') || b.key.localeCompare(a.key),
+		);
+	}
+
+	async function loadLatestPlannedRun(limit: number): Promise<PlannedParseRun | null> {
+		const plans = await Promise.all(
+			(await listPlanKeys()).slice(0, 25).map(async ({ key }) => {
+				const raw = await readJson<WorkPlanArtifact>(key);
+				return raw ? planFromArtifact(raw, limit) : null;
+			}),
+		);
+		return plans
+			.filter((plan): plan is PlannedParseRun => plan !== null)
+			.sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))[0] ?? null;
+	}
+
 	let publishedCratesCache: Promise<CrateSummaryResult[]> | null = null;
 	async function listPublishedCrates(): Promise<CrateSummaryResult[]> {
 		if (!publishedCratesCache) {
@@ -1304,7 +1456,38 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					}),
 				);
 			}
-			await env.PARSE_REQUESTS.send(makeParseRequest(name, version, !!force, 'ui', requestKind));
+			const parseRequest = makeParseRequest(name, version, !!force, 'ui', requestKind);
+			const workflowId = parseWorkflowId(parseRequest.requestId);
+			await recordHostedParseEvent({
+				kind: parseRequest.kind,
+				name: parseRequest.name,
+				version: parseRequest.version,
+				status: 'processing',
+				step: 'queued',
+				requestId: parseRequest.requestId,
+				workflowId,
+			}).catch((err) => {
+				log.warn`parse ledger queue write failed for ${name}@${version}: ${String(err)}`;
+			});
+			try {
+				await env.PARSE_REQUESTS.send(parseRequest);
+			} catch (err) {
+				await recordHostedParseEvent({
+					kind: parseRequest.kind,
+					name: parseRequest.name,
+					version: parseRequest.version,
+					status: 'failed',
+					step: 'queue-send',
+					error: errorMessage(err),
+					requestId: parseRequest.requestId,
+					workflowId,
+				}).catch(() => {});
+				return Result.err(
+					new NotAvailableError({
+						message: `Hosted parse queue send failed: ${errorMessage(err)}`,
+					}),
+				);
+			}
 			return Result.ok(undefined);
 		},
 
@@ -1362,6 +1545,22 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				version: entry.version,
 				description: entry.step ?? 'Parsing',
 			}));
+		},
+
+		async getParseQueue(limit = 50): Promise<ParseQueueSnapshot> {
+			const boundedLimit = Math.max(1, Math.min(limit, 100));
+			const [queue, planned] = await Promise.all([
+				readHostedQueue(boundedLimit),
+				loadLatestPlannedRun(boundedLimit).catch((err) => {
+					log.warn`planned parse run load failed: ${String(err)}`;
+					return null;
+				}),
+			]);
+			return {
+				active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
+				recent: queue.recent.map((entry) => storedStatusToQueueEntry(entry)),
+				planned,
+			};
 		},
 
 		async getCrateVersions(name: string, limit = 20): Promise<string[]> {

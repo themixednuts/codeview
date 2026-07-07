@@ -12,6 +12,7 @@ import {
 	parseWorkflowId,
 	type BeginParseResponse,
 	type ParseCompletionPayload,
+	type ParseQueueSnapshot,
 	type ParseRequestMessage,
 	type ParseStatusEvent,
 	type ParseWorkflowParams,
@@ -275,6 +276,10 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			const limit = Number(url.searchParams.get('limit') ?? '20');
 			return json(this.processing(Number.isFinite(limit) ? limit : 20));
 		}
+		if (url.pathname === '/queue' && request.method === 'GET') {
+			const limit = Number(url.searchParams.get('limit') ?? '50');
+			return json(this.queueSnapshot(Number.isFinite(limit) ? limit : 50));
+		}
 		return new Response('Not found', { status: 404 });
 	}
 
@@ -390,6 +395,25 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			'processing',
 			Math.max(1, Math.min(limit, 100)),
 		).toArray().map((row) => statusRowToObject(row as Record<string, unknown>));
+	}
+
+	private recent(limit: number): StoredParseStatus[] {
+		return this.ctx.storage.sql.exec(
+			`SELECT * FROM statuses
+			 WHERE ecosystem = ? AND status != ?
+			 ORDER BY updated_at DESC
+			 LIMIT ?`,
+			'rust',
+			'processing',
+			Math.max(1, Math.min(limit, 100)),
+		).toArray().map((row) => statusRowToObject(row as Record<string, unknown>));
+	}
+
+	private queueSnapshot(limit: number): ParseQueueSnapshot {
+		return {
+			active: this.processing(limit),
+			recent: this.recent(limit),
+		};
 	}
 
 	private readBucket(config: RateBucketConfig, nowMs: number): RateBucketState {
