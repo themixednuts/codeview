@@ -312,9 +312,43 @@
 							<Icon name="clock" size={13} class="text-(--accent)" />
 							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Active</h2>
 						</div>
-						<span class="font-mono text-[11px] text-(--muted-soft)">
-							{activeEntries.length} rows
-						</span>
+						<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
+							<span class="font-mono text-[11px] text-(--muted-soft)">
+								{activeEntries.length} rows
+							</span>
+							{#if activeEntries.length > PAGE_SIZE}
+								<div class="flex items-center gap-2">
+									<span class="font-mono text-[11px] text-(--muted-soft)">
+										{pageStart(activePage, activeEntries.length)}-{pageEnd(
+											activePage,
+											activeEntries.length,
+										)}
+										of {activeEntries.length}
+									</span>
+									<button
+										type="button"
+										disabled={activePage <= 1}
+										onclick={() => (activePage -= 1)}
+										class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+									>
+										<Icon name="chevron-left" size={12} />
+										Prev
+									</button>
+									<span class="font-mono text-[11px] text-(--muted-soft)">
+										{activePage}/{activePageCount}
+									</span>
+									<button
+										type="button"
+										disabled={activePage >= activePageCount}
+										onclick={() => (activePage += 1)}
+										class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+									>
+										Next
+										<Icon name="chevron-right" size={12} />
+									</button>
+								</div>
+							{/if}
+						</div>
 					</div>
 					{#if visibleActiveEntries.length > 0}
 						<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
@@ -350,40 +384,6 @@
 								</a>
 							{/each}
 						</div>
-						{#if activeEntries.length > PAGE_SIZE}
-							<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
-								<div class="font-mono text-[11px] text-(--muted-soft)">
-									Showing {pageStart(activePage, activeEntries.length)}-{pageEnd(
-										activePage,
-										activeEntries.length,
-									)}
-									of {activeEntries.length}
-								</div>
-								<div class="flex items-center gap-2">
-									<button
-										type="button"
-										disabled={activePage <= 1}
-										onclick={() => (activePage -= 1)}
-										class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-									>
-										<Icon name="chevron-left" size={12} />
-										Prev
-									</button>
-									<span class="font-mono text-[11px] text-(--muted-soft)">
-										{activePage}/{activePageCount}
-									</span>
-									<button
-										type="button"
-										disabled={activePage >= activePageCount}
-										onclick={() => (activePage += 1)}
-										class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-									>
-										Next
-										<Icon name="chevron-right" size={12} />
-									</button>
-								</div>
-							</div>
-						{/if}
 					{:else}
 						<div
 							class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"
@@ -399,56 +399,19 @@
 							<Icon name="layers" size={13} class="text-(--accent)" />
 							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Planned batch</h2>
 						</div>
-						<span class="font-mono text-[11px] text-(--muted-soft)">
-							{queue?.planned?.total ?? 0} planned
-						</span>
-					</div>
-					{#if visiblePlannedItems.length > 0}
-						<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
-							{#each visiblePlannedItems as item (item.workId)}
-								<a
-									href={itemHref(item.name, item.version)}
-									data-sveltekit-preload-data="off"
-									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[minmax(0,1fr)_180px]"
-								>
-									<div class="min-w-0">
-										<div class="flex min-w-0 flex-wrap items-center gap-2">
-											<span class="badge badge-sm">{kindLabel(item.kind)}</span>
-											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
-												{item.name}
-											</span>
-											<span class="font-mono text-[10.5px] text-(--muted-soft)">
-												{item.version}
-											</span>
-											<span class="badge badge-sm">{item.priorityTier}</span>
-										</div>
-										{#if item.reason}
-											<div class="mt-1 line-clamp-1 text-[12px] text-(--muted)">{item.reason}</div>
-										{/if}
-									</div>
-									<div class="flex items-center justify-between gap-3 md:justify-end">
-										{#if item.downloadRank}
-											<span class="font-mono text-[10.5px] text-(--muted-soft)">
-												rank {item.downloadRank}
-											</span>
-										{/if}
-										<span class="font-mono text-[10.5px] text-(--muted-soft)">
-											{item.channel}
-										</span>
-									</div>
-								</a>
-							{/each}
-						</div>
-						{#if plannedItems.length > PAGE_SIZE}
-							<div class="mt-2 flex flex-wrap items-center justify-between gap-2">
-								<div class="font-mono text-[11px] text-(--muted-soft)">
-									Showing {pageStart(plannedPage, plannedItems.length)}-{pageEnd(
-										plannedPage,
-										plannedItems.length,
-									)}
-									of {plannedItems.length}
-								</div>
+						<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
+							<span class="font-mono text-[11px] text-(--muted-soft)">
+								{queue?.planned?.total ?? 0} planned
+							</span>
+							{#if plannedItems.length > PAGE_SIZE}
 								<div class="flex items-center gap-2">
+									<span class="font-mono text-[11px] text-(--muted-soft)">
+										{pageStart(plannedPage, plannedItems.length)}-{pageEnd(
+											plannedPage,
+											plannedItems.length,
+										)}
+										of {plannedItems.length}
+									</span>
 									<button
 										type="button"
 										disabled={plannedPage <= 1}
@@ -471,8 +434,48 @@
 										<Icon name="chevron-right" size={12} />
 									</button>
 								</div>
-							</div>
-						{/if}
+							{/if}
+						</div>
+					</div>
+					{#if visiblePlannedItems.length > 0}
+						<div class="overflow-hidden rounded-md border border-(--panel-border-soft)">
+							{#each visiblePlannedItems as item (item.workId)}
+								<a
+									href={itemHref(item.name, item.version)}
+									data-sveltekit-preload-data="off"
+									class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[minmax(0,1fr)_180px]"
+								>
+									<div class="min-w-0">
+										<div class="flex min-w-0 flex-wrap items-center gap-2">
+											<span class="badge badge-sm">{kindLabel(item.kind)}</span>
+											<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+												{item.name}
+											</span>
+											<span class="font-mono text-[10.5px] text-(--muted-soft)">
+												{item.version}
+											</span>
+											<span class="badge badge-sm">{item.priorityTier}</span>
+										</div>
+										<div
+											class="mt-1 min-h-[18px] line-clamp-1 text-[12px] text-(--muted)"
+											aria-hidden={!item.reason}
+										>
+											{item.reason ?? ''}
+										</div>
+									</div>
+									<div class="flex items-center justify-between gap-3 md:justify-end">
+										{#if item.downloadRank}
+											<span class="font-mono text-[10.5px] text-(--muted-soft)">
+												rank {item.downloadRank}
+											</span>
+										{/if}
+										<span class="font-mono text-[10.5px] text-(--muted-soft)">
+											{item.channel}
+										</span>
+									</div>
+								</a>
+							{/each}
+						</div>
 					{:else}
 						<div
 							class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-4 py-10 text-center"

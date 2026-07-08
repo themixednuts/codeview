@@ -1425,8 +1425,8 @@
 				{#if mode === 'docs' && docLayout !== 'classic'}
 					{@render nodeContentPane('')}
 				{:else}
-					{@render treePane('min-h-[260px] border-b border-(--panel-border-soft)')}
-					{@render nodeContentPane('min-h-[520px]')}
+					{@render treePane('stacked-tree-pane min-h-[260px] border-b border-(--panel-border-strong)')}
+					{@render nodeContentPane('stacked-doc-pane min-h-[520px]')}
 					{#if mode === 'graph'}
 						{@render detailPane('min-h-[420px] border-t border-(--panel-border-soft)')}
 					{/if}
@@ -1435,3 +1435,15 @@
 		{/if}
 	</div>
 </div>
+
+<style>
+	.live-explorer :global(.stacked-tree-pane) {
+		position: relative;
+		z-index: 2;
+		box-shadow: 0 14px 28px rgb(0 0 0 / 0.16);
+	}
+
+	.live-explorer :global(.stacked-doc-pane) {
+		border-top: 1px solid var(--panel-border-soft);
+	}
+</style>

@@ -750,7 +750,7 @@
 {#if selected}
 	<div class="max-w-3xl">
 		<!-- Header — doc-classic title row: kind label + h1 + qualified path -->
-		<div class="mb-6">
+		<div class="doc-title-header mb-6">
 			<div class="flex items-baseline gap-3 flex-wrap">
 				<span
 					class="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase"
@@ -1268,3 +1268,19 @@
 {:else}
 	<p class="text-sm text-(--muted)">Select a node to view details</p>
 {/if}
+
+<style>
+	@media (max-width: 1279.98px) {
+		.doc-title-header {
+			position: sticky;
+			top: 0;
+			z-index: 20;
+			margin-inline: -0.25rem;
+			padding: 0.85rem 0.25rem 0.75rem;
+			border-bottom: 1px solid var(--panel-border-soft);
+			background: color-mix(in srgb, var(--bg) 94%, transparent);
+			backdrop-filter: blur(12px);
+			-webkit-backdrop-filter: blur(12px);
+		}
+	}
+</style>
