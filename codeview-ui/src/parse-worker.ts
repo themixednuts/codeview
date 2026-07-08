@@ -111,6 +111,9 @@ type WorkPlanArtifact = {
 		kind?: string;
 		name?: string;
 		version?: string;
+		priority_tier?: string;
+		priorityTier?: string;
+		reason?: string;
 	}>;
 };
 
@@ -123,6 +126,15 @@ type PlannedParseItem = {
 	kind: 'crate' | 'sysroot';
 	name: string;
 	version: string;
+	priorityTier?: string;
+	reason?: string;
+};
+
+type FreshnessEntry = {
+	version?: string;
+	parsedAt?: string;
+	parserRevision?: string;
+	schemaVersion?: number;
 };
 
 type GitHubWorkflowRun = {
@@ -503,13 +515,28 @@ async function readStatus(
 	return (await response.json()) as StoredParseStatus | null;
 }
 
-async function readProcessingCount(env: ParseWorkerEnv): Promise<number> {
+function consumesDispatchCapacity(status: StoredParseStatus): boolean {
+	return (
+		status.status === 'processing' &&
+		status.step !== 'waiting-capacity' &&
+		status.step !== 'waiting-github-capacity' &&
+		status.step !== 'waiting-rate-limit'
+	);
+}
+
+async function readProcessingCount(
+	env: ParseWorkerEnv,
+	options: { excludeRequestId?: string; dispatchCapacityOnly?: boolean } = {},
+): Promise<number> {
 	const url = new URL('https://status/queue');
 	url.searchParams.set('limit', '100');
 	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
 	if (!response.ok) return 0;
 	const snapshot = (await response.json()) as ParseQueueSnapshot;
-	return snapshot.active.length;
+	return snapshot.active.filter((status) => {
+		if (options.excludeRequestId && status.requestId === options.excludeRequestId) return false;
+		return options.dispatchCapacityOnly ? consumesDispatchCapacity(status) : true;
+	}).length;
 }
 
 function githubReadHeaders(env: ParseWorkerEnv): HeadersInit {
@@ -690,6 +717,41 @@ async function readDrainPressure(env: ParseWorkerEnv): Promise<{
 	};
 }
 
+async function readDispatchPressure(
+	env: ParseWorkerEnv,
+	excludeRequestId?: string,
+): Promise<{
+	statusActive: number;
+	githubActive: number;
+	actionsInUse: number;
+	capacityReliable: boolean;
+	capacityReason?: string;
+}> {
+	const [statusActive, githubActiveResult] = await Promise.all([
+		readProcessingCount(env, { excludeRequestId, dispatchCapacityOnly: true }),
+		countActiveGitHubParseRuns(env)
+			.then((count) => ({ ok: true as const, count }))
+			.catch((err) => ({ ok: false as const, error: errorMessage(err) })),
+	]);
+	if (!githubActiveResult.ok) {
+		console.warn(`parse dispatch paused: ${githubActiveResult.error}`);
+		return {
+			statusActive,
+			githubActive: statusActive,
+			actionsInUse: statusActive,
+			capacityReliable: false,
+			capacityReason: 'github-active-unavailable',
+		};
+	}
+	const githubActive = githubActiveResult.count;
+	return {
+		statusActive,
+		githubActive,
+		actionsInUse: Math.max(statusActive, githubActive),
+		capacityReliable: true,
+	};
+}
+
 async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 2000): Promise<PlanCandidate[]> {
 	const candidates: PlanCandidate[] = [];
 	let cursor: string | undefined;
@@ -744,6 +806,35 @@ function statusIsNewerThanPlan(status: StoredParseStatus, plan: WorkPlanArtifact
 		: true;
 }
 
+function planReasonParserTarget(reason: string | undefined): string | null {
+	const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(
+		reason ?? '',
+	);
+	return match?.[1] ?? null;
+}
+
+function planReasonSchemaTarget(reason: string | undefined): number | null {
+	const match = /\bschema\s+v\d+\s+(?:\u2192|->)\s+v(\d+)\b/.exec(reason ?? '');
+	if (!match?.[1]) return null;
+	const value = Number.parseInt(match[1], 10);
+	return Number.isFinite(value) ? value : null;
+}
+
+function revisionMatches(actual: string | undefined, target: string): boolean {
+	return !!actual && (actual === target || actual.startsWith(target));
+}
+
+function freshnessParsedAfterPlan(
+	freshness: FreshnessEntry,
+	plan: WorkPlanArtifact | null,
+): boolean {
+	const generatedAtMs = plan ? Date.parse(generatedAt(plan)) : NaN;
+	const parsedAtMs = Date.parse(freshness.parsedAt ?? '');
+	return Number.isFinite(generatedAtMs) && Number.isFinite(parsedAtMs)
+		? parsedAtMs >= generatedAtMs
+		: false;
+}
+
 function plannedParseItem(
 	value: NonNullable<WorkPlanArtifact['work']>[number],
 ): PlannedParseItem | null {
@@ -752,10 +843,139 @@ function plannedParseItem(
 	if (!isSafeCrateName(name) || !isSafeVersion(version)) return null;
 	if (value.kind === 'std' || value.kind === 'sysroot') {
 		if (version !== HOSTED_SYSROOT_PARSE_CHANNEL) return null;
-		return { kind: 'sysroot', name, version };
+		return {
+			kind: 'sysroot',
+			name,
+			version,
+			priorityTier: value.priority_tier ?? value.priorityTier,
+			reason: value.reason,
+		};
 	}
-	if (value.kind === 'crate') return { kind: 'crate', name, version };
+	if (value.kind === 'crate')
+		return {
+			kind: 'crate',
+			name,
+			version,
+			priorityTier: value.priority_tier ?? value.priorityTier,
+			reason: value.reason,
+		};
 	return null;
+}
+
+async function readFreshnessEntry(
+	env: ParseWorkerEnv,
+	item: PlannedParseItem,
+): Promise<FreshnessEntry | null> {
+	for (const variant of crateNameVariants(item.name)) {
+		const entry = await env.CRATE_GRAPHS.get(
+			`rust/_index/by-version/${normalizeCrateName(variant)}/${item.version}.json`,
+		);
+		if (entry) return (await entry.json()) as FreshnessEntry;
+	}
+	return null;
+}
+
+async function plannedItemSatisfiedByFreshness(
+	env: ParseWorkerEnv,
+	item: PlannedParseItem,
+	plan: WorkPlanArtifact | null,
+): Promise<boolean> {
+	const freshness = await readFreshnessEntry(env, item).catch((err) => {
+		console.warn(`planned freshness lookup failed ${item.name}@${item.version}: ${errorMessage(err)}`);
+		return null;
+	});
+	if (!freshness) return false;
+
+	const parserTarget = planReasonParserTarget(item.reason);
+	if (parserTarget)
+		return revisionMatches(freshness.parserRevision, parserTarget) || freshnessParsedAfterPlan(freshness, plan);
+
+	const schemaTarget = planReasonSchemaTarget(item.reason);
+	if (schemaTarget !== null)
+		return freshness.schemaVersion === schemaTarget || freshnessParsedAfterPlan(freshness, plan);
+
+	if (
+		item.priorityTier === 'never-parsed-backfill' ||
+		item.priorityTier === 'newer-version' ||
+		item.reason?.includes('never parsed') ||
+		item.reason?.includes('crates.io')
+	) {
+		return freshness.version === item.version;
+	}
+
+	const generatedAtMs = plan ? Date.parse(generatedAt(plan)) : NaN;
+	const parsedAtMs = Date.parse(freshness.parsedAt ?? '');
+	return freshness.version === item.version && Number.isFinite(generatedAtMs)
+		? Number.isFinite(parsedAtMs) && parsedAtMs >= generatedAtMs
+		: freshness.version === item.version;
+}
+
+async function plannedItemAlreadyHandled(
+	env: ParseWorkerEnv,
+	item: PlannedParseItem,
+	plan: WorkPlanArtifact | null,
+	status: StoredParseStatus | null,
+): Promise<boolean> {
+	if (status?.status === 'processing') return true;
+	if (await plannedItemSatisfiedByFreshness(env, item, plan)) return true;
+	if (status?.status === 'failed' && statusIsNewerThanPlan(status, plan)) return true;
+	if (
+		status?.status === 'ready' &&
+		statusIsNewerThanPlan(status, plan) &&
+		!planReasonParserTarget(item.reason) &&
+		planReasonSchemaTarget(item.reason) === null
+	) {
+		return true;
+	}
+	return false;
+}
+
+async function currentPlanItemForRequest(
+	env: ParseWorkerEnv,
+	request: ParseRequestMessage,
+): Promise<{ plan: WorkPlanArtifact; item: PlannedParseItem } | null> {
+	const plan = await loadLatestPlan(env);
+	const work = Array.isArray(plan?.work) ? plan.work : [];
+	for (const raw of work) {
+		const item = plannedParseItem(raw);
+		if (
+			item &&
+			item.kind === request.kind &&
+			normalizeCrateName(item.name) === normalizeCrateName(request.name) &&
+			item.version === request.version
+		) {
+			return { plan: plan!, item };
+		}
+	}
+	return null;
+}
+
+async function retireStalePlannedRequest(
+	env: ParseWorkerEnv,
+	request: ParseRequestMessage,
+	reason: string,
+): Promise<void> {
+	const status = await readStatus(env, request.name, request.version);
+	if (status?.requestId !== request.requestId || status.status !== 'processing') return;
+	if (await markReadyIfArtifactsExist(env, status)) return;
+	await failStaleProcessing(env, status, 'planned-stale', reason);
+}
+
+async function plannedQueueMessageStillNeeded(
+	env: ParseWorkerEnv,
+	request: ParseRequestMessage,
+): Promise<boolean> {
+	if (request.source !== 'planned') return true;
+	const current = await currentPlanItemForRequest(env, request);
+	if (!current) {
+		await retireStalePlannedRequest(env, request, 'Planned parse request was superseded before dispatch');
+		return false;
+	}
+	if (await plannedItemSatisfiedByFreshness(env, current.item, current.plan)) {
+		await retireStalePlannedRequest(env, request, 'Planned parse request was already satisfied');
+		return false;
+	}
+	return true;
 }
 
 async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): Promise<void> {
@@ -860,7 +1080,7 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
 			continue;
 		}
 		const status = await readStatus(env, item.name, item.version);
-		if (status?.status === 'processing' || (status && statusIsNewerThanPlan(status, plan))) {
+		if (await plannedItemAlreadyHandled(env, item, plan, status)) {
 			skipped += 1;
 			continue;
 		}
@@ -1012,15 +1232,6 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 		if (status.step === 'finalizing') continue;
 		const updatedAtMs = Date.parse(status.updatedAt);
 		const ageMs = Number.isFinite(updatedAtMs) ? now - updatedAtMs : 0;
-		if (ageMs < STALE_PROCESSING_RECONCILE_MS) {
-			kept += 1;
-			continue;
-		}
-
-		if (await markReadyIfArtifactsExist(env, status)) {
-			ready += 1;
-			continue;
-		}
 
 		if (status.githubRunId) {
 			let runLookupFailed = false;
@@ -1049,6 +1260,20 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 				kept += 1;
 				continue;
 			}
+			if (run?.status === 'completed' && run.conclusion === 'success') {
+				if (await markReadyIfArtifactsExist(env, status)) {
+					ready += 1;
+					continue;
+				}
+				await failStaleProcessing(
+					env,
+					status,
+					'artifact-verify',
+					'GitHub parse workflow completed successfully but expected R2 artifacts are unavailable',
+				);
+				failed += 1;
+				continue;
+			}
 			const conclusion =
 				run?.status === 'completed'
 					? (run.conclusion ?? 'completed without conclusion')
@@ -1060,6 +1285,16 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 				`GitHub parse workflow ${conclusion} before callback`,
 			);
 			failed += 1;
+			continue;
+		}
+
+		if (ageMs < STALE_PROCESSING_RECONCILE_MS) {
+			kept += 1;
+			continue;
+		}
+
+		if (await markReadyIfArtifactsExist(env, status)) {
+			ready += 1;
 			continue;
 		}
 
@@ -1748,6 +1983,43 @@ async function reconcileExistingWorkflowInstance(
 	}
 }
 
+async function deferQueueMessage(
+	message: Message<ParseRequestMessage>,
+	env: ParseWorkerEnv,
+	delaySeconds: number,
+): Promise<void> {
+	const boundedDelay = Math.min(900, Math.max(1, delaySeconds) + Math.floor(Math.random() * 5));
+	if (env.PARSE_REQUESTS) {
+		await env.PARSE_REQUESTS.send(message.body, { delaySeconds: boundedDelay });
+		message.ack();
+		return;
+	}
+	message.retry({ delaySeconds: boundedDelay });
+}
+
+async function waitForDispatchCapacity(
+	message: Message<ParseRequestMessage>,
+	env: ParseWorkerEnv,
+): Promise<boolean> {
+	const activeTarget = parsePositiveInteger(env.PLAN_DRAIN_ACTIVE_TARGET, 4);
+	const pressure = await readDispatchPressure(env, message.body.requestId);
+	if (pressure.capacityReliable && pressure.actionsInUse < activeTarget) return true;
+
+	await updateStatus(env, {
+		name: message.body.name,
+		version: message.body.version,
+		kind: message.body.kind,
+		status: 'processing',
+		step: pressure.capacityReliable ? 'waiting-capacity' : 'waiting-github-capacity',
+		error: pressure.capacityReliable ? undefined : pressure.capacityReason,
+		requestId: message.body.requestId,
+		workflowId: parseWorkflowId(message.body.requestId),
+		requestedBy: message.body.requestedBy,
+	});
+	await deferQueueMessage(message, env, pressure.capacityReliable ? 60 : 180);
+	return false;
+}
+
 async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv): Promise<void> {
 	if (!isParseRequestMessage(message.body)) {
 		message.ack();
@@ -1768,6 +2040,13 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 		message.ack();
 		return;
 	}
+	if (!(await plannedQueueMessageStillNeeded(env, message.body))) {
+		message.ack();
+		return;
+	}
+	if (!(await waitForDispatchCapacity(message as Message<ParseRequestMessage>, env))) {
+		return;
+	}
 	const beginResponse = await parseStatusObject(env.PARSE_STATUS).fetch('https://status/begin', {
 		method: 'POST',
 		headers: JSON_HEADERS,
@@ -1783,16 +2062,7 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 		return;
 	}
 	if (!begin.leased) {
-		const retryAfterSeconds = Math.min(
-			900,
-			Math.max(1, begin.retryAfterSeconds ?? 30) + Math.floor(Math.random() * 5),
-		);
-		if (env.PARSE_REQUESTS) {
-			await env.PARSE_REQUESTS.send(message.body, { delaySeconds: retryAfterSeconds });
-			message.ack();
-		} else {
-			message.retry({ delaySeconds: retryAfterSeconds });
-		}
+		await deferQueueMessage(message as Message<ParseRequestMessage>, env, begin.retryAfterSeconds ?? 30);
 		return;
 	}
 	try {
@@ -1920,7 +2190,9 @@ export default {
 	},
 
 	async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
-		await Promise.all(batch.messages.map((message) => handleQueueMessage(message, env)));
+		for (const message of batch.messages) {
+			await handleQueueMessage(message, env);
+		}
 	},
 
 	async fetch(request: Request, env: ParseWorkerEnv): Promise<Response> {

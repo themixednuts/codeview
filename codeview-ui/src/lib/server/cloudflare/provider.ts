@@ -311,6 +311,13 @@ type WorkPlanArtifact = {
 	}>;
 };
 
+type FreshnessEntry = {
+	version?: string;
+	parsedAt?: string;
+	parserRevision?: string;
+	schemaVersion?: number;
+};
+
 type PlanKeyCandidate = {
 	key: string;
 	uploaded?: string;
@@ -1639,6 +1646,75 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return keys;
 	}
 
+	function planReasonParserTarget(reason: string | undefined): string | null {
+		const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(
+			reason ?? '',
+		);
+		return match?.[1] ?? null;
+	}
+
+	function planReasonSchemaTarget(reason: string | undefined): number | null {
+		const match = /\bschema\s+v\d+\s+(?:\u2192|->)\s+v(\d+)\b/.exec(reason ?? '');
+		if (!match?.[1]) return null;
+		const value = Number.parseInt(match[1], 10);
+		return Number.isFinite(value) ? value : null;
+	}
+
+	function revisionMatches(actual: string | undefined, target: string): boolean {
+		return !!actual && (actual === target || actual.startsWith(target));
+	}
+
+	function freshnessParsedAfterPlan(freshness: FreshnessEntry, planGeneratedAt: string): boolean {
+		const generatedAtMs = Date.parse(planGeneratedAt);
+		const parsedAtMs = Date.parse(freshness.parsedAt ?? '');
+		return Number.isFinite(generatedAtMs) && Number.isFinite(parsedAtMs)
+			? parsedAtMs >= generatedAtMs
+			: false;
+	}
+
+	async function readPlanFreshness(item: PlannedParseItem): Promise<FreshnessEntry | null> {
+		for (const variant of crateNameVariants(item.name)) {
+			const entry = await readJson<FreshnessEntry>(
+				`rust/_index/by-version/${normalizeCrateName(variant)}/${item.version}.json`,
+			);
+			if (entry) return entry;
+		}
+		return null;
+	}
+
+	async function plannedItemSatisfiedByFreshness(
+		item: PlannedParseItem,
+		planGeneratedAt: string,
+	): Promise<boolean> {
+		const freshness = await readPlanFreshness(item);
+		if (!freshness) return false;
+
+		const parserTarget = planReasonParserTarget(item.reason);
+		if (parserTarget)
+			return revisionMatches(freshness.parserRevision, parserTarget) ||
+				freshnessParsedAfterPlan(freshness, planGeneratedAt);
+
+		const schemaTarget = planReasonSchemaTarget(item.reason);
+		if (schemaTarget !== null)
+			return freshness.schemaVersion === schemaTarget ||
+				freshnessParsedAfterPlan(freshness, planGeneratedAt);
+
+		if (
+			item.priorityTier === 'never-parsed-backfill' ||
+			item.priorityTier === 'newer-version' ||
+			item.reason.includes('never parsed') ||
+			item.reason.includes('crates.io')
+		) {
+			return freshness.version === item.version;
+		}
+
+		const generatedAtMs = Date.parse(planGeneratedAt);
+		const parsedAtMs = Date.parse(freshness.parsedAt ?? '');
+		return freshness.version === item.version && Number.isFinite(generatedAtMs)
+			? Number.isFinite(parsedAtMs) && parsedAtMs >= generatedAtMs
+			: freshness.version === item.version;
+	}
+
 	function planItemFromArtifact(
 		item: NonNullable<WorkPlanArtifact['work']>[number],
 	): PlannedParseItem | null {
@@ -1656,19 +1732,26 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
-	function planFromArtifact(
+	async function planFromArtifact(
 		plan: WorkPlanArtifact,
 		limit: number,
 		excludedKeys = new Set<string>(),
-	): PlannedParseRun | null {
+	): Promise<PlannedParseRun | null> {
 		const runId = plan.run_id ?? plan.runId;
 		const generatedAt = plan.generated_at ?? plan.generatedAt;
 		if (!runId || !generatedAt) return null;
 		const work = Array.isArray(plan.work) ? plan.work : [];
-		const items = work
+		const candidates = work
 			.map(planItemFromArtifact)
 			.filter((entry): entry is PlannedParseItem => entry !== null)
 			.filter((entry) => !excludedKeys.has(planItemKey(entry.kind, entry.name, entry.version)));
+		const items = (
+			await Promise.all(
+				candidates.map(async (entry) =>
+					(await plannedItemSatisfiedByFreshness(entry, generatedAt)) ? null : entry,
+				),
+			)
+		).filter((entry): entry is PlannedParseItem => entry !== null);
 		return {
 			runId,
 			generatedAt,
@@ -1711,7 +1794,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		const plans = await Promise.all(
 			(await listPlanKeys()).slice(0, 25).map(async ({ key }) => {
 				const raw = await readJson<WorkPlanArtifact>(key);
-				return raw ? planFromArtifact(raw, limit, excludedKeys) : null;
+				return raw ? await planFromArtifact(raw, limit, excludedKeys) : null;
 			}),
 		);
 		return (
