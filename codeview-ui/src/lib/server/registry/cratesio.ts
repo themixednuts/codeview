@@ -4,6 +4,8 @@ import { FetchError, JsonParseError } from '../errors';
 
 const CRATES_IO_API = 'https://crates.io/api/v1';
 const USER_AGENT = 'codeview (https://github.com/themixednuts/codeview)';
+const DEFAULT_VERSION_LIMIT = 100;
+const VERSION_PAGE_SIZE = 100;
 
 interface CratesIoVersion {
 	num: string;
@@ -30,6 +32,9 @@ interface CratesIoVersionEntry {
 
 interface CratesIoVersionsResponse {
 	versions: CratesIoVersionEntry[];
+	meta?: {
+		total?: number;
+	};
 }
 
 async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonParseError>> {
@@ -133,12 +138,26 @@ export function createCratesIoAdapter(): RegistryAdapter {
 			}));
 		},
 
-		async listVersions(name, limit = 20) {
-			const result = await fetchJson<CratesIoVersionsResponse>(
-				`${CRATES_IO_API}/crates/${name}/versions?per_page=${limit}`,
-			);
-			if (result.isErr()) return [];
-			return result.value.versions.filter((v) => !v.yanked).map((v) => v.num);
+		async listVersions(name, limit = DEFAULT_VERSION_LIMIT) {
+			const maxVersions = Math.max(0, limit);
+			if (maxVersions === 0) return [];
+			const perPage = Math.min(VERSION_PAGE_SIZE, maxVersions);
+			const versions: string[] = [];
+			let page = 1;
+			while (versions.length < maxVersions) {
+				const result = await fetchJson<CratesIoVersionsResponse>(
+					`${CRATES_IO_API}/crates/${name}/versions?per_page=${perPage}&page=${page}`,
+				);
+				if (result.isErr()) return versions;
+				const pageVersions = result.value.versions;
+				versions.push(...pageVersions.filter((v) => !v.yanked).map((v) => v.num));
+				const total = result.value.meta?.total;
+				if (pageVersions.length === 0) break;
+				if (typeof total === 'number' && page * perPage >= total) break;
+				if (typeof total !== 'number' && pageVersions.length < perPage) break;
+				page += 1;
+			}
+			return versions.slice(0, maxVersions);
 		},
 
 		async getLatestVersion(name) {

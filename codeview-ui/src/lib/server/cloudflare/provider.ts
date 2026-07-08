@@ -904,6 +904,29 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return foundRefs ? [] : null;
 	}
 
+	async function listRegistryVersions(name: string, limit: number): Promise<string[]> {
+		if (isStdCrate(normalizeCrateName(name))) return [];
+		const registryResult = getRegistry('rust');
+		if (registryResult.isErr()) return [];
+		for (const variant of uniqueCrateNameVariants(name)) {
+			const versions = await registryResult.value.listVersions(variant, limit);
+			if (versions.length > 0) return versions;
+		}
+		return [];
+	}
+
+	function mergeVersions(primary: string[], secondary: string[] | null, limit: number): string[] {
+		const versions: string[] = [];
+		const seen = new Set<string>();
+		for (const version of [...primary, ...(secondary ?? [])]) {
+			if (seen.has(version)) continue;
+			seen.add(version);
+			versions.push(version);
+			if (versions.length >= limit) break;
+		}
+		return versions;
+	}
+
 	async function loadHostedContext(
 		name: string,
 		version: string,
@@ -1221,14 +1244,16 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return catalog;
 	}
 
-	async function listPublishedVersions(name: string, limit = 20): Promise<string[]> {
-		const refsVersions = await listPublishedVersionsFromRefs(name, limit);
+	async function listPublishedVersions(name: string, limit = 100): Promise<string[]> {
+		const [refsVersions, registryVersions] = await Promise.all([
+			listPublishedVersionsFromRefs(name, limit),
+			listRegistryVersions(name, limit),
+		]);
+		if (registryVersions.length > 0) return mergeVersions(registryVersions, refsVersions, limit);
 		return refsVersions ?? [];
 	}
 
 	async function firstPublishedVersion(name: string): Promise<string | null> {
-		const latest = await resolveRefForArtifact(name, 'latest');
-		if (latest) return latest.version;
 		return (await listPublishedVersions(name, 1))[0] ?? null;
 	}
 
@@ -2117,12 +2142,13 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			return { queue, allowance };
 		},
 
-		async getCrateVersions(name: string, limit = 20): Promise<string[]> {
+		async getCrateVersions(name: string, limit = 100): Promise<string[]> {
 			return listPublishedVersions(name, limit);
 		},
 
 		async resolveVersion(name: string, version: string): Promise<string> {
 			if (version === 'latest' && isStdCrate(normalizeCrateName(name))) return 'stable';
+			if (version === 'latest') return (await firstPublishedVersion(name)) ?? version;
 			const ref = await resolveRefForArtifact(name, version);
 			return ref?.version ?? version;
 		},

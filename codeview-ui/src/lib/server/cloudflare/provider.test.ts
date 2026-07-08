@@ -458,6 +458,59 @@ describe('createCloudflareProvider', () => {
 		]);
 	});
 
+	test('uses live crates.io versions beyond parsed artifact refs', async () => {
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = new URL(String(input));
+			expect(url.pathname).toBe('/api/v1/crates/hashbrown/versions');
+			return new Response(
+				JSON.stringify({
+					versions: [
+						{ num: '0.17.1', yanked: false },
+						{ num: '0.17.0', yanked: false },
+						{ num: '0.16.1', yanked: false },
+					],
+					meta: { total: 3 },
+				}),
+				{ status: 200, headers: { 'content-type': 'application/json' } },
+			);
+		});
+		vi.stubGlobal('fetch', fetchMock);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(
+				new Map([
+					[
+						'rust/_refs/hashbrown.json',
+						{
+							schemaVersion: 1,
+							storageName: 'hashbrown',
+							displayName: 'hashbrown',
+							aliases: {
+								latest: {
+									version: '0.17.1',
+									graphHash: 'hash-0.17.1',
+								},
+							},
+							versions: [
+								{
+									version: '0.17.1',
+									graphHash: 'hash-0.17.1',
+								},
+							],
+						},
+					],
+				]),
+			),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.getCrateVersions('hashbrown', 5)).resolves.toEqual([
+			'0.17.1',
+			'0.17.0',
+			'0.16.1',
+		]);
+		await expect(provider.resolveVersion('hashbrown', 'latest')).resolves.toBe('0.17.1');
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
 	test('includes active GitHub parse workflow runs in queue snapshots', async () => {
 		vi.stubGlobal(
 			'fetch',
