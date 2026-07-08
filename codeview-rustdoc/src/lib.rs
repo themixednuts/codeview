@@ -187,6 +187,9 @@ pub struct RustdocValidationReport {
     pub graph_edges: usize,
     pub external_graph_nodes: usize,
     pub pruned_edges: usize,
+    pub raw_doc_links: usize,
+    pub resolved_doc_links: usize,
+    pub unresolved_doc_links: usize,
     pub warnings: Vec<String>,
     pub quarantine_reason: Option<String>,
 }
@@ -205,6 +208,9 @@ impl RustdocValidationReport {
             graph_edges: 0,
             external_graph_nodes: 0,
             pruned_edges: 0,
+            raw_doc_links: 0,
+            resolved_doc_links: 0,
+            unresolved_doc_links: 0,
             warnings: Vec::new(),
             quarantine_reason: None,
         }
@@ -1227,6 +1233,15 @@ pub fn extract_graph_validated(
     )?;
     let mut report = validated.report;
     report.pruned_edges = stats.pruned_edges;
+    report.raw_doc_links = stats.raw_doc_links;
+    report.resolved_doc_links = stats.resolved_doc_links;
+    report.unresolved_doc_links = stats.unresolved_doc_links;
+    if stats.unresolved_doc_links > 0 {
+        report.warnings.push(format!(
+            "left {} of {} rustdoc intra-doc link targets unresolved because their IDs were absent from paths/index",
+            stats.unresolved_doc_links, stats.raw_doc_links
+        ));
+    }
     validate_graph_quality(&graph, crate_name, &mut report)?;
     Ok((graph, report))
 }
@@ -1566,6 +1581,9 @@ struct BuildGraphOptions<'a> {
 #[derive(Debug, Default, Clone, Copy)]
 struct BuildGraphStats {
     pruned_edges: usize,
+    raw_doc_links: usize,
+    resolved_doc_links: usize,
+    unresolved_doc_links: usize,
 }
 
 fn build_graph(
@@ -2224,12 +2242,22 @@ fn build_graph_with_stats(
         &path_index,
     );
     let pruned_edges = prune_dangling_edges(&mut graph, &node_cache);
+    let (raw_doc_links, resolved_doc_links, unresolved_doc_links) =
+        doc_link_resolution_stats(krate, crate_name, &path_index);
 
     // Persist the alias map so server URL routing can resolve user-friendly
     // paths back to their canonical node IDs.
     graph.aliases = aliases;
 
-    Ok((graph, BuildGraphStats { pruned_edges }))
+    Ok((
+        graph,
+        BuildGraphStats {
+            pruned_edges,
+            raw_doc_links,
+            resolved_doc_links,
+            unresolved_doc_links,
+        },
+    ))
 }
 
 fn collect_method_ids(krate: &rdt::Crate) -> HashSet<rdt::Id> {
@@ -3421,6 +3449,29 @@ fn extract_doc_links(
             })
         })
         .collect()
+}
+
+fn doc_link_resolution_stats(
+    krate: &rdt::Crate,
+    default_crate_name: &str,
+    path_index: &PathIndex,
+) -> (usize, usize, usize) {
+    let mut raw = 0;
+    let mut resolved = 0;
+    let mut unresolved = 0;
+
+    for item in krate.index.values() {
+        for id in item.links.values() {
+            raw += 1;
+            if resolve_id(krate, default_crate_name, path_index, *id).is_some() {
+                resolved += 1;
+            } else {
+                unresolved += 1;
+            }
+        }
+    }
+
+    (raw, resolved, unresolved)
 }
 
 #[derive(Default)]
@@ -5782,6 +5833,39 @@ mod tests {
         )
     }
 
+    fn rustdoc_assoc_const_item(id: u32, name: &str) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            name,
+            serde_json::json!({
+                "assoc_const": {
+                    "type": {
+                        "generic": "Self"
+                    },
+                    "value": null,
+                    "default_unstable": null
+                }
+            }),
+        )
+    }
+
+    fn rustdoc_assoc_type_item(id: u32, name: &str) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            name,
+            serde_json::json!({
+                "assoc_type": {
+                    "generics": empty_generics(),
+                    "bounds": [],
+                    "type": null,
+                    "default_unstable": null
+                }
+            }),
+        )
+    }
+
     fn empty_generics() -> serde_json::Value {
         serde_json::json!({
             "params": [],
@@ -6005,6 +6089,126 @@ mod tests {
                 .map(String::as_str),
             Some("fixture::distr::uniform::Uniform::new"),
         );
+    }
+
+    #[test]
+    fn doc_links_resolve_trait_associated_consts_and_types_not_listed_in_paths() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1, 2]);
+        value["index"]["1"] = rustdoc_item(
+            1,
+            0,
+            "flags",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [],
+                    "is_stripped": false
+                }
+            }),
+        );
+        value["index"]["1"]["docs"] =
+            serde_json::json!("See [`Flags::FLAGS`] and [`Flags::Bits`].");
+        value["index"]["1"]["links"] = serde_json::json!({
+            "`Flags::FLAGS`": 3,
+            "`Flags::Bits`": 4
+        });
+        value["index"]["2"] = rustdoc_trait_item(2, "Flags", vec![3, 4]);
+        value["index"]["3"] = rustdoc_assoc_const_item(3, "FLAGS");
+        value["index"]["4"] = rustdoc_assoc_type_item(4, "Bits");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "flags"],
+            "kind": "module"
+        });
+        value["paths"]["2"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "Flags"],
+            "kind": "trait"
+        });
+
+        let (graph, report) = extract_graph_validated(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("graph extracts");
+
+        let module = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::flags")
+            .expect("module node exists");
+        assert_eq!(
+            module.doc_links.get("`Flags::FLAGS`").map(String::as_str),
+            Some("fixture::Flags::FLAGS"),
+        );
+        assert_eq!(
+            module.doc_links.get("`Flags::Bits`").map(String::as_str),
+            Some("fixture::Flags::Bits"),
+        );
+        assert_eq!(report.raw_doc_links, 2);
+        assert_eq!(report.resolved_doc_links, 2);
+        assert_eq!(report.unresolved_doc_links, 0);
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "fixture::Flags::FLAGS")
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "fixture::Flags::Bits")
+        );
+    }
+
+    #[test]
+    fn doc_link_resolution_stats_report_opaque_rustdoc_targets() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_item(
+            1,
+            0,
+            "docs",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [],
+                    "is_stripped": false
+                }
+            }),
+        );
+        value["index"]["1"]["docs"] = serde_json::json!("See [`Opaque::missing`].");
+        value["index"]["1"]["links"] = serde_json::json!({
+            "`Opaque::missing`": 99
+        });
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "docs"],
+            "kind": "module"
+        });
+
+        let (graph, report) = extract_graph_validated(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("graph extracts");
+
+        let module = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::docs")
+            .expect("module node exists");
+        assert!(!module.doc_links.contains_key("`Opaque::missing`"));
+        assert_eq!(report.raw_doc_links, 1);
+        assert_eq!(report.resolved_doc_links, 0);
+        assert_eq!(report.unresolved_doc_links, 1);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.contains("left 1 of 1 rustdoc intra-doc link targets unresolved")
+        }));
     }
 
     #[cfg(feature = "native")]

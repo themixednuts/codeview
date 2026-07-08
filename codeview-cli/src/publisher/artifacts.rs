@@ -219,12 +219,15 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         codeview_rustdoc::extract_graph_validated(json_str, name, &RustdocFormatPolicy::strict())
             .map_err(classify_rustdoc_error)?;
     eprintln!(
-        "[parse-one] rustdoc validation: format={} parser_format={} raw_items={} local_paths={} external_paths={} pruned_edges={}",
+        "[parse-one] rustdoc validation: format={} parser_format={} raw_items={} local_paths={} external_paths={} doc_links={}/{} unresolved_doc_links={} pruned_edges={}",
         validation.source_format_version,
         validation.parser_format_version,
         validation.raw_items,
         validation.local_path_items,
         validation.external_path_items,
+        validation.resolved_doc_links,
+        validation.raw_doc_links,
+        validation.unresolved_doc_links,
         validation.pruned_edges,
     );
     for warning in &validation.warnings {
