@@ -69,11 +69,6 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 	// Display content (without backticks)
 	const displayContent = hasBackticks ? content.slice(1, -1) : content;
 
-	// Must contain valid identifier characters
-	if (!/^[a-zA-Z_][\w:]*$/.test(displayContent)) {
-		return false;
-	}
-
 	// Check if this is a known intra-doc link
 	const docLinks = (state.md.options as { docLinks?: DocLinks }).docLinks;
 

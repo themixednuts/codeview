@@ -1615,7 +1615,7 @@ fn build_graph_with_stats(
     let mut node_cache = HashSet::new();
     let mut edge_cache = EdgeIndex::with_capacity(krate.index.len().saturating_mul(4));
     let method_ids = collect_method_ids(krate);
-    let path_index = build_path_index(krate, crate_name);
+    let mut path_index = build_path_index(krate, crate_name);
     let function_index = build_function_index(krate, &method_ids, crate_name);
     let trait_lookup = build_trait_lookup(krate, crate_name, &path_index);
     let mut placeholder_module_nodes = HashSet::new();
@@ -1625,18 +1625,16 @@ fn build_graph_with_stats(
     // to `core::async_iter::async_iter::AsyncIterator` becomes
     // `core::async_iter::AsyncIterator`). Used again later for re-export edges
     // and the final `graph.aliases` field.
-    let item_to_parent: HashMap<rdt::Id, rdt::Id> = {
-        let mut map = HashMap::new();
-        for (module_id, item) in &krate.index {
-            if let rdt::ItemEnum::Module(module) = &item.inner {
-                for child_id in &module.items {
-                    map.insert(*child_id, *module_id);
-                }
-            }
-        }
-        map
-    };
-    let aliases = build_aliases(krate, crate_name, &path_index, &item_to_parent);
+    let item_to_parent = build_item_to_parent(krate);
+    let mut aliases = build_aliases(krate, crate_name, &path_index, &item_to_parent);
+    let canonical_to_alias = invert_aliases(&aliases);
+    add_associated_item_paths(
+        krate,
+        crate_name,
+        &mut path_index,
+        &mut aliases,
+        &canonical_to_alias,
+    );
     let canonical_to_alias = invert_aliases(&aliases);
 
     #[cfg(feature = "wasm")]
@@ -1963,10 +1961,15 @@ fn build_graph_with_stats(
                         _ => continue,
                     };
 
-                    // Create a per-impl node so each impl block owns its own child.
-                    // This avoids shared children when the same rustdoc ID appears
-                    // in multiple impl blocks (e.g. blanket impls like `impl<T> Any for T`).
-                    let assoc_node_id = format!("{}::{}-{}", impl_id, assoc_prefix, assoc_id.0);
+                    // Inherent associated items have semantic paths
+                    // (`Type::method`) in rustdoc links. Trait-impl items
+                    // stay per-impl so repeated rustdoc IDs across blanket
+                    // impls do not collapse into one shared child.
+                    let assoc_node_id = path_index
+                        .node_ids_by_rustdoc_id
+                        .get(assoc_id)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}::{}-{}", impl_id, assoc_prefix, assoc_id.0));
                     let assoc_span = assoc_item.span.as_ref().map(map_span);
                     if !node_cache.contains(&assoc_node_id) {
                         let name = assoc_item
@@ -2066,11 +2069,77 @@ fn build_graph_with_stats(
             rdt::ItemEnum::Trait(item_trait) => {
                 collect_generics_ids(&item_trait.generics, &mut type_ids);
                 collect_bounds_ids(&item_trait.bounds, &mut type_ids);
+                let owner_crate = owner_id.split("::").next().unwrap_or(crate_name);
+                let owner_is_external = !workspace_members.contains(owner_crate);
 
                 for assoc_id in &item_trait.items {
                     if let Some(assoc_node_id) =
                         resolve_id(krate, crate_name, &path_index, *assoc_id)
                     {
+                        if let Some(assoc_item) = krate.index.get(assoc_id)
+                            && let Some(kind) = associated_item_kind(assoc_item)
+                            && !node_cache.contains(&assoc_node_id)
+                        {
+                            let name = assoc_item
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| assoc_node_id.clone());
+                            let details = extract_item_details(&krate.index, assoc_item);
+                            let span = assoc_item.span.as_ref().map(map_span);
+                            let deprecation = map_deprecation(assoc_item.deprecation.as_ref());
+                            let mut node = Node::new(
+                                assoc_node_id.clone(),
+                                name,
+                                kind,
+                                map_visibility(&assoc_item.visibility),
+                            );
+                            node.line_count = line_count(&span);
+                            node.span = span;
+                            node.attrs = format_attributes(&assoc_item.attrs);
+                            node.is_external = owner_is_external;
+                            node.is_deprecated = deprecation.is_some();
+                            node.is_unsafe = details.is_unsafe;
+                            node.is_auto = details.is_auto;
+                            node.is_mutable = details.is_mutable;
+                            node.is_stripped = details.is_stripped;
+                            node.has_stripped_fields = details.has_stripped_fields;
+                            node.has_stripped_variants = details.has_stripped_variants;
+                            node.is_dyn_compatible = details.is_dyn_compatible;
+                            node.deprecation = deprecation;
+                            node.stability = map_stability(assoc_item.stability.as_deref());
+                            node.const_stability =
+                                map_stability(assoc_item.const_stability.as_deref());
+                            node.default_unstable = details.default_unstable;
+                            node.fields = details.fields;
+                            node.variants = details.variants;
+                            node.signature = details.signature;
+                            node.generics = details.generics;
+                            node.docs = details.docs;
+                            node.doc_links = extract_doc_links(
+                                assoc_item,
+                                krate,
+                                crate_name,
+                                &path_index,
+                                &canonical_to_alias,
+                            );
+                            node.required_trait_methods = details.required_trait_methods;
+                            node.default_trait_methods = details.default_trait_methods;
+                            node.type_ = details.type_;
+                            node.variant_kind = details.variant_kind;
+                            node.discriminant = details.discriminant;
+                            node.const_value = details.const_value;
+                            node.bounds = details.bounds;
+                            node.import_source = details.import_source;
+                            node.import_name = details.import_name;
+                            node.is_glob = details.is_glob;
+                            node.extern_crate_name = details.extern_crate_name;
+                            node.extern_crate_rename = details.extern_crate_rename;
+                            node.macro_source = details.macro_source;
+                            node.proc_macro_kind = details.proc_macro_kind;
+                            node.proc_macro_helpers = details.proc_macro_helpers;
+                            graph.add_node(node);
+                            node_cache.insert(assoc_node_id.clone());
+                        }
                         let occurrence = krate
                             .index
                             .get(assoc_id)
@@ -2197,6 +2266,33 @@ impl PathIndex {
     }
 }
 
+fn insert_path_index_node(
+    index: &mut PathIndex,
+    item_id: rdt::Id,
+    path_id: String,
+    kind: NodeKind,
+) -> String {
+    if let Some(existing) = index.node_ids_by_rustdoc_id.get(&item_id) {
+        return existing.clone();
+    }
+
+    let node_id = if index.known_paths.contains(&path_id) {
+        format!("{}~{}-{}", path_id, node_kind_slug(kind), item_id.0)
+    } else {
+        path_id.clone()
+    };
+
+    index.known_paths.insert(path_id);
+    if kind == NodeKind::Module {
+        index.module_paths.insert(node_id.clone());
+    }
+    index.node_kinds.insert(node_id.clone(), kind);
+    index
+        .node_ids_by_rustdoc_id
+        .insert(item_id, node_id.clone());
+    node_id
+}
+
 fn build_path_index(krate: &rdt::Crate, default_crate_name: &str) -> PathIndex {
     let mut index = PathIndex::default();
     let mut entries_by_path: HashMap<String, Vec<(rdt::Id, NodeKind)>> = HashMap::new();
@@ -2243,6 +2339,141 @@ fn build_path_index(krate: &rdt::Crate, default_crate_name: &str) -> PathIndex {
     }
 
     index
+}
+
+fn associated_item_kind(item: &rdt::Item) -> Option<NodeKind> {
+    match &item.inner {
+        rdt::ItemEnum::Function(_) => Some(NodeKind::Function),
+        rdt::ItemEnum::AssocType { .. } => Some(NodeKind::AssocType),
+        rdt::ItemEnum::AssocConst { .. } => Some(NodeKind::AssocConst),
+        rdt::ItemEnum::Constant { .. } => Some(NodeKind::Constant),
+        rdt::ItemEnum::TypeAlias(_) => Some(NodeKind::TypeAlias),
+        _ => None,
+    }
+}
+
+fn build_item_to_parent(krate: &rdt::Crate) -> HashMap<rdt::Id, rdt::Id> {
+    let mut map = HashMap::new();
+    for (parent_id, item) in &krate.index {
+        match &item.inner {
+            rdt::ItemEnum::Module(module) => {
+                for child_id in &module.items {
+                    map.insert(*child_id, *parent_id);
+                }
+            }
+            rdt::ItemEnum::Trait(trait_) => {
+                for child_id in &trait_.items {
+                    map.insert(*child_id, *parent_id);
+                }
+            }
+            rdt::ItemEnum::Impl(impl_) => {
+                for child_id in &impl_.items {
+                    map.insert(*child_id, *parent_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    map
+}
+
+fn add_associated_item_paths(
+    krate: &rdt::Crate,
+    default_crate_name: &str,
+    path_index: &mut PathIndex,
+    aliases: &mut HashMap<String, String>,
+    canonical_to_alias: &HashMap<String, String>,
+) {
+    let mut additions: Vec<(rdt::Id, String, NodeKind)> = Vec::new();
+
+    for (owner_id, item) in &krate.index {
+        match &item.inner {
+            rdt::ItemEnum::Trait(trait_) => {
+                let Some(owner_path) = resolve_id(krate, default_crate_name, path_index, *owner_id)
+                else {
+                    continue;
+                };
+                collect_owned_associated_item_paths(
+                    krate,
+                    &owner_path,
+                    &trait_.items,
+                    &mut additions,
+                );
+            }
+            rdt::ItemEnum::Impl(impl_) if impl_.trait_.is_none() => {
+                let Some(owner_path) = type_to_id(&impl_.for_)
+                    .and_then(|id| resolve_id(krate, default_crate_name, path_index, id))
+                else {
+                    continue;
+                };
+                collect_owned_associated_item_paths(
+                    krate,
+                    &owner_path,
+                    &impl_.items,
+                    &mut additions,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    for (item_id, path_id, kind) in additions {
+        let node_id = insert_path_index_node(path_index, item_id, path_id, kind);
+        add_associated_alias(&node_id, aliases, canonical_to_alias);
+    }
+}
+
+fn collect_owned_associated_item_paths(
+    krate: &rdt::Crate,
+    owner_path: &str,
+    item_ids: &[rdt::Id],
+    additions: &mut Vec<(rdt::Id, String, NodeKind)>,
+) {
+    for item_id in item_ids {
+        let Some(item) = krate.index.get(item_id) else {
+            continue;
+        };
+        let Some(name) = item.name.as_deref() else {
+            continue;
+        };
+        let Some(kind) = associated_item_kind(item) else {
+            continue;
+        };
+        additions.push((*item_id, format!("{owner_path}::{name}"), kind));
+    }
+}
+
+fn add_associated_alias(
+    canonical_node_id: &str,
+    aliases: &mut HashMap<String, String>,
+    canonical_to_alias: &HashMap<String, String>,
+) {
+    let mut best: Option<(&str, &str)> = None;
+    for (canonical_prefix, alias_prefix) in canonical_to_alias {
+        let Some(rest) = canonical_node_id.strip_prefix(canonical_prefix) else {
+            continue;
+        };
+        if !rest.starts_with("::") {
+            continue;
+        }
+        if best
+            .map(|(current, _)| canonical_prefix.len() > current.len())
+            .unwrap_or(true)
+        {
+            best = Some((canonical_prefix.as_str(), alias_prefix.as_str()));
+        }
+    }
+
+    let Some((canonical_prefix, alias_prefix)) = best else {
+        return;
+    };
+    let alias = format!(
+        "{alias_prefix}{}",
+        &canonical_node_id[canonical_prefix.len()..]
+    );
+    aliases
+        .entry(alias)
+        .or_insert_with(|| canonical_node_id.to_string());
 }
 
 fn structural_edge_kind(parent_id: &str, crate_name: &str, path_index: &PathIndex) -> EdgeKind {
@@ -5549,6 +5780,231 @@ mod tests {
                 }
             }),
         )
+    }
+
+    fn empty_generics() -> serde_json::Value {
+        serde_json::json!({
+            "params": [],
+            "where_predicates": []
+        })
+    }
+
+    fn rustdoc_trait_item(id: u32, name: &str, items: Vec<u32>) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            name,
+            serde_json::json!({
+                "trait": {
+                    "is_auto": false,
+                    "is_unsafe": false,
+                    "is_dyn_compatible": true,
+                    "items": items,
+                    "generics": empty_generics(),
+                    "bounds": [],
+                    "implementations": []
+                }
+            }),
+        )
+    }
+
+    fn rustdoc_struct_item(id: u32, name: &str, impls: Vec<u32>) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            name,
+            serde_json::json!({
+                "struct": {
+                    "kind": {
+                        "tuple": []
+                    },
+                    "generics": empty_generics(),
+                    "impls": impls
+                }
+            }),
+        )
+    }
+
+    fn rustdoc_impl_item(
+        id: u32,
+        for_id: u32,
+        for_path: &str,
+        items: Vec<u32>,
+    ) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            "",
+            serde_json::json!({
+                "impl": {
+                    "is_unsafe": false,
+                    "generics": empty_generics(),
+                    "provided_trait_methods": [],
+                    "trait": null,
+                    "for": {
+                        "resolved_path": {
+                            "path": for_path,
+                            "id": for_id,
+                            "args": null
+                        }
+                    },
+                    "items": items,
+                    "is_negative": false,
+                    "is_synthetic": false,
+                    "blanket_impl": null
+                }
+            }),
+        )
+    }
+
+    fn rustdoc_use_item(id: u32, name: &str, source: &str, target_id: u32) -> serde_json::Value {
+        rustdoc_item(
+            id,
+            0,
+            "",
+            serde_json::json!({
+                "use": {
+                    "source": source,
+                    "name": name,
+                    "id": target_id,
+                    "is_glob": false
+                }
+            }),
+        )
+    }
+
+    #[test]
+    fn doc_links_resolve_trait_methods_not_listed_in_paths() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_item(
+            1,
+            0,
+            "distr",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [2],
+                    "is_stripped": false
+                }
+            }),
+        );
+        value["index"]["1"]["docs"] =
+            serde_json::json!("Use [`Rng::random_range(Range)`](RngExt::random_range).");
+        value["index"]["1"]["links"] = serde_json::json!({
+            "RngExt::random_range": 3
+        });
+        value["index"]["2"] = rustdoc_trait_item(2, "RngExt", vec![3]);
+        value["index"]["3"] = rustdoc_function_item(3, "random_range");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "distr"],
+            "kind": "module"
+        });
+        value["paths"]["2"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "RngExt"],
+            "kind": "trait"
+        });
+
+        let graph = extract_graph(&value.to_string(), "fixture").expect("graph extracts");
+
+        let module = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::distr")
+            .expect("module node exists");
+        assert_eq!(
+            module
+                .doc_links
+                .get("RngExt::random_range")
+                .map(String::as_str),
+            Some("fixture::RngExt::random_range"),
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "fixture::RngExt::random_range")
+        );
+    }
+
+    #[test]
+    fn doc_links_resolve_reexported_inherent_associated_functions() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_item(
+            1,
+            0,
+            "distr",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [2, 6],
+                    "is_stripped": false
+                }
+            }),
+        );
+        value["index"]["1"]["docs"] = serde_json::json!("Use [`Uniform::new`].");
+        value["index"]["1"]["links"] = serde_json::json!({
+            "Uniform::new": 5
+        });
+        value["index"]["2"] = rustdoc_item(
+            2,
+            0,
+            "uniform",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [3],
+                    "is_stripped": false
+                }
+            }),
+        );
+        value["index"]["3"] = rustdoc_struct_item(3, "Uniform", vec![4]);
+        value["index"]["4"] = rustdoc_impl_item(4, 3, "Uniform", vec![5]);
+        value["index"]["5"] = rustdoc_function_item(5, "new");
+        value["index"]["6"] = rustdoc_use_item(6, "Uniform", "self::uniform::Uniform", 3);
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "distr"],
+            "kind": "module"
+        });
+        value["paths"]["2"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "distr", "uniform"],
+            "kind": "module"
+        });
+        value["paths"]["3"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "distr", "uniform", "Uniform"],
+            "kind": "struct"
+        });
+
+        let graph = extract_graph(&value.to_string(), "fixture").expect("graph extracts");
+
+        let module = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::distr")
+            .expect("module node exists");
+        assert_eq!(
+            module.doc_links.get("Uniform::new").map(String::as_str),
+            Some("fixture::distr::Uniform::new"),
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "fixture::distr::uniform::Uniform::new")
+        );
+        assert_eq!(
+            graph
+                .aliases
+                .get("fixture::distr::Uniform::new")
+                .map(String::as_str),
+            Some("fixture::distr::uniform::Uniform::new"),
+        );
     }
 
     #[cfg(feature = "native")]
