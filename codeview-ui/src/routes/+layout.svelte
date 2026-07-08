@@ -609,7 +609,7 @@
 
 <div class="flex h-screen flex-col bg-(--bg)">
 	<header
-		class="grid h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-(--panel-border) bg-(--panel-solid) px-3 text-sm text-(--muted) sm:px-4 md:gap-3 lg:px-6"
+		class="grid h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-(--panel-border) bg-(--panel-solid) px-3 text-sm text-(--muted) sm:px-4 md:gap-3 lg:px-6 min-[1120px]:grid-cols-[minmax(0,1fr)_minmax(0,440px)_minmax(0,1fr)]"
 	>
 		<div class="flex min-w-0 items-center">
 			<a
@@ -643,7 +643,7 @@
 
 		<button
 			type="button"
-			class="corner-squircle hidden min-w-0 max-w-[440px] justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex md:w-full md:items-center md:justify-between md:gap-3"
+			class="corner-squircle hidden min-w-0 max-w-[440px] justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex md:w-full md:items-center md:justify-between md:gap-3 min-[1120px]:justify-self-center"
 			aria-label="Search crates and Rust items"
 			title="Global search"
 			onclick={() => (commandOpen = true)}
