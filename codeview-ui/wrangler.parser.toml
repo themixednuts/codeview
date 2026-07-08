@@ -1,6 +1,6 @@
 name = "codeview-parser"
 account_id = "8ce8bd9cb4d667a578aee91aa8dc5edd"
-compatibility_date = "2026-07-07"
+compatibility_date = "2026-07-08"
 compatibility_flags = ["nodejs_compat"]
 main = "src/parse-worker.ts"
 

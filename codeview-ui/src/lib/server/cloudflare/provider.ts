@@ -101,7 +101,13 @@ const DEFAULT_PLAN_DRAIN_ACTIVE_TARGET = 4;
 const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 2;
 const DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT = 35;
 const GITHUB_API_VERSION = '2026-03-10';
-const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
+const ACTIVE_GITHUB_RUN_STATUSES = [
+	'queued',
+	'pending',
+	'in_progress',
+	'waiting',
+	'requested',
+] as const;
 const HOSTED_ARTIFACT_CACHE_NAMESPACE = 'hosted-kind-index-1';
 
 type GitHubWorkflowRun = {

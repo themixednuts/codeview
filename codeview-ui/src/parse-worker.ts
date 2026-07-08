@@ -3,6 +3,8 @@ import {
 	WorkflowEntrypoint,
 	type WorkflowEvent,
 	type WorkflowStep,
+	type WorkflowStepConfig,
+	type WorkflowStepContext,
 } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import {
@@ -56,9 +58,31 @@ const MAX_WS_TAGS_PER_SOCKET = 100;
 const SAFE_CRATE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_VERSION_PATTERN = /^(?:stable|beta|nightly|[0-9A-Za-z][0-9A-Za-z.+_-]{0,127})$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,160}$/;
-const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
+const ACTIVE_GITHUB_RUN_STATUSES = [
+	'queued',
+	'pending',
+	'in_progress',
+	'waiting',
+	'requested',
+] as const;
 const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
 const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
+const GITHUB_CALLBACK_WAIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
+const MAX_ORPHANED_PROCESSING_RECONCILE_MS =
+	GITHUB_CALLBACK_WAIT_TIMEOUT_MS + 15 * 60 * 1000;
+const GITHUB_CALLBACK_WAIT_TIMEOUT = '6 hours';
+const WORKFLOW_STATUS_STEP_CONFIG = {
+	retries: { limit: 8, delay: '5 seconds', backoff: 'exponential' },
+	timeout: '30 seconds',
+} satisfies WorkflowStepConfig;
+const WORKFLOW_GITHUB_DISPATCH_STEP_CONFIG = {
+	retries: { limit: 8, delay: '20 seconds', backoff: 'exponential' },
+	timeout: '2 minutes',
+} satisfies WorkflowStepConfig;
+const WORKFLOW_ARTIFACT_VERIFY_STEP_CONFIG = {
+	retries: { limit: 12, delay: '15 seconds', backoff: 'linear' },
+	timeout: '45 seconds',
+} satisfies WorkflowStepConfig;
 const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
 const HOSTED_SYSROOT_UNAVAILABLE_MESSAGE =
 	'Hosted standard-library parsing currently supports the nightly rustdoc JSON channel.';
@@ -198,6 +222,26 @@ function databaseNow(): string {
 
 function errorMessage(cause: unknown): string {
 	return cause instanceof Error ? cause.message : String(cause);
+}
+
+function logWorkflowRetry(
+	ctx: WorkflowStepContext,
+	params: ParseWorkflowParams,
+	detail?: string,
+): void {
+	if (ctx.attempt <= 1) return;
+	console.warn(
+		`parse workflow retry step=${ctx.step.name} attempt=${ctx.attempt} ${params.name}@${params.version}${detail ? ` ${detail}` : ''}`,
+	);
+}
+
+function workflowOutputOk(output: unknown): boolean | null {
+	return output &&
+		typeof output === 'object' &&
+		'ok' in output &&
+		typeof (output as { ok?: unknown }).ok === 'boolean'
+		? (output as { ok: boolean }).ok
+		: null;
 }
 
 function normalizeCrateName(name: string): string {
@@ -483,6 +527,7 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
 	if (!repo) return 0;
 	const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
 	const ids = new Set<number>();
+	const failedStatuses: string[] = [];
 	await Promise.all(
 		ACTIVE_GITHUB_RUN_STATUSES.map(async (status) => {
 			const url = new URL(
@@ -495,6 +540,7 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
 				console.warn(
 					`active GitHub parse run count failed status=${status} code=${response.status}`,
 				);
+				failedStatuses.push(`${status}:${response.status}`);
 				return;
 			}
 			const body = (await response.json()) as GitHubWorkflowRunsResponse;
@@ -503,10 +549,13 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
 			}
 		}),
 	);
+	if (failedStatuses.length) {
+		throw new Error(`active GitHub parse run count incomplete: ${failedStatuses.join(', ')}`);
+	}
 	return ids.size;
 }
 
-function isGitHubRunActive(run: GitHubWorkflowRun | null): boolean {
+function isGitHubRunActive(run: GitHubWorkflowRun | null | undefined): boolean {
 	return ACTIVE_GITHUB_RUN_STATUSES.includes(
 		run?.status as (typeof ACTIVE_GITHUB_RUN_STATUSES)[number],
 	);
@@ -613,15 +662,31 @@ async function readDrainPressure(env: ParseWorkerEnv): Promise<{
 	statusActive: number;
 	githubActive: number;
 	actionsInUse: number;
+	capacityReliable: boolean;
+	capacityReason?: string;
 }> {
-	const [statusActive, githubActive] = await Promise.all([
+	const [statusActive, githubActiveResult] = await Promise.all([
 		readProcessingCount(env),
-		countActiveGitHubParseRuns(env).catch(() => 0),
+		countActiveGitHubParseRuns(env)
+			.then((count) => ({ ok: true as const, count }))
+			.catch((err) => ({ ok: false as const, error: errorMessage(err) })),
 	]);
+	if (!githubActiveResult.ok) {
+		console.warn(`planned parse drain paused: ${githubActiveResult.error}`);
+		return {
+			statusActive,
+			githubActive: statusActive,
+			actionsInUse: statusActive,
+			capacityReliable: false,
+			capacityReason: 'github-active-unavailable',
+		};
+	}
+	const githubActive = githubActiveResult.count;
 	return {
 		statusActive,
 		githubActive,
 		actionsInUse: Math.max(statusActive, githubActive),
+		capacityReliable: true,
 	};
 }
 
@@ -739,6 +804,17 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
 	if (!env.PARSE_REQUESTS) return empty;
 	const batchSize = parsePositiveInteger(env.PLAN_DRAIN_BATCH_SIZE, 2);
 	const pressure = await readDrainPressure(env);
+	if (!pressure.capacityReliable) {
+		return {
+			...pressure,
+			activeTarget,
+			availableSlots: 0,
+			budgetLimited: true,
+			budgetReason: pressure.capacityReason,
+			queued: 0,
+			skipped: 0,
+		};
+	}
 	const availableSlots = Math.max(0, activeTarget - pressure.actionsInUse);
 	let remaining = Math.max(0, Math.min(batchSize, availableSlots));
 	if (remaining === 0) {
@@ -915,7 +991,10 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
 	if (!response.ok) return { ready: 0, failed: 0, kept: 0 };
 	const snapshot = (await response.json()) as ParseQueueSnapshot;
-	const githubActive = await countActiveGitHubParseRuns(env).catch(() => 0);
+	const githubActive = await countActiveGitHubParseRuns(env).catch((err) => {
+		console.warn(`stale parse reconciliation cannot read active GitHub runs: ${errorMessage(err)}`);
+		return null;
+	});
 	const now = Date.now();
 	let ready = 0;
 	let failed = 0;
@@ -936,13 +1015,29 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 		}
 
 		if (status.githubRunId) {
+			let runLookupFailed = false;
 			const run = await loadGitHubWorkflowRun(env, status.githubRunId).catch((err) => {
+				runLookupFailed = true;
 				console.warn(
 					`stale parse run lookup failed ${status.name}@${status.version} run=${status.githubRunId}: ${errorMessage(err)}`,
 				);
 				return undefined;
 			});
-			if (run === undefined || isGitHubRunActive(run)) {
+			if (runLookupFailed && ageMs < MAX_ORPHANED_PROCESSING_RECONCILE_MS) {
+				kept += 1;
+				continue;
+			}
+			if (runLookupFailed) {
+				await failStaleProcessing(
+					env,
+					status,
+					'github-reconcile',
+					`GitHub parse workflow run lookup did not recover after ${Math.round(ageMs / 60_000)} minutes`,
+				);
+				failed += 1;
+				continue;
+			}
+			if (isGitHubRunActive(run)) {
 				kept += 1;
 				continue;
 			}
@@ -960,7 +1055,10 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 			continue;
 		}
 
-		if (githubActive > 0 || ageMs < ORPHANED_PROCESSING_RECONCILE_MS) {
+		const shouldKeepOrphan =
+			ageMs < ORPHANED_PROCESSING_RECONCILE_MS ||
+			(githubActive !== 0 && ageMs < MAX_ORPHANED_PROCESSING_RECONCILE_MS);
+		if (shouldKeepOrphan) {
 			kept += 1;
 			continue;
 		}
@@ -969,7 +1067,7 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
 			env,
 			status,
 			'github-reconcile',
-			'Parse request became stale before a GitHub run id was recorded',
+			`Parse request had no GitHub run id or callback after ${Math.round(ageMs / 60_000)} minutes`,
 		);
 		failed += 1;
 	}
@@ -1350,6 +1448,13 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 	}
 
 	private recordEvent(event: ParseStatusEvent): StoredParseStatus {
+		if (event.requestId) {
+			const existing = this.getStatus(event.name, event.version);
+			if (existing?.requestId && existing.requestId !== event.requestId) {
+				return existing;
+			}
+		}
+
 		const now = databaseNow();
 		this.ctx.storage.sql.exec(
 			`INSERT INTO statuses (
@@ -1408,7 +1513,8 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 		if (!params) throw new NonRetryableError('missing parse workflow payload');
 		const workflowId = parseWorkflowId(params.requestId);
 
-		await step.do('mark workflow started', async () => {
+		await step.do('mark workflow started', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
+			logWorkflowRetry(ctx, params);
 			await updateStatus(this.env, {
 				kind: params.kind,
 				name: params.name,
@@ -1422,11 +1528,15 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 
 		const dispatch = await step.do(
 			'dispatch github action',
-			{ retries: { limit: 3, delay: '30 seconds', backoff: 'exponential' }, timeout: '2 minutes' },
-			async () => dispatchGitHubParse(this.env, params, workflowId),
+			WORKFLOW_GITHUB_DISPATCH_STEP_CONFIG,
+			async (ctx) => {
+				logWorkflowRetry(ctx, params);
+				return dispatchGitHubParse(this.env, params, workflowId);
+			},
 		);
 
-		await step.do('mark github running', async () => {
+		await step.do('mark github running', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
+			logWorkflowRetry(ctx, params);
 			await updateStatus(this.env, {
 				kind: params.kind,
 				name: params.name,
@@ -1443,17 +1553,49 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 		try {
 			completion = await step.waitForEvent<ParseCompletionPayload>('wait for github', {
 				type: 'github-complete',
-				timeout: '6 hours',
+				timeout: GITHUB_CALLBACK_WAIT_TIMEOUT,
 			});
 		} catch (err) {
-			await step.do('mark github wait failed', async () => {
+			const recovered = await step
+				.do(
+					'recover artifacts after github wait timeout',
+					WORKFLOW_ARTIFACT_VERIFY_STEP_CONFIG,
+					async (ctx) => {
+						logWorkflowRetry(ctx, params);
+						await verifyArtifacts(this.env, params.name, params.version);
+						return true;
+					},
+				)
+				.catch((verifyErr) => {
+					console.warn(
+						`parse workflow timeout artifact recovery failed ${params.name}@${params.version}: ${errorMessage(verifyErr)}`,
+					);
+					return false;
+				});
+			if (recovered) {
+				await step.do('mark ready after github wait timeout', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
+					logWorkflowRetry(ctx, params);
+					await updateStatus(this.env, {
+						kind: params.kind,
+						name: params.name,
+						version: params.version,
+						status: 'ready',
+						requestId: params.requestId,
+						workflowId,
+					});
+				});
+				return { ok: true, recovered: 'artifacts-after-timeout' };
+			}
+
+			await step.do('mark github wait failed', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
+				logWorkflowRetry(ctx, params);
 				await updateStatus(this.env, {
 					kind: params.kind,
 					name: params.name,
 					version: params.version,
 					status: 'failed',
 					step: 'github-timeout',
-					error: errorMessage(err),
+					error: `GitHub callback did not arrive before workflow timeout: ${errorMessage(err)}`,
 					requestId: params.requestId,
 					workflowId,
 				});
@@ -1462,7 +1604,8 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 		}
 		const payload = completion.payload;
 		if (!payload?.ok) {
-			await step.do('mark failed', async () => {
+			await step.do('mark failed', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
+				logWorkflowRetry(ctx, params);
 				await updateStatus(this.env, {
 					kind: params.kind,
 					name: params.name,
@@ -1482,28 +1625,38 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 		try {
 			await step.do(
 				'verify r2 artifacts',
-				{ retries: { limit: 5, delay: '20 seconds', backoff: 'linear' }, timeout: '2 minutes' },
-				async () => verifyArtifacts(this.env, params.name, params.version),
+				WORKFLOW_ARTIFACT_VERIFY_STEP_CONFIG,
+				async (ctx) => {
+					logWorkflowRetry(ctx, params);
+					await verifyArtifacts(this.env, params.name, params.version);
+					return true;
+				},
 			);
 		} catch (err) {
-			await step.do('mark artifact verification failed', async () => {
-				await updateStatus(this.env, {
-					kind: params.kind,
-					name: params.name,
-					version: params.version,
-					status: 'failed',
-					step: 'artifact-verify',
-					error: errorMessage(err),
-					requestId: params.requestId,
-					workflowId,
-					githubRunId: payload.runId,
-					githubRunUrl: payload.runUrl,
-				});
-			});
+			await step.do(
+				'mark artifact verification failed',
+				WORKFLOW_STATUS_STEP_CONFIG,
+				async (ctx) => {
+					logWorkflowRetry(ctx, params);
+					await updateStatus(this.env, {
+						kind: params.kind,
+						name: params.name,
+						version: params.version,
+						status: 'failed',
+						step: 'artifact-verify',
+						error: errorMessage(err),
+						requestId: params.requestId,
+						workflowId,
+						githubRunId: payload.runId,
+						githubRunUrl: payload.runUrl,
+					});
+				},
+			);
 			return { ok: false };
 		}
 
-		await step.do('mark ready', async () => {
+		await step.do('mark ready', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
+			logWorkflowRetry(ctx, params);
 			await updateStatus(this.env, {
 				kind: params.kind,
 				name: params.name,
@@ -1516,6 +1669,74 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 			});
 		});
 		return { ok: true };
+	}
+}
+
+async function reconcileExistingWorkflowInstance(
+	env: ParseWorkerEnv,
+	request: ParseRequestMessage,
+	workflowId: string,
+): Promise<void> {
+	let status:
+		| {
+				status: string;
+				error?: { name?: string; message?: string };
+				output?: unknown;
+		  }
+		| null = null;
+	try {
+		const instance = await env.PARSE_WORKFLOW.get(workflowId);
+		status = await instance.status();
+	} catch (err) {
+		console.warn(
+			`workflow instance status lookup failed ${request.name}@${request.version} workflow=${workflowId}: ${errorMessage(err)}`,
+		);
+		return;
+	}
+
+	const outputOk = workflowOutputOk(status.output);
+	if (status.status === 'complete' && outputOk !== false) {
+		try {
+			await verifyArtifacts(env, request.name, request.version);
+			await updateStatus(env, {
+				kind: request.kind,
+				name: request.name,
+				version: request.version,
+				status: 'ready',
+				requestId: request.requestId,
+				workflowId,
+			});
+			return;
+		} catch (err) {
+			if (outputOk !== true) return;
+			await updateStatus(env, {
+				kind: request.kind,
+				name: request.name,
+				version: request.version,
+				status: 'failed',
+				step: 'workflow-complete',
+				error: `Existing workflow completed successfully but artifacts are unavailable: ${errorMessage(err)}`,
+				requestId: request.requestId,
+				workflowId,
+			});
+			return;
+		}
+	}
+
+	if (status.status === 'errored' || status.status === 'terminated' || outputOk === false) {
+		const detail = status.error?.message
+			? `${status.error.name ? `${status.error.name}: ` : ''}${status.error.message}`
+			: `Workflow instance status is ${status.status}`;
+		await updateStatus(env, {
+			kind: request.kind,
+			name: request.name,
+			version: request.version,
+			status: 'failed',
+			step: 'workflow-existing',
+			error: detail,
+			requestId: request.requestId,
+			workflowId,
+		});
 	}
 }
 
@@ -1582,6 +1803,7 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 	} catch (err) {
 		const text = err instanceof Error ? err.message : String(err);
 		if (text.includes('already exists')) {
+			await reconcileExistingWorkflowInstance(env, message.body, begin.workflowId);
 			message.ack();
 			return;
 		}
@@ -1612,6 +1834,18 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 	const payload = parseCompletionPayload(await readJson<unknown>(request));
 	if (!payload) {
 		return json({ error: 'invalid callback payload' }, { status: 400 });
+	}
+	const existing = await readStatus(env, payload.name, payload.version);
+	if (existing?.requestId && existing.requestId !== payload.requestId) {
+		return json({ ok: true, eventDelivered: false, ignored: 'stale-request' });
+	}
+	if (existing?.requestId === payload.requestId) {
+		if (existing.status === 'ready') {
+			return json({ ok: true, eventDelivered: false, alreadyReady: true });
+		}
+		if (!payload.ok && existing.status === 'failed') {
+			return json({ ok: true, eventDelivered: false, alreadyFailed: true });
+		}
 	}
 	await updateStatus(env, {
 		kind: payload.kind,
