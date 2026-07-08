@@ -192,7 +192,6 @@
 	const selected = $derived(detail?.node ?? null);
 	const isOnCrateRoot = $derived(selected?.kind === 'Crate');
 	const detailModel = $derived(materializeDetailDocModel(nodeView?.docModel, detail));
-	const selectedEdges = $derived(detailModel.selectedEdges);
 
 	// Pre-built lookup maps — O(1) instead of O(n) per call
 	const relatedNodeMap = $derived(detailModel.relatedNodeMap);
@@ -213,10 +212,8 @@
 	const sourceImpls = $derived(detailModel.sourceImpls);
 	const blanketImpls = $derived(detailModel.blanketImpls);
 
-	// Filter out redundant edges: Defines→impl and incoming UsesType←impl
-	const filteredEdges = $derived(detailModel.filteredEdges);
-
 	const methodGroups = $derived(detailModel.methodGroups);
+	const traitImplGroups = $derived(detailModel.traitImplGroups);
 
 	// ── Right-pane TOC entries ───────────────────────────────────────────
 	const tocEntries = $derived(detailModel.tocEntries);
@@ -336,10 +333,10 @@
 			{#if isOnCrateRoot}
 				<NodeDetails
 					{selected}
-					selectedEdges={filteredEdges}
 					{sourceImpls}
 					{blanketImpls}
 					{methodGroups}
+					{traitImplGroups}
 					{kindLabels}
 					{displayNode}
 					{theme}
@@ -356,10 +353,10 @@
 					<div class="min-w-0">
 						<NodeDetails
 							{selected}
-							selectedEdges={filteredEdges}
 							{sourceImpls}
 							{blanketImpls}
 							{methodGroups}
+							{traitImplGroups}
 							{kindLabels}
 							{displayNode}
 							{theme}

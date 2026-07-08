@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { Edge, EdgeKind, Node, NodeKind, Visibility } from '$lib/graph';
+	import type { Node, NodeKind, Visibility } from '$lib/graph';
 	import { isPublic, visibilityLabel } from '$lib/display-names';
 	import type {
 		GenericBound,
@@ -14,10 +14,6 @@
 		return idx >= 0 ? path.slice(idx + 2) : path;
 	}
 
-	type SelectedEdges = {
-		incoming: Edge[];
-		outgoing: Edge[];
-	};
 	import { resolveAppPath } from '$lib/app-paths';
 	import { kindColors } from '$lib/tree';
 	import { externalDocsUrl } from '$lib/docs';
@@ -26,10 +22,7 @@
 	import CollapsibleSection from './CollapsibleSection.svelte';
 	import SignatureBlock from './SignatureBlock.svelte';
 	import SourceViewer from './SourceViewer.svelte';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import Icon from '$lib/components/design/Icon.svelte';
-	import { tooltip } from '$lib/tooltip';
-	import { edgeKindToRelation, REL_ORDER, type DesignRelation } from '$lib/design/live-node';
 	import { hyphenateCrateName, normalizeCrateName } from '$lib/crate-names';
 	import { extLinkModeCtx } from '$lib/context';
 
@@ -39,29 +32,13 @@
 		impl: Node;
 		methods: Node[];
 	};
-	type RelationshipDirection = 'incoming' | 'outgoing';
-	type RelationshipEdgeView = {
-		edge: Edge;
-		targetId: string;
-		target?: Node;
-		display: string;
-		href: string | null;
-		isExternal: boolean;
-	};
-	type RelationshipEdgeGroup = {
-		rel: DesignRelation;
-		label: string;
-		color: string;
-		description: string;
-		edges: RelationshipEdgeView[];
-	};
 
 	let {
 		selected,
-		selectedEdges,
 		sourceImpls,
 		blanketImpls,
 		methodGroups,
+		traitImplGroups,
 		kindLabels,
 		displayNode,
 		theme = 'light',
@@ -74,10 +51,10 @@
 		belowTitle,
 	} = $props<{
 		selected: Node | null;
-		selectedEdges: SelectedEdges;
 		sourceImpls: Node[];
 		blanketImpls: Node[];
 		methodGroups: MethodGroup[];
+		traitImplGroups: MethodGroup[];
 		kindLabels: Record<NodeKind, string>;
 		displayNode: (id: string) => string;
 		theme?: 'dark' | 'light';
@@ -102,6 +79,11 @@
 	const selectedVisibility = $derived(safeVisibility(selected));
 	const selectedIsPublic = $derived(isPublic(selectedVisibility));
 	const selectedVisibilityLabel = $derived(visibilityLabel(selectedVisibility));
+	const traitImplGroupById = $derived(
+		new Map<string, MethodGroup>(
+			traitImplGroups.map((group: MethodGroup) => [group.impl.id, group] as const),
+		),
+	);
 
 	function safeVisibility(node: Node | null): Visibility {
 		const raw = node as unknown;
@@ -215,105 +197,6 @@
 		);
 	}
 
-	const emptyEdges: Edge[] = [];
-
-	function edgesFor(direction: RelationshipDirection): Edge[] {
-		const value = selectedEdges as unknown;
-		if (!value || typeof value !== 'object') return emptyEdges;
-		const edges = (value as Partial<SelectedEdges>)[direction];
-		return Array.isArray(edges) ? edges : emptyEdges;
-	}
-
-	function edgeCountFor(direction: RelationshipDirection): number {
-		return edgesFor(direction).length;
-	}
-
-	function totalRelationshipCount(): number {
-		return edgeCountFor('outgoing') + edgeCountFor('incoming');
-	}
-
-	function relationshipGroupsFor(direction: RelationshipDirection): RelationshipEdgeGroup[] {
-		return groupRelationshipEdges(edgesFor(direction), direction);
-	}
-
-	const edgeKindDescriptions: Record<EdgeKind, string> = {
-		Contains: 'This item is a direct child module or member',
-		Defines: 'This item defines or declares the target',
-		UsesType: 'References this type in a signature or field',
-		Implements: 'Implements this trait',
-		CallsStatic: 'Calls this function or method directly',
-		CallsRuntime: 'Calls this via dynamic dispatch (dyn Trait)',
-		Derives: 'Auto-derives this trait via #[derive]',
-		ReExports: 'Re-exports this item via pub use',
-	};
-
-	function relationshipTargetId(edge: Edge, direction: RelationshipDirection): unknown {
-		return direction === 'incoming' ? edge.from : edge.to;
-	}
-
-	function materializeRelationshipEdge(
-		edge: Edge,
-		direction: RelationshipDirection,
-	): RelationshipEdgeView {
-		const targetId = safeNodeId(relationshipTargetId(edge, direction)) ?? '';
-		const target = targetId ? nodeMeta?.(targetId) : undefined;
-		const isExternal = hasExternalNode(targetId);
-		const href = hasInternalNode(targetId) || isExternal ? nodeHref(targetId) : null;
-		return {
-			edge,
-			targetId,
-			target,
-			display: displayNodeSafe(targetId),
-			href,
-			isExternal,
-		};
-	}
-
-	function compareRelationshipEdges(a: RelationshipEdgeView, b: RelationshipEdgeView): number {
-		const aName = a.target?.name ?? a.display;
-		const bName = b.target?.name ?? b.display;
-		const byName = aName.localeCompare(bName);
-		if (byName !== 0) return byName;
-		if (a.edge.confidence !== b.edge.confidence) {
-			return a.edge.confidence.localeCompare(b.edge.confidence);
-		}
-		const aFrom = safeNodeId(a.edge.from) ?? '';
-		const bFrom = safeNodeId(b.edge.from) ?? '';
-		if (aFrom !== bFrom) return aFrom.localeCompare(bFrom);
-		const aTo = safeNodeId(a.edge.to) ?? '';
-		const bTo = safeNodeId(b.edge.to) ?? '';
-		return aTo.localeCompare(bTo);
-	}
-
-	function groupRelationshipEdges(
-		edgeList: Edge[],
-		direction: RelationshipDirection,
-	): RelationshipEdgeGroup[] {
-		const groups = new Map<DesignRelation, RelationshipEdgeGroup>();
-		for (const edge of edgeList) {
-			const relation = edgeKindToRelation(edge.kind);
-			let group = groups.get(relation.token);
-			if (!group) {
-				group = {
-					rel: relation.token,
-					label: direction === 'incoming' ? relation.in : relation.out,
-					color: relation.color,
-					description: edgeKindDescriptions[edge.kind],
-					edges: [],
-				};
-				groups.set(relation.token, group);
-			}
-			group.edges.push(materializeRelationshipEdge(edge, direction));
-		}
-		return REL_ORDER.filter((rel) => groups.has(rel)).map((rel) => {
-			const group = groups.get(rel)!;
-			return {
-				...group,
-				edges: [...group.edges].sort(compareRelationshipEdges),
-			};
-		});
-	}
-
 	function implCategoryLabel(category: Node['impl_category']): string | null {
 		switch (category) {
 			case 'Blanket':
@@ -333,6 +216,31 @@
 
 	function isTupleVariant(fields: { name: string }[]): boolean {
 		return fields.length > 0 && fields.every((f) => /^\d+$/.test(f.name));
+	}
+
+	function parentPathFor(node: Node): string {
+		const suffix = `::${node.name}`;
+		if (node.id.endsWith(suffix)) return node.id.slice(0, -suffix.length);
+		const parts = node.id.split('::');
+		return parts.length > 1 ? parts.slice(0, -1).join('::') : node.id;
+	}
+
+	function memberKindLabel(kind: NodeKind): string {
+		switch (kind) {
+			case 'Function':
+				return 'fn';
+			case 'AssocType':
+				return 'type';
+			case 'AssocConst':
+			case 'Constant':
+				return 'const';
+			default:
+				return kindLabels[kind] ?? kind;
+		}
+	}
+
+	function traitImplGroup(implId: string): MethodGroup | undefined {
+		return traitImplGroupById.get(implId);
 	}
 
 	// fn signatures are now formatted by SignatureBlock, which measures the
@@ -647,104 +555,114 @@
 	</div>
 {/snippet}
 
-{#snippet relationshipGroupList(
-	title: string,
-	groups: RelationshipEdgeGroup[],
-)}
-	<div class="min-w-0">
-		<div class="mb-3 flex items-center gap-2">
-			<h4 class="text-xs font-semibold tracking-[0.16em] text-(--muted) uppercase">
-				{title}
-			</h4>
+{#snippet attributesPanel(attrs: string[])}
+	<details
+		class="mt-3 rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2"
+	>
+		<summary
+			class="cursor-pointer text-xs font-semibold tracking-wider text-(--muted) uppercase select-none"
+		>
+			Attributes <span class="font-mono text-(--muted-soft)">({attrs.length})</span>
+		</summary>
+		<div class="mt-2 space-y-1 border-t border-(--panel-border-soft) pt-2">
+			{#each attrs as attr (attr)}
+				<code class="token-meta block text-sm">{attr}</code>
+			{/each}
 		</div>
-		{#if groups.length > 0}
-			<div class="space-y-3">
-				{#each groups as group (group.rel)}
-					<section
-						class="overflow-hidden rounded-(--radius-card) border border-(--panel-border-soft) bg-(--panel) [contain-intrinsic-size:auto_520px] [content-visibility:auto]"
-					>
-						<div
-							class="flex items-center gap-2 border-b border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2"
-						>
-							<span
-								class="size-1.5 shrink-0 rounded-full"
-								style={`background: ${group.color}`}
-							></span>
-							<span
-								class="font-mono text-[10.5px] font-semibold tracking-[0.16em] uppercase"
-								style={`color: ${group.color}`}
-								{@attach tooltip(group.description)}
-							>
-								{group.label}
-							</span>
-							<span class="ml-auto font-mono text-[10.5px] text-(--muted-soft) tabular-nums">
-								{group.edges.length}
-							</span>
-						</div>
-						<div class="divide-y divide-(--panel-border-soft)">
-							{#each group.edges as row}
-								<div
-									class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1.5 transition-colors [contain-intrinsic-size:auto_32px] [content-visibility:auto] hover:bg-(--panel-muted)"
-								>
-									<span class="flex min-w-0 items-center gap-2">
-										{#if row.target}
-											<KindBadge kind={row.target.kind} size={14} />
-										{:else}
-											<span class="size-3.5 shrink-0 rounded-sm bg-(--panel-border-strong)"></span>
-										{/if}
-										<span class="min-w-0 flex-1">
-											{#if row.href && !row.isExternal}
-												<a
-													href={row.href}
-													data-sveltekit-noscroll
-													class="font-medium text-(--ink) underline-offset-2 hover:text-(--accent) hover:underline"
-												>
-													{row.display}
-												</a>
-											{:else if row.href && row.isExternal}
-												<a
-													href={row.href}
-													data-sveltekit-noscroll
-													onclick={externalLinkHandler(row.targetId)}
-													class="font-medium text-(--ink) underline-offset-2 hover:text-(--accent) hover:underline"
-													title="External dependency"
-												>
-													{row.display}
-												</a>
-											{:else}
-												<span class="font-medium text-(--ink)">{row.display}</span>
-											{/if}
-											<span class="font-mono text-[10.5px] text-(--muted-soft)">
-												{row.targetId}
-											</span>
-										</span>
-									</span>
-									<div class="flex items-center gap-1.5">
-										{#if row.edge.kind === 'ReExports' && row.edge.is_glob}
-											<span class="badge badge-sm" title="Glob re-export (pub use ...::*)">glob</span>
-										{/if}
-										{#if row.edge.confidence !== 'Static'}
-											<span
-												class="badge badge-sm {row.edge.confidence === 'Inferred'
-													? 'border-(--panel-border) opacity-80'
-													: ''}"
-											>
-												{row.edge.confidence}
-											</span>
-										{/if}
-									</div>
-								</div>
-							{/each}
-						</div>
-					</section>
-				{/each}
+	</details>
+{/snippet}
+
+{#snippet implMemberRow(member: Node, index: number)}
+	<div
+		class={`bg-(--panel-solid) px-3 py-3 [contain-intrinsic-size:auto_92px] [content-visibility:auto] ${index ? 'border-t border-(--panel-border)' : ''}`}
+	>
+		<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+			<div class="flex min-w-0 items-center gap-2">
+				<span
+					class="badge badge-sm font-mono uppercase"
+					style={`color: ${kindColors[member.kind]}`}
+				>
+					{memberKindLabel(member.kind)}
+				</span>
+				{#if !member.signature}
+					<code class="font-(--font-code) font-medium text-(--ink)">{member.name}</code>
+				{/if}
 			</div>
-		{:else}
-			<p class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2 text-sm text-(--muted)">
-				None recorded.
-			</p>
+			{#if member.span}
+				<div class="text-xs">
+					<SourceViewer
+						span={member.span}
+						{theme}
+						crateName={crateFromId(member.id) ?? crateName}
+						crateVersion={resolveVersionForCrate(member.id)}
+					/>
+				</div>
+			{/if}
+		</div>
+		{#if member.signature}
+			<SignatureBlock node={member} {theme} variant="flat" />
+		{:else if member.type}
+			<div class="flex flex-wrap items-baseline gap-2 font-(--font-code) text-sm">
+				{#if member.kind === 'AssocConst' || member.kind === 'Constant'}
+					<span class="text-(--muted)">const</span>
+					<code class="text-(--ink)">{member.name}</code>
+					<span class="text-(--muted)">:</span>
+					{@render typeBadge(member.type, false)}
+					{#if member.const_value}
+						<span class="text-(--muted)">=</span>
+						<code class="text-(--ink)">{member.const_value}</code>
+					{/if}
+				{:else}
+					<span class="text-(--muted)">type</span>
+					<code class="text-(--ink)">{member.name}</code>
+					<span class="text-(--muted)">=</span>
+					{@render typeBadge(member.type, false)}
+				{/if}
+			</div>
+		{/if}
+		{#if member.docs}
+			<div
+				class={`mt-3 text-sm text-(--muted) ${member.signature || member.type ? 'border-t border-(--panel-border-soft) pt-3' : ''}`}
+			>
+				<Documentation
+					docs={member.docs}
+					defaultLang="rust"
+					{theme}
+					docLinks={member.doc_links ?? {}}
+					{getNodeUrl}
+					{nodeExists}
+				/>
+			</div>
 		{/if}
 	</div>
+{/snippet}
+
+{#snippet traitImplBlock(implBlock: Node)}
+	{@const group = traitImplGroup(implBlock.id)}
+	<article
+		class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)"
+	>
+		<div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+			{@render implRow(implBlock)}
+			{#if implBlock.span}
+				<div class="text-xs">
+					<SourceViewer
+						span={implBlock.span}
+						{theme}
+						crateName={crateFromId(implBlock.id) ?? crateName}
+						crateVersion={resolveVersionForCrate(implBlock.id)}
+					/>
+				</div>
+			{/if}
+		</div>
+		{#if group && group.methods.length > 0}
+			<div>
+				{#each group.methods as member, index (member.id)}
+					{@render implMemberRow(member, index)}
+				{/each}
+			</div>
+		{/if}
+	</article>
 {/snippet}
 
 {#if selected}
@@ -765,7 +683,7 @@
 				>
 					{selected.name}
 				</h1>
-				<span class="font-mono text-[12px] text-(--muted-soft)">{selected.id}</span>
+				<span class="font-mono text-[12px] text-(--muted-soft)">{parentPathFor(selected)}</span>
 				{#if !selectedIsPublic}
 					<span class="badge badge-sm">{selectedVisibilityLabel}</span>
 				{/if}
@@ -807,6 +725,9 @@
 						crateVersion={resolveVersionForCrate(selected?.id)}
 					/>
 				</div>
+			{/if}
+			{#if selected.attrs && selected.attrs.length > 0}
+				{@render attributesPanel(selected.attrs)}
 			{/if}
 			{#if selected.generics?.params && selected.generics.params.length > 0}
 				<div class="mt-3 flex flex-wrap items-center gap-2">
@@ -858,28 +779,6 @@
 				<div>
 					<SignatureBlock node={selected} {theme} />
 				</div>
-				{#if selected.signature.inputs.length > 0}
-					<div class="mt-4">
-						<h4 class="text-xs font-semibold tracking-wider text-(--muted) uppercase">Arguments</h4>
-						<div class="mt-2 space-y-2">
-							{#each selected.signature.inputs as arg (arg.name)}
-								<div class="flex flex-wrap items-baseline gap-2">
-									<code class="badge badge-strong badge-code">{arg.name}</code>
-									<span class="text-(--muted)">:</span>
-									{@render typeBadge(arg.type, false)}
-								</div>
-							{/each}
-						</div>
-					</div>
-				{/if}
-				{#if selected.signature.output}
-					<div class="mt-4">
-						<h4 class="text-xs font-semibold tracking-wider text-(--muted) uppercase">Returns</h4>
-						<div class="mt-2">
-							{@render typeBadge(selected.signature.output, false)}
-						</div>
-					</div>
-				{/if}
 			</CollapsibleSection>
 		{/if}
 
@@ -1194,9 +1093,9 @@
 				<div class="space-y-4">
 					<!-- Source (user-written) implementations -->
 					{#if sourceImpls.length > 0}
-						<div class="space-y-2">
+						<div class="space-y-3">
 							{#each sourceImpls as implBlock (implBlock.id)}
-								{@render implRow(implBlock)}
+								{@render traitImplBlock(implBlock)}
 							{/each}
 						</div>
 					{/if}
@@ -1220,50 +1119,6 @@
 			</section>
 		{/if}
 
-		<!-- Relationships — grouped by edge kind, with every edge still rendered. -->
-		{#if totalRelationshipCount() > 0}
-			<section id="relationships" class="doc-section group">
-				<div
-					class="mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
-				>
-					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
-					>
-						Relationships
-					</h2>
-				</div>
-				<div class="grid gap-5 md:grid-cols-2">
-					{@render relationshipGroupList(
-						'Outgoing',
-						relationshipGroupsFor('outgoing'),
-					)}
-					{@render relationshipGroupList(
-						'Incoming',
-						relationshipGroupsFor('incoming'),
-					)}
-				</div>
-			</section>
-		{/if}
-
-		<!-- Attributes -->
-		{#if selected.attrs && selected.attrs.length > 0}
-			<section id="attributes" class="doc-section group">
-				<div
-					class="mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
-				>
-					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
-					>
-						Attributes
-					</h2>
-				</div>
-				<div class="space-y-1">
-					{#each selected.attrs as attr (attr)}
-						<code class="token-meta block text-sm">{attr}</code>
-					{/each}
-				</div>
-			</section>
-		{/if}
 	</div>
 {:else}
 	<p class="text-sm text-(--muted)">Select a node to view details</p>

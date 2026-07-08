@@ -59,10 +59,10 @@
 
 	<NodeDetails
 		{selected}
-		selectedEdges={model.filteredEdges}
 		sourceImpls={model.sourceImpls}
 		blanketImpls={model.blanketImpls}
 		methodGroups={model.methodGroups}
+		traitImplGroups={model.traitImplGroups}
 		{kindLabels}
 		{displayNode}
 		{theme}

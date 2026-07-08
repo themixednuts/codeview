@@ -9,6 +9,7 @@
 	import { sourceProviderModeCtx } from '$lib/context';
 	import type { SourceResult } from '$lib/schema';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
+	import { docsRsSourceUrl } from '$lib/source-links';
 	import CodeBlock from './CodeBlock.svelte';
 	import SourceActions from './SourceActions.svelte';
 	import X from '@lucide/svelte/icons/x';
@@ -40,6 +41,7 @@
 	const sourceContent = $derived(sourceData?.content ?? null);
 	const absolutePath = $derived(sourceData?.absolutePath ?? null);
 	const repoUrl = $derived(sourceData?.repoUrl ?? null);
+	const sourceHref = $derived(docsRsSourceUrl(crateName, crateVersion, span?.file, span?.line) ?? '#');
 
 	$effect(() => {
 		if (!isOpen || !span) {
@@ -85,7 +87,8 @@
 		return lines;
 	});
 
-	function open() {
+	function open(event: MouseEvent) {
+		event.preventDefault();
 		if (!spanKey) return;
 		updateSourceParam(spanKey);
 	}
@@ -160,10 +163,10 @@
 	};
 </script>
 
-<button type="button" class="source-link" onclick={open} title="View source">
+<a class="source-link" href={sourceHref} onclick={open} title="View source">
 	<span class="token-name">{displayFile}</span>
 	<span class="token-meta">:{span.line}:{span.column}</span>
-</button>
+</a>
 
 {#if isOpen}
 	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

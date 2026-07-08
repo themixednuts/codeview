@@ -553,6 +553,7 @@ export const DetailDocModelSchema = v.object({
 	sourceImplIds: v.array(v.string()),
 	blanketImplIds: v.array(v.string()),
 	methodGroups: v.array(DetailMethodGroupSchema),
+	traitImplGroups: v.optional(v.array(DetailMethodGroupSchema)),
 	methodCount: v.number(),
 	totalImpls: v.number(),
 	tocEntries: v.array(TocEntrySchema),

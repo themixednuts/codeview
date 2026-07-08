@@ -1,4 +1,5 @@
 import type { VcsMode } from '$lib/context';
+import { hyphenateCrateName } from '$lib/crate-names';
 
 export function repoBaseUrl(url: string): string {
 	const blobIdx = url.indexOf('/blob/');
@@ -37,4 +38,16 @@ export function resolveEditorPath(
 
 export function editorUri(scheme: string, path: string, line: number): string {
 	return scheme.replaceAll('{path}', path).replaceAll('{line}', String(line));
+}
+
+export function docsRsSourceUrl(
+	crateName: string | null | undefined,
+	crateVersion: string | null | undefined,
+	file: string | null | undefined,
+	line: number | null | undefined,
+): string | null {
+	if (!crateName || !crateVersion || !file || !line) return null;
+	const cleanFile = normalizeSourceFile(file);
+	if (!cleanFile) return null;
+	return `https://docs.rs/crate/${hyphenateCrateName(crateName)}/${crateVersion}/source/${cleanFile}#L${line}`;
 }

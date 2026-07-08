@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vite-plus/test';
-import { cloneCommand, editorUri, repoBaseUrl, resolveEditorPath } from './source-links';
+import {
+	cloneCommand,
+	docsRsSourceUrl,
+	editorUri,
+	repoBaseUrl,
+	resolveEditorPath,
+} from './source-links';
 
 describe('source links', () => {
 	it('builds editor URIs from local absolute paths', () => {
@@ -25,5 +31,12 @@ describe('source links', () => {
 		expect(repoBaseUrl(blob)).toBe('https://github.com/dtolnay/proc-macro2');
 		expect(cloneCommand(blob, 'git')).toBe('git clone https://github.com/dtolnay/proc-macro2');
 		expect(cloneCommand(blob, 'jj')).toBe('jj git clone https://github.com/dtolnay/proc-macro2');
+	});
+
+	it('builds docs.rs source URLs for no-JS source anchors', () => {
+		expect(docsRsSourceUrl('proc_macro2', '1.0.106', '.\\src\\lib.rs', 12)).toBe(
+			'https://docs.rs/crate/proc-macro2/1.0.106/source/src/lib.rs#L12',
+		);
+		expect(docsRsSourceUrl('proc_macro2', '1.0.106', '', 12)).toBeNull();
 	});
 });
