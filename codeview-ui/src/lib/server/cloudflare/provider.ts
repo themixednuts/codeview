@@ -1244,7 +1244,10 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return catalog;
 	}
 
-	async function listPublishedVersions(name: string, limit = 100): Promise<string[]> {
+	async function listPublishedVersions(
+		name: string,
+		limit = Number.POSITIVE_INFINITY,
+	): Promise<string[]> {
 		const [refsVersions, registryVersions] = await Promise.all([
 			listPublishedVersionsFromRefs(name, limit),
 			listRegistryVersions(name, limit),
@@ -2142,7 +2145,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			return { queue, allowance };
 		},
 
-		async getCrateVersions(name: string, limit = 100): Promise<string[]> {
+		async getCrateVersions(name: string, limit = Number.POSITIVE_INFINITY): Promise<string[]> {
 			return listPublishedVersions(name, limit);
 		},
 

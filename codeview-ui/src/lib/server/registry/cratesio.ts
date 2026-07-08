@@ -3,9 +3,9 @@ import type { RegistryAdapter, PackageMetadata } from './types';
 import { FetchError, JsonParseError } from '../errors';
 
 const CRATES_IO_API = 'https://crates.io/api/v1';
+const CRATES_IO_INDEX = 'https://index.crates.io';
 const USER_AGENT = 'codeview (https://github.com/themixednuts/codeview)';
-const DEFAULT_VERSION_LIMIT = 100;
-const VERSION_PAGE_SIZE = 100;
+const DEFAULT_VERSION_LIMIT = Number.POSITIVE_INFINITY;
 
 interface CratesIoVersion {
 	num: string;
@@ -25,16 +25,9 @@ interface CratesIoCrateDetailResponse {
 	crate: CratesIoCrate;
 }
 
-interface CratesIoVersionEntry {
-	num: string;
-	yanked: boolean;
-}
-
-interface CratesIoVersionsResponse {
-	versions: CratesIoVersionEntry[];
-	meta?: {
-		total?: number;
-	};
+interface SparseIndexVersionEntry {
+	vers: string;
+	yanked?: boolean;
 }
 
 async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonParseError>> {
@@ -59,6 +52,21 @@ async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonPar
 	}
 }
 
+async function fetchText(url: string): Promise<Result<string, FetchError>> {
+	let res: Response;
+	try {
+		res = await fetch(url, {
+			headers: { 'User-Agent': USER_AGENT },
+		});
+	} catch (err) {
+		return Result.err(new FetchError({ url, status: 0, statusText: String(err) }));
+	}
+	if (!res.ok) {
+		return Result.err(new FetchError({ url, status: res.status, statusText: res.statusText }));
+	}
+	return Result.ok(await res.text());
+}
+
 /** Extract "owner/repo" from a GitHub URL, or return undefined. */
 function extractGitHubRepo(url: string | null | undefined): string | undefined {
 	if (!url) return undefined;
@@ -68,6 +76,32 @@ function extractGitHubRepo(url: string | null | undefined): string | undefined {
 
 function canonicalCrateName(crate_: CratesIoCrate | undefined, fallback: string): string {
 	return crate_?.name || crate_?.id || fallback;
+}
+
+function sparseIndexPath(name: string): string {
+	const crateName = name.toLowerCase();
+	if (crateName.length === 1) return `1/${crateName}`;
+	if (crateName.length === 2) return `2/${crateName}`;
+	if (crateName.length === 3) return `3/${crateName[0]}/${crateName}`;
+	return `${crateName.slice(0, 2)}/${crateName.slice(2, 4)}/${crateName}`;
+}
+
+async function listSparseIndexVersions(name: string, limit: number): Promise<string[]> {
+	const result = await fetchText(`${CRATES_IO_INDEX}/${sparseIndexPath(name)}`);
+	if (result.isErr()) return [];
+	const versions: string[] = [];
+	for (const line of result.value.split('\n')) {
+		if (!line) continue;
+		try {
+			const entry = JSON.parse(line) as Partial<SparseIndexVersionEntry>;
+			if (typeof entry.vers === 'string' && entry.yanked !== true) {
+				versions.push(entry.vers);
+			}
+		} catch {
+			continue;
+		}
+	}
+	return versions.reverse().slice(0, limit);
 }
 
 export function createCratesIoAdapter(): RegistryAdapter {
@@ -141,23 +175,7 @@ export function createCratesIoAdapter(): RegistryAdapter {
 		async listVersions(name, limit = DEFAULT_VERSION_LIMIT) {
 			const maxVersions = Math.max(0, limit);
 			if (maxVersions === 0) return [];
-			const perPage = Math.min(VERSION_PAGE_SIZE, maxVersions);
-			const versions: string[] = [];
-			let page = 1;
-			while (versions.length < maxVersions) {
-				const result = await fetchJson<CratesIoVersionsResponse>(
-					`${CRATES_IO_API}/crates/${name}/versions?per_page=${perPage}&page=${page}`,
-				);
-				if (result.isErr()) return versions;
-				const pageVersions = result.value.versions;
-				versions.push(...pageVersions.filter((v) => !v.yanked).map((v) => v.num));
-				const total = result.value.meta?.total;
-				if (pageVersions.length === 0) break;
-				if (typeof total === 'number' && page * perPage >= total) break;
-				if (typeof total !== 'number' && pageVersions.length < perPage) break;
-				page += 1;
-			}
-			return versions.slice(0, maxVersions);
+			return listSparseIndexVersions(name, maxVersions);
 		},
 
 		async getLatestVersion(name) {

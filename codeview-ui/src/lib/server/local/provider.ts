@@ -1467,7 +1467,7 @@ export function createLocalProvider(): DataProvider {
 			return lc.getProcessingCrates('rust', limit);
 		},
 
-		async getCrateVersions(name: string, limit = 100): Promise<string[]> {
+		async getCrateVersions(name: string, limit = Number.POSITIVE_INFINITY): Promise<string[]> {
 			const localVersion = (await getWorkspaceCrate(name))?.version;
 			// Try both hyphen and underscore variants for registry lookup
 			let registryVersions: string[] = [];

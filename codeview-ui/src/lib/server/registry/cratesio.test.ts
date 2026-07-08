@@ -75,33 +75,25 @@ describe('crates.io registry adapter', () => {
 		});
 	});
 
-	test('paginates crate versions and filters yanked releases', async () => {
-		const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
-			const url = new URL(String(input));
-			const page = url.searchParams.get('page');
-			if (page === '1') {
-				return jsonResponse({
-					versions: [
-						{ num: '1.2.0', yanked: false },
-						{ num: '1.1.0', yanked: true },
-						{ num: '1.0.0', yanked: false },
-					],
-					meta: { total: 4 },
-				});
-			}
-			return jsonResponse({
-				versions: [{ num: '0.9.0', yanked: false }],
-				meta: { total: 4 },
-			});
+	test('lists crate versions from the sparse index and filters yanked releases', async () => {
+		const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => {
+			return new Response(
+				[
+					JSON.stringify({ name: 'demo', vers: '1.0.0', yanked: false }),
+					JSON.stringify({ name: 'demo', vers: '1.1.0', yanked: true }),
+					JSON.stringify({ name: 'demo', vers: '1.2.0', yanked: false }),
+					'',
+				].join('\n'),
+				{ status: 200 },
+			);
 		});
 		vi.stubGlobal('fetch', fetchMock);
 
 		const versions = await createCratesIoAdapter().listVersions('demo', 3);
 
-		expect(versions).toEqual(['1.2.0', '1.0.0', '0.9.0']);
+		expect(versions).toEqual(['1.2.0', '1.0.0']);
 		expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-			'https://crates.io/api/v1/crates/demo/versions?per_page=3&page=1',
-			'https://crates.io/api/v1/crates/demo/versions?per_page=3&page=2',
+			'https://index.crates.io/de/mo/demo',
 		]);
 	});
 });

@@ -505,7 +505,7 @@ export class Resolver {
 			Effect.all(
 				[
 					Effect.promise(() => provider.loadCrateIndex(name, version)),
-					Effect.promise(() => provider.getCrateVersions(name, 100)),
+					Effect.promise(() => provider.getCrateVersions(name)),
 					Effect.promise(() => provider.loadTreeMeta?.(name, version) ?? Promise.resolve(null)),
 				] as const,
 				{ concurrency: 3 },

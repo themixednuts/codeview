@@ -460,18 +460,15 @@ describe('createCloudflareProvider', () => {
 
 	test('uses live crates.io versions beyond parsed artifact refs', async () => {
 		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-			const url = new URL(String(input));
-			expect(url.pathname).toBe('/api/v1/crates/hashbrown/versions');
+			expect(String(input)).toBe('https://index.crates.io/ha/sh/hashbrown');
 			return new Response(
-				JSON.stringify({
-					versions: [
-						{ num: '0.17.1', yanked: false },
-						{ num: '0.17.0', yanked: false },
-						{ num: '0.16.1', yanked: false },
-					],
-					meta: { total: 3 },
-				}),
-				{ status: 200, headers: { 'content-type': 'application/json' } },
+				[
+					JSON.stringify({ name: 'hashbrown', vers: '0.16.1', yanked: false }),
+					JSON.stringify({ name: 'hashbrown', vers: '0.17.0', yanked: false }),
+					JSON.stringify({ name: 'hashbrown', vers: '0.17.1', yanked: false }),
+					'',
+				].join('\n'),
+				{ status: 200 },
 			);
 		});
 		vi.stubGlobal('fetch', fetchMock);
