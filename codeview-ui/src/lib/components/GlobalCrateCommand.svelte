@@ -91,7 +91,7 @@
 	>
 		<Dialog.Title class="sr-only">Search crates</Dialog.Title>
 		<Dialog.Description class="sr-only">
-			Search the crate registry and open a crate version.
+			Search crates.io and open a crate version.
 		</Dialog.Description>
 		<Command.Root shouldFilter={false} class="bg-(--panel-solid)">
 			<Command.Input

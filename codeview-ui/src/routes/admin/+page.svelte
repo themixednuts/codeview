@@ -57,6 +57,24 @@
 		return 'crate';
 	}
 
+	function priorityLabel(priority: string): string {
+		switch (priority) {
+			case 'forced':
+				return 'Requested';
+			case 'top-download-stale':
+			case 'catalog-stale':
+				return 'Refresh';
+			case 'newer-version':
+			case 'catalog-newer':
+				return 'New version';
+			case 'never-parsed-backfill':
+			case 'long-tail-backfill':
+				return 'First parse';
+			default:
+				return 'Planned';
+		}
+	}
+
 	function absoluteTime(value: string): string {
 		const date = new Date(value);
 		if (Number.isNaN(date.getTime())) return value;
@@ -454,7 +472,7 @@
 											<span class="font-mono text-[10.5px] text-(--muted-soft)">
 												{item.version}
 											</span>
-											<span class="badge badge-sm">{item.priorityTier}</span>
+											<span class="badge badge-sm">{priorityLabel(item.priorityTier)}</span>
 										</div>
 										<div
 											class="mt-1 min-h-[18px] line-clamp-1 text-[12px] text-(--muted)"

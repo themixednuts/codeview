@@ -19,7 +19,7 @@ export const load: PageServerLoad = async (event) => {
 		return {
 			auth,
 			dashboard: null,
-			loadError: 'Admin dashboard is not available for this provider.',
+			loadError: 'Admin dashboard is not available in this deployment.',
 		};
 	}
 

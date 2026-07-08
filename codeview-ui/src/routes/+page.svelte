@@ -43,7 +43,7 @@
 		{
 			id: 'popular' as const,
 			label: 'Popular',
-			meta: 'registry',
+			meta: 'crates.io',
 			icon: 'trending' as const,
 		},
 	]);
@@ -84,7 +84,7 @@
 					<span class="font-mono">
 						{visibleSection === 'workspace'
 							? `${localCrates.length} local`
-							: 'deferred registry'}
+							: 'from crates.io'}
 					</span>
 				</div>
 			</div>
@@ -171,7 +171,7 @@
 							class="corner-squircle rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-10 text-center"
 						>
 							<p class="text-sm font-medium text-(--ink)">No workspace crates loaded</p>
-							<p class="mt-1 text-xs text-(--muted)">Registry results are still available.</p>
+							<p class="mt-1 text-xs text-(--muted)">Crates.io results are still available.</p>
 						</div>
 					{/if}
 				{:else}
@@ -182,7 +182,7 @@
 								Popular crates
 							</h2>
 						</div>
-						<span class="font-mono text-[11px] text-(--muted-soft)">registry provider</span>
+						<span class="font-mono text-[11px] text-(--muted-soft)">crates.io</span>
 					</div>
 					{#if topCrates.length > 0}
 						<div class="grid gap-3 sm:grid-cols-2">

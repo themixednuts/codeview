@@ -609,9 +609,9 @@
 
 <div class="flex h-screen flex-col bg-(--bg)">
 	<header
-		class="grid h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-(--panel-border) bg-(--panel-solid) px-4 text-sm text-(--muted) sm:px-6"
+		class="grid h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-(--panel-border) bg-(--panel-solid) px-3 text-sm text-(--muted) sm:px-4 md:gap-3 lg:px-6"
 	>
-		<div class="flex min-w-0 items-center gap-3">
+		<div class="flex min-w-0 items-center">
 			<a
 				href={resolve('/')}
 				class="group flex min-w-0 items-center gap-2 text-(--ink) transition-colors hover:text-(--accent)"
@@ -643,7 +643,7 @@
 
 		<button
 			type="button"
-			class="corner-squircle hidden w-[min(42vw,440px)] items-center justify-between gap-3 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex"
+			class="corner-squircle hidden min-w-0 max-w-[440px] justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) md:inline-flex md:w-full md:items-center md:justify-between md:gap-3"
 			aria-label="Search crates and Rust items"
 			title="Global search"
 			onclick={() => (commandOpen = true)}
@@ -652,13 +652,13 @@
 				<Icon name="search" size={12} />
 				<span class="truncate">Search crates...</span>
 			</span>
-			<span class="inline-flex shrink-0 items-center gap-1" aria-hidden="true">
+			<span class="hidden shrink-0 items-center gap-1 lg:inline-flex" aria-hidden="true">
 				<span class="kbd">{shortcutModLabel}</span>
 				<span class="kbd">K</span>
 			</span>
 		</button>
 
-		<div class="flex items-center justify-end gap-2">
+		<div class="flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
 			{#if auth.authConfigured}
 				{#if auth.user}
 					<button

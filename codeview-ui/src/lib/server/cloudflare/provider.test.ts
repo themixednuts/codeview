@@ -1,4 +1,25 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
+import type { AuthState } from '../auth';
+
+const mockAuthState = vi.hoisted(() => ({
+	value: null as AuthState | null,
+}));
+
+vi.mock('../auth', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../auth')>();
+	const unauthenticated = {
+		user: null,
+		session: null,
+		isAdmin: false,
+		authConfigured: false,
+		adminAllowlistConfigured: false,
+	} satisfies AuthState;
+	return {
+		...actual,
+		getAuthStateFromRequest: vi.fn(async () => mockAuthState.value ?? unauthenticated),
+	};
+});
+
 import { createCloudflareProvider } from './provider';
 
 function jsonObject(value: unknown): R2ObjectBody {
@@ -183,6 +204,7 @@ function baseNodeArtifacts(
 
 describe('createCloudflareProvider', () => {
 	afterEach(() => {
+		mockAuthState.value = null;
 		vi.unstubAllGlobals();
 	});
 
@@ -659,6 +681,54 @@ describe('createCloudflareProvider', () => {
 		expect(result.error._tag).toBe('NotAvailableError');
 		expect(result.error.message).toBe('Force parse requires admin access');
 		expect(sent).toHaveLength(0);
+	});
+
+	test('lets admin force parses bypass parse rate limiting', async () => {
+		const sent: unknown[] = [];
+		mockAuthState.value = {
+			user: {
+				id: 'github-user-1',
+				name: 'Admin',
+				email: 'admin@example.com',
+				emailVerified: true,
+				githubLogin: 'themixednuts',
+				image: 'https://example.com/avatar.png',
+			},
+			session: {
+				id: 'session-1',
+				userId: 'github-user-1',
+				expiresAt: new Date('2030-01-01T00:00:00Z'),
+			},
+			isAdmin: true,
+			authConfigured: true,
+			adminAllowlistConfigured: true,
+		};
+		const provider = createCloudflareProvider(
+			{
+				CRATE_GRAPHS: fakeBucket(new Map()),
+				PARSE_REQUESTS: fakeQueue(sent),
+			} as Env & { CRATE_GRAPHS: R2Bucket },
+			new Request('https://codeview.codes/admin'),
+		);
+
+		const result = await provider.triggerParse('serde', '1.0.228', true);
+		if (result.isErr()) throw result.error;
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({
+			schemaVersion: 1,
+			ecosystem: 'rust',
+			kind: 'crate',
+			name: 'serde',
+			version: '1.0.228',
+			force: true,
+			source: 'ui',
+			requestedBy: {
+				provider: 'github',
+				id: 'github-user-1',
+				login: 'themixednuts',
+				avatarUrl: 'https://example.com/avatar.png',
+			},
+		});
 	});
 
 	test('enqueues hosted sysroot parse requests for std crates', async () => {

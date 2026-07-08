@@ -1973,9 +1973,10 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			const requestKind = isStdCrate(normalizedName) ? 'sysroot' : 'crate';
 			const requestedVersion =
 				requestKind === 'sysroot' && version === 'latest' ? HOSTED_SYSROOT_PARSE_CHANNEL : version;
+			let parseContext: Awaited<ReturnType<typeof resolveParseRequestContext>> | null = null;
 			if (force) {
-				const authContext = await resolveParseRequestContext({ rateLimit: false });
-				if (!authContext.auth?.isAdmin) {
+				parseContext = await resolveParseRequestContext({ rateLimit: false });
+				if (!parseContext.auth?.isAdmin) {
 					return Result.err(
 						new NotAvailableError({
 							message: 'Force parse requires admin access',
@@ -1997,7 +1998,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					}),
 				);
 			}
-			const parseContext = await resolveParseRequestContext({ rateLimit: true });
+			parseContext ??= await resolveParseRequestContext({ rateLimit: true });
 			if (parseContext.configError) return Result.err(parseContext.configError);
 			if (parseContext.rateLimitError) return Result.err(parseContext.rateLimitError);
 			if (!env.PARSE_REQUESTS) {

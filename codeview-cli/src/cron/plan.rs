@@ -4,7 +4,7 @@
 //! receives only a compact shard matrix, so job output stays small even
 //! when the plan contains thousands of crate work items.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -197,6 +197,12 @@ struct PlanAssembly {
 }
 
 #[derive(Debug, Clone)]
+struct PlannedWorkItem {
+    priority: PriorityTier,
+    item: WorkItem,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct PlanBuildConfig {
     pub(crate) mode: PlanMode,
     pub(crate) corpus: String,
@@ -260,6 +266,41 @@ enum PriorityTier {
     LongTailBackfill,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FairnessLane {
+    PopularRefresh,
+    CatalogRefresh,
+    Backfill,
+}
+
+// Daily plans follow the crates.io dump cadence: keep popular crates fresh,
+// but reserve steady room for catalog refreshes and crates that have never parsed.
+const DAILY_FAIRNESS_SEQUENCE: [FairnessLane; 10] = [
+    FairnessLane::PopularRefresh,
+    FairnessLane::PopularRefresh,
+    FairnessLane::CatalogRefresh,
+    FairnessLane::PopularRefresh,
+    FairnessLane::Backfill,
+    FairnessLane::PopularRefresh,
+    FairnessLane::CatalogRefresh,
+    FairnessLane::PopularRefresh,
+    FairnessLane::Backfill,
+    FairnessLane::CatalogRefresh,
+];
+
+const BACKFILL_FAIRNESS_SEQUENCE: [FairnessLane; 10] = [
+    FairnessLane::Backfill,
+    FairnessLane::Backfill,
+    FairnessLane::CatalogRefresh,
+    FairnessLane::Backfill,
+    FairnessLane::PopularRefresh,
+    FairnessLane::Backfill,
+    FairnessLane::CatalogRefresh,
+    FairnessLane::Backfill,
+    FairnessLane::PopularRefresh,
+    FairnessLane::Backfill,
+];
+
 impl PriorityTier {
     fn sort_rank(self) -> u8 {
         match self {
@@ -282,6 +323,15 @@ impl PriorityTier {
             Self::CatalogNewer => "catalog-newer",
             Self::NeverParsedBackfill => "never-parsed-backfill",
             Self::LongTailBackfill => "long-tail-backfill",
+        }
+    }
+
+    fn fairness_lane(self) -> Option<FairnessLane> {
+        match self {
+            Self::Forced => None,
+            Self::TopDownloadStale | Self::NewerVersion => Some(FairnessLane::PopularRefresh),
+            Self::CatalogStale | Self::CatalogNewer => Some(FairnessLane::CatalogRefresh),
+            Self::NeverParsedBackfill | Self::LongTailBackfill => Some(FairnessLane::Backfill),
         }
     }
 }
@@ -534,16 +584,16 @@ fn assemble_work_plan(
         anyhow::bail!("shard_count must be greater than zero");
     }
 
-    let mut planned = Vec::<(PriorityTier, WorkItem)>::new();
+    let mut planned = Vec::<PlannedWorkItem>::new();
     for item in evaluated {
         let Some(priority) = priority_for(&item, options.mode) else {
             continue;
         };
         let canonical_name = normalise_crate_name(&item.candidate.name);
         let work_id = shards::work_id("crate", &canonical_name, &item.version, DEFAULT_CHANNEL);
-        planned.push((
+        planned.push(PlannedWorkItem {
             priority,
-            WorkItem {
+            item: WorkItem {
                 work_id,
                 kind: WorkKind::Crate,
                 name: item.candidate.name,
@@ -553,39 +603,17 @@ fn assemble_work_plan(
                 download_rank: item.candidate.all_time_rank,
                 reason: reason_for(item.forced, &item.staleness),
             },
-        ));
+        });
     }
 
-    planned.sort_by(|(left_priority, left), (right_priority, right)| {
-        left_priority
-            .sort_rank()
-            .cmp(&right_priority.sort_rank())
-            .then_with(|| {
-                left.download_rank
-                    .unwrap_or(u32::MAX)
-                    .cmp(&right.download_rank.unwrap_or(u32::MAX))
-            })
-            .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left.version.cmp(&right.version))
-    });
-
-    let mut per_shard = vec![0usize; options.shard_count];
-    let mut work = Vec::new();
-    for (_, item) in planned {
-        let bucket = shards::work_bucket(&item.work_id, options.shard_count);
-        if let Some(max_per_shard) = options.max_per_shard
-            && per_shard[bucket] >= max_per_shard
-        {
-            continue;
-        }
-        per_shard[bucket] += 1;
-        work.push(item);
-        if let Some(max_total) = options.max_total
-            && work.len() >= max_total
-        {
-            break;
-        }
-    }
+    planned.sort_by(compare_planned_work);
+    let work = select_planned_work(
+        planned,
+        options.mode,
+        options.shard_count,
+        options.max_total,
+        options.max_per_shard,
+    );
 
     Ok(WorkPlan {
         run_id: options.run_id,
@@ -594,6 +622,143 @@ fn assemble_work_plan(
         shard_count: options.shard_count,
         work,
     })
+}
+
+fn compare_planned_work(left: &PlannedWorkItem, right: &PlannedWorkItem) -> std::cmp::Ordering {
+    left.priority
+        .sort_rank()
+        .cmp(&right.priority.sort_rank())
+        .then_with(|| {
+            left.item
+                .download_rank
+                .unwrap_or(u32::MAX)
+                .cmp(&right.item.download_rank.unwrap_or(u32::MAX))
+        })
+        .then_with(|| left.item.name.cmp(&right.item.name))
+        .then_with(|| left.item.version.cmp(&right.item.version))
+}
+
+fn select_planned_work(
+    planned: Vec<PlannedWorkItem>,
+    mode: PlanMode,
+    shard_count: usize,
+    max_total: Option<usize>,
+    max_per_shard: Option<usize>,
+) -> Vec<WorkItem> {
+    let mut forced = VecDeque::new();
+    let mut popular = VecDeque::new();
+    let mut catalog = VecDeque::new();
+    let mut backfill = VecDeque::new();
+
+    for planned_item in planned {
+        match planned_item.priority.fairness_lane() {
+            None => forced.push_back(planned_item.item),
+            Some(FairnessLane::PopularRefresh) => popular.push_back(planned_item.item),
+            Some(FairnessLane::CatalogRefresh) => catalog.push_back(planned_item.item),
+            Some(FairnessLane::Backfill) => backfill.push_back(planned_item.item),
+        }
+    }
+
+    let mut per_shard = vec![0usize; shard_count];
+    let mut work = Vec::new();
+    while has_work_capacity(work.len(), max_total) {
+        if !take_next_work(
+            &mut forced,
+            &mut work,
+            &mut per_shard,
+            shard_count,
+            max_per_shard,
+        ) {
+            break;
+        }
+    }
+
+    let sequence = fairness_sequence(mode);
+    let mut cursor = 0usize;
+    while has_work_capacity(work.len(), max_total) {
+        if popular.is_empty() && catalog.is_empty() && backfill.is_empty() {
+            break;
+        }
+
+        let mut selected = false;
+        for offset in 0..sequence.len() {
+            let lane = sequence[(cursor + offset) % sequence.len()];
+            if take_from_lane(
+                lane,
+                &mut popular,
+                &mut catalog,
+                &mut backfill,
+                &mut work,
+                &mut per_shard,
+                shard_count,
+                max_per_shard,
+            ) {
+                cursor = (cursor + offset + 1) % sequence.len();
+                selected = true;
+                break;
+            }
+        }
+        if !selected {
+            break;
+        }
+    }
+
+    work
+}
+
+fn has_work_capacity(current: usize, max_total: Option<usize>) -> bool {
+    max_total.map_or(true, |max| current < max)
+}
+
+fn fairness_sequence(mode: PlanMode) -> &'static [FairnessLane] {
+    match mode {
+        PlanMode::Daily => &DAILY_FAIRNESS_SEQUENCE,
+        PlanMode::Backfill => &BACKFILL_FAIRNESS_SEQUENCE,
+    }
+}
+
+fn take_from_lane(
+    lane: FairnessLane,
+    popular: &mut VecDeque<WorkItem>,
+    catalog: &mut VecDeque<WorkItem>,
+    backfill: &mut VecDeque<WorkItem>,
+    work: &mut Vec<WorkItem>,
+    per_shard: &mut [usize],
+    shard_count: usize,
+    max_per_shard: Option<usize>,
+) -> bool {
+    match lane {
+        FairnessLane::PopularRefresh => {
+            take_next_work(popular, work, per_shard, shard_count, max_per_shard)
+        }
+        FairnessLane::CatalogRefresh => {
+            take_next_work(catalog, work, per_shard, shard_count, max_per_shard)
+        }
+        FairnessLane::Backfill => {
+            take_next_work(backfill, work, per_shard, shard_count, max_per_shard)
+        }
+    }
+}
+
+fn take_next_work(
+    lane: &mut VecDeque<WorkItem>,
+    work: &mut Vec<WorkItem>,
+    per_shard: &mut [usize],
+    shard_count: usize,
+    max_per_shard: Option<usize>,
+) -> bool {
+    while let Some(item) = lane.pop_front() {
+        let bucket = shards::work_bucket(&item.work_id, shard_count);
+        if let Some(max_per_shard) = max_per_shard
+            && per_shard[bucket] >= max_per_shard
+        {
+            continue;
+        }
+        per_shard[bucket] += 1;
+        work.push(item);
+        return true;
+    }
+    false
 }
 
 fn priority_for(item: &EvaluatedCandidate, mode: PlanMode) -> Option<PriorityTier> {
@@ -753,6 +918,20 @@ mod tests {
         }
     }
 
+    fn evaluated_candidate(
+        name: &str,
+        version: &str,
+        rank: u32,
+        staleness: Staleness,
+    ) -> EvaluatedCandidate {
+        EvaluatedCandidate {
+            candidate: candidate(name, version, u64::from(10_000 - rank), rank),
+            version: version.to_string(),
+            staleness,
+            forced: false,
+        }
+    }
+
     fn snapshot() -> CrateCatalogSnapshot {
         CrateCatalogSnapshot {
             schema_version: 1,
@@ -846,5 +1025,77 @@ mod tests {
         assert_eq!(plan.work[1].priority_tier, "top-download-stale");
         assert_eq!(plan.work[2].priority_tier, "newer-version");
         assert_eq!(plan.work[0].work_id, "crate:alpha:1.0.0:default");
+    }
+
+    #[test]
+    fn daily_plan_keeps_slots_for_catalog_and_first_parse_work() {
+        let evaluated = vec![
+            evaluated_candidate(
+                "alpha",
+                "1.0.0",
+                1,
+                Staleness::ParserRevisionChanged {
+                    recorded: "old".to_string(),
+                    current: "new".to_string(),
+                },
+            ),
+            evaluated_candidate(
+                "beta",
+                "1.0.0",
+                2,
+                Staleness::ParserRevisionChanged {
+                    recorded: "old".to_string(),
+                    current: "new".to_string(),
+                },
+            ),
+            evaluated_candidate(
+                "gamma",
+                "1.0.0",
+                3,
+                Staleness::ParserRevisionChanged {
+                    recorded: "old".to_string(),
+                    current: "new".to_string(),
+                },
+            ),
+            evaluated_candidate(
+                "delta",
+                "1.0.0",
+                4,
+                Staleness::ParserRevisionChanged {
+                    recorded: "old".to_string(),
+                    current: "new".to_string(),
+                },
+            ),
+            evaluated_candidate(
+                "epsilon",
+                "1.0.0",
+                7_000,
+                Staleness::ParserRevisionChanged {
+                    recorded: "old".to_string(),
+                    current: "new".to_string(),
+                },
+            ),
+            evaluated_candidate("zeta", "1.0.0", 8_000, Staleness::NeverParsed),
+        ];
+
+        let plan = assemble_work_plan(
+            PlanAssembly {
+                run_id: "run-123".to_string(),
+                generated_at: "2026-07-04T00:00:00Z".to_string(),
+                mode: PlanMode::Daily,
+                shard_count: 4,
+                max_total: Some(5),
+                max_per_shard: None,
+            },
+            evaluated,
+        )
+        .unwrap();
+
+        let names = plan
+            .work
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["alpha", "beta", "epsilon", "gamma", "zeta"]);
     }
 }

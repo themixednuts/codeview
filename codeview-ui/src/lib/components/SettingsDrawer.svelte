@@ -626,9 +626,9 @@
 						</span>
 					</div>
 
-					<!-- Source provider -->
+					<!-- Source links -->
 					<div class="flex flex-col gap-1">
-						<span class="text-xs font-medium text-(--ink)">Source provider</span>
+						<span class="text-xs font-medium text-(--ink)">Source links</span>
 						<div
 							class="corner-squircle relative grid grid-cols-3 items-stretch rounded-(--radius-control) border border-(--panel-border) bg-(--panel) p-1"
 						>
