@@ -10,6 +10,8 @@
 		model,
 		theme = 'light',
 		getNodeUrl,
+		openGraphHref,
+		onOpenGraph,
 		crateName,
 		crateVersion,
 		crateVersions = {},
@@ -19,15 +21,12 @@
 		model: MaterializedDetailDocModel;
 		theme?: 'dark' | 'light';
 		getNodeUrl: (id: string) => string;
+		openGraphHref?: string;
+		onOpenGraph?: () => void;
 		crateName?: string;
 		crateVersion?: string;
 		crateVersions?: Record<string, string>;
 	}>();
-
-	function focusRelationships() {
-		const el = typeof document !== 'undefined' ? document.getElementById('relationships') : null;
-		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-	}
 </script>
 
 <div
@@ -52,7 +51,8 @@
 			entries={model.tocEntries}
 			related={model.whereUsed}
 			{getNodeUrl}
-			onOpenGraph={focusRelationships}
+			{openGraphHref}
+			{onOpenGraph}
 			nodeId={detail.node.id}
 		/>
 	</aside>

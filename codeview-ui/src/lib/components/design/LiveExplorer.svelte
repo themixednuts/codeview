@@ -181,6 +181,11 @@
 
 	const viewState = $derived(parseExplorerState(page.url));
 	const mode = $derived(localViewOverride ?? viewState.view);
+	const graphHref = $derived.by(() => {
+		const url = serializeExplorerState(page.url, { view: 'graph' });
+		url.hash = '';
+		return `${url.pathname}${url.search}`;
+	});
 	const expandPath = $derived(expandPathCtx.getOr(null));
 	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
 	const docLayout = $derived(localDocLayoutOverride ?? viewState.layout ?? preferredDocLayout);
@@ -811,6 +816,10 @@
 		updateExplorerState({ view: 'docs', layout: nextLayout });
 	}
 
+	function openGraphView() {
+		updateExplorerState({ view: 'graph' });
+	}
+
 	function handleExplorerKeydown(event: KeyboardEvent) {
 		if (event.defaultPrevented || event.metaKey || event.ctrlKey) return;
 		if (isEditableTarget(event.target)) return;
@@ -1233,6 +1242,8 @@
 					model={detailModel}
 					{theme}
 					{getNodeUrl}
+					openGraphHref={graphHref}
+					onOpenGraph={openGraphView}
 					crateName={canonicalCrateName ?? crateName}
 					crateVersion={version}
 					{crateVersions}
@@ -1244,6 +1255,8 @@
 					model={detailModel}
 					{theme}
 					{getNodeUrl}
+					openGraphHref={graphHref}
+					onOpenGraph={openGraphView}
 					crateName={canonicalCrateName ?? crateName}
 					crateVersion={version}
 					{crateVersions}

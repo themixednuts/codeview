@@ -11,12 +11,14 @@
 		entries,
 		related = [],
 		getNodeUrl,
+		openGraphHref,
 		onOpenGraph,
 		nodeId,
 	} = $props<{
 		entries: TocEntry[];
 		related?: RelatedRef[];
 		getNodeUrl?: (id: string) => string;
+		openGraphHref?: string;
 		onOpenGraph?: () => void;
 		nodeId?: string;
 	}>();
@@ -65,6 +67,13 @@
 			history.replaceState(null, '', `#${anchor}`);
 			activeAnchor = anchor;
 		}
+	}
+
+	function handleOpenGraph(event: MouseEvent) {
+		if (!onOpenGraph) return;
+		if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+		event.preventDefault();
+		onOpenGraph();
 	}
 </script>
 
@@ -118,15 +127,27 @@
 						</li>
 					{/each}
 				</ul>
-				{#if onOpenGraph && nodeId}
-					<button
-						type="button"
-						class="mt-3 inline-flex items-center gap-1 text-[10.5px] font-mono text-(--accent-strong) hover:text-(--accent)"
-						onclick={onOpenGraph}
-					>
-						Open in graph
-						<span aria-hidden="true">→</span>
-					</button>
+				{#if (openGraphHref || onOpenGraph) && nodeId}
+					{#if openGraphHref}
+						<a
+							href={resolve(openGraphHref)}
+							data-sveltekit-noscroll
+							class="mt-3 inline-flex items-center gap-1 text-[10.5px] font-mono text-(--accent-strong) hover:text-(--accent)"
+							onclick={handleOpenGraph}
+						>
+							Open in graph
+							<span aria-hidden="true">→</span>
+						</a>
+					{:else}
+						<button
+							type="button"
+							class="mt-3 inline-flex items-center gap-1 text-[10.5px] font-mono text-(--accent-strong) hover:text-(--accent)"
+							onclick={handleOpenGraph}
+						>
+							Open in graph
+							<span aria-hidden="true">→</span>
+						</button>
+					{/if}
 				{/if}
 			</div>
 		{/if}

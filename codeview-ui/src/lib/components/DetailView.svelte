@@ -223,11 +223,19 @@
 
 	// "Where used" — surface the top incoming-edge sources by node name.
 	const whereUsed = $derived(detailModel.whereUsed);
+	const graphHref = $derived.by(() => {
+		const url = serializeExplorerState(page.url, { view: 'graph' });
+		url.hash = '';
+		return `${url.pathname}${url.search}`;
+	});
 
-	function focusGraph() {
+	function openGraphView() {
 		if (!browser) return;
-		const el = document.getElementById('relationships');
-		if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		goto(resolveAppPath(graphHref), {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
 	}
 </script>
 
@@ -389,7 +397,8 @@
 							entries={tocEntries}
 							related={whereUsed}
 							{getNodeUrl}
-							onOpenGraph={focusGraph}
+							openGraphHref={graphHref}
+							onOpenGraph={openGraphView}
 							{nodeId}
 						/>
 					</div>

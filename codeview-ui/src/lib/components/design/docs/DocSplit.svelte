@@ -14,6 +14,8 @@
 		model,
 		theme = 'light',
 		getNodeUrl,
+		openGraphHref,
+		onOpenGraph,
 		crateName,
 		crateVersion,
 		crateVersions = {},
@@ -23,6 +25,8 @@
 		model: MaterializedDetailDocModel;
 		theme?: 'dark' | 'light';
 		getNodeUrl: (id: string) => string;
+		openGraphHref?: string;
+		onOpenGraph?: () => void;
 		crateName?: string;
 		crateVersion?: string;
 		crateVersions?: Record<string, string>;
@@ -107,6 +111,8 @@
 		{model}
 		{theme}
 		{getNodeUrl}
+		{openGraphHref}
+		{onOpenGraph}
 		{crateName}
 		{crateVersion}
 		{crateVersions}
