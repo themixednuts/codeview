@@ -16,16 +16,22 @@
 //! Errors classify into transient / permanent so the cron caller picks
 //! the right retry strategy.
 
+use std::io::Cursor;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use codeview_rustdoc::{RustdocError, RustdocFormatPolicy};
+use flate2::read::GzDecoder;
+use futures::StreamExt;
 use sha2::{Digest as _, Sha256};
+use tar::Archive;
 
 use super::freshness::{FreshnessEntry, FreshnessRegistry, Source};
 use super::r2::R2;
 use super::shards;
 use super::{docs_rs, hosted_artifacts};
+
+const CRATES_IO_CRATE_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Outcome of `publish_one` — distinguishes a no-op skip from real work
 /// so the CLI logs read cleanly.
@@ -143,54 +149,62 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     }
 
     // ─── 2. Load rustdoc JSON ────────────────────────────────────
-    let (json_bytes, recorded_source) =
-        match source {
-            CrateSource::DocsRs {
-                target: docsrs_target,
-            } => {
-                let http = docs_rs::http_client().map_err(PublishError::Transient)?;
-                let download =
-                    match docs_rs::fetch_rustdoc_json(&http, package_name, version, docsrs_target)
-                        .await
-                    {
-                        Ok(d) => d,
-                        Err(docs_rs::DocsRsError::Permanent { status, url }) => {
-                            return Err(PublishError::Permanent(format!(
-                                "docs.rs {url} returned {status}"
-                            )));
-                        }
-                        Err(docs_rs::DocsRsError::Corrupt(e)) => {
-                            return Err(PublishError::Permanent(format!(
-                                "docs.rs artifact: {e:#}"
-                            )));
-                        }
-                        Err(docs_rs::DocsRsError::Transient(e)) => {
-                            return Err(PublishError::Transient(e));
-                        }
-                    };
-                eprintln!(
-                    "[parse-one] docs.rs JSON: {:.2} MB {} → {:.2} MB raw",
-                    download.compressed_bytes as f64 / 1024.0 / 1024.0,
-                    download.encoding,
-                    download.json.len() as f64 / 1024.0 / 1024.0,
-                );
-                (download.json, Source::DocsRs)
+    let (json_bytes, recorded_source) = match source {
+        CrateSource::DocsRs {
+            target: docsrs_target,
+        } => {
+            let http = docs_rs::http_client().map_err(PublishError::Transient)?;
+            match docs_rs::fetch_rustdoc_json(&http, package_name, version, docsrs_target).await {
+                Ok(download) => {
+                    eprintln!(
+                        "[parse-one] docs.rs JSON: {:.2} MB {} → {:.2} MB raw",
+                        download.compressed_bytes as f64 / 1024.0 / 1024.0,
+                        download.encoding,
+                        download.json.len() as f64 / 1024.0 / 1024.0,
+                    );
+                    (download.json, Source::DocsRs)
+                }
+                Err(docs_rs::DocsRsError::Permanent { status, url })
+                    if docsrs_target.is_none() && matches!(status, 404 | 410) =>
+                {
+                    eprintln!(
+                        "[parse-one] docs.rs JSON unavailable ({status} {url}); building rustdoc JSON from crates.io"
+                    );
+                    let json = fetch_crates_io_rustdoc_json(&http, package_name, version).await?;
+                    eprintln!(
+                        "[parse-one] crates.io rustdoc JSON: {:.2} MB raw",
+                        json.len() as f64 / 1024.0 / 1024.0,
+                    );
+                    (json, Source::Cargo)
+                }
+                Err(docs_rs::DocsRsError::Permanent { status, url }) => {
+                    return Err(PublishError::Permanent(format!(
+                        "docs.rs {url} returned {status}"
+                    )));
+                }
+                Err(docs_rs::DocsRsError::Corrupt(e)) => {
+                    return Err(PublishError::Permanent(format!("docs.rs artifact: {e:#}")));
+                }
+                Err(docs_rs::DocsRsError::Transient(e)) => {
+                    return Err(PublishError::Transient(e));
+                }
             }
-            CrateSource::LocalFile {
-                path,
-                freshness_source,
-            } => {
-                let bytes = std::fs::read(path)
-                    .with_context(|| format!("read rustdoc JSON from {}", path.display()))
-                    .map_err(PublishError::Transient)?;
-                eprintln!(
-                    "[parse-one] local JSON: {} ({:.2} MB)",
-                    path.display(),
-                    bytes.len() as f64 / 1024.0 / 1024.0,
-                );
-                (bytes, freshness_source)
-            }
-        };
+        }
+        CrateSource::LocalFile {
+            path,
+            freshness_source,
+        } => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("read rustdoc JSON from {}", path.display()))
+                .map_err(PublishError::Transient)?;
+            eprintln!(
+                "[parse-one] local JSON: {} ({:.2} MB)",
+                path.display(),
+                bytes.len() as f64 / 1024.0 / 1024.0,
+            );
+            (bytes, freshness_source)
+        }
+    };
 
     // ─── 3. Parse via codeview-rustdoc ───────────────────────────
     let rustdoc_hash = hex::encode(Sha256::digest(&json_bytes));
@@ -350,6 +364,101 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     Ok(Outcome::Published {
         nodes: crate_graph.nodes.len(),
         edges: crate_graph.edges.len(),
+    })
+}
+
+async fn fetch_crates_io_rustdoc_json(
+    client: &reqwest::Client,
+    package_name: &str,
+    version: &str,
+) -> Result<Vec<u8>, PublishError> {
+    let crate_url = format!(
+        "https://crates.io/api/v1/crates/{}/{}/download",
+        urlencoding::encode(package_name),
+        urlencoding::encode(version)
+    );
+    let resp =
+        client.get(&crate_url).send().await.map_err(|e| {
+            PublishError::Transient(anyhow::Error::new(e).context("download crate"))
+        })?;
+    let status = resp.status();
+    if !status.is_success() {
+        if status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error() {
+            return Err(PublishError::Transient(anyhow::anyhow!(
+                "crates.io {crate_url}: {status}"
+            )));
+        }
+        return Err(PublishError::Permanent(format!(
+            "crates.io {crate_url} returned {status}"
+        )));
+    }
+    if let Some(content_length) = resp.content_length()
+        && content_length > CRATES_IO_CRATE_CAP_BYTES
+    {
+        return Err(PublishError::Permanent(format!(
+            "crates.io crate archive for {package_name}@{version} is {content_length} bytes, above cap {CRATES_IO_CRATE_CAP_BYTES}"
+        )));
+    }
+
+    let archive_bytes = read_response_with_cap(resp, CRATES_IO_CRATE_CAP_BYTES)
+        .await
+        .map_err(PublishError::Transient)?;
+    let temp = tempfile::Builder::new()
+        .prefix("codeview-crate-")
+        .tempdir()
+        .map_err(|e| PublishError::Transient(anyhow::Error::new(e).context("create tempdir")))?;
+
+    let gzip = GzDecoder::new(Cursor::new(archive_bytes));
+    let mut archive = Archive::new(gzip);
+    archive
+        .unpack(temp.path())
+        .map_err(|e| PublishError::Permanent(format!("unpack crates.io archive: {e}")))?;
+
+    let crate_dir = find_unpacked_crate_dir(temp.path()).ok_or_else(|| {
+        PublishError::Permanent("crates.io archive did not contain Cargo.toml".into())
+    })?;
+    let manifest_path = crate_dir.join("Cargo.toml");
+    let rustdoc =
+        codeview_rustdoc::generate_rustdoc_json(&manifest_path).map_err(classify_rustdoc_error)?;
+    std::fs::read(&rustdoc.json_path).map_err(|e| {
+        PublishError::Transient(
+            anyhow::Error::new(e).context(format!("read {}", rustdoc.json_path.display())),
+        )
+    })
+}
+
+async fn read_response_with_cap(
+    resp: reqwest::Response,
+    cap_bytes: u64,
+) -> Result<Vec<u8>, anyhow::Error> {
+    let cap = usize::try_from(cap_bytes).unwrap_or(usize::MAX);
+    let mut body = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read response body")?;
+        if body.len().saturating_add(chunk.len()) > cap {
+            anyhow::bail!("response body exceeded cap {cap_bytes}");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+fn find_unpacked_crate_dir(root: &std::path::Path) -> Option<std::path::PathBuf> {
+    let expected = std::fs::read_dir(root).ok()?.flatten().find_map(|entry| {
+        let path = entry.path();
+        if path.join("Cargo.toml").is_file() {
+            Some(path)
+        } else {
+            None
+        }
+    });
+    expected.or_else(|| {
+        if root.join("Cargo.toml").is_file() {
+            Some(root.to_path_buf())
+        } else {
+            None
+        }
     })
 }
 

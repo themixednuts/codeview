@@ -21,6 +21,7 @@ use codeview_core::{
     Workspace,
 };
 use rustdoc_types as rdt;
+use serde::de::{DeserializeOwned, IntoDeserializer};
 use syn::spanned::Spanned;
 use syn::visit::Visit;
 use thiserror::Error;
@@ -700,7 +701,7 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
     // Fast path: zero-copy when the format already matches our target.
     #[cfg(feature = "wasm")]
     wasm_log!("[wasm] parse_rustdoc_lenient: attempting fast path");
-    if let Ok(krate) = serde_json::from_str::<rdt::Crate>(json) {
+    if let Ok(krate) = deserialize_json_str_unbounded::<rdt::Crate>(json) {
         #[cfg(feature = "wasm")]
         wasm_log!(
             "[wasm] rustdoc parsed (fast path): {:.0}ms",
@@ -713,7 +714,7 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
     let t1 = js_sys::Date::now();
 
     // Slow path: parse → fixup → materialize.
-    let mut doc: serde_json::Value = serde_json::from_str(json)?;
+    let mut doc = parse_json_value_unbounded(json)?;
 
     #[cfg(feature = "wasm")]
     let t2 = js_sys::Date::now();
@@ -919,8 +920,7 @@ pub fn validate_rustdoc_json(
     crate_name: &str,
     policy: &RustdocFormatPolicy,
 ) -> Result<ValidatedRustdoc, RustdocError> {
-    let mut doc: serde_json::Value =
-        serde_json::from_str(json).map_err(RustdocError::JsonSyntax)?;
+    let mut doc = parse_json_value_unbounded(json).map_err(RustdocError::JsonSyntax)?;
     let source_format_version = preflight_rustdoc_json(&doc, policy)?;
 
     if (source_format_version < rdt::FORMAT_VERSION && policy.allow_older_compat)
@@ -1012,11 +1012,27 @@ fn require_u32_field(
 }
 
 fn deserialize_rustdoc_value(doc: serde_json::Value) -> Result<rdt::Crate, RustdocError> {
-    serde_path_to_error::deserialize(doc).map_err(|err| {
+    let value_deserializer = doc.into_deserializer();
+    let value_deserializer = serde_stacker::Deserializer::new(value_deserializer);
+    serde_path_to_error::deserialize(value_deserializer).map_err(|err| {
         let path = err.path().to_string();
         let source = err.into_inner();
         RustdocError::Deserialize { path, source }
     })
+}
+
+fn deserialize_json_str_unbounded<T>(json: &str) -> Result<T, serde_json::Error>
+where
+    T: DeserializeOwned,
+{
+    let mut deserializer = serde_json::Deserializer::from_str(json);
+    deserializer.disable_recursion_limit();
+    let deserializer = serde_stacker::Deserializer::new(&mut deserializer);
+    T::deserialize(deserializer)
+}
+
+fn parse_json_value_unbounded(json: &str) -> Result<serde_json::Value, serde_json::Error> {
+    deserialize_json_str_unbounded(json)
 }
 
 fn validate_rustdoc_structure(
@@ -1043,10 +1059,11 @@ fn validate_rustdoc_structure(
         }
     }
 
+    let mut local_paths_missing_index = Vec::new();
     for (id, summary) in &krate.paths {
         if summary.crate_id == 0 {
             if !krate.index.contains_key(id) {
-                return Err(RustdocStructuralError::LocalPathMissingIndex { id: id.0 }.into());
+                local_paths_missing_index.push(id.0);
             }
             continue;
         }
@@ -1065,6 +1082,25 @@ fn validate_rustdoc_structure(
             }
             .into());
         }
+    }
+    if !local_paths_missing_index.is_empty() {
+        local_paths_missing_index.sort_unstable();
+        let sample = local_paths_missing_index
+            .iter()
+            .take(8)
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        let extra = local_paths_missing_index.len().saturating_sub(8);
+        let suffix = if extra == 0 {
+            String::new()
+        } else {
+            format!("; {extra} more")
+        };
+        report.warnings.push(format!(
+            "ignored {} local path summaries without index items: {sample}{suffix}",
+            local_paths_missing_index.len()
+        ));
     }
 
     for item in krate.index.values() {
@@ -5437,7 +5473,7 @@ mod tests {
     }
 
     #[test]
-    fn gate4_rejects_local_path_missing_from_index() {
+    fn gate4_warns_on_local_path_missing_from_index() {
         let mut value = minimal_rustdoc_value("fixture");
         value["paths"]["1"] = serde_json::json!({
             "crate_id": 0,
@@ -5445,16 +5481,20 @@ mod tests {
             "kind": "struct"
         });
 
-        assert!(matches!(
-            validate_rustdoc_json(
-                &value.to_string(),
-                "fixture",
-                &RustdocFormatPolicy::strict()
-            ),
-            Err(RustdocError::Structural(
-                RustdocStructuralError::LocalPathMissingIndex { id: 1 }
-            ))
-        ));
+        let validated = validate_rustdoc_json(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("path summaries without item bodies are tolerated");
+
+        assert!(
+            validated
+                .report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("without index items: 1"))
+        );
     }
 
     #[test]
