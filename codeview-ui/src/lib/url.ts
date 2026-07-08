@@ -10,9 +10,33 @@ export function nodeUrl(nodeId: string, crateVersions: Record<string, string>): 
 	const parts = nodeId.split('::');
 	const crate = parts[0];
 	const routeCrate = hyphenateCrateName(crate);
-	const version = crateVersions[crate] ?? (isStdCrate(crate) ? 'stable' : 'latest');
+	const version =
+		crateVersions[crate] ??
+		crateVersions[normalizeCrateName(crate)] ??
+		crateVersions[hyphenateCrateName(crate)] ??
+		(isStdCrate(crate) ? 'stable' : 'latest');
 	const path = parts.slice(1).join('/');
 	return path ? `/${routeCrate}/${version}/${path}` : `/${routeCrate}/${version}`;
+}
+
+export function nodeUrlForRoute(
+	nodeId: string,
+	crateVersions: Record<string, string>,
+	currentCrate?: string,
+	currentVersion?: string,
+): string {
+	const parts = nodeId.split('::');
+	const crate = parts[0];
+	const isCurrentCrate =
+		currentCrate && normalizeCrateName(crate) === normalizeCrateName(currentCrate);
+	if (!isCurrentCrate || !currentVersion) return nodeUrl(nodeId, crateVersions);
+
+	return nodeUrl(nodeId, {
+		...crateVersions,
+		[crate]: currentVersion,
+		[normalizeCrateName(crate)]: currentVersion,
+		[hyphenateCrateName(crate)]: currentVersion,
+	});
 }
 
 /**

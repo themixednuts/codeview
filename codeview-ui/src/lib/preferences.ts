@@ -24,6 +24,7 @@ export const SOURCE_PROVIDER_KEY = 'codeview-source-provider-mode';
 export const VCS_KEY = 'codeview-vcs';
 export const EDITOR_KEY = 'codeview-editor';
 export const CUSTOM_EDITOR_KEY = 'codeview-editor-custom';
+export const SOURCE_ROOT_KEY = 'codeview-source-root';
 
 export const THEME_VALUES = ['light', 'dark', 'system'] as const satisfies readonly Theme[];
 export const ACCENT_VALUES = ['orange', 'cobalt', 'forest', 'plum', 'char'] as const satisfies
@@ -93,6 +94,17 @@ export function writePref(key: string, value: string): void {
 		document.cookie = `${key}=${encodeURIComponent(
 			value,
 		)}; path=/; max-age=${PREF_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`;
+	}
+}
+
+export function writeClientPref(key: string, value: string): void {
+	try {
+		if (typeof localStorage === 'undefined') return;
+		const next = value.trim();
+		if (next) localStorage.setItem(key, next);
+		else localStorage.removeItem(key);
+	} catch {
+		// Local integration preferences are best-effort browser state.
 	}
 }
 

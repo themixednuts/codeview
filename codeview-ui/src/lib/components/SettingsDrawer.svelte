@@ -51,6 +51,7 @@
 		extLinkMode: ExternalLinkMode;
 		sourceProviderMode: SourceProviderMode;
 		vcsMode: VcsMode;
+		sourceRoot: string;
 		onThemeChange: (theme: Theme) => void;
 		onAccentChange: (mode: AccentMode) => void;
 		onDensityChange: (mode: DensityMode) => void;
@@ -62,6 +63,7 @@
 		onSourceProviderModeChange: (mode: SourceProviderMode) => void;
 		onVcsModeChange: (mode: VcsMode) => void;
 		onEditorSchemeChange?: (scheme: string) => void;
+		onSourceRootChange?: (root: string) => void;
 		onOpenChange?: (open: boolean) => void;
 	}
 
@@ -77,6 +79,7 @@
 		extLinkMode,
 		sourceProviderMode,
 		vcsMode,
+		sourceRoot,
 		onThemeChange,
 		onAccentChange,
 		onDensityChange,
@@ -88,6 +91,7 @@
 		onSourceProviderModeChange,
 		onVcsModeChange,
 		onEditorSchemeChange,
+		onSourceRootChange,
 		onOpenChange,
 	}: Props = $props();
 
@@ -721,6 +725,22 @@
 							and
 							<code class="text-(--accent)">{'{line}'}</code>
 							are replaced with the file path and line number
+						</span>
+					</div>
+
+					<div class="flex flex-col gap-1">
+						<span class="text-[10px] font-medium tracking-wider text-(--muted) uppercase">
+							Local source root
+						</span>
+						<input
+							type="text"
+							value={sourceRoot}
+							oninput={(e) => onSourceRootChange?.(e.currentTarget.value)}
+							placeholder="C:\\src\\proc-macro2"
+							class="corner-squircle w-full rounded-(--radius-chip) border border-(--panel-border) bg-(--panel) px-3 py-2 font-mono text-[11px] text-(--ink) placeholder:text-(--muted) focus:border-(--accent) focus:ring-1 focus:ring-(--accent) focus:outline-none"
+						/>
+						<span class="text-[10px] text-(--muted)">
+							Used for hosted editor links when the browser only has repo source paths
 						</span>
 					</div>
 				</div>

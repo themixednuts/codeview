@@ -95,6 +95,7 @@ export const extLinkModeCtx = new ReactiveContext<ExternalLinkMode>('extLinkMode
 export const sourceProviderModeCtx = new ReactiveContext<SourceProviderMode>('sourceProviderMode');
 export const vcsModeCtx = new ReactiveContext<VcsMode>('vcsMode');
 export const editorSchemeCtx = new ReactiveContext<string>('editorScheme');
+export const sourceRootCtx = new ReactiveContext<string>('sourceRoot');
 
 // --- Crate layout contexts ---
 export const getNodeUrlCtx = new ReactiveContext<(id: string) => string>('getNodeUrl');

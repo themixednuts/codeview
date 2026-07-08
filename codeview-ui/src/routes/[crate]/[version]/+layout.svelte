@@ -20,7 +20,7 @@
 	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
 	import { getStaticTreeRoots, getTreeRoots } from '$lib/rpc/roots.remote';
 	import { searchNodes } from '$lib/rpc/search.remote';
-	import { nodeIdFromPath, nodeUrl } from '$lib/url';
+	import { nodeIdFromPath, nodeUrlForRoute } from '$lib/url';
 	import { hyphenateCrateName } from '$lib/crate-names';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import { onMount } from 'svelte';
@@ -351,7 +351,7 @@
 	}
 
 	function getNodeUrl(id: string): string {
-		const base = nodeUrl(id, crateVersions);
+		const base = nodeUrlForRoute(id, crateVersions, canonicalCrateName, version);
 		const target = new URL(base, page.url);
 		const currentCratePrefix = `/${canonicalCrateName}/${version}`;
 		const sameCrateRoute =

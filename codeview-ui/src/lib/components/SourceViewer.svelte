@@ -6,16 +6,12 @@
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { getSource } from '$lib/rpc/source.remote';
-	import { sourceProviderModeCtx, editorSchemeCtx, vcsModeCtx } from '$lib/context';
+	import { sourceProviderModeCtx } from '$lib/context';
 	import type { SourceResult } from '$lib/schema';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import CodeBlock from './CodeBlock.svelte';
+	import SourceActions from './SourceActions.svelte';
 	import X from '@lucide/svelte/icons/x';
-	import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
-	import ExternalLink from '@lucide/svelte/icons/external-link';
-	import TerminalSquare from '@lucide/svelte/icons/terminal-square';
-	import ClipboardCopy from '@lucide/svelte/icons/clipboard-copy';
-	import Check from '@lucide/svelte/icons/check';
 
 	interface Props {
 		span: Span;
@@ -44,28 +40,6 @@
 	const sourceContent = $derived(sourceData?.content ?? null);
 	const absolutePath = $derived(sourceData?.absolutePath ?? null);
 	const repoUrl = $derived(sourceData?.repoUrl ?? null);
-
-	const editorScheme = $derived(editorSchemeCtx.getOr('vscode://file/{path}:{line}'));
-	const vcsMode = $derived(vcsModeCtx.getOr('git'));
-
-	/** Whether viewing an external crate (not the workspace crate) */
-	const isExternalCrate = $derived(!!crateName);
-
-	/** Extract repo base URL from a GitHub blob URL (strip /blob/...) */
-	function repoBaseUrl(url: string): string {
-		const blobIdx = url.indexOf('/blob/');
-		return blobIdx !== -1 ? url.slice(0, blobIdx) : url;
-	}
-
-	/** Build the clone command based on VCS preference */
-	const cloneCommand = $derived.by(() => {
-		if (!repoUrl) return '';
-		const base = repoBaseUrl(repoUrl);
-		return vcsMode === 'jj' ? `jj git clone ${base}` : `git clone ${base}`;
-	});
-
-	let clonePopoverOpen = $state(false);
-	let cloneCopied = $state(false);
 
 	$effect(() => {
 		if (!isOpen || !span) {
@@ -102,46 +76,6 @@
 		};
 	});
 
-	function openInEditor() {
-		if (!absolutePath || !span) return;
-		const uri = editorScheme.replace('{path}', absolutePath).replace('{line}', String(span.line));
-		window.open(uri);
-	}
-
-	function openOnGitHub() {
-		if (!repoUrl) return;
-		window.open(repoUrl, '_blank');
-	}
-
-	function toggleClonePopover() {
-		clonePopoverOpen = !clonePopoverOpen;
-		cloneCopied = false;
-	}
-
-	async function copyCloneCommand() {
-		await navigator.clipboard.writeText(cloneCommand);
-		cloneCopied = true;
-		setTimeout(() => (cloneCopied = false), 2000);
-	}
-
-	function handleCloneKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') clonePopoverOpen = false;
-	}
-
-	/** Click-outside handler for clone popover */
-	const cloneClickOutside: Attachment<HTMLDivElement> = (wrapper) => {
-		$effect(() => {
-			if (!clonePopoverOpen) return;
-			function onClick(e: MouseEvent) {
-				if (!wrapper.contains(e.target as HTMLElement)) {
-					clonePopoverOpen = false;
-				}
-			}
-			document.addEventListener('click', onClick, true);
-			return () => document.removeEventListener('click', onClick, true);
-		});
-	};
-
 	const highlightRange = $derived.by(() => {
 		if (!span) return [];
 		const start = span.line;
@@ -170,7 +104,6 @@
 	}
 
 	function close() {
-		clonePopoverOpen = false;
 		clearSourceState();
 	}
 
@@ -247,51 +180,13 @@
 					<span class="modal-line">:{span.line}:{span.column}</span>
 				</div>
 				<div class="modal-actions">
-					{#if absolutePath}
-						<button
-							type="button"
-							class="modal-action"
-							onclick={openInEditor}
-							title="Open in editor"
-						>
-							<SquareArrowOutUpRight size={16} />
-						</button>
-					{/if}
-					{#if repoUrl}
-						<button type="button" class="modal-action" onclick={openOnGitHub} title="View on GitHub">
-							<ExternalLink size={16} />
-						</button>
-					{/if}
-					{#if isExternalCrate && repoUrl}
-						<div class="clone-wrapper" {@attach cloneClickOutside}>
-							<button
-								type="button"
-								class="modal-action"
-								onclick={toggleClonePopover}
-								title="Clone repository"
-							>
-								<TerminalSquare size={16} />
-							</button>
-							{#if clonePopoverOpen}
-								<!-- svelte-ignore a11y_no_static_element_interactions -->
-								<div class="clone-popover" onkeydown={handleCloneKeydown}>
-									<code class="clone-command">{cloneCommand}</code>
-									<button
-										type="button"
-										class="clone-copy"
-										onclick={copyCloneCommand}
-										title="Copy to clipboard"
-									>
-										{#if cloneCopied}
-											<Check size={14} />
-										{:else}
-											<ClipboardCopy size={14} />
-										{/if}
-									</button>
-								</div>
-							{/if}
-						</div>
-					{/if}
+					<SourceActions
+						{repoUrl}
+						{absolutePath}
+						sourceFile={span.file}
+						line={span.line}
+						className="modal-source-actions"
+					/>
 					<button type="button" class="modal-close" onclick={close} aria-label="Close">
 						<X size={18} />
 					</button>
@@ -421,76 +316,6 @@
 		display: flex;
 		align-items: center;
 		gap: 2px;
-	}
-
-	.modal-action {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 28px;
-		height: 28px;
-		border-radius: 6px;
-		border: none;
-		background: none;
-		color: var(--muted);
-		cursor: pointer;
-		transition:
-			background 0.15s,
-			color 0.15s;
-	}
-
-	.modal-action:hover {
-		background: var(--panel-strong);
-		color: var(--ink);
-	}
-
-	.clone-wrapper {
-		position: relative;
-	}
-
-	.clone-popover {
-		position: absolute;
-		top: calc(100% + 6px);
-		right: 0;
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.5rem 0.625rem;
-		background: var(--panel-solid);
-		border: 1px solid var(--panel-border);
-		border-radius: 8px;
-		box-shadow: var(--shadow-modal);
-		white-space: nowrap;
-		z-index: 10;
-	}
-
-	.clone-command {
-		font-family: var(--font-code);
-		font-size: 0.75rem;
-		color: var(--ink);
-		user-select: all;
-	}
-
-	.clone-copy {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		border-radius: 4px;
-		border: none;
-		background: none;
-		color: var(--muted);
-		cursor: pointer;
-		flex-shrink: 0;
-		transition:
-			background 0.15s,
-			color 0.15s;
-	}
-
-	.clone-copy:hover {
-		background: var(--panel-strong);
-		color: var(--ink);
 	}
 
 	.modal-body {

@@ -4,6 +4,7 @@
 	import { getSource } from '$lib/rpc/source.remote';
 	import { sourceProviderModeCtx } from '$lib/context';
 	import CodeBlock from '$lib/components/design/CodeBlock.svelte';
+	import SourceActions from '$lib/components/SourceActions.svelte';
 	import DocArticle from './DocArticle.svelte';
 	import DocClassic from './DocClassic.svelte';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
@@ -61,6 +62,7 @@
 	let sourceResult = $state<SourceResult | null>(null);
 	let sourceLoaded = $state(false);
 	const sourceContent = $derived(sourceResult?.content ?? null);
+	const absolutePath = $derived(sourceResult?.absolutePath ?? null);
 	const repoUrl = $derived(sourceResult?.repoUrl ?? null);
 
 	$effect(() => {
@@ -154,17 +156,13 @@
 						</span>
 					{/if}
 				</div>
-				{#if repoUrl}
-					<a
-						href={repoUrl}
-						target="_blank"
-						rel="noopener noreferrer"
-						class="shrink-0 text-[10.5px] hover:underline"
-						style="color: var(--link)"
-					>
-						open source
-					</a>
-				{/if}
+				<SourceActions
+					{repoUrl}
+					{absolutePath}
+					sourceFile={span.file}
+					line={span.line}
+					className="split-source-actions"
+				/>
 			</div>
 
 			<div class="min-h-0 flex-1 overflow-auto">

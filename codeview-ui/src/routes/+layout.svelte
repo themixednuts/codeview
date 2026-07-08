@@ -24,13 +24,16 @@
 		EXT_LINK_VALUES,
 		SOURCE_PROVIDER_KEY,
 		SOURCE_PROVIDER_VALUES,
+		SOURCE_ROOT_KEY,
 		THEME_KEY,
 		THEME_VALUES,
 		VCS_KEY,
 		VCS_VALUES,
 		VOICE_KEY,
 		VOICE_VALUES,
+		readClientPref,
 		readStoredPref,
+		writeClientPref,
 		writePref,
 	} from '$lib/preferences';
 	import {
@@ -46,6 +49,7 @@
 		sourceProviderModeCtx,
 		vcsModeCtx,
 		editorSchemeCtx,
+		sourceRootCtx,
 		type Theme,
 		type ResolvedTheme,
 		type AccentMode,
@@ -391,11 +395,13 @@
 	let sourceProviderMode = $state<SourceProviderMode>('auto');
 	let vcsMode = $state<VcsMode>('git');
 	let editorScheme = $state('vscode://file/{path}:{line}');
+	let sourceRoot = $state('');
 
 	extLinkModeCtx.set(() => extLinkMode);
 	sourceProviderModeCtx.set(() => sourceProviderMode);
 	vcsModeCtx.set(() => vcsMode);
 	editorSchemeCtx.set(() => editorScheme);
+	sourceRootCtx.set(() => sourceRoot);
 
 	function setExtLinkMode(mode: ExternalLinkMode) {
 		extLinkMode = mode;
@@ -424,6 +430,11 @@
 
 	function setEditorScheme(scheme: string) {
 		editorScheme = scheme;
+	}
+
+	function setSourceRoot(root: string) {
+		sourceRoot = root;
+		if (browser) writeClientPref(SOURCE_ROOT_KEY, root);
 	}
 
 	function resolveTheme(pref: Theme): 'light' | 'dark' {
@@ -529,6 +540,7 @@
 		extLinkMode = getInitialExtLinkMode();
 		sourceProviderMode = getInitialSourceProviderMode();
 		vcsMode = getInitialVcsMode();
+		sourceRoot = readClientPref(SOURCE_ROOT_KEY, '');
 
 		// Restore tweak axes from cookies/localStorage (app.html's inline script
 		// set the initial dataset values; we sync our reactive state here).
@@ -798,6 +810,7 @@
 	{extLinkMode}
 	{sourceProviderMode}
 	{vcsMode}
+	{sourceRoot}
 	onThemeChange={applyTheme}
 	onAccentChange={setAccent}
 	onDensityChange={setDensity}
@@ -809,6 +822,7 @@
 	onSourceProviderModeChange={setSourceProviderMode}
 	onVcsModeChange={setVcsMode}
 	onEditorSchemeChange={setEditorScheme}
+	onSourceRootChange={setSourceRoot}
 />
 
 <Toaster position="bottom-right" expand={false} />
