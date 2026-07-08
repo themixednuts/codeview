@@ -736,6 +736,14 @@ async function loadLatestPlan(env: ParseWorkerEnv): Promise<WorkPlanArtifact | n
 	);
 }
 
+function statusIsNewerThanPlan(status: StoredParseStatus, plan: WorkPlanArtifact | null): boolean {
+	const generatedAtMs = plan ? Date.parse(generatedAt(plan)) : NaN;
+	const updatedAtMs = Date.parse(status.updatedAt);
+	return Number.isFinite(generatedAtMs) && Number.isFinite(updatedAtMs)
+		? updatedAtMs >= generatedAtMs
+		: true;
+}
+
 function plannedParseItem(
 	value: NonNullable<WorkPlanArtifact['work']>[number],
 ): PlannedParseItem | null {
@@ -751,7 +759,7 @@ function plannedParseItem(
 }
 
 async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): Promise<void> {
-	const request = makeParseRequest(item.name, item.version, false, 'planned', item.kind);
+	const request = makeParseRequest(item.name, item.version, true, 'planned', item.kind);
 	const workflowId = parseWorkflowId(request.requestId);
 	await updateStatus(env, {
 		kind: request.kind,
@@ -852,7 +860,7 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
 			continue;
 		}
 		const status = await readStatus(env, item.name, item.version);
-		if (status) {
+		if (status?.status === 'processing' || (status && statusIsNewerThanPlan(status, plan))) {
 			skipped += 1;
 			continue;
 		}
