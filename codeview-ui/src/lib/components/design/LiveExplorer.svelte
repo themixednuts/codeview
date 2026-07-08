@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { goto, replaceState } from '$app/navigation';
+	import { goto, invalidateAll, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
 		KindFacet,
@@ -137,6 +137,11 @@
 	let filterInputTimer: ReturnType<typeof setTimeout> | null = null;
 	let filterDraft = $state('');
 	let pendingFilter = $state<string | null>(null);
+	let filterOverride = $state<string | null>(null);
+	let searchResults = $state.raw<NodeSummary[]>([]);
+	let searchLoading = $state(false);
+	let searchError = $state<string | null>(null);
+	let searchRetryNonce = $state(0);
 
 	const attachTreeFilterInput: Attachment<HTMLInputElement> = (node) => {
 		treeFilterInput = node;
@@ -205,15 +210,55 @@
 		},
 	);
 	const docSummary = $derived(docsSummary(selected?.docs));
-	const hasActiveTreeFilter = $derived(Boolean(filter) || kindFilter.size > 0);
+	const activeFilter = $derived(filterOverride ?? filter);
+	const hasActiveTreeFilter = $derived(Boolean(activeFilter) || kindFilter.size > 0);
 	const emptySearchMessage = $derived(
-		filter ? `No results for "${filter}"` : 'No items match these filters',
+		activeFilter ? `No results for "${activeFilter}"` : 'No items match these filters',
 	);
-
 	$effect(() => {
-		if (pendingFilter !== null && filter !== pendingFilter) return;
+		if (filterOverride !== null && filter !== filterOverride) return;
+		filterOverride = null;
 		pendingFilter = null;
 		filterDraft = filter;
+	});
+
+	$effect(() => {
+		const query = searchQuery;
+		const retryNonce = searchRetryNonce;
+		if (!hasActiveTreeFilter) {
+			searchResults = [];
+			searchLoading = false;
+			searchError = null;
+			return;
+		}
+		if (!query) {
+			searchResults = [];
+			searchLoading = true;
+			searchError = null;
+			return;
+		}
+
+		let cancelled = false;
+		void retryNonce;
+		searchLoading = true;
+		searchError = null;
+		query.then(
+			(results) => {
+				if (cancelled) return;
+				searchResults = results;
+				searchLoading = false;
+			},
+			(err) => {
+				if (cancelled) return;
+				searchResults = [];
+				searchError = err instanceof Error ? err.message : String(err);
+				searchLoading = false;
+			},
+		);
+
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	$effect(() => {
@@ -226,6 +271,9 @@
 		localOverrideRouteKey = key;
 		localViewOverride = null;
 		localDocLayoutOverride = null;
+		filterOverride = null;
+		pendingFilter = null;
+		filterDraft = filter;
 	});
 
 	function loadTreeChildren(input: { name: string; version?: string; nodeId: string }) {
@@ -633,7 +681,7 @@
 		writeExpandedIdsToUrl();
 	}
 
-	function updateExplorerState(patch: Partial<ExplorerViewState>) {
+	function updateExplorerState(patch: Partial<ExplorerViewState>): Promise<void> | void {
 		const nextUrl = serializeExplorerState(page.url, patch);
 		if (browser && (patch.view !== undefined || patch.layout !== undefined)) {
 			if (patch.view !== undefined) localViewOverride = patch.view;
@@ -642,7 +690,7 @@
 			if (patch.layout) document.documentElement.dataset.docLayout = patch.layout;
 			return;
 		}
-		void goto(nextUrl, {
+		return goto(nextUrl, {
 			replaceState: true,
 			noScroll: true,
 			keepFocus: true,
@@ -680,7 +728,14 @@
 			return;
 		}
 		pendingFilter = nextFilter;
-		updateExplorerState({ q: nextFilter });
+		filterOverride = nextFilter;
+		const navigation = updateExplorerState({ q: nextFilter });
+		if (navigation) {
+			void navigation.catch((err) => {
+				searchError = err instanceof Error ? err.message : String(err);
+				searchLoading = false;
+			});
+		}
 	}
 
 	function scheduleFilterUpdate(nextFilter: string) {
@@ -708,6 +763,20 @@
 		filterDraft = nextFilter;
 		pendingFilter = nextFilter;
 		commitFilter(nextFilter);
+	}
+
+	function retrySearch() {
+		searchRetryNonce += 1;
+		searchError = null;
+		searchLoading = true;
+		const navigation = updateExplorerState({ q: activeFilter });
+		if (navigation) {
+			void navigation.catch((err) => {
+				searchError = err instanceof Error ? err.message : String(err);
+				searchLoading = false;
+			});
+		}
+		void invalidateAll();
 	}
 
 	function docsSummary(docs: string | null | undefined): string | null {
@@ -1038,31 +1107,28 @@
 		</div>
 
 		<div class="flex min-h-0 flex-1 flex-col">
-			{#if hasActiveTreeFilter && searchQuery}
-				<svelte:boundary>
-					{@const results = await searchQuery}
+			{#if hasActiveTreeFilter}
+				{#if searchLoading}
+					<SkeletonTree count={8} showKindBadges={true} />
+				{:else if searchError}
+					<div class="p-4 text-sm text-(--danger)">
+						<p class="font-medium">Search failed</p>
+						<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={retrySearch}>
+							Try again
+						</button>
+					</div>
+				{:else}
 					<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
 						<div class="mono mb-1 px-2 text-[10.5px] text-(--muted-soft)">
-							{results.length} result{results.length === 1 ? '' : 's'}
+							{searchResults.length} result{searchResults.length === 1 ? '' : 's'}
 						</div>
-						{#each results as node (node.id)}
+						{#each searchResults as node (node.id)}
 							{@render searchResultRow(node)}
 						{:else}
 							<p class="px-2 py-3 text-sm text-(--muted)">{emptySearchMessage}</p>
 						{/each}
 					</div>
-					{#snippet pending()}
-						<SkeletonTree count={8} showKindBadges={true} />
-					{/snippet}
-					{#snippet failed(_error, reset)}
-						<div class="p-4 text-sm text-(--danger)">
-							<p class="font-medium">Search failed</p>
-							<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={reset}>
-								Try again
-							</button>
-						</div>
-					{/snippet}
-				</svelte:boundary>
+				{/if}
 			{:else if treeRoots && treeRoots.length > 0}
 				<div
 					class="flex items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"

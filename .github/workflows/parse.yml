@@ -164,6 +164,10 @@ jobs:
           REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
         run: |
           TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
+          if [[ "$TOOLCHAIN" == "stable" || "$TOOLCHAIN" == "beta" ]]; then
+            echo "::error::rust-docs-json is not published for the $TOOLCHAIN channel in this hosted parse path. Use nightly."
+            exit 1
+          fi
           rustup toolchain install "$TOOLCHAIN" --profile minimal
           rustup component add rust-docs-json --toolchain "$TOOLCHAIN"
 
@@ -176,6 +180,10 @@ jobs:
           REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
         run: |
           TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
+          if [[ "$TOOLCHAIN" == "stable" || "$TOOLCHAIN" == "beta" ]]; then
+            echo "::error::rust-docs-json is not published for the $TOOLCHAIN channel in this hosted parse path. Use nightly."
+            exit 1
+          fi
           FORCE_FLAG=""
           if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
             FORCE_FLAG="--force"

@@ -13,7 +13,7 @@
 				current?: T;
 		  };
 
-	const TOOLCHAIN_VERSIONS = ['stable', 'beta', 'nightly'];
+	const TOOLCHAIN_VERSIONS = ['nightly'];
 	const TOOLCHAIN_DESCRIPTIONS: Record<string, string> = {
 		std: 'Rust standard library',
 		core: 'Rust core library',
@@ -24,7 +24,7 @@
 	const TOOLCHAIN_CRATES: CrateSearchResult[] = STD_JSON_CRATES.map((name) => ({
 		id: name,
 		name,
-		version: 'stable',
+		version: 'nightly',
 		description: TOOLCHAIN_DESCRIPTIONS[name] ?? 'Rust library crate',
 	}));
 
@@ -85,7 +85,7 @@
 		crateQuery = crate.name;
 		if (isToolchainCrate(crate)) {
 			versions = TOOLCHAIN_VERSIONS;
-			selectedVersion = 'stable';
+			selectedVersion = 'nightly';
 			loadingVersions = false;
 			return;
 		}
@@ -176,7 +176,7 @@
 								{/if}
 								{#if isToolchainCrate(selectedCrate)}
 									<div class="mt-1 font-mono text-[10.5px] text-(--muted-soft)">
-										stable · beta · nightly
+										nightly rustdoc JSON
 									</div>
 								{/if}
 							</div>
@@ -198,7 +198,7 @@
 												{crate.name}
 											</span>
 											<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
-												stable · beta · nightly
+												nightly
 											</span>
 										</div>
 										{#if crate.description}

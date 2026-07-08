@@ -5,6 +5,8 @@ import { initProvider } from '$lib/server/provider';
 import { isValidCrateName, isValidVersion, normalizeCrateName } from '$lib/server/validation';
 import { isStdCrate } from '$lib/std';
 
+const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
+
 export const load: PageServerLoad = async (event) => {
 	event.depends('codeview:admin-dashboard');
 	const auth = event.locals.auth ?? (await getAuthState(event));
@@ -54,7 +56,7 @@ export const actions: Actions = {
 		const provider = await initProvider(event);
 		const version =
 			requestedVersion === 'latest' && isStdCrate(normalizeCrateName(name))
-				? 'stable'
+				? HOSTED_SYSROOT_PARSE_CHANNEL
 				: requestedVersion === 'latest'
 					? ((await provider.getCrateVersions(name, 1).catch(() => []))[0] ?? requestedVersion)
 					: requestedVersion;

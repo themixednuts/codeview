@@ -249,6 +249,9 @@ const REF_CACHE_MAX = 512;
 const JSON_CACHE_MAX = 128;
 const ARTIFACT_JSON_CACHE_MAX = 256;
 const IMMUTABLE_ARTIFACT_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
+const HOSTED_SYSROOT_UNAVAILABLE_MESSAGE =
+	'Hosted standard-library parsing currently supports the nightly rustdoc JSON channel. Use nightly for forced std/core/alloc/proc_macro/test parses.';
 
 function uniqueCrateNameVariants(name: string): string[] {
 	return [...new Set(crateNameVariants(name))];
@@ -1461,18 +1464,39 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				return [];
 			}),
 		]);
-		const planned = await loadLatestPlannedRun(boundedLimit, queueStatusKeys(queue)).catch(
-			(err) => {
-				log.warn`planned parse run load failed: ${String(err)}`;
-				return null;
-			},
-		);
+		const recent = await removeStaleFailedQueueEntries(queue.recent);
+		const planned = await loadLatestPlannedRun(
+			boundedLimit,
+			queueStatusKeys({ active: queue.active, recent }),
+		).catch((err) => {
+			log.warn`planned parse run load failed: ${String(err)}`;
+			return null;
+		});
 		return {
 			active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
 			activeRuns,
-			recent: queue.recent.map((entry) => storedStatusToQueueEntry(entry)),
+			recent: recent.map((entry) => storedStatusToQueueEntry(entry)),
 			planned,
 		};
+	}
+
+	async function hasReadyArtifact(name: string, version: string): Promise<boolean> {
+		const ref = await resolveRefForArtifact(name, version);
+		if (!ref) return false;
+		const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
+		return meta?.schema_version === 1 && !!meta.index;
+	}
+
+	async function removeStaleFailedQueueEntries(
+		entries: StoredParseStatus[],
+	): Promise<StoredParseStatus[]> {
+		const stale = await Promise.all(
+			entries.map(async (entry) => {
+				if (entry.status !== 'failed') return false;
+				return hasReadyArtifact(entry.name, entry.version).catch(() => false);
+			}),
+		);
+		return entries.filter((_, index) => !stale[index]);
 	}
 
 	async function buildParseAllowance(queue: ParseQueueSnapshot): Promise<ParseQueueAllowance> {
@@ -1948,7 +1972,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			const normalizedName = normalizeCrateName(name);
 			const requestKind = isStdCrate(normalizedName) ? 'sysroot' : 'crate';
 			const requestedVersion =
-				requestKind === 'sysroot' && version === 'latest' ? 'stable' : version;
+				requestKind === 'sysroot' && version === 'latest' ? HOSTED_SYSROOT_PARSE_CHANNEL : version;
 			if (force) {
 				const authContext = await resolveParseRequestContext({ rateLimit: false });
 				if (!authContext.auth?.isAdmin) {
@@ -1965,6 +1989,13 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
 					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
 				}
+			}
+			if (requestKind === 'sysroot' && requestedVersion !== HOSTED_SYSROOT_PARSE_CHANNEL) {
+				return Result.err(
+					new NotAvailableError({
+						message: HOSTED_SYSROOT_UNAVAILABLE_MESSAGE,
+					}),
+				);
 			}
 			const parseContext = await resolveParseRequestContext({ rateLimit: true });
 			if (parseContext.configError) return Result.err(parseContext.configError);

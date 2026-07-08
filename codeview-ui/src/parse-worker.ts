@@ -57,6 +57,9 @@ const SAFE_CRATE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_VERSION_PATTERN = /^(?:stable|beta|nightly|[0-9A-Za-z][0-9A-Za-z.+_-]{0,127})$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,160}$/;
 const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
+const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
+const HOSTED_SYSROOT_UNAVAILABLE_MESSAGE =
+	'Hosted standard-library parsing currently supports the nightly rustdoc JSON channel.';
 
 type RateBucketConfig = {
 	name: string;
@@ -396,7 +399,7 @@ function githubDispatchBody(env: ParseWorkerEnv, params: ParseWorkflowParams, wo
 			crate: params.name,
 			version: params.version,
 			request_kind: params.kind,
-			toolchain: params.kind === 'sysroot' ? params.version : '',
+			toolchain: params.kind === 'sysroot' ? HOSTED_SYSROOT_PARSE_CHANNEL : '',
 			parse_force: params.force ? 'true' : 'false',
 			workflow_id: workflowId,
 			request_id: params.requestId,
@@ -650,7 +653,10 @@ function plannedParseItem(
 	const name = value.name ?? '';
 	const version = value.version ?? '';
 	if (!isSafeCrateName(name) || !isSafeVersion(version)) return null;
-	if (value.kind === 'std' || value.kind === 'sysroot') return { kind: 'sysroot', name, version };
+	if (value.kind === 'std' || value.kind === 'sysroot') {
+		if (version !== HOSTED_SYSROOT_PARSE_CHANNEL) return null;
+		return { kind: 'sysroot', name, version };
+	}
 	if (value.kind === 'crate') return { kind: 'crate', name, version };
 	return null;
 }
@@ -1377,6 +1383,24 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 
 async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv): Promise<void> {
 	if (!isParseRequestMessage(message.body)) {
+		message.ack();
+		return;
+	}
+	if (
+		message.body.kind === 'sysroot' &&
+		message.body.version !== HOSTED_SYSROOT_PARSE_CHANNEL
+	) {
+		await updateStatus(env, {
+			name: message.body.name,
+			version: message.body.version,
+			kind: message.body.kind,
+			status: 'failed',
+			step: 'unsupported',
+			error: HOSTED_SYSROOT_UNAVAILABLE_MESSAGE,
+			requestId: message.body.requestId,
+			workflowId: parseWorkflowId(message.body.requestId),
+			requestedBy: message.body.requestedBy,
+		});
 		message.ack();
 		return;
 	}
