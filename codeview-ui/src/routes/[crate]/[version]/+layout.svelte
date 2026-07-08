@@ -33,6 +33,7 @@
 	import { nodeKindOrder } from '$lib/display-names';
 	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 	import { isHosted } from '$lib/platform';
+	import { hasNonEmptyArray, preferNonEmptyArray } from '$lib/load-precedence';
 
 	const log = getLogger('layout');
 
@@ -225,7 +226,7 @@
 	$effect(() => {
 		const nc = progressConn.nodeCount;
 		const status = effectiveCrateStatus;
-		const hasRoots = (rootsProxy?.current?.length ?? 0) > 0;
+		const hasRoots = hasNonEmptyArray(data?.roots) || hasNonEmptyArray(rootsProxy?.current);
 		if (status === 'processing' && nc >= 200 && !hasRefreshedDuringParse && !hasRoots) {
 			hasRefreshedDuringParse = true;
 			log.debug`partial data available (nodes=${nc}), refreshing roots`;
@@ -241,7 +242,7 @@
 	$effect(() => {
 		const currentStatus = effectiveCrateStatus;
 		const currentStep = statusConn.step;
-		const hasRoots = (rootsProxy?.current?.length ?? 0) > 0;
+		const hasRoots = hasNonEmptyArray(data?.roots) || hasNonEmptyArray(rootsProxy?.current);
 
 		if (!crateName || !version) {
 			wasReady = false;
@@ -314,7 +315,7 @@
 			: null,
 	);
 
-	const indexFromProxy = $derived(metaProxy?.current?.index ?? null);
+	const indexFromProxy = $derived(data?.meta?.index ?? metaProxy?.current?.index ?? null);
 
 	const crateVersions = $derived.by(() => {
 		const map: Record<string, string> = {};
@@ -461,8 +462,8 @@
 	const loadRoots = $derived(data?.roots ?? null);
 	const loadRootChildren = $derived(data?.rootChildren ?? null);
 	const loadPrefetchedTreeChildren = $derived(data?.prefetchedTreeChildren ?? []);
-	const meta = $derived(metaProxy?.current ?? loadMeta ?? null);
-	const treeRoots = $derived(rootsProxy?.current ?? loadRoots ?? null);
+	const meta = $derived(loadMeta ?? metaProxy?.current ?? null);
+	const treeRoots = $derived(preferNonEmptyArray(loadRoots, rootsProxy?.current));
 	const rootChildren = $derived(filter || kindParamList.length > 0 ? null : loadRootChildren);
 	const prefetchedTreeChildren = $derived(
 		filter || kindParamList.length > 0 ? [] : loadPrefetchedTreeChildren,
