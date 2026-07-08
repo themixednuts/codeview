@@ -17,6 +17,7 @@ use codeview_rustdoc::{
 use serde::{Deserialize, Serialize};
 
 const SIDECAR: &[u8] = include_bytes!(env!("SIDECAR_PATH"));
+const CRON_STACK_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Parser)]
 #[command(name = "codeview", version, about = "Codeview CLI")]
@@ -128,11 +129,21 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     if let Commands::Cron(args) = cli.command {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .context("build tokio runtime")?;
-        return rt.block_on(cron::dispatch(args));
+        let handle = std::thread::Builder::new()
+            .name("codeview-cron".to_string())
+            .stack_size(CRON_STACK_BYTES)
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .thread_stack_size(CRON_STACK_BYTES)
+                    .enable_all()
+                    .build()
+                    .context("build tokio runtime")?;
+                rt.block_on(cron::dispatch(args))
+            })
+            .context("spawn cron runtime thread")?;
+        return handle
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     }
 
     match cli.command {

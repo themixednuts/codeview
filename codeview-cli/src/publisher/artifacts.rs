@@ -168,9 +168,11 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
                     if docsrs_target.is_none() && matches!(status, 404 | 410) =>
                 {
                     eprintln!(
-                        "[parse-one] docs.rs JSON unavailable ({status} {url}); building rustdoc JSON from crates.io"
+                        "[parse-one] docs.rs JSON unavailable ({status} {url}); building docs.rs-style rustdoc JSON from crates.io source"
                     );
-                    let json = fetch_crates_io_rustdoc_json(&http, package_name, version).await?;
+                    let json =
+                        build_rustdoc_json_from_crates_io_source(&http, package_name, version)
+                            .await?;
                     eprintln!(
                         "[parse-one] crates.io rustdoc JSON: {:.2} MB raw",
                         json.len() as f64 / 1024.0 / 1024.0,
@@ -367,7 +369,7 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     })
 }
 
-async fn fetch_crates_io_rustdoc_json(
+async fn build_rustdoc_json_from_crates_io_source(
     client: &reqwest::Client,
     package_name: &str,
     version: &str,
@@ -418,8 +420,8 @@ async fn fetch_crates_io_rustdoc_json(
         PublishError::Permanent("crates.io archive did not contain Cargo.toml".into())
     })?;
     let manifest_path = crate_dir.join("Cargo.toml");
-    let rustdoc =
-        codeview_rustdoc::generate_rustdoc_json(&manifest_path).map_err(classify_rustdoc_error)?;
+    let rustdoc = codeview_rustdoc::generate_docs_rs_rustdoc_json(&manifest_path)
+        .map_err(classify_rustdoc_error)?;
     std::fs::read(&rustdoc.json_path).map_err(|e| {
         PublishError::Transient(
             anyhow::Error::new(e).context(format!("read {}", rustdoc.json_path.display())),

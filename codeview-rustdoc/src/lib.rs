@@ -233,6 +233,29 @@ pub struct RustdocJson {
     pub src_path: PathBuf,
 }
 
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RustdocBuildOptions {
+    /// Match docs.rs build conventions when we have to build JSON from source.
+    pub docs_rs: bool,
+}
+
+#[cfg(feature = "native")]
+impl RustdocBuildOptions {
+    pub const fn docs_rs() -> Self {
+        Self { docs_rs: true }
+    }
+}
+
+#[cfg(feature = "native")]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RustdocCommandPlan {
+    cargo_args: Vec<String>,
+    rustdoc_args: Vec<String>,
+    rustflags: Vec<String>,
+    target: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallMode {
     Strict,
@@ -271,10 +294,24 @@ fn get_workspace_members(manifest_path: &Path) -> Result<HashSet<String>, Rustdo
 
 #[cfg(feature = "native")]
 pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, RustdocError> {
+    generate_rustdoc_json_with_options(manifest_path, RustdocBuildOptions::default())
+}
+
+#[cfg(feature = "native")]
+pub fn generate_docs_rs_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, RustdocError> {
+    generate_rustdoc_json_with_options(manifest_path, RustdocBuildOptions::docs_rs())
+}
+
+#[cfg(feature = "native")]
+pub fn generate_rustdoc_json_with_options(
+    manifest_path: &Path,
+    options: RustdocBuildOptions,
+) -> Result<RustdocJson, RustdocError> {
     let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
     let package = metadata
         .root_package()
         .ok_or(RustdocError::MissingRootPackage)?;
+
     // Normalize crate name: Cargo uses hyphens but Rust uses underscores internally
     let crate_name = package.name.replace('-', "_");
     let lib_target = package
@@ -290,6 +327,13 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         })
         .ok_or(RustdocError::MissingRootPackage)?;
     let src_path = primary_target.src_path.clone().into_std_path_buf();
+    let package_features: Vec<String> = package.features.keys().cloned().collect();
+    let plan = rustdoc_command_plan(
+        &package.metadata,
+        &package_features,
+        Some(&src_path),
+        options,
+    );
 
     // For lib crates the rustdoc name matches the crate name; for binary crates
     // rustdoc uses the target (binary) name which may differ from the package name.
@@ -299,15 +343,32 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         primary_target.name.replace('-', "_")
     };
 
-    let status = Command::new("cargo")
+    if let Some(target) = plan.target.as_deref() {
+        install_nightly_target(target)?;
+    }
+
+    let mut command = Command::new("cargo");
+    command
         .arg("+nightly")
         .arg("rustdoc")
         .arg("--manifest-path")
-        .arg(manifest_path)
+        .arg(manifest_path);
+
+    command.args(&plan.cargo_args);
+
+    if options.docs_rs {
+        command.env("DOCS_RS", "1");
+    }
+    if !plan.rustflags.is_empty() {
+        command.env("RUSTFLAGS", plan.rustflags.join(" "));
+    }
+
+    let status = command
         .arg("--")
         .arg("-Zunstable-options")
         .arg("--output-format")
         .arg("json")
+        .args(&plan.rustdoc_args)
         .status()?;
 
     if !status.success() {
@@ -316,7 +377,11 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
 
     let target_dir = metadata.target_directory.into_std_path_buf();
     let crate_file = format!("{rustdoc_name}.json");
-    let json_path = target_dir.join("doc").join(crate_file);
+    let json_path = if let Some(target) = plan.target {
+        target_dir.join(target).join("doc").join(crate_file)
+    } else {
+        target_dir.join("doc").join(crate_file)
+    };
 
     Ok(RustdocJson {
         crate_name,
@@ -325,6 +390,213 @@ pub fn generate_rustdoc_json(manifest_path: &Path) -> Result<RustdocJson, Rustdo
         manifest_path: manifest_path.to_path_buf(),
         src_path,
     })
+}
+
+#[cfg(feature = "native")]
+fn rustdoc_command_plan(
+    package_metadata: &serde_json::Value,
+    package_features: &[String],
+    src_path: Option<&Path>,
+    options: RustdocBuildOptions,
+) -> RustdocCommandPlan {
+    let mut plan = RustdocCommandPlan::default();
+
+    if options.docs_rs {
+        plan.rustdoc_args.extend(
+            ["--cfg", "docsrs", "--cap-lints", "warn"]
+                .into_iter()
+                .map(str::to_string),
+        );
+        apply_docs_rs_metadata(package_metadata, package_features, src_path, &mut plan);
+    }
+
+    plan
+}
+
+#[cfg(feature = "native")]
+fn apply_docs_rs_metadata(
+    package_metadata: &serde_json::Value,
+    package_features: &[String],
+    src_path: Option<&Path>,
+    plan: &mut RustdocCommandPlan,
+) {
+    let Some(metadata) = package_metadata
+        .get("docs")
+        .and_then(|docs| docs.get("rs"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+
+    let omitted_features = src_path
+        .map(missing_debugger_visualizer_features)
+        .unwrap_or_default();
+    let no_default_features = bool_field(metadata, "no-default-features") == Some(true);
+
+    if bool_field(metadata, "all-features") == Some(true) {
+        if omitted_features.is_empty() {
+            plan.cargo_args.push("--all-features".to_string());
+        } else {
+            let features = package_features
+                .iter()
+                .filter(|feature| !omitted_features.contains(*feature))
+                .filter(|feature| !no_default_features || feature.as_str() != "default")
+                .cloned()
+                .collect::<Vec<_>>();
+            push_feature_args(plan, features);
+        }
+    }
+    if no_default_features {
+        plan.cargo_args.push("--no-default-features".to_string());
+    }
+    if let Some(features) = string_array_field(metadata, "features")
+        && !features.is_empty()
+    {
+        let features = features
+            .into_iter()
+            .filter(|feature| !omitted_features.contains(feature))
+            .collect::<Vec<_>>();
+        push_feature_args(plan, features);
+    }
+
+    let target = string_field(metadata, "default-target").or_else(|| {
+        string_array_field(metadata, "targets").and_then(|targets| targets.into_iter().next())
+    });
+    if let Some(target) = target {
+        plan.cargo_args.push("--target".to_string());
+        plan.cargo_args.push(target.clone());
+        plan.target = Some(target);
+    }
+
+    if let Some(cargo_args) = string_array_field(metadata, "cargo-args") {
+        plan.cargo_args.extend(cargo_args);
+    }
+    if let Some(rustc_args) = string_array_field(metadata, "rustc-args") {
+        plan.rustflags.extend(rustc_args);
+    }
+    if let Some(rustdoc_args) = string_array_field(metadata, "rustdoc-args") {
+        plan.rustdoc_args.extend(rustdoc_args);
+    }
+}
+
+#[cfg(feature = "native")]
+fn push_feature_args(plan: &mut RustdocCommandPlan, features: Vec<String>) {
+    if features.is_empty() {
+        return;
+    }
+    plan.cargo_args.push("--features".to_string());
+    plan.cargo_args.push(features.join(","));
+}
+
+#[cfg(feature = "native")]
+fn missing_debugger_visualizer_features(src_path: &Path) -> HashSet<String> {
+    let Ok(source) = fs::read_to_string(src_path) else {
+        return HashSet::new();
+    };
+    let Ok(file) = syn::parse_file(&source) else {
+        return HashSet::new();
+    };
+    let Some(source_dir) = src_path.parent() else {
+        return HashSet::new();
+    };
+
+    let mut omitted = HashSet::new();
+    for attr in &file.attrs {
+        let syn::Meta::List(list) = &attr.meta else {
+            continue;
+        };
+        if !attr.path().is_ident("cfg_attr") {
+            continue;
+        }
+
+        let tokens = list.tokens.to_string();
+        let feature_names = quoted_values_after_marker(&tokens, "feature = ");
+        if feature_names.is_empty() {
+            continue;
+        }
+        let visualizer_files = quoted_values_after_marker(&tokens, "natvis_file = ")
+            .into_iter()
+            .chain(quoted_values_after_marker(&tokens, "gdb_script_file = "))
+            .collect::<Vec<_>>();
+        if visualizer_files.is_empty() {
+            continue;
+        }
+        if visualizer_files
+            .iter()
+            .any(|file| !source_dir.join(file).is_file())
+        {
+            omitted.extend(feature_names);
+        }
+    }
+    omitted
+}
+
+#[cfg(feature = "native")]
+fn quoted_values_after_marker(tokens: &str, marker: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut rest = tokens;
+    while let Some(marker_start) = rest.find(marker) {
+        rest = &rest[marker_start + marker.len()..];
+        let Some(quote_start) = rest.find('"') else {
+            break;
+        };
+        rest = &rest[quote_start + 1..];
+        let Some(quote_end) = rest.find('"') else {
+            break;
+        };
+        values.push(rest[..quote_end].to_string());
+        rest = &rest[quote_end + 1..];
+    }
+    values
+}
+
+#[cfg(feature = "native")]
+fn bool_field(object: &serde_json::Map<String, serde_json::Value>, field: &str) -> Option<bool> {
+    object.get(field).and_then(serde_json::Value::as_bool)
+}
+
+#[cfg(feature = "native")]
+fn string_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+#[cfg(feature = "native")]
+fn string_array_field(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<Vec<String>> {
+    let values = object.get(field)?.as_array()?;
+    Some(
+        values
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
+#[cfg(feature = "native")]
+fn install_nightly_target(target: &str) -> Result<(), RustdocError> {
+    let status = Command::new("rustup")
+        .arg("target")
+        .arg("add")
+        .arg(target)
+        .arg("--toolchain")
+        .arg("nightly")
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(RustdocError::RustdocFailed(status))
+    }
 }
 
 /// Generate rustdoc JSON for all workspace members
@@ -1098,7 +1370,7 @@ fn validate_rustdoc_structure(
             format!("; {extra} more")
         };
         report.warnings.push(format!(
-            "ignored {} local path summaries without index items: {sample}{suffix}",
+            "materialized {} path-summary-only local items without index bodies: {sample}{suffix}",
             local_paths_missing_index.len()
         ));
     }
@@ -1480,7 +1752,7 @@ fn build_graph_with_stats(
             node.is_unsafe = details.is_unsafe;
             node.is_auto = details.is_auto;
             node.is_mutable = details.is_mutable;
-            node.is_stripped = details.is_stripped;
+            node.is_stripped = item.is_none() || details.is_stripped;
             node.has_stripped_fields = details.has_stripped_fields;
             node.has_stripped_variants = details.has_stripped_variants;
             node.is_dyn_compatible = details.is_dyn_compatible;
@@ -5279,6 +5551,125 @@ mod tests {
         )
     }
 
+    #[cfg(feature = "native")]
+    #[test]
+    fn docs_rs_command_plan_honors_package_metadata() {
+        let metadata = serde_json::json!({
+            "docs": {
+                "rs": {
+                    "features": ["std", "derive"],
+                    "all-features": true,
+                    "no-default-features": true,
+                    "default-target": "wasm32-unknown-unknown",
+                    "rustc-args": ["--cfg", "codeview_test"],
+                    "rustdoc-args": ["--generate-link-to-definition"],
+                    "cargo-args": ["-Z", "build-std"]
+                }
+            }
+        });
+
+        let package_features = Vec::new();
+        let plan = rustdoc_command_plan(
+            &metadata,
+            &package_features,
+            None,
+            RustdocBuildOptions::docs_rs(),
+        );
+
+        assert_eq!(plan.target.as_deref(), Some("wasm32-unknown-unknown"));
+        assert!(plan.cargo_args.contains(&"--all-features".to_string()));
+        assert!(
+            plan.cargo_args
+                .contains(&"--no-default-features".to_string())
+        );
+        assert!(
+            plan.cargo_args
+                .windows(2)
+                .any(|args| args[0] == "--features" && args[1] == "std,derive")
+        );
+        assert!(
+            plan.cargo_args
+                .windows(2)
+                .any(|args| args[0] == "--target" && args[1] == "wasm32-unknown-unknown")
+        );
+        assert!(
+            plan.cargo_args
+                .windows(2)
+                .any(|args| args[0] == "-Z" && args[1] == "build-std")
+        );
+        assert!(
+            plan.rustdoc_args
+                .windows(2)
+                .any(|args| args[0] == "--cfg" && args[1] == "docsrs")
+        );
+        assert!(plan.rustdoc_args.contains(&"--cap-lints".to_string()));
+        assert!(
+            plan.rustdoc_args
+                .contains(&"--generate-link-to-definition".to_string())
+        );
+        assert!(
+            plan.rustflags
+                .windows(2)
+                .any(|args| args[0] == "--cfg" && args[1] == "codeview_test")
+        );
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn docs_rs_command_plan_omits_missing_debugger_visualizer_feature() {
+        let root = std::env::temp_dir().join(format!(
+            "codeview-rustdoc-debugger-visualizer-{}",
+            std::process::id()
+        ));
+        let src_dir = root.join("src");
+        fs::create_dir_all(&src_dir).expect("create temp src dir");
+        let src_path = src_dir.join("lib.rs");
+        fs::write(
+            &src_path,
+            r#"
+#![cfg_attr(
+    feature = "debugger_visualizer",
+    feature(debugger_visualizer),
+    debugger_visualizer(natvis_file = "../debug_metadata/missing.natvis")
+)]
+pub struct Small;
+"#,
+        )
+        .expect("write temp rust source");
+
+        let metadata = serde_json::json!({
+            "docs": {
+                "rs": {
+                    "all-features": true
+                }
+            }
+        });
+        let package_features = vec![
+            "debugger_visualizer".to_string(),
+            "serde".to_string(),
+            "union".to_string(),
+        ];
+
+        let plan = rustdoc_command_plan(
+            &metadata,
+            &package_features,
+            Some(&src_path),
+            RustdocBuildOptions::docs_rs(),
+        );
+
+        assert!(!plan.cargo_args.contains(&"--all-features".to_string()));
+        let enabled_features = plan
+            .cargo_args
+            .windows(2)
+            .find_map(|args| (args[0] == "--features").then_some(args[1].as_str()))
+            .expect("explicit feature list");
+        assert!(enabled_features.contains("serde"));
+        assert!(enabled_features.contains("union"));
+        assert!(!enabled_features.contains("debugger_visualizer"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn format_policy_defaults_and_lenient_newer_escape_hatch() {
         let strict = RustdocFormatPolicy::strict();
@@ -5493,8 +5884,48 @@ mod tests {
                 .report
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("without index items: 1"))
+                .any(|warning| warning.contains("path-summary-only local items"))
         );
+    }
+
+    #[test]
+    fn path_summary_without_index_materializes_stub_node() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "Missing"],
+            "kind": "struct"
+        });
+
+        let (graph, report) = extract_graph_validated(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("summary-only local path is preserved as a stub");
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("path-summary-only local items"))
+        );
+
+        let stub = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::Missing")
+            .expect("stub node");
+        assert_eq!(stub.name, "Missing");
+        assert_eq!(stub.kind, NodeKind::Struct);
+        assert_eq!(stub.visibility, Visibility::Unknown);
+        assert!(stub.is_stripped);
+        assert!(!stub.is_external);
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "fixture"
+                && edge.to == "fixture::Missing"
+                && edge.kind == EdgeKind::Contains
+        }));
     }
 
     #[test]
