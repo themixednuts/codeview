@@ -57,6 +57,8 @@ const SAFE_CRATE_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_VERSION_PATTERN = /^(?:stable|beta|nightly|[0-9A-Za-z][0-9A-Za-z.+_-]{0,127})$/;
 const SAFE_ID_PATTERN = /^[A-Za-z0-9_.:-]{1,160}$/;
 const ACTIVE_GITHUB_RUN_STATUSES = ['queued', 'in_progress', 'waiting', 'requested'] as const;
+const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
+const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
 const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
 const HOSTED_SYSROOT_UNAVAILABLE_MESSAGE =
 	'Hosted standard-library parsing currently supports the nightly rustdoc JSON channel.';
@@ -102,6 +104,8 @@ type PlannedParseItem = {
 type GitHubWorkflowRun = {
 	id?: number;
 	status?: string;
+	conclusion?: string | null;
+	html_url?: string;
 	created_at?: string;
 	updated_at?: string;
 };
@@ -502,6 +506,26 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
 	return ids.size;
 }
 
+function isGitHubRunActive(run: GitHubWorkflowRun | null): boolean {
+	return ACTIVE_GITHUB_RUN_STATUSES.includes(
+		run?.status as (typeof ACTIVE_GITHUB_RUN_STATUSES)[number],
+	);
+}
+
+async function loadGitHubWorkflowRun(
+	env: ParseWorkerEnv,
+	runId: string,
+): Promise<GitHubWorkflowRun | null> {
+	const repo = env.GITHUB_REPO;
+	if (!repo || !SAFE_ID_PATTERN.test(runId)) return null;
+	const response = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}`, {
+		headers: githubReadHeaders(env),
+	});
+	if (response.status === 404 || response.status === 410) return null;
+	if (!response.ok) throw new Error(`GitHub run ${runId} lookup failed: ${response.status}`);
+	return (await response.json()) as GitHubWorkflowRun;
+}
+
 async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubRepositoryResponse | null> {
 	const repo = env.GITHUB_REPO;
 	if (!repo) return null;
@@ -837,6 +861,120 @@ async function reconcileFinalizingParses(
 		}
 	}
 	return { ready, failed };
+}
+
+async function markReadyIfArtifactsExist(
+	env: ParseWorkerEnv,
+	status: StoredParseStatus,
+): Promise<boolean> {
+	try {
+		await verifyArtifacts(env, status.name, status.version);
+		await updateStatus(env, {
+			kind: status.kind,
+			name: status.name,
+			version: status.version,
+			status: 'ready',
+			requestId: status.requestId,
+			workflowId: status.workflowId,
+			githubRunId: status.githubRunId,
+			githubRunUrl: status.githubRunUrl,
+		});
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function failStaleProcessing(
+	env: ParseWorkerEnv,
+	status: StoredParseStatus,
+	step: string,
+	error: string,
+): Promise<void> {
+	await updateStatus(env, {
+		kind: status.kind,
+		name: status.name,
+		version: status.version,
+		status: 'failed',
+		step,
+		error,
+		requestId: status.requestId,
+		workflowId: status.workflowId,
+		githubRunId: status.githubRunId,
+		githubRunUrl: status.githubRunUrl,
+	});
+}
+
+async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
+	ready: number;
+	failed: number;
+	kept: number;
+}> {
+	const url = new URL('https://status/queue');
+	url.searchParams.set('limit', '100');
+	const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
+	if (!response.ok) return { ready: 0, failed: 0, kept: 0 };
+	const snapshot = (await response.json()) as ParseQueueSnapshot;
+	const githubActive = await countActiveGitHubParseRuns(env).catch(() => 0);
+	const now = Date.now();
+	let ready = 0;
+	let failed = 0;
+	let kept = 0;
+
+	for (const status of snapshot.active) {
+		if (status.step === 'finalizing') continue;
+		const updatedAtMs = Date.parse(status.updatedAt);
+		const ageMs = Number.isFinite(updatedAtMs) ? now - updatedAtMs : 0;
+		if (ageMs < STALE_PROCESSING_RECONCILE_MS) {
+			kept += 1;
+			continue;
+		}
+
+		if (await markReadyIfArtifactsExist(env, status)) {
+			ready += 1;
+			continue;
+		}
+
+		if (status.githubRunId) {
+			const run = await loadGitHubWorkflowRun(env, status.githubRunId).catch((err) => {
+				console.warn(
+					`stale parse run lookup failed ${status.name}@${status.version} run=${status.githubRunId}: ${errorMessage(err)}`,
+				);
+				return undefined;
+			});
+			if (run === undefined || isGitHubRunActive(run)) {
+				kept += 1;
+				continue;
+			}
+			const conclusion =
+				run?.status === 'completed'
+					? (run.conclusion ?? 'completed without conclusion')
+					: (run?.status ?? 'missing');
+			await failStaleProcessing(
+				env,
+				status,
+				'github-reconcile',
+				`GitHub parse workflow ${conclusion} before callback`,
+			);
+			failed += 1;
+			continue;
+		}
+
+		if (githubActive > 0 || ageMs < ORPHANED_PROCESSING_RECONCILE_MS) {
+			kept += 1;
+			continue;
+		}
+
+		await failStaleProcessing(
+			env,
+			status,
+			'github-reconcile',
+			'Parse request became stale before a GitHub run id was recorded',
+		);
+		failed += 1;
+	}
+
+	return { ready, failed, kept };
 }
 
 export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
@@ -1386,10 +1524,7 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 		message.ack();
 		return;
 	}
-	if (
-		message.body.kind === 'sysroot' &&
-		message.body.version !== HOSTED_SYSROOT_PARSE_CHANNEL
-	) {
+	if (message.body.kind === 'sysroot' && message.body.version !== HOSTED_SYSROOT_PARSE_CHANNEL) {
 		await updateStatus(env, {
 			name: message.body.name,
 			version: message.body.version,
@@ -1524,6 +1659,12 @@ export default {
 		if (reconciled.ready > 0 || reconciled.failed > 0) {
 			console.log(
 				`reconciled finalizing parses ready=${reconciled.ready} failed=${reconciled.failed}`,
+			);
+		}
+		const stale = await reconcileStaleProcessingParses(env);
+		if (stale.ready > 0 || stale.failed > 0) {
+			console.log(
+				`reconciled stale parses ready=${stale.ready} failed=${stale.failed} kept=${stale.kept}`,
 			);
 		}
 		const result = await drainPlannedParses(env);
