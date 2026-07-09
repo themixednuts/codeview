@@ -63,8 +63,12 @@
 		blanketImpls={model.blanketImpls}
 		methodGroups={model.methodGroups}
 		traitImplGroups={model.traitImplGroups}
+		requiredTraitMethods={model.requiredTraitMethods}
+		providedTraitMethods={model.providedTraitMethods}
+		traitAssocItems={model.traitAssocItems}
 		{kindLabels}
 		{displayNode}
+		implementers={model.whereUsed}
 		{theme}
 		{getNodeUrl}
 		{nodeExists}

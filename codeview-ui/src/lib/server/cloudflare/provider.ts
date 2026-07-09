@@ -1,7 +1,7 @@
 import { Result } from 'better-result';
 import { Data, Effect } from 'effect';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { CrateGraph, Node, NodeKind } from '$lib/graph';
+import type { CrateGraph, Edge, Node, NodeKind } from '$lib/graph';
 import type {
 	CrateIndex,
 	CrateTree,
@@ -597,6 +597,78 @@ function nodeFromSummary(summary: NodeSummary): Node {
 	return node;
 }
 
+function edgeKey(edge: Edge): string {
+	return `${edge.from}|${edge.to}|${edge.kind}`;
+}
+
+/**
+ * Older hosted shards only store first-hop edges on a type page. Trait-impl
+ * methods hang off the impl node via Contains/Defines, so expand those
+ * second-hop edges at read time (and hydrate their nodes from nodes/*.json).
+ * New publishes already include the expanded edges; this remains a no-op then.
+ */
+async function expandImplMemberEdges(
+	_ref: ArtifactRef,
+	nodeId: string,
+	baseEdges: Edge[],
+	_loadNode: (id: string) => Promise<Node | null>,
+	loadDetailEntry: (id: string) => Promise<StaticNodeDetailEntry | null>,
+): Promise<Edge[]> {
+	// Fast path: shards already include second-hop impl→member edges.
+	const alreadyExpanded = baseEdges.some(
+		(edge) =>
+			edge.from !== nodeId &&
+			(edge.kind === 'Defines' || edge.kind === 'Contains') &&
+			baseEdges.some(
+				(parent) =>
+					parent.from === nodeId &&
+					parent.to === edge.from &&
+					(parent.kind === 'Defines' || parent.kind === 'Contains'),
+			),
+	);
+	if (alreadyExpanded) return baseEdges;
+
+	const edges = [...baseEdges];
+	const seen = new Set(edges.map(edgeKey));
+	// Cap fan-out: types with huge impl sets should not stampede R2 on every view.
+	const MAX_IMPLS = 24;
+	const implIds = baseEdges
+		.filter(
+			(edge) =>
+				edge.from === nodeId && (edge.kind === 'Defines' || edge.kind === 'Contains'),
+		)
+		.map((edge) => edge.to)
+		.slice(0, MAX_IMPLS);
+
+	if (implIds.length === 0) return edges;
+
+	await Effect.runPromise(
+		Effect.forEach(
+			implIds,
+			(implId) =>
+				Effect.promise(async () => {
+					const implEntry = await loadDetailEntry(implId);
+					if (!implEntry) return;
+					for (const edge of implEntry.edges) {
+						if (
+							edge.from !== implId ||
+							(edge.kind !== 'Defines' && edge.kind !== 'Contains')
+						) {
+							continue;
+						}
+						const key = edgeKey(edge);
+						if (seen.has(key)) continue;
+						seen.add(key);
+						edges.push(edge);
+					}
+				}),
+			{ concurrency: 6, discard: true },
+		),
+	);
+
+	return edges;
+}
+
 function readR2JsonEffect<T>(r2: R2Bucket, key: string): Effect.Effect<T | null, R2JsonError> {
 	return Effect.gen(function* () {
 		const obj = yield* Effect.tryPromise({
@@ -1133,9 +1205,23 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 
 		if (!entry || !node) return null;
 
+		// Expand impl → member edges (older shards only store first-hop edges).
+		const edges = await expandImplMemberEdges(
+			ref,
+			resolvedId,
+			entry.edges,
+			(id) => loadNodeFromRef(ref, id),
+			(id) => loadNodeDetailEntryFromRef(ref, id),
+		);
+		const relatedIds = new Set(entry.relatedIds);
+		for (const edge of edges) {
+			if (edge.from !== resolvedId) relatedIds.add(edge.from);
+			if (edge.to !== resolvedId) relatedIds.add(edge.to);
+		}
+
 		const relatedNodes = new Map<string, Node>();
 		const relatedBuckets = new Map<string, string[]>();
-		for (const id of entry.relatedIds) {
+		for (const id of relatedIds) {
 			const bucket = nodeViewBucket(id);
 			(relatedBuckets.get(bucket) ?? relatedBuckets.set(bucket, []).get(bucket)!).push(id);
 		}
@@ -1162,8 +1248,8 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return {
 			detail: {
 				node,
-				edges: entry.edges,
-				relatedNodes: entry.relatedIds
+				edges,
+				relatedNodes: Array.from(relatedIds)
 					.map((id) => relatedNodes.get(id))
 					.filter((related): related is Node => Boolean(related)),
 			},
@@ -1197,16 +1283,75 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			}
 		}
 		const node = entry ? await loadNodeFromRef(hostedRef, resolvedId) : null;
-		return entry && node
-			? {
-					detail: {
-						node,
-						edges: entry.detail.edges,
-						relatedNodes: entry.detail.relatedNodes.map(nodeFromSummary),
-					},
-					ancestors: entry.ancestors,
-				}
-			: null;
+		if (!entry || !node) return null;
+
+		// Older node-views only store first-hop edges; expand impl members at
+		// read time so trait-impl methods appear without a full republish.
+		const edges = await expandImplMemberEdges(
+			hostedRef,
+			resolvedId,
+			entry.detail.edges,
+			(id) => loadNodeFromRef(hostedRef, id),
+			(id) => loadNodeDetailEntryFromRef(hostedRef, id),
+		);
+
+		// Node-view shards store relatedNodes as summaries (no signature/docs).
+		// Hydrate full Node payloads from nodes/{bucket}.json so trait-impl
+		// methods can render the way docs.rs does.
+		const relatedById = new Map<string, Node>();
+		const summaryById = new Map(entry.detail.relatedNodes.map((s) => [s.id, s] as const));
+		const relatedIds = new Set<string>();
+		for (const edge of edges) {
+			if (edge.from !== resolvedId) relatedIds.add(edge.from);
+			if (edge.to !== resolvedId) relatedIds.add(edge.to);
+		}
+		for (const id of summaryById.keys()) relatedIds.add(id);
+
+		const relatedBuckets = new Map<string, string[]>();
+		for (const id of relatedIds) {
+			const bucket = nodeViewBucket(id);
+			(relatedBuckets.get(bucket) ?? relatedBuckets.set(bucket, []).get(bucket)!).push(id);
+		}
+
+		await Effect.runPromise(
+			Effect.forEach(
+				Array.from(relatedBuckets.entries()),
+				([bucket, ids]) =>
+					Effect.promise(async () => {
+						if (!(await isShardPopulated(hostedRef, 'nodes', bucket))) return;
+						const shard = await readArtifactJson<StaticNodeShard>(
+							hostedRef,
+							`nodes/${bucket}.json`,
+						);
+						if (!shard) return;
+						for (const id of ids) {
+							const related = shard.nodes[id];
+							if (related) relatedById.set(id, related);
+						}
+					}),
+				{ concurrency: 8, discard: true },
+			),
+		);
+
+		const relatedNodes: Node[] = [];
+		for (const id of relatedIds) {
+			const full = relatedById.get(id);
+			if (full) {
+				relatedNodes.push(full);
+				continue;
+			}
+			const summary = summaryById.get(id);
+			if (summary) relatedNodes.push(nodeFromSummary(summary));
+		}
+
+		return {
+			detail: {
+				node,
+				edges,
+				relatedNodes,
+			},
+			ancestors: entry.ancestors,
+		};
 	}
 
 	async function loadNodeView(

@@ -518,7 +518,7 @@
 		statusConn.error = msg;
 	}}
 >
-	<div class="flex min-h-0 flex-1 overflow-hidden">
+	<div id="main-content" class="flex min-h-0 flex-1 overflow-hidden">
 		<LiveExplorer
 			{crateName}
 			{version}

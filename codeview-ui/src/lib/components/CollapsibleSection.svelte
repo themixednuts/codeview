@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 
 	let {
@@ -7,44 +6,34 @@
 		count = null,
 		defaultOpen = true,
 		forceOpen = null,
-		forceVersion = 0,
+		forceToken = 0,
 		children,
 	} = $props<{
 		title: string;
 		count?: number | null;
 		defaultOpen?: boolean;
+		/** When non-null, forces open/closed (expand-all / collapse-all). */
 		forceOpen?: boolean | null;
-		forceVersion?: number;
+		/** Bump to re-apply forceOpen after the user toggled natively. */
+		forceToken?: number;
 		children: import('svelte').Snippet;
 	}>();
 
-	// Initialize state from prop using untrack to capture initial value only
-	let isOpen = $state(untrack(() => defaultOpen));
-
-	$effect(() => {
-		void forceVersion;
-		if (forceOpen !== null) isOpen = forceOpen;
-	});
-
-	export function setOpen(open: boolean) {
-		isOpen = open;
-	}
-
-	export function toggle() {
-		isOpen = !isOpen;
-	}
+	// Native <details> works without JS. forceOpen only upgrades when set.
+	// {@key forceToken} remounts so expand-all re-applies after a manual toggle.
+	const open = $derived(forceOpen ?? defaultOpen);
 </script>
 
-<section
-	class="corner-squircle mb-6 overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)"
->
-	<button
-		type="button"
-		class="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-(--panel-strong)"
-		onclick={() => (isOpen = !isOpen)}
+{#key forceToken}
+	<details
+		class="corner-squircle mb-6 overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)"
+		open={open}
+	>
+	<summary
+		class="flex w-full cursor-pointer list-none items-center justify-between px-4 py-3 text-left transition-colors hover:bg-(--panel-strong)"
 	>
 		<div class="flex items-center gap-2">
-			<span class="text-(--muted) transition-transform duration-200" class:rotate-90={isOpen}>
+			<span class="text-(--muted) transition-transform duration-200 details-chevron">
 				<ChevronRight size={16} />
 			</span>
 			<h3 class="text-sm font-semibold tracking-wider text-(--muted) uppercase">{title}</h3>
@@ -54,11 +43,20 @@
 				</span>
 			{/if}
 		</div>
-	</button>
+	</summary>
 
-	{#if isOpen}
-		<div class="px-4 pb-4">
-			{@render children()}
-		</div>
-	{/if}
-</section>
+	<div class="px-4 pb-4">
+		{@render children()}
+	</div>
+	</details>
+{/key}
+
+<style>
+	summary::-webkit-details-marker {
+		display: none;
+	}
+
+	details[open] .details-chevron {
+		transform: rotate(90deg);
+	}
+</style>

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vite-plus/test';
-import type { Node, TypeRef } from '$lib/schema';
-import { formatSignature } from './signature-format';
+import type { Node, TypeRef, Visibility } from '$lib/schema';
+import { formatItemDeclaration, formatSignature } from './signature-format';
 
 type Sig = NonNullable<Node['signature']>;
 
@@ -21,6 +21,9 @@ function fn(name: string, overrides: Partial<Sig> = {}): Pick<Node, 'name' | 'si
 		},
 	};
 }
+
+const pub: Visibility = { kind: 'Public' };
+const crateVis: Visibility = { kind: 'Crate' };
 
 describe('formatSignature', () => {
 	it('joins args with comma+space in inline form', () => {
@@ -127,5 +130,121 @@ describe('formatSignature', () => {
 			}),
 		);
 		expect(inline).toBe("fn push(self: &mut Self, value: &'a str) -> ()");
+	});
+});
+
+describe('formatItemDeclaration', () => {
+	function node(partial: Partial<Node> & { name: string; kind: Node['kind'] }): Node {
+		return {
+			...partial,
+			id: partial.id ?? partial.name,
+			attrs: partial.attrs ?? [],
+			visibility: partial.visibility ?? pub,
+		} as Node;
+	}
+
+	it('returns null for kinds without a declaration', () => {
+		expect(formatItemDeclaration(node({ name: 'my_crate', kind: 'Crate' }))).toBeNull();
+		expect(formatItemDeclaration(node({ name: 'foo', kind: 'Module' }))).toBeNull();
+	});
+
+	it('renders a pub struct declaration with generics + where', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'Vec',
+				kind: 'Struct',
+				visibility: pub,
+				generics: {
+					params: [{ name: 'T', kind: { kind: 'Type', bounds: [] } }],
+					where_predicates: [],
+				},
+			}),
+		);
+		expect(result?.inline).toBe('pub struct Vec<T> {}');
+	});
+
+	it('renders a pub(crate) enum declaration', () => {
+		const result = formatItemDeclaration(
+			node({ name: 'Color', kind: 'Enum', visibility: crateVis }),
+		);
+		expect(result?.inline).toBe('pub(crate) enum Color {}');
+	});
+
+	it('renders an unsafe auto trait with supertrait bounds', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'Send',
+				kind: 'Trait',
+				is_unsafe: true,
+				is_auto: true,
+				bounds: [
+					{ kind: 'Trait', trait: { kind: 'ResolvedPath', id: 'Sized', path: 'Sized' }, modifier: 'none' },
+				],
+			}),
+		);
+		expect(result?.inline).toBe('pub unsafe auto trait Send: Sized {}');
+	});
+
+	it('renders a type alias', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'Result',
+				kind: 'TypeAlias',
+				visibility: pub,
+				generics: {
+					params: [
+						{ name: 'T', kind: { kind: 'Type', bounds: [] } },
+						{ name: 'E', kind: { kind: 'Type', bounds: [] } },
+					],
+					where_predicates: [],
+				},
+				type: { kind: 'ResolvedPath', id: 'std::result::Result', path: 'Result' },
+			}),
+		);
+		expect(result?.inline).toBe('pub type Result<T, E> = Result;');
+	});
+
+	it('renders a const', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'MAX',
+				kind: 'Constant',
+				visibility: pub,
+				type: prim('usize'),
+				const_value: '100',
+			}),
+		);
+		expect(result?.inline).toBe('pub const MAX: usize = 100;');
+	});
+
+	it('renders a static mut', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'COUNTER',
+				kind: 'Static',
+				visibility: pub,
+				is_mutable: true,
+				type: prim('u64'),
+			}),
+		);
+		expect(result?.inline).toBe('pub static mut COUNTER: u64;');
+	});
+
+	it('delegates to formatSignature for function nodes', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'push',
+				kind: 'Function',
+				visibility: pub,
+				signature: {
+					inputs: [],
+					is_async: false,
+					is_const: false,
+					is_unsafe: false,
+					output: null,
+				},
+			}),
+		);
+		expect(result?.inline).toBe('fn push()');
 	});
 });

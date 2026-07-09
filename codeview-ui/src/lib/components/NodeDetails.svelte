@@ -17,6 +17,8 @@
 	import { resolveAppPath } from '$lib/app-paths';
 	import { kindColors } from '$lib/tree';
 	import { externalDocsUrl } from '$lib/docs';
+	import { formatItemDeclaration } from '$lib/signature-format';
+	import { renderTypeText } from '$lib/type-render';
 	import Documentation from './Documentation.svelte';
 	import CodeBlock from './CodeBlock.svelte';
 	import CollapsibleSection from './CollapsibleSection.svelte';
@@ -39,8 +41,12 @@
 		blanketImpls,
 		methodGroups,
 		traitImplGroups,
+		requiredTraitMethods = [],
+		providedTraitMethods = [],
+		traitAssocItems = [],
 		kindLabels,
 		displayNode,
+		implementers = [],
 		theme = 'light',
 		getNodeUrl,
 		nodeExists,
@@ -55,8 +61,12 @@
 		blanketImpls: Node[];
 		methodGroups: MethodGroup[];
 		traitImplGroups: MethodGroup[];
+		requiredTraitMethods?: Node[];
+		providedTraitMethods?: Node[];
+		traitAssocItems?: Node[];
 		kindLabels: Record<NodeKind, string>;
 		displayNode: (id: string) => string;
+		implementers?: { id: string; name: string }[];
 		theme?: 'dark' | 'light';
 		/** Returns URL for navigating to a node */
 		getNodeUrl?: (id: string) => string;
@@ -84,6 +94,10 @@
 			traitImplGroups.map((group: MethodGroup) => [group.impl.id, group] as const),
 		),
 	);
+
+	/** Canonical rustfmt-style declaration for the selected item.
+	 *  Falls back to null for kinds without a meaningful declaration. */
+	const itemDeclaration = $derived(selected ? formatItemDeclaration(selected) : null);
 
 	function safeVisibility(node: Node | null): Visibility {
 		const raw = node as unknown;
@@ -168,23 +182,19 @@
 	}
 
 	let sectionForceOpen = $state<boolean | null>(null);
-	let sectionForceVersion = $state(0);
+	let sectionForceToken = $state(0);
 
 	function expandAll() {
 		sectionForceOpen = true;
-		sectionForceVersion += 1;
+		sectionForceToken += 1;
 	}
 
 	function collapseAll() {
 		sectionForceOpen = false;
-		sectionForceVersion += 1;
+		sectionForceToken += 1;
 	}
 
 	// Smart defaults: collapse sections with many items
-	const FIELDS_COLLAPSE_THRESHOLD = 5;
-	const VARIANTS_COLLAPSE_THRESHOLD = 5;
-	const METHODS_COLLAPSE_THRESHOLD = 8;
-	const IMPLS_COLLAPSE_THRESHOLD = 6;
 
 	function totalImplCount(): number {
 		return sourceImpls.length + blanketImpls.length;
@@ -218,13 +228,6 @@
 		return fields.length > 0 && fields.every((f) => /^\d+$/.test(f.name));
 	}
 
-	function parentPathFor(node: Node): string {
-		const suffix = `::${node.name}`;
-		if (node.id.endsWith(suffix)) return node.id.slice(0, -suffix.length);
-		const parts = node.id.split('::');
-		return parts.length > 1 ? parts.slice(0, -1).join('::') : node.id;
-	}
-
 	function memberKindLabel(kind: NodeKind): string {
 		switch (kind) {
 			case 'Function':
@@ -237,6 +240,47 @@
 			default:
 				return kindLabels[kind] ?? kind;
 		}
+	}
+
+	/** Visibility keyword prefix for a field (`pub ` / `pub(crate) ` / ``). */
+	function fieldVisPrefix(vis: Visibility | undefined): string {
+		const raw = vis as { kind?: string; path?: string } | undefined;
+		switch (raw?.kind) {
+			case 'Public':
+				return 'pub ';
+			case 'Crate':
+				return 'pub(crate) ';
+			case 'Restricted':
+				return `pub(in ${raw.path ?? 'crate'}) `;
+			default:
+				return '';
+		}
+	}
+
+	/** Render struct/union fields as a clean Rust source block (docs.rs style). */
+	function fieldsToRust(fields: { name: string; type: TypeRef; visibility: Visibility }[]): string {
+		return fields
+			.map((f) => `${fieldVisPrefix(f.visibility)}${f.name}: ${renderTypeText(f.type)},`)
+			.join('\n');
+	}
+
+	/** Render enum variants as a clean Rust source block (docs.rs style). */
+	function variantsToRust(
+		variants: { name: string; fields: { name: string; type: TypeRef }[] }[],
+	): string {
+		return variants
+			.map((v) => {
+				if (v.fields.length === 0) return `${v.name},`;
+				if (isTupleVariant(v.fields)) {
+					const types = v.fields.map((f) => renderTypeText(f.type)).join(', ');
+					return `${v.name}(${types}),`;
+				}
+				const body = v.fields
+					.map((f) => `${f.name}: ${renderTypeText(f.type)},`)
+					.join('\n    ');
+				return `${v.name} {\n    ${body}\n},`;
+			})
+			.join('\n');
 	}
 
 	function traitImplGroup(implId: string): MethodGroup | undefined {
@@ -667,23 +711,26 @@
 
 {#if selected}
 	<div class="max-w-3xl">
-		<!-- Header — doc-classic title row: kind label + h1 + qualified path -->
-		<div class="doc-title-header mb-6">
+		<!-- Header — kind label + h1 + source link. The qualified path is
+		     shown once, in the breadcrumb sub-nav, so we don't repeat it
+		     here (the old header listed the path three times). -->
+		<div class="doc-title-header mb-5">
 			<div class="flex items-baseline gap-3 flex-wrap">
 				<span
-					class="font-mono text-[11px] font-semibold tracking-[0.18em] uppercase"
+					class="kind-label"
 					style="color: {kindColors[selectedKind]}"
+					aria-label="{kindLabels[selected.kind]}"
 				>
+					<span class="kind-label-bar" style="background: {kindColors[selectedKind]}"></span>
 					{kindLabels[selected.kind]}
 				</span>
 				<h1
-					class="font-display text-[34px] font-semibold leading-none tracking-tight text-(--ink) {selected.is_deprecated
+					class="font-display text-[32px] font-semibold leading-tight tracking-tight text-(--ink) {selected.is_deprecated
 						? 'line-through opacity-80'
 						: ''}"
 				>
 					{selected.name}
 				</h1>
-				<span class="font-mono text-[12px] text-(--muted-soft)">{parentPathFor(selected)}</span>
 				{#if !selectedIsPublic}
 					<span class="badge badge-sm">{selectedVisibilityLabel}</span>
 				{/if}
@@ -693,6 +740,17 @@
 					</span>
 				{/if}
 				<div class="ml-auto flex items-center gap-1">
+					{#if selected?.span?.file}
+						<span class="source-pill-wrap" title="View source">
+							<Icon name="file-code" size={13} strokeWidth={2} />
+							<SourceViewer
+								span={selected.span}
+								{theme}
+								crateName={crateFromId(selected.id) ?? crateName}
+								crateVersion={resolveVersionForCrate(selected.id)}
+							/>
+						</span>
+					{/if}
 					<button
 						type="button"
 						class="badge badge-sm inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
@@ -714,40 +772,11 @@
 			{#if selected.deprecation?.note}
 				<p class="mt-2 text-sm text-(--danger)">{selected.deprecation.note}</p>
 			{/if}
-			{#if selected?.span}
-				<div
-					class="mt-3 flex items-center gap-3 font-mono text-[11px] text-(--muted-soft)"
-				>
-					<SourceViewer
-						span={selected?.span ?? { file: '', line: 0 }}
-						{theme}
-						crateName={crateFromId(selected?.id) ?? crateName}
-						crateVersion={resolveVersionForCrate(selected?.id)}
-					/>
-				</div>
-			{/if}
-			{#if selected.attrs && selected.attrs.length > 0}
-				{@render attributesPanel(selected.attrs)}
-			{/if}
-			{#if selected.generics?.params && selected.generics.params.length > 0}
-				<div class="mt-3 flex flex-wrap items-center gap-2">
-					{#each selected.generics.params as p, i (i)}
-						{@render paramBadge(p, true)}
-					{/each}
-				</div>
-			{/if}
-			{#if selected.generics?.where_predicates && selected.generics.where_predicates.length > 0}
-				<div class="mt-2 flex flex-wrap items-center gap-2">
-					<span class="text-xs font-semibold tracking-wider text-(--muted) uppercase">where</span>
-					{#each selected.generics.where_predicates as pred, i (i)}
-						{@render wherePredBadge(pred)}
-					{/each}
-				</div>
-			{/if}
 		</div>
 
-		<!-- Below-title slot: doc page hoists the Relationship Graph here so
-			 the visual context shows before the prose. -->
+		<!-- Below-title slot: kept for embedding; the relationship graph
+		     no longer renders inline (redundant with the tree sidebar and
+		     a major performance cost on cold render). -->
 		{@render belowTitle?.()}
 
 		<!-- Parent context for associated items -->
@@ -768,162 +797,93 @@
 			</div>
 		{/if}
 
-		<!-- Signature (always open) -->
-		{#if selected.signature}
-			<CollapsibleSection
-				title="Signature"
-				defaultOpen={true}
-				forceOpen={sectionForceOpen}
-				forceVersion={sectionForceVersion}
-			>
-				<div>
+		<!-- Declaration block — single canonical Rust signature. Replaces the
+		     old "Signature" collapsible + separate generics/where badge rows,
+		     which duplicated the same information. Rendered for every kind
+		     that has a meaningful declaration (fn / struct / enum / trait …). -->
+		{#if itemDeclaration}
+			<div class="declaration-block mb-5">
+				{#if selected.signature}
 					<SignatureBlock node={selected} {theme} />
-				</div>
-			</CollapsibleSection>
+				{:else}
+					<CodeBlock code={itemDeclaration.inline} lang="rust" {theme} variant="flat" />
+				{/if}
+			</div>
 		{/if}
 
-		<!-- Fields (collapse if many) -->
+		<!-- Attributes — collapsed, right under the declaration (not buried
+		     at the bottom of the header). Source attributes belong with the
+		     source declaration they annotate. -->
+		{#if selected.attrs && selected.attrs.length > 0}
+			{@render attributesPanel(selected.attrs)}
+		{/if}
+
+		<!-- Fields (collapse if many) — rendered as a clean Rust source block
+		     the way docs.rs / cargo doc does, instead of a noisy table. -->
 		{#if selected.fields && selected.fields.length > 0}
-			<CollapsibleSection
-				title="Fields"
-				count={selected.fields.length}
-				defaultOpen={selected.fields.length <= FIELDS_COLLAPSE_THRESHOLD}
-				forceOpen={sectionForceOpen}
-				forceVersion={sectionForceVersion}
-			>
-				<table class="w-full text-sm [text-box:trim-both_cap_alphabetic]">
-					<thead>
-						<tr class="text-left text-[10px] font-semibold tracking-wider text-(--muted) uppercase">
-							<th class="pr-3 pb-2 font-semibold">Name</th>
-							<th class="pb-2 font-semibold">Type</th>
-						</tr>
-					</thead>
-					<tbody class="divide-y divide-(--panel-border)">
-						{#each selected.fields as field (field.name)}
-							<tr class="group">
-								<td class="py-2 pr-3 align-baseline whitespace-nowrap">
-									<span class="inline-flex items-baseline gap-1.5">
-										{#if isPublic(field.visibility)}
-											<span class="text-[10px] font-medium text-(--accent)">pub</span>
-										{:else}
-											<span class="text-[10px] font-medium text-(--muted)">prv</span>
-										{/if}
-										<code class="font-(--font-code) font-medium text-(--ink)">{field.name}</code>
-									</span>
-								</td>
-								<td class="py-2 align-baseline">
-									{@render typeBadge(field.type, false)}
-								</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</CollapsibleSection>
-		{/if}
-
-		<!-- Variants (collapse if many) -->
-		{#if selected.variants && selected.variants.length > 0}
-			<CollapsibleSection
-				title="Variants"
-				count={selected.variants.length}
-				defaultOpen={selected.variants.length <= VARIANTS_COLLAPSE_THRESHOLD}
-				forceOpen={sectionForceOpen}
-				forceVersion={sectionForceVersion}
-			>
-				<div class="divide-y divide-(--panel-border) [text-box:trim-both_cap_alphabetic]">
-					{#each selected.variants as variant (variant.name)}
-						<div
-							class="py-2.5 [contain-intrinsic-size:auto_36px] [content-visibility:auto] first:pt-0 last:pb-0"
-						>
-							<div class="flex items-baseline gap-2">
-								<code class="font-(--font-code) font-medium text-(--ink)">{variant.name}</code>
-								{#if variant.fields.length === 0}
-									<!-- Unit variant — nothing else to show -->
-								{:else if isTupleVariant(variant.fields)}
-									<!-- Tuple variant — show types inline -->
-									<span class="font-(--font-code) text-(--muted)">
-										({#each variant.fields as field, i (field.name)}{#if i > 0},
-											{/if}{@render typeBadge(field.type, false)}{/each})
-									</span>
-								{:else}
-									<span class="text-xs text-(--muted)">
-										{variant.fields.length} field{variant.fields.length === 1 ? '' : 's'}
-									</span>
-								{/if}
-							</div>
-							{#if variant.fields.length > 0 && !isTupleVariant(variant.fields)}
-								<!-- Named struct fields — show as indented sub-table -->
-								<div class="mt-1.5 ml-4 border-l-2 border-(--panel-border) pl-3">
-									{#each variant.fields as field (field.name)}
-										<div class="flex items-baseline gap-1.5 py-0.5 text-sm">
-											<code class="font-(--font-code) text-(--ink)">{field.name}</code>
-											<span class="text-(--muted)">:</span>
-											<span class="font-(--font-code) text-(--muted)">
-												{@render typeBadge(field.type, false)}
-											</span>
-										</div>
-									{/each}
-								</div>
-							{/if}
-						</div>
-					{/each}
+			<section id="fields" class="doc-section group">
+				<div
+					class="section-header mt-7 mb-3 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.StructField}"></span>
+					<h2 class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)">
+						Fields
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{selected.fields.length}</span>
 				</div>
-			</CollapsibleSection>
+				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)">
+					<CodeBlock
+						code={fieldsToRust(selected.fields)}
+						lang="rust"
+						{theme}
+						variant="flat"
+					/>
+				</div>
+			</section>
 		{/if}
 
-		<!-- Type info for StructField, AssocType, AssocConst -->
-		{#if selected.type && (selectedKind === 'StructField' || selectedKind === 'AssocType' || selectedKind === 'AssocConst')}
+		<!-- Variants (collapse if many) — clean Rust source block. -->
+		{#if selected.variants && selected.variants.length > 0}
+			<section id="variants" class="doc-section group">
+				<div
+					class="section-header mt-7 mb-3 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.Variant}"></span>
+					<h2 class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)">
+						Variants
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{selected.variants.length}</span>
+				</div>
+				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)">
+					<CodeBlock
+						code={variantsToRust(selected.variants)}
+						lang="rust"
+						{theme}
+						variant="flat"
+					/>
+				</div>
+			</section>
+		{/if}
+
+		<!-- Type info for StructField only — every other kind now gets a
+		     declaration block at the top that already includes the type. -->
+		{#if selected.type && selectedKind === 'StructField'}
 			<CollapsibleSection
 				title="Type"
 				defaultOpen={true}
 				forceOpen={sectionForceOpen}
-				forceVersion={sectionForceVersion}
+				forceToken={sectionForceToken}
 			>
 				<div class="flex flex-wrap items-baseline gap-2">
-					{#if selectedKind === 'AssocConst'}
-						<span class="text-(--muted)">const</span>
-						<code class="badge badge-strong badge-code">{selected.name}</code>
-						<span class="text-(--muted)">:</span>
-					{:else if selectedKind === 'AssocType'}
-						<span class="text-(--muted)">type</span>
-						<code class="badge badge-strong badge-code">{selected.name}</code>
-						<span class="text-(--muted)">=</span>
-					{:else}
-						<code class="badge badge-strong badge-code">{selected.name}</code>
-						<span class="text-(--muted)">:</span>
-					{/if}
+					<code class="badge badge-strong badge-code">{selected.name}</code>
+					<span class="text-(--muted)">:</span>
 					{@render typeBadge(selected.type, false)}
 				</div>
-				{#if selected.const_value}
-					<div class="mt-3">
-						<h4 class="text-xs font-semibold tracking-wider text-(--muted) uppercase">Value</h4>
-						<code class="mt-1 block text-sm font-(--font-code) text-(--ink)">
-							{selected.const_value}
-						</code>
-					</div>
-				{/if}
 			</CollapsibleSection>
 		{/if}
 
-		<!-- Bounds for AssocType -->
-		{#if selected.bounds && selected.bounds.length > 0}
-			<CollapsibleSection
-				title="Bounds"
-				count={selected.bounds.length}
-				defaultOpen={true}
-				forceOpen={sectionForceOpen}
-				forceVersion={sectionForceVersion}
-			>
-				<div class="flex flex-wrap items-center gap-2">
-					{#each selected.bounds as bound, idx (idx)}
-						<code class="badge badge-code">{@render boundContent(bound)}</code>
-						{#if idx < selected.bounds.length - 1}
-							<span class="text-(--muted)">+</span>
-						{/if}
-					{/each}
-				</div>
-			</CollapsibleSection>
-		{/if}
+		<!-- Bounds are now rendered inside the declaration block; no
+		     separate section needed. -->
 
 		<!-- Variant info -->
 		{#if selectedKind === 'Variant'}
@@ -931,7 +891,7 @@
 				title="Variant Type"
 				defaultOpen={true}
 				forceOpen={sectionForceOpen}
-				forceVersion={sectionForceVersion}
+				forceToken={sectionForceToken}
 			>
 				<div class="flex items-center gap-2">
 					<span class="badge">{selected.variant_kind ?? 'unit'}</span>
@@ -947,8 +907,9 @@
 		{#if selected.docs}
 			<section id="documentation" class="doc-section group">
 				<div
-					class="mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
 				>
+					<span class="section-bar section-bar-muted"></span>
 					<h2
 						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
 					>
@@ -966,17 +927,85 @@
 			</section>
 		{/if}
 
+		<!-- Trait definition: associated types/consts, required methods, provided methods.
+		     Uses the same member-row rendering as trait-impl blocks so signatures + docs
+		     show with their own body (docs.rs style). -->
+		{#if traitAssocItems.length > 0}
+			<section id="associated-items" class="doc-section group">
+				<div
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.AssocType}"></span>
+					<h2
+						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
+						Associated items
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{traitAssocItems.length}</span>
+				</div>
+				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)">
+					{#each traitAssocItems as member, index (member.id)}
+						{@render implMemberRow(member, index)}
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if requiredTraitMethods.length > 0}
+			<section id="required-methods" class="doc-section group">
+				<div
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.Function}"></span>
+					<h2
+						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
+						Required methods
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{requiredTraitMethods.length}</span>
+				</div>
+				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)">
+					{#each requiredTraitMethods as member, index (member.id)}
+						{@render implMemberRow(member, index)}
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		{#if providedTraitMethods.length > 0}
+			<section id="provided-methods" class="doc-section group">
+				<div
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.Function}"></span>
+					<h2
+						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
+						Provided methods
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{providedTraitMethods.length}</span>
+				</div>
+				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)">
+					{#each providedTraitMethods as member, index (member.id)}
+						{@render implMemberRow(member, index)}
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 		<!-- Methods -->
 		{#if methodCountValue() > 0}
 			<section id="methods" class="doc-section group">
 				<div
-					class="mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
 				>
+					<span class="section-bar" style="background: {kindColors.Function}"></span>
 					<h2
 						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Methods
 					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{methodCountValue()}</span>
 				</div>
 				<div class="space-y-6">
 					{#each methodGroups as group (group.impl.id)}
@@ -1082,13 +1111,15 @@
 		{#if totalImplCount() > 0}
 			<section id="trait-impls" class="doc-section group">
 				<div
-					class="mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
 				>
+					<span class="section-bar" style="background: {kindColors.Trait}"></span>
 					<h2
 						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Trait implementations
 					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{sourceImpls.length}</span>
 				</div>
 				<div class="space-y-4">
 					<!-- Source (user-written) implementations -->
@@ -1113,9 +1144,46 @@
 									{@render implRow(implBlock)}
 								{/each}
 							</div>
-						</details>
-					{/if}
+					</details>
+				{/if}
+			</div>
+		</section>
+	{/if}
+
+		<!-- Implementers — shown only on trait / trait-alias pages. The
+		     reviewer's suggestion: replace generic "incoming relationships"
+		     with a focused list of types that implement this trait. -->
+		{#if (selectedKind === 'Trait' || selectedKind === 'TraitAlias') && implementers.length > 0}
+			<section id="implementers" class="doc-section group">
+				<div
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.Struct}"></span>
+					<h2
+						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
+						Implementers
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{implementers.length}</span>
 				</div>
+				<ul class="flex flex-wrap gap-x-5 gap-y-1.5 font-mono text-sm">
+					{#each implementers as impl (impl.id)}
+						<li>
+							{#if hasInternalNode(impl.id)}
+								<a
+									href={nodeHref(impl.id)}
+									data-sveltekit-noscroll
+									class="text-(--accent) underline-offset-2 hover:underline"
+									title={impl.id}
+								>
+									{impl.name}
+								</a>
+							{:else}
+								<span class="text-(--ink-soft)" title={impl.id}>{impl.name}</span>
+							{/if}
+						</li>
+					{/each}
+				</ul>
 			</section>
 		{/if}
 
@@ -1137,5 +1205,74 @@
 			backdrop-filter: blur(12px);
 			-webkit-backdrop-filter: blur(12px);
 		}
+	}
+
+	/* Kind label with a colored leading bar — gives module/type/trait
+	   separation at a glance without icon clutter. */
+	.kind-label {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-family: var(--font-code);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.16em;
+		text-transform: uppercase;
+	}
+	.kind-label-bar {
+		display: inline-block;
+		width: 3px;
+		height: 13px;
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+
+	/* Source pill — prominent but quiet link to the source location.
+	   Wraps SourceViewer so it gets the real source dialog + docs.rs
+	   fallback; we just add an icon + pill chrome around it. */
+	.source-pill-wrap {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		padding: 0.12rem 0.5rem;
+		border-radius: var(--radius-control, 6px);
+		font-size: 11.5px;
+		color: var(--ink-soft);
+		background: var(--panel);
+		border: 1px solid var(--panel-border-soft);
+		transition: color 0.12s, border-color 0.12s, background 0.12s;
+	}
+	.source-pill-wrap:hover {
+		color: var(--accent);
+		border-color: var(--accent);
+		background: var(--accent-soft);
+	}
+	.source-pill-wrap :global(.source-link) {
+		color: inherit;
+		font-size: inherit;
+	}
+	.source-pill-wrap :global(.source-link:hover) {
+		color: inherit;
+	}
+
+	/* Section header colored bar — unifies the "module/type/trait" colour
+	   language across the whole detail page. */
+	.section-bar {
+		display: inline-block;
+		width: 3px;
+		height: 18px;
+		border-radius: 2px;
+		background: var(--muted-soft);
+		flex-shrink: 0;
+	}
+	.section-bar-muted {
+		background: var(--muted-soft);
+	}
+
+	/* Declaration block — sits flush with the header, no card chrome so
+	   the rust source reads as source, not as a UI widget. */
+	.declaration-block {
+		border-radius: var(--radius-card, 10px);
+		overflow: hidden;
 	}
 </style>

@@ -85,6 +85,53 @@ describe('detail doc model', () => {
 		expect(model.whereUsed).toEqual([{ id: caller.id, name: caller.name }]);
 	});
 
+	it('lists required/provided methods and assoc items on trait definition pages', () => {
+		const selected = node('demo::Display', 'Display', 'Trait', {
+			required_trait_methods: ['fmt'],
+			default_trait_methods: ['to_string'],
+		});
+		const required = node('demo::Display::fmt', 'fmt', 'Function', {
+			docs: 'Formats the value.',
+			signature: {
+				inputs: [{ name: 'self', type: { kind: 'Generic', name: 'Self' } }],
+				output: { kind: 'Primitive', name: '()' },
+				is_async: false,
+				is_const: false,
+				is_unsafe: false,
+			},
+		});
+		const provided = node('demo::Display::to_string', 'to_string', 'Function', {
+			docs: 'Converts the value to a String.',
+		});
+		const assocType = node('demo::Display::Output', 'Output', 'AssocType', {
+			type: { kind: 'Primitive', name: 'str' },
+		});
+		const detail: NodeDetail = {
+			node: selected,
+			relatedNodes: [required, provided, assocType],
+			edges: [
+				{ from: selected.id, to: required.id, kind: 'Defines', confidence: 'Static' },
+				{ from: selected.id, to: provided.id, kind: 'Defines', confidence: 'Static' },
+				{ from: selected.id, to: assocType.id, kind: 'Defines', confidence: 'Static' },
+			],
+		};
+
+		const model = buildDetailDocModel(detail);
+		const materialized = materializeDetailDocModel(model, detail);
+
+		expect(model.requiredTraitMethodIds).toEqual([required.id]);
+		expect(model.providedTraitMethodIds).toEqual([provided.id]);
+		expect(model.traitAssocItemIds).toEqual([assocType.id]);
+		expect(model.tocEntries.map((e) => e.anchor)).toEqual([
+			'associated-items',
+			'required-methods',
+			'provided-methods',
+		]);
+		expect(materialized.requiredTraitMethods.map((m) => m.name)).toEqual(['fmt']);
+		expect(materialized.providedTraitMethods.map((m) => m.name)).toEqual(['to_string']);
+		expect(materialized.traitAssocItems.map((m) => m.name)).toEqual(['Output']);
+	});
+
 	it('rebuilds optional trait impl groups when materializing older doc models', () => {
 		const selected = node('demo::Widget', 'Widget', 'Struct');
 		const traitImpl = node('demo::Widget::impl-Display', 'impl Display for Widget', 'Impl', {

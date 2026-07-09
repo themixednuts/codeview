@@ -3,7 +3,6 @@
 	import type { VizMode } from '$lib/components/VizSwitcher.svelte';
 	import type { NodeView } from '$lib/schema';
 	import type { CrateMapData } from '$lib/graph/crate-map';
-	import { browser } from '$app/environment';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { resolveAppPath } from '$lib/app-paths';
@@ -15,7 +14,6 @@
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
 	import { LoaderCircleIcon } from '@lucide/svelte';
-	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
 	import CrateOverviewFlow from '$lib/components/design/graph/CrateOverviewFlow.svelte';
 	import VizSwitcher from '$lib/components/VizSwitcher.svelte';
 	import CrateTreemap from '$lib/components/CrateTreemap.svelte';
@@ -214,26 +212,23 @@
 
 	const methodGroups = $derived(detailModel.methodGroups);
 	const traitImplGroups = $derived(detailModel.traitImplGroups);
+	const requiredTraitMethods = $derived(detailModel.requiredTraitMethods);
+	const providedTraitMethods = $derived(detailModel.providedTraitMethods);
+	const traitAssocItems = $derived(detailModel.traitAssocItems);
 
 	// ── Right-pane TOC entries ───────────────────────────────────────────
 	const tocEntries = $derived(detailModel.tocEntries);
 
-	// "Where used" — surface the top incoming-edge sources by node name.
-	const whereUsed = $derived(detailModel.whereUsed);
+	/** Incoming references — used only to render an "Implementers" list on
+	 *  trait / trait-alias pages (the reviewer's suggestion). Not shown as a
+	 *  generic "where used" card for other kinds. */
+	const implementers = $derived(detailModel.whereUsed);
 	const graphHref = $derived.by(() => {
 		const url = serializeExplorerState(page.url, { view: 'graph' });
 		url.hash = '';
 		return `${url.pathname}${url.search}`;
 	});
 
-	function openGraphView() {
-		if (!browser) return;
-		goto(resolveAppPath(graphHref), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
-		});
-	}
 </script>
 
 {#if selected && detail}
@@ -331,71 +326,57 @@
 				 The left tree lives in [crate]/[version]/+layout.svelte.
 				 Crate-root pages show the viz switcher above with no TOC. -->
 			{#if isOnCrateRoot}
-				<NodeDetails
-					{selected}
-					{sourceImpls}
-					{blanketImpls}
-					{methodGroups}
-					{traitImplGroups}
-					{kindLabels}
-					{displayNode}
-					{theme}
-					{getNodeUrl}
-					{nodeExists}
-					{nodeMeta}
-					{crateName}
-					{crateVersion}
-					{crateVersions}
-				/>
-			{:else}
-				<div class="doc-body-grid grid gap-8 xl:grid-cols-[1fr_220px]">
-					<!-- Doc body — primary reading surface. -->
-					<div class="min-w-0">
-						<NodeDetails
-							{selected}
-							{sourceImpls}
-							{blanketImpls}
-							{methodGroups}
-							{traitImplGroups}
-							{kindLabels}
-							{displayNode}
-							{theme}
+			<NodeDetails
+				{selected}
+				{sourceImpls}
+				{blanketImpls}
+				{methodGroups}
+				{traitImplGroups}
+				{requiredTraitMethods}
+				{providedTraitMethods}
+				{traitAssocItems}
+				{kindLabels}
+				{displayNode}
+				{implementers}
+				{theme}
+				{getNodeUrl}
+				{nodeExists}
+				{nodeMeta}
+				{crateName}
+				{crateVersion}
+				{crateVersions}
+			/>
+		{:else}
+			<div class="doc-body-grid grid gap-8 xl:grid-cols-[1fr_220px]">
+				<!-- Doc body — primary reading surface. -->
+				<div class="min-w-0">
+					<NodeDetails
+						{selected}
+						{sourceImpls}
+						{blanketImpls}
+						{methodGroups}
+						{traitImplGroups}
+						{requiredTraitMethods}
+						{providedTraitMethods}
+						{traitAssocItems}
+						{kindLabels}
+						{displayNode}
+						{implementers}
+						{theme}
 							{getNodeUrl}
 							{nodeExists}
 							{nodeMeta}
 							{crateName}
 							{crateVersion}
 							{crateVersions}
-						>
-							<!-- belowTitle slot: relationship graph card lives right
-								 below the title block so the visual context appears
-								 ahead of the doc prose. -->
-							{#snippet belowTitle()}
-								{#if detail}
-									<div class="mt-5 mb-6">
-										<FocusGraphFlow
-											{detail}
-											{ancestors}
-											crateName={crateName ?? ''}
-											crateVersion={crateVersion ?? ''}
-											{getNodeUrl}
-											height={360}
-											compact
-										/>
-									</div>
-								{/if}
-							{/snippet}
-						</NodeDetails>
+						/>
 					</div>
 
 					<!-- TOC sidebar -->
 					<div class="hidden xl:block">
 						<DocToc
 							entries={tocEntries}
-							related={whereUsed}
-							{getNodeUrl}
 							openGraphHref={graphHref}
-							onOpenGraph={openGraphView}
 							{nodeId}
 						/>
 					</div>

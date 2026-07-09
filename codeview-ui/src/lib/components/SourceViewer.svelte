@@ -88,6 +88,11 @@
 	});
 
 	function open(event: MouseEvent) {
+		// Progressive enhancement: without JS, href is the docs.rs source URL.
+		// With JS, open the in-app source dialog via the `src` query param.
+		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+			return;
+		}
 		event.preventDefault();
 		if (!spanKey) return;
 		updateSourceParam(spanKey);

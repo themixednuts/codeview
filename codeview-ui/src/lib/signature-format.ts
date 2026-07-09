@@ -1,5 +1,6 @@
-import type { Node } from '$lib/graph';
+import type { Node, NodeKind, Visibility } from '$lib/graph';
 import {
+	renderGenericBound,
 	renderGenericParams,
 	renderTypeText,
 	renderWhereClause,
@@ -64,4 +65,127 @@ export function formatSignature(
 			: `${header}(\n${args.map((a) => `${INDENT}${a}`).join(',\n')},\n)${ret}${whereSuffix}`;
 
 	return { inline, multiline };
+}
+
+// ─── Item declarations (struct / enum / trait / type / const / …) ────────
+//
+// `formatSignature` covers `fn` items. `formatItemDeclaration` covers every
+// other top-level item kind so the detail header can show a single canonical
+// Rust declaration block (the docs.rs approach) instead of the badge-soup
+// representation. Returns null for kinds with no meaningful declaration.
+
+/** Render a `Visibility` as its source keyword, or '' when omitted. */
+function visibilityPrefix(visibility: Visibility | undefined): string {
+	if (!visibility) return '';
+	const raw = visibility as { kind?: string; path?: string };
+	switch (raw.kind) {
+		case 'Public':
+			return 'pub ';
+		case 'Crate':
+			return 'pub(crate) ';
+		case 'Restricted':
+			return `pub(in ${raw.path ?? 'crate'}) `;
+		default:
+			return '';
+	}
+}
+
+/** Kinds that `formatItemDeclaration` knows how to render. */
+const DECLARABLE_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
+	'Struct',
+	'Enum',
+	'Union',
+	'Trait',
+	'TraitAlias',
+	'TypeAlias',
+	'Constant',
+	'AssocConst',
+	'Static',
+	'AssocType',
+	'Function',
+]);
+
+/**
+ * Format `node` as a Rust item declaration in inline + multiline forms.
+ *
+ * For `Function`, delegates to `formatSignature`. For every other declarable
+ * kind, produces the rustfmt-style header (`pub struct Foo<T> where …` etc.)
+ * without the body — fields/variants live in their own dedicated sections.
+ *
+ * Returns `null` for kinds without a meaningful declaration (Crate, Module,
+ * Impl, Import, …) so callers can skip rendering.
+ */
+export function formatItemDeclaration(node: Node): FormattedSignature | null {
+	if (node.signature) return formatSignature(node);
+	if (!DECLARABLE_KINDS.has(node.kind)) return null;
+
+	const pub = visibilityPrefix(node.visibility);
+	const generics = node.generics;
+	const params = renderGenericParams(generics);
+	const where = renderWhereClause(generics);
+	const whereSuffix = where ? `\n${where}` : '';
+
+	switch (node.kind) {
+		case 'Struct':
+		case 'Union': {
+			const kw = node.kind === 'Struct' ? 'struct' : 'union';
+			const head = `${pub}${kw} ${node.name}${params}`;
+			const body = whereSuffix ? `${whereSuffix} {}` : ' {}';
+			return { inline: `${head}${body}`, multiline: `${head}${body}` };
+		}
+		case 'Enum': {
+			const head = `${pub}enum ${node.name}${params}`;
+			const body = whereSuffix ? `${whereSuffix} {}` : ' {}';
+			return { inline: `${head}${body}`, multiline: `${head}${body}` };
+		}
+		case 'Trait': {
+			const bounds =
+				node.bounds && node.bounds.length > 0
+					? ': ' + node.bounds.map(renderGenericBound).join(' + ')
+					: '';
+			const auto = node.is_auto ? 'auto ' : '';
+			const unsafe = node.is_unsafe ? 'unsafe ' : '';
+			const head = `${pub}${unsafe}${auto}trait ${node.name}${params}${bounds}`;
+			const body = whereSuffix ? `${whereSuffix} {}` : ' {}';
+			return { inline: `${head}${body}`, multiline: `${head}${body}` };
+		}
+		case 'TraitAlias': {
+			const bounds =
+				node.bounds && node.bounds.length > 0
+					? node.bounds.map(renderGenericBound).join(' + ')
+					: '_';
+			const head = `${pub}trait ${node.name}${params} = ${bounds}`;
+			return { inline: head, multiline: head };
+		}
+		case 'TypeAlias': {
+			const ty = node.type ? ` = ${renderTypeText(node.type)}` : '';
+			const head = `${pub}type ${node.name}${params}${ty};`;
+			return { inline: head, multiline: head };
+		}
+		case 'AssocType': {
+			const bounds =
+				node.bounds && node.bounds.length > 0
+					? ': ' + node.bounds.map(renderGenericBound).join(' + ')
+					: '';
+			const ty = node.type ? ` = ${renderTypeText(node.type)}` : '';
+			const head = `type ${node.name}${params}${bounds}${ty};`;
+			return { inline: head, multiline: head };
+		}
+		case 'Constant':
+		case 'AssocConst': {
+			const ty = node.type ? renderTypeText(node.type) : '_';
+			const val = node.const_value ? ` = ${node.const_value}` : '';
+			const head = `${pub}const ${node.name}: ${ty}${val};`;
+			return { inline: head, multiline: head };
+		}
+		case 'Static': {
+			const mut = node.is_mutable ? 'mut ' : '';
+			const ty = node.type ? renderTypeText(node.type) : '_';
+			const val = node.const_value ? ` = ${node.const_value}` : '';
+			const head = `${pub}static ${mut}${node.name}: ${ty}${val};`;
+			return { inline: head, multiline: head };
+		}
+		default:
+			return null;
+	}
 }

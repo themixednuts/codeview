@@ -554,6 +554,12 @@ export const DetailDocModelSchema = v.object({
 	blanketImplIds: v.array(v.string()),
 	methodGroups: v.array(DetailMethodGroupSchema),
 	traitImplGroups: v.optional(v.array(DetailMethodGroupSchema)),
+	/** Trait-definition associated items (required methods). Empty on non-trait pages. */
+	requiredTraitMethodIds: v.optional(v.array(v.string())),
+	/** Trait-definition associated items (provided/default methods). Empty on non-trait pages. */
+	providedTraitMethodIds: v.optional(v.array(v.string())),
+	/** Trait-definition associated types/consts. Empty on non-trait pages. */
+	traitAssocItemIds: v.optional(v.array(v.string())),
 	methodCount: v.number(),
 	totalImpls: v.number(),
 	tocEntries: v.array(TocEntrySchema),

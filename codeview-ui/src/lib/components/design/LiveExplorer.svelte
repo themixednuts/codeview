@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { goto, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
 		KindFacet,
@@ -12,7 +12,7 @@
 		TreeNodeDTO,
 	} from '$lib/schema';
 	import type { CrateStatusValue } from '$lib/context';
-	import { SvelteSet } from 'svelte/reactivity';
+	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
 	import { onDestroy, onMount } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { resolveAppPath } from '$lib/app-paths';
@@ -29,6 +29,7 @@
 	import { isHosted } from '$lib/platform';
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
 	import {
+		kindFilterHref,
 		parseExplorerState,
 		serializeExplorerState,
 		type ExplorerDocLayout,
@@ -128,7 +129,12 @@
 	let lastReadyExpandKey = '';
 	let lastReadyKey = '';
 	let observedNonReady = false;
-	let useWidePanes = $state(false);
+	/** Mobile: tree drawer open. Docs-first by default so the page is readable. */
+	let mobileTreeOpen = $state(false);
+	const widePanesQuery = new MediaQuery('min-width: 1024px', false);
+	const useWidePanes = $derived(widePanesQuery.current);
+	/** Only show the drawer on narrow viewports; wide layout uses the side pane. */
+	const showMobileTree = $derived(mobileTreeOpen && !useWidePanes);
 	let treeFilterInput = $state<HTMLInputElement | null>(null);
 	let localViewOverride = $state<ExplorerViewMode | null>(null);
 	let localDocLayoutOverride = $state<ExplorerDocLayout | null>(null);
@@ -157,18 +163,23 @@
 		localDocLayoutOverride = nextLayout;
 	}
 
+	function closeMobileTree() {
+		mobileTreeOpen = false;
+	}
+
+	function toggleMobileTree() {
+		mobileTreeOpen = !mobileTreeOpen;
+	}
+
+	// Event-driven close: navigation (tree link / search hit) dismisses the drawer.
+	// No $effect — Svelte 5 prefers derived state + explicit event handlers.
+	afterNavigate(closeMobileTree);
+
 	onMount(() => {
 		hydrated = true;
-		const query = window.matchMedia('(min-width: 1024px)');
-		const syncWidePanes = () => {
-			useWidePanes = query.matches;
-		};
-		syncWidePanes();
-		query.addEventListener('change', syncWidePanes);
 		window.addEventListener('keydown', handleExplorerKeydown);
 		window.addEventListener('codeview-doc-layout-change', handleDocLayoutPreferenceEvent);
 		return () => {
-			query.removeEventListener('change', syncWidePanes);
 			window.removeEventListener('keydown', handleExplorerKeydown);
 			window.removeEventListener('codeview-doc-layout-change', handleDocLayoutPreferenceEvent);
 		};
@@ -654,6 +665,8 @@
 	}
 
 	function handleTreeRowLinkClick(row: FlatTreeNode, href: string, event: MouseEvent) {
+		// Always dismiss the mobile drawer when the user picks a node.
+		closeMobileTree();
 		if (!row.hasChildren) return;
 		if (event.defaultPrevented || event.button !== 0) return;
 		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -864,18 +877,30 @@
 </script>
 
 {#snippet modeButton(nextMode: 'graph' | 'docs', label: string, icon: 'link' | 'hash')}
-	<button
-		type="button"
-		class="flex items-center gap-1 rounded px-2.5 py-0.5 text-[11.5px] transition-colors {mode ===
+	{@const href = serializeExplorerState(page.url, { view: nextMode })}
+	{@const modeHref = `${href.pathname}${href.search}`}
+	<a
+		href={resolveAppPath(modeHref)}
+		data-sveltekit-noscroll
+		data-sveltekit-keepfocus
+		class="flex items-center gap-1 rounded px-2.5 py-0.5 text-[11.5px] transition-colors no-underline {mode ===
 		nextMode
 			? 'bg-(--panel-solid) text-(--ink) shadow-(--shadow-soft)'
 			: 'text-(--muted)'}"
-		aria-pressed={mode === nextMode}
-		onclick={() => updateExplorerState({ view: nextMode })}
+		aria-current={mode === nextMode ? 'page' : undefined}
+		onclick={(event) => {
+			// Progressive enhancement: real URL works without JS.
+			// With JS, keep focus/scroll and use replaceState path from updateExplorerState.
+			if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+				return;
+			}
+			event.preventDefault();
+			void updateExplorerState({ view: nextMode });
+		}}
 	>
 		<Icon name={icon} size={11} />
 		{label}
-	</button>
+	</a>
 {/snippet}
 
 {#snippet searchResultRow(node: NodeSummary)}
@@ -885,6 +910,7 @@
 		data-sveltekit-noscroll
 		data-sveltekit-keepfocus
 		aria-current={isSelected ? 'page' : undefined}
+		onclick={closeMobileTree}
 		class="group flex items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
@@ -1095,15 +1121,29 @@
 				<div class="mt-2 flex flex-wrap gap-1">
 					{#each populatedKinds as facet (facet.kind)}
 						{@const isActive = activeKinds.has(facet.kind)}
-						<button
-							type="button"
-							class="badge badge-sm transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+						<a
+							href={resolveAppPath(kindFilterHref(page.url, facet.kind, isActive))}
+							data-sveltekit-noscroll
+							data-sveltekit-keepfocus
+							class="badge badge-sm no-underline transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 							class:badge-accent={isActive}
-							aria-pressed={isActive}
-							onclick={() => onToggleKind(facet.kind)}
+							aria-current={isActive ? 'true' : undefined}
+							onclick={(event) => {
+								if (
+									event.metaKey ||
+									event.ctrlKey ||
+									event.shiftKey ||
+									event.altKey ||
+									event.button !== 0
+								) {
+									return;
+								}
+								event.preventDefault();
+								onToggleKind(facet.kind);
+							}}
 						>
 							{facet.label}
-						</button>
+						</a>
 					{/each}
 				</div>
 			{/if}
@@ -1434,15 +1474,58 @@
 				{@render nodeContentPane('')}
 			{/if}
 		{:else}
-			<div class="grid h-full min-h-0 grid-cols-1 overflow-auto">
-				{#if mode === 'docs' && docLayout !== 'classic'}
-					{@render nodeContentPane('')}
-				{:else}
-					{@render treePane('stacked-tree-pane min-h-[260px] border-b border-(--panel-border-strong)')}
-					{@render nodeContentPane('stacked-doc-pane min-h-[520px]')}
-					{#if mode === 'graph'}
-						{@render detailPane('min-h-[420px] border-t border-(--panel-border-soft)')}
-					{/if}
+			<!-- Mobile: docs first, tree as a slide-over drawer. -->
+			<div class="relative grid h-full min-h-0 grid-cols-1 overflow-hidden">
+				<div class="mobile-doc-shell flex min-h-0 flex-col overflow-hidden">
+					<div class="flex shrink-0 items-center gap-2 border-b border-(--panel-border-soft) bg-(--panel) px-3 py-2">
+						<button
+							type="button"
+							class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1.5 text-[12px] font-medium text-(--ink)"
+							aria-expanded={showMobileTree}
+							aria-controls="mobile-tree-drawer"
+							onclick={toggleMobileTree}
+						>
+							<Icon name="layers" size={14} strokeWidth={2} />
+							{showMobileTree ? 'Hide tree' : 'Tree'}
+						</button>
+						<span class="mono min-w-0 flex-1 truncate text-[11px] text-(--muted-soft)">
+							{selected?.name ?? crateName ?? 'crate'}
+						</span>
+					</div>
+					<div class="min-h-0 flex-1 overflow-auto">
+						{@render nodeContentPane('mobile-doc-pane')}
+						{#if mode === 'graph'}
+							{@render detailPane('border-t border-(--panel-border-soft)')}
+						{/if}
+					</div>
+				</div>
+
+				{#if showMobileTree}
+					<button
+						type="button"
+						class="mobile-tree-backdrop"
+						aria-label="Close module tree"
+						onclick={closeMobileTree}
+					></button>
+					<div
+						id="mobile-tree-drawer"
+						class="mobile-tree-drawer"
+						role="dialog"
+						aria-modal="true"
+						aria-label="Module tree"
+					>
+						<div class="flex items-center justify-between border-b border-(--panel-border-soft) px-3 py-2">
+							<span class="text-[11px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
+								Module tree
+							</span>
+							<button type="button" class="badge badge-sm" onclick={closeMobileTree}>
+								Close
+							</button>
+						</div>
+						<div class="min-h-0 flex-1 overflow-hidden">
+							{@render treePane('h-full')}
+						</div>
+					</div>
 				{/if}
 			</div>
 		{/if}
@@ -1450,13 +1533,27 @@
 </div>
 
 <style>
-	.live-explorer :global(.stacked-tree-pane) {
-		position: relative;
-		z-index: 2;
-		box-shadow: 0 14px 28px rgb(0 0 0 / 0.16);
+	.mobile-tree-backdrop {
+		position: absolute;
+		inset: 0;
+		z-index: 20;
+		border: 0;
+		background: color-mix(in srgb, var(--bg) 35%, rgb(0 0 0 / 0.45));
 	}
 
-	.live-explorer :global(.stacked-doc-pane) {
-		border-top: 1px solid var(--panel-border-soft);
+	.mobile-tree-drawer {
+		position: absolute;
+		inset: 0 auto 0 0;
+		z-index: 30;
+		display: flex;
+		width: min(92vw, 22rem);
+		flex-direction: column;
+		background: var(--panel-solid);
+		border-right: 1px solid var(--panel-border);
+		box-shadow: 12px 0 32px rgb(0 0 0 / 0.28);
+	}
+
+	.live-explorer :global(.mobile-doc-pane) {
+		min-height: 100%;
 	}
 </style>

@@ -156,6 +156,30 @@ export function serializeExplorerState(base: URL, patch: Partial<ExplorerViewSta
 	return url;
 }
 
+/**
+ * Build a kind-filter toggle URL without allocating intermediate kind arrays.
+ * Toggles `kind` in the current `k` query set and returns pathname+search.
+ */
+export function kindFilterHref(base: URL, kind: NodeKind, currentlyActive: boolean): string {
+	const url = new URL(base);
+	const params = url.searchParams;
+	const existing = params.getAll('k');
+	params.delete('k');
+	if (currentlyActive) {
+		for (const raw of existing) {
+			if (raw.toLowerCase() !== kind.toLowerCase()) params.append('k', raw);
+		}
+	} else {
+		let seen = false;
+		for (const raw of existing) {
+			params.append('k', raw);
+			if (raw.toLowerCase() === kind.toLowerCase()) seen = true;
+		}
+		if (!seen) params.append('k', kind);
+	}
+	return `${url.pathname}${url.search}`;
+}
+
 export function parseHomeState(url: URL, options: HomeStateOptions = {}): HomeViewState {
 	const { searchParams } = url;
 	const defaultTab = options.defaultTab ?? 'workspace';

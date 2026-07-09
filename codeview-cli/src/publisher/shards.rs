@@ -304,6 +304,48 @@ impl<'a> EdgeLookup<'a> {
         }
         edges
     }
+
+    /// Direct edges for a type page, plus Contains/Defines edges hanging off
+    /// each outgoing impl block. The UI needs those second-hop edges to render
+    /// trait-impl methods/assoc items (signatures + docs) on the type page —
+    /// matching the local provider's expansion behaviour.
+    pub(crate) fn page_edges_with_impl_members(&self, node_id: &str) -> Vec<Edge> {
+        let mut edges = self.cloned_edges(node_id);
+        let mut seen: HashSet<String> = edges
+            .iter()
+            .map(|edge| format!("{}|{}|{:?}", edge.from, edge.to, edge.kind))
+            .collect();
+
+        let impl_ids: Vec<String> = edges
+            .iter()
+            .filter(|edge| {
+                edge.from == node_id
+                    && matches!(
+                        edge.kind,
+                        codeview_core::EdgeKind::Defines | codeview_core::EdgeKind::Contains
+                    )
+            })
+            .map(|edge| edge.to.clone())
+            .collect();
+
+        for impl_id in impl_ids {
+            if let Some(outgoing) = self.outgoing.get(impl_id.as_str()) {
+                for edge in outgoing {
+                    if !matches!(
+                        edge.kind,
+                        codeview_core::EdgeKind::Defines | codeview_core::EdgeKind::Contains
+                    ) {
+                        continue;
+                    }
+                    let key = format!("{}|{}|{:?}", edge.from, edge.to, edge.kind);
+                    if seen.insert(key) {
+                        edges.push((*edge).clone());
+                    }
+                }
+            }
+        }
+        edges
+    }
 }
 
 pub(crate) fn collect_related<T>(
@@ -472,7 +514,9 @@ pub fn build_node_detail_shards(
     let mut shards: BTreeMap<String, StaticNodeDetailShard> = BTreeMap::new();
     for node in graph.nodes.iter().filter(|node| is_local_page_node(node)) {
         let bucket = node_view_bucket(&node.id, NODE_VIEW_BUCKETS);
-        let edges = edge_lookup.cloned_edges(node.id.as_str());
+        // Include second-hop edges from impl blocks → methods/assoc items so
+        // the hosted detail page can list trait-impl members the way docs.rs does.
+        let edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
         let related_ids = collect_related(node.id.as_str(), &edges, |endpoint| {
             Some(endpoint.to_string())
         });
@@ -849,6 +893,7 @@ mod tests {
                 node("demo::Thing", "Thing", NodeKind::Struct),
                 node("demo::make", "make", NodeKind::Function),
                 node("demo::impl-1", "impl Clone for Thing", NodeKind::Impl),
+                node("demo::impl-1::clone", "clone", NodeKind::Function),
                 node("demo::Wrapper", "Wrapper", NodeKind::Module),
                 node("demo::Adopted", "Adopted", NodeKind::Struct),
                 external_node("core", "core", NodeKind::Crate),
@@ -862,6 +907,7 @@ mod tests {
                 edge("demo::Wrapper", "core::clone::Clone", EdgeKind::Defines),
                 edge("core", "demo::Adopted", EdgeKind::Defines),
                 edge("demo::impl-1", "core::clone::Clone", EdgeKind::Implements),
+                edge("demo::impl-1", "demo::impl-1::clone", EdgeKind::Defines),
                 edge("demo::make", "core::clone::Clone", EdgeKind::UsesType),
             ],
             aliases: HashMap::new(),
@@ -961,12 +1007,24 @@ mod tests {
 
         assert_eq!(
             entry.edges.len(),
-            1 + 1 + extra_callers,
-            "one outgoing impl edge, one crate parent edge, and all incoming references"
+            1 + 1 + 1 + extra_callers,
+            "one outgoing impl edge, one impl-member edge, one crate parent edge, and all incoming references"
         );
         assert!(
             entry.related_ids.contains(&"demo::caller_143".to_string()),
             "related ids should be derived from the complete edge set"
+        );
+        assert!(
+            entry
+                .related_ids
+                .contains(&"demo::impl-1::clone".to_string()),
+            "impl methods must be related so the UI can render signatures + docs"
+        );
+        assert!(
+            entry.edges.iter().any(|edge| {
+                edge.from == "demo::impl-1" && edge.to == "demo::impl-1::clone"
+            }),
+            "type pages must include second-hop impl→member edges"
         );
     }
 

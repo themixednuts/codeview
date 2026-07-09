@@ -49,10 +49,7 @@
 	<aside class="hidden min-w-0 xl:block" aria-label="Documentation table of contents">
 		<DocToc
 			entries={model.tocEntries}
-			related={model.whereUsed}
-			{getNodeUrl}
 			{openGraphHref}
-			{onOpenGraph}
 			nodeId={detail.node.id}
 		/>
 	</aside>

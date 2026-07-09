@@ -620,6 +620,7 @@
 </svelte:head>
 
 <div class="flex h-screen flex-col bg-(--bg)">
+	<a href="#main-content" class="skip-link">Skip to content</a>
 	<header
 		class="grid h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-(--panel-border) bg-(--panel-solid) px-3 text-sm text-(--muted) sm:px-4 md:gap-3 lg:px-6 min-[1120px]:grid-cols-[minmax(0,1fr)_minmax(0,440px)_minmax(0,1fr)]"
 	>
@@ -826,3 +827,22 @@
 />
 
 <Toaster position="bottom-right" expand={false} />
+
+<style>
+	.skip-link {
+		position: absolute;
+		left: -9999px;
+		top: 0;
+		z-index: 9999;
+		padding: 0.5rem 0.875rem;
+		border-radius: 0 0 8px 0;
+		background: var(--accent);
+		color: white;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.skip-link:focus {
+		left: 0;
+	}
+</style>

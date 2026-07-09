@@ -404,19 +404,29 @@ fn build_node_view_entries(
     {
         let incoming_edges = edge_lookup.incoming_count(node.id.as_str());
         let outgoing_edges = edge_lookup.outgoing_count(node.id.as_str());
-        let edges = edge_lookup.cloned_edges(node.id.as_str());
+        // Second-hop edges from impl blocks → methods/assoc items so the type
+        // page can list trait-impl members (signatures + docs) like docs.rs.
+        let edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
         let related_nodes = collect_related(node.id.as_str(), &edges, |endpoint| {
             nodes_by_id.get(endpoint).map(|node| summarise_node(node))
         });
         let ancestors = ancestor_summaries(node.id.as_str(), parents, nodes_by_id);
+        let included_outgoing = edges
+            .iter()
+            .filter(|edge| edge.from == node.id)
+            .count();
+        let included_incoming = edges
+            .iter()
+            .filter(|edge| edge.to == node.id)
+            .count();
         let value = HostedNodeViewEntry {
             node_id: node.id.clone(),
             stats: HostedNodeViewStats {
                 incoming_edges,
                 outgoing_edges,
                 related_nodes: related_nodes.len(),
-                included_incoming_edges: incoming_edges,
-                included_outgoing_edges: outgoing_edges,
+                included_incoming_edges: included_incoming,
+                included_outgoing_edges: included_outgoing,
                 truncated_incoming_edges: 0,
                 truncated_outgoing_edges: 0,
             },
