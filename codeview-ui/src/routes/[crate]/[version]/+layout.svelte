@@ -162,6 +162,18 @@
 			wasReady = true;
 		}
 
+		// A stale terminal ledger row must not mask an artifact that failed the
+		// current contract check. Queueing a parse reconnects after the server has
+		// recorded a fresh processing event.
+		if (
+			data?.status?.status === 'failed' &&
+			data.status.action === 'docs_unavailable' &&
+			data?.meta == null &&
+			!hasNonEmptyArray(data?.roots)
+		) {
+			return;
+		}
+
 		statusConn.connect(canonicalCrateName, version);
 	}
 

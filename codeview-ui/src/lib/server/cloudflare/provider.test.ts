@@ -78,6 +78,25 @@ function fakeRateLimit(success = true): RateLimit {
 	} as unknown as RateLimit;
 }
 
+function fakeParseStatusNamespace(status: unknown): DurableObjectNamespace {
+	const stub = {
+		async fetch(input: RequestInfo | URL) {
+			const url = new URL(input instanceof Request ? input.url : input.toString());
+			return url.pathname === '/status'
+				? Response.json(status)
+				: new Response(null, { status: 404 });
+		},
+	};
+	return {
+		idFromName() {
+			return {};
+		},
+		get() {
+			return stub;
+		},
+	} as unknown as DurableObjectNamespace;
+}
+
 function fnv1a32(value: string): number {
 	let hash = 0x811c9dc5;
 	for (let i = 0; i < value.length; i += 1) {
@@ -217,6 +236,39 @@ describe('createCloudflareProvider', () => {
 
 		await expect(provider.getCrateStatus('proc-macro', '1.98.0-nightly')).resolves.toEqual({
 			status: 'ready',
+		});
+	});
+
+	test('rejects stale ready status when no current artifact is published', async () => {
+		const objects = new Map<string, unknown>([
+			['rust/_refs/demo.json', crateRefs()],
+			[
+				'rust/demo/1.0.0/site/meta.json',
+				{
+					schema_version: 1,
+					name: 'demo',
+					version: '1.0.0',
+				},
+			],
+		]);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+			PARSE_STATUS: fakeParseStatusNamespace({
+				ecosystem: 'rust',
+				kind: 'crate',
+				name: 'demo',
+				version: '1.0.0',
+				status: 'ready',
+				createdAt: '2026-07-09T00:00:00.000Z',
+				updatedAt: '2026-07-09T00:00:00.000Z',
+				sequence: 1,
+			}),
+		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.getCrateStatus('demo', '1.0.0')).resolves.toEqual({
+			status: 'failed',
+			error: 'No static graph is published for demo@1.0.0.',
+			action: 'docs_unavailable',
 		});
 	});
 

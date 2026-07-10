@@ -1902,7 +1902,11 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				}
 			}
 			const hostedStatus = await readHostedParseStatus(name, version);
-			if (hostedStatus) return storedStatusToCrateStatus(hostedStatus);
+			// Artifact validation is authoritative for readiness. A completed parse row can
+			// outlive its artifact contract, for example after a clean schema migration.
+			if (hostedStatus && hostedStatus.status !== 'ready') {
+				return storedStatusToCrateStatus(hostedStatus);
+			}
 			return {
 				status: 'failed' as const,
 				error: `No static graph is published for ${name}@${version}.`,
