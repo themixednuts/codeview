@@ -878,6 +878,8 @@
 			? 'bg-(--panel-solid) text-(--ink) shadow-(--shadow-soft)'
 			: 'text-(--muted)'}"
 		aria-current={mode === nextMode ? 'page' : undefined}
+		aria-label={`${label} view`}
+		title={`${label} view`}
 		onclick={(event) => {
 			// Progressive enhancement: real URL works without JS.
 			// With JS, keep focus/scroll and use replaceState path from updateExplorerState.
@@ -889,7 +891,7 @@
 		}}
 	>
 		<Icon name={icon} size={11} />
-		{label}
+		<span class="mode-label">{label}</span>
 	</a>
 {/snippet}
 
@@ -1423,13 +1425,13 @@
 	<div
 		class="flex min-h-12 items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-4"
 	>
-		<div class="flex min-w-0 items-center gap-2">
+		<div class="flex min-w-0 flex-1 items-center gap-2">
 			{#if selected}
 				<KindBadge kind={selected.kind} size={16} />
 			{/if}
 			<nav
 				aria-label="Node path"
-				class="mono flex min-w-0 flex-wrap items-baseline gap-1 text-[13px]"
+				class="mono flex min-w-0 flex-nowrap items-baseline gap-1 overflow-hidden text-[13px]"
 			>
 				{#each ancestors as ancestor, index (ancestor.id)}
 					<a
@@ -1448,7 +1450,7 @@
 				{/if}
 			</nav>
 		</div>
-		<div class="ml-auto flex items-center gap-2">
+		<div class="ml-auto flex shrink-0 items-center gap-2">
 			<span class="mono hidden text-[11px] text-(--muted-soft) sm:inline">
 				{relationshipTotal} relationships
 			</span>
@@ -1585,5 +1587,11 @@
 
 	.live-explorer :global(.mobile-doc-pane) {
 		min-height: 100%;
+	}
+
+	@media (max-width: 379.98px) {
+		.live-explorer :global(.mode-label) {
+			display: none;
+		}
 	}
 </style>

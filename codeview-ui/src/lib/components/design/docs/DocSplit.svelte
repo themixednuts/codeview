@@ -123,7 +123,9 @@
 
 {#snippet splitFrame(sourceContent: string | null, repoUrl: string | null)}
 	<div class="doc-split grid min-h-full grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(480px,44%)]">
-		<article class="min-w-0 overflow-y-auto px-6 py-7 sm:px-8 xl:border-r xl:border-(--panel-border-soft)">
+		<article
+			class="min-w-0 overflow-y-auto px-4 py-5 sm:px-8 sm:py-7 xl:border-r xl:border-(--panel-border-soft)"
+		>
 			<DocArticle
 				{detail}
 				{ancestors}
@@ -172,12 +174,14 @@
 						lang={langFromFile(displayFile)}
 						{theme}
 						startLine={1}
-						highlightLines={highlightLines}
+						{highlightLines}
 						showLineNumbers={true}
 						variant="flat"
 					/>
 				{:else}
-					<div class="flex h-full min-h-[280px] items-center justify-center gap-2 p-6 text-sm text-(--muted)">
+					<div
+						class="flex h-full min-h-[280px] items-center justify-center gap-2 p-6 text-sm text-(--muted)"
+					>
 						<LoaderCircleIcon class="animate-spin" size={14} />
 						<span>Loading source...</span>
 					</div>

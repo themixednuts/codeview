@@ -24,6 +24,8 @@ export interface FormattedSignature {
 }
 
 const INDENT = '    ';
+type ItemField = NonNullable<Node['fields']>[number];
+type ItemVariant = NonNullable<Node['variants']>[number];
 
 /**
  * Format `node` as a Rust fn signature in both inline and multiline forms.
@@ -40,9 +42,7 @@ const INDENT = '    ';
  * `node.signature` may be `null` (non-function nodes); in that case both
  * forms are the bare `fn <name>()` shape.
  */
-export function formatSignature(
-	node: Pick<Node, 'name' | 'signature'>,
-): FormattedSignature {
+export function formatSignature(node: Pick<Node, 'name' | 'signature'>): FormattedSignature {
 	const sig = node.signature;
 	const headerParts: string[] = [];
 	if (sig?.is_const) headerParts.push('const');
@@ -90,6 +90,98 @@ function visibilityPrefix(visibility: Visibility | undefined): string {
 	}
 }
 
+function fieldDeclaration(field: ItemField, includeName: boolean): string {
+	const name = includeName ? `${field.name}: ` : '';
+	return `${visibilityPrefix(field.visibility)}${name}${renderTypeText(field.type)}`;
+}
+
+function isTupleFields(fields: readonly ItemField[]): boolean {
+	return fields.length > 0 && fields.every((field) => /^\d+$/.test(field.name));
+}
+
+function variantDeclaration(variant: ItemVariant, multiline: boolean): string {
+	if (variant.fields.length === 0) return variant.name;
+	if (isTupleFields(variant.fields)) {
+		return `${variant.name}(${variant.fields
+			.map((field) => fieldDeclaration(field, false))
+			.join(', ')})`;
+	}
+	if (!multiline) {
+		return `${variant.name} { ${variant.fields
+			.map((field) => fieldDeclaration(field, true))
+			.join(', ')} }`;
+	}
+	return `${variant.name} {\n${variant.fields
+		.map((field) => `${INDENT}${fieldDeclaration(field, true)},`)
+		.join('\n')}\n}`;
+}
+
+function formatRecordDeclaration(node: Node, keyword: 'struct' | 'union'): FormattedSignature {
+	const head = `${visibilityPrefix(node.visibility)}${keyword} ${node.name}${renderGenericParams(node.generics)}`;
+	const where = renderWhereClause(node.generics);
+	const whereBeforeBody = where ? ` ${where}` : '';
+	const fields = node.fields ?? [];
+
+	if (keyword === 'struct' && isTupleFields(fields)) {
+		const inlineFields = fields.map((field) => fieldDeclaration(field, false)).join(', ');
+		const multilineFields = fields
+			.map((field) => `${INDENT}${fieldDeclaration(field, false)},`)
+			.join('\n');
+		return {
+			inline: `${head}(${inlineFields})${whereBeforeBody};`,
+			multiline: `${head}(\n${multilineFields}\n)${whereBeforeBody};`,
+		};
+	}
+
+	const members = fields.map((field) => fieldDeclaration(field, true));
+	if (node.has_stripped_fields) members.push('/* private fields */');
+	if (members.length === 0) {
+		return {
+			inline: `${head}${whereBeforeBody} {}`,
+			multiline: `${head}${whereBeforeBody} {}`,
+		};
+	}
+
+	return {
+		inline: `${head}${whereBeforeBody} { ${members.join(', ')} }`,
+		multiline: `${head}${whereBeforeBody} {\n${members
+			.map((member) => `${INDENT}${member}${member.startsWith('/*') ? '' : ','}`)
+			.join('\n')}\n}`,
+	};
+}
+
+function formatEnumDeclaration(node: Node): FormattedSignature {
+	const head = `${visibilityPrefix(node.visibility)}enum ${node.name}${renderGenericParams(node.generics)}`;
+	const where = renderWhereClause(node.generics);
+	const whereBeforeBody = where ? ` ${where}` : '';
+	const variants = node.variants ?? [];
+	const inlineMembers = variants.map((variant) => variantDeclaration(variant, false));
+	const multilineMembers = variants.map((variant) => variantDeclaration(variant, true));
+	if (node.has_stripped_variants) {
+		inlineMembers.push('/* private variants */');
+		multilineMembers.push('/* private variants */');
+	}
+	if (inlineMembers.length === 0) {
+		return {
+			inline: `${head}${whereBeforeBody} {}`,
+			multiline: `${head}${whereBeforeBody} {}`,
+		};
+	}
+
+	return {
+		inline: `${head}${whereBeforeBody} { ${inlineMembers.join(', ')} }`,
+		multiline: `${head}${whereBeforeBody} {\n${multilineMembers
+			.map(
+				(member) =>
+					member
+						.split('\n')
+						.map((line) => `${INDENT}${line}`)
+						.join('\n') + (member.startsWith('/*') ? '' : ','),
+			)
+			.join('\n')}\n}`,
+	};
+}
+
 /** Kinds that `formatItemDeclaration` knows how to render. */
 const DECLARABLE_KINDS: ReadonlySet<NodeKind> = new Set<NodeKind>([
 	'Struct',
@@ -127,17 +219,11 @@ export function formatItemDeclaration(node: Node): FormattedSignature | null {
 
 	switch (node.kind) {
 		case 'Struct':
-		case 'Union': {
-			const kw = node.kind === 'Struct' ? 'struct' : 'union';
-			const head = `${pub}${kw} ${node.name}${params}`;
-			const body = whereSuffix ? `${whereSuffix} {}` : ' {}';
-			return { inline: `${head}${body}`, multiline: `${head}${body}` };
-		}
-		case 'Enum': {
-			const head = `${pub}enum ${node.name}${params}`;
-			const body = whereSuffix ? `${whereSuffix} {}` : ' {}';
-			return { inline: `${head}${body}`, multiline: `${head}${body}` };
-		}
+			return formatRecordDeclaration(node, 'struct');
+		case 'Union':
+			return formatRecordDeclaration(node, 'union');
+		case 'Enum':
+			return formatEnumDeclaration(node);
 		case 'Trait': {
 			const bounds =
 				node.bounds && node.bounds.length > 0

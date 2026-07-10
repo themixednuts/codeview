@@ -163,11 +163,59 @@ describe('formatItemDeclaration', () => {
 		expect(result?.inline).toBe('pub struct Vec<T> {}');
 	});
 
+	it('renders named and private struct fields in the declaration', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'Drain',
+				kind: 'Struct',
+				fields: [{ name: 'remaining', visibility: pub, type: prim('usize') }],
+				has_stripped_fields: true,
+			}),
+		);
+		expect(result?.multiline).toBe(
+			'pub struct Drain {\n    pub remaining: usize,\n    /* private fields */\n}',
+		);
+	});
+
+	it('renders tuple struct fields without numeric field names', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'Pair',
+				kind: 'Struct',
+				fields: [
+					{ name: '0', visibility: pub, type: prim('u8') },
+					{ name: '1', visibility: crateVis, type: prim('u16') },
+				],
+			}),
+		);
+		expect(result?.inline).toBe('pub struct Pair(pub u8, pub(crate) u16);');
+	});
+
 	it('renders a pub(crate) enum declaration', () => {
 		const result = formatItemDeclaration(
 			node({ name: 'Color', kind: 'Enum', visibility: crateVis }),
 		);
 		expect(result?.inline).toBe('pub(crate) enum Color {}');
+	});
+
+	it('renders enum variants and stripped variants in the declaration', () => {
+		const result = formatItemDeclaration(
+			node({
+				name: 'Choice',
+				kind: 'Enum',
+				variants: [
+					{ name: 'None', fields: [] },
+					{
+						name: 'Some',
+						fields: [{ name: '0', visibility: pub, type: prim('u8') }],
+					},
+				],
+				has_stripped_variants: true,
+			}),
+		);
+		expect(result?.multiline).toBe(
+			'pub enum Choice {\n    None,\n    Some(pub u8),\n    /* private variants */\n}',
+		);
 	});
 
 	it('renders an unsafe auto trait with supertrait bounds', () => {
@@ -178,7 +226,11 @@ describe('formatItemDeclaration', () => {
 				is_unsafe: true,
 				is_auto: true,
 				bounds: [
-					{ kind: 'Trait', trait: { kind: 'ResolvedPath', id: 'Sized', path: 'Sized' }, modifier: 'none' },
+					{
+						kind: 'Trait',
+						trait: { kind: 'ResolvedPath', id: 'Sized', path: 'Sized' },
+						modifier: 'none',
+					},
 				],
 			}),
 		);

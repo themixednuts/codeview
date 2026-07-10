@@ -30,7 +30,7 @@
 </script>
 
 <div
-	class="doc-classic mx-auto grid min-h-full w-full max-w-[1180px] grid-cols-1 gap-8 px-6 py-6 md:px-8 xl:grid-cols-[minmax(0,1fr)_220px]"
+	class="doc-classic mx-auto grid min-h-full w-full max-w-[1180px] grid-cols-1 gap-8 px-4 py-5 sm:px-6 sm:py-6 md:px-8 xl:grid-cols-[minmax(0,1fr)_220px]"
 >
 	<article class="min-w-0">
 		<DocArticle
@@ -47,11 +47,7 @@
 	</article>
 
 	<aside class="hidden min-w-0 xl:block" aria-label="Documentation table of contents">
-		<DocToc
-			entries={model.tocEntries}
-			{openGraphHref}
-			nodeId={detail.node.id}
-		/>
+		<DocToc entries={model.tocEntries} {openGraphHref} nodeId={detail.node.id} />
 	</aside>
 </div>
 

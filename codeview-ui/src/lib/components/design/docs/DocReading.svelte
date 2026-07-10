@@ -25,7 +25,7 @@
 </script>
 
 <div class="doc-reading min-h-full overflow-y-auto">
-	<article class="mx-auto min-h-full w-full max-w-[760px] px-6 py-12 sm:px-8">
+	<article class="mx-auto min-h-full w-full max-w-[760px] px-4 py-6 sm:px-8 sm:py-10 lg:py-12">
 		<DocArticle
 			{detail}
 			{ancestors}

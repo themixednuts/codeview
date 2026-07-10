@@ -336,6 +336,7 @@
 				{requiredTraitMethods}
 				{providedTraitMethods}
 				{traitAssocItems}
+				crateItems={detailModel.crateItems}
 				{kindLabels}
 				{displayNode}
 				{implementers}
@@ -360,6 +361,7 @@
 						{requiredTraitMethods}
 						{providedTraitMethods}
 						{traitAssocItems}
+						crateItems={detailModel.crateItems}
 						{kindLabels}
 						{displayNode}
 						{implementers}

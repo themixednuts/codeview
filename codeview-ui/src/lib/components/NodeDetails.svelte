@@ -1,12 +1,7 @@
 <script lang="ts">
 	import type { Node, NodeKind, Visibility } from '$lib/graph';
 	import { isPublic, visibilityLabel } from '$lib/display-names';
-	import type {
-		GenericBound,
-		GenericParam,
-		TypeRef,
-		WherePredicate,
-	} from '$lib/schema';
+	import type { GenericBound, GenericParam, TypeRef, WherePredicate } from '$lib/schema';
 
 	/** Final segment of a `::`-separated path. `std::vec::Vec` → `Vec`. */
 	function pathTail(path: string): string {
@@ -18,6 +13,7 @@
 	import { kindColors } from '$lib/tree';
 	import { externalDocsUrl } from '$lib/docs';
 	import { formatItemDeclaration } from '$lib/signature-format';
+	import { renderMarkdown } from '$lib/highlight/markdown';
 	import { renderTypeText } from '$lib/type-render';
 	import Documentation from './Documentation.svelte';
 	import CodeBlock from './CodeBlock.svelte';
@@ -34,6 +30,11 @@
 		impl: Node;
 		methods: Node[];
 	};
+	type CrateItemGroup = {
+		kind: NodeKind;
+		label: string;
+		items: Node[];
+	};
 
 	let {
 		selected,
@@ -44,6 +45,7 @@
 		requiredTraitMethods = [],
 		providedTraitMethods = [],
 		traitAssocItems = [],
+		crateItems = [],
 		kindLabels,
 		displayNode,
 		implementers = [],
@@ -64,6 +66,7 @@
 		requiredTraitMethods?: Node[];
 		providedTraitMethods?: Node[];
 		traitAssocItems?: Node[];
+		crateItems?: Node[];
 		kindLabels: Record<NodeKind, string>;
 		displayNode: (id: string) => string;
 		implementers?: { id: string; name: string }[];
@@ -98,6 +101,18 @@
 	/** Canonical rustfmt-style declaration for the selected item.
 	 *  Falls back to null for kinds without a meaningful declaration. */
 	const itemDeclaration = $derived(selected ? formatItemDeclaration(selected) : null);
+	const crateItemGroups = $derived.by(() => {
+		const groups: CrateItemGroup[] = [];
+		for (const item of crateItems) {
+			let group = groups.find((candidate) => candidate.kind === item.kind);
+			if (!group) {
+				group = { kind: item.kind, label: crateItemGroupLabel(item.kind), items: [] };
+				groups.push(group);
+			}
+			group.items.push(item);
+		}
+		return groups;
+	});
 
 	function safeVisibility(node: Node | null): Visibility {
 		const raw = node as unknown;
@@ -242,6 +257,45 @@
 		}
 	}
 
+	function crateItemGroupLabel(kind: NodeKind): string {
+		switch (kind) {
+			case 'Module':
+				return 'Modules';
+			case 'Struct':
+				return 'Structs';
+			case 'Enum':
+				return 'Enums';
+			case 'Union':
+				return 'Unions';
+			case 'Trait':
+				return 'Traits';
+			case 'TraitAlias':
+				return 'Trait aliases';
+			case 'Function':
+				return 'Functions';
+			case 'TypeAlias':
+				return 'Type aliases';
+			case 'Constant':
+				return 'Constants';
+			case 'Static':
+				return 'Statics';
+			case 'Macro':
+				return 'Macros';
+			case 'ProcMacro':
+				return 'Procedural macros';
+			case 'Primitive':
+				return 'Primitive types';
+			default:
+				return kindLabels[kind] ?? kind;
+		}
+	}
+
+	function docsSummary(docs: string | null | undefined): string | null {
+		if (!docs) return null;
+		const paragraph = docs.split(/\n\s*\n/, 1)[0]?.trim();
+		return paragraph ? renderMarkdown(paragraph) : null;
+	}
+
 	/** Visibility keyword prefix for a field (`pub ` / `pub(crate) ` / ``). */
 	function fieldVisPrefix(vis: Visibility | undefined): string {
 		const raw = vis as { kind?: string; path?: string } | undefined;
@@ -258,29 +312,33 @@
 	}
 
 	/** Render struct/union fields as a clean Rust source block (docs.rs style). */
-	function fieldsToRust(fields: { name: string; type: TypeRef; visibility: Visibility }[]): string {
-		return fields
-			.map((f) => `${fieldVisPrefix(f.visibility)}${f.name}: ${renderTypeText(f.type)},`)
-			.join('\n');
+	function fieldToRust(field: { name: string; type: TypeRef; visibility: Visibility }): string {
+		return /^\d+$/.test(field.name)
+			? `${fieldVisPrefix(field.visibility)}${renderTypeText(field.type)}`
+			: `${fieldVisPrefix(field.visibility)}${field.name}: ${renderTypeText(field.type)}`;
 	}
 
-	/** Render enum variants as a clean Rust source block (docs.rs style). */
-	function variantsToRust(
-		variants: { name: string; fields: { name: string; type: TypeRef }[] }[],
-	): string {
-		return variants
-			.map((v) => {
-				if (v.fields.length === 0) return `${v.name},`;
-				if (isTupleVariant(v.fields)) {
-					const types = v.fields.map((f) => renderTypeText(f.type)).join(', ');
-					return `${v.name}(${types}),`;
-				}
-				const body = v.fields
-					.map((f) => `${f.name}: ${renderTypeText(f.type)},`)
-					.join('\n    ');
-				return `${v.name} {\n    ${body}\n},`;
-			})
-			.join('\n');
+	/** Render one enum variant as Rust source for its documented row. */
+	function variantToRust(variant: {
+		name: string;
+		fields: { name: string; type: TypeRef; visibility: Visibility }[];
+	}): string {
+		if (variant.fields.length === 0) return variant.name;
+		if (isTupleVariant(variant.fields)) {
+			const types = variant.fields.map((field) => fieldToRust(field)).join(', ');
+			return `${variant.name}(${types})`;
+		}
+		const body = variant.fields
+			.map(
+				(field) =>
+					`${fieldVisPrefix(field.visibility)}${field.name}: ${renderTypeText(field.type)},`,
+			)
+			.join('\n    ');
+		return `${variant.name} {\n    ${body}\n}`;
+	}
+
+	function childNode(name: string): Node | undefined {
+		return selected ? nodeMeta?.(`${selected.id}::${name}`) : undefined;
 	}
 
 	function traitImplGroup(implId: string): MethodGroup | undefined {
@@ -329,7 +387,6 @@
 		const wrappedArgs = args.map((arg) => `${indent}${arg}`).join(',\n');
 		return `${prefix}<\n${wrappedArgs},\n>${suffix}`;
 	}
-
 </script>
 
 {#snippet idLink(id: string, display: string)}
@@ -364,53 +421,68 @@
 		{@render idLink(t.id, pathTail(t.path))}
 		{#if t.args}{@render genericArgs(t.args)}{/if}
 	{:else if t.kind === 'DynTrait'}
-		<span class="text-(--muted)">dyn </span>
+		<span class="text-(--muted)">dyn</span>
 		{#each t.traits as poly, i (i)}
-			{#if i > 0}<span class="text-(--muted)"> + </span>{/if}
+			{#if i > 0}<span class="text-(--muted)">+</span>{/if}
 			{@render typeContent(poly.trait)}
 		{/each}
-		{#if t.lifetime}<span class="text-(--muted)"> + {t.lifetime}</span>{/if}
+		{#if t.lifetime}<span class="text-(--muted)">+ {t.lifetime}</span>{/if}
 	{:else if t.kind === 'Generic'}
 		<span class="token-name">{t.name}</span>
 	{:else if t.kind === 'Primitive'}
 		<span class="token-name">{t.name}</span>
 	{:else if t.kind === 'BorrowedRef'}
-		<span class="text-(--muted)">&{t.lifetime ? `${t.lifetime} ` : ''}{t.mutable ? 'mut ' : ''}</span>
+		<span class="text-(--muted)">
+			&{t.lifetime ? `${t.lifetime} ` : ''}{t.mutable ? 'mut ' : ''}
+		</span>
 		{@render typeContent(t.inner)}
 	{:else if t.kind === 'Tuple'}
 		<span class="text-(--muted)">(</span>
 		{#each t.elements as el, i (i)}
-			{#if i > 0}<span class="text-(--muted)">, </span>{/if}
+			{#if i > 0}<span class="text-(--muted)">,</span>{/if}
 			{@render typeContent(el)}
 		{/each}{#if t.elements.length === 1}<span class="text-(--muted)">,</span>{/if}
 		<span class="text-(--muted)">)</span>
 	{:else if t.kind === 'Slice'}
-		<span class="text-(--muted)">[</span>{@render typeContent(t.element)}<span class="text-(--muted)">]</span>
+		<span class="text-(--muted)">[</span>
+		{@render typeContent(t.element)}
+		<span class="text-(--muted)">]</span>
 	{:else if t.kind === 'Array'}
-		<span class="text-(--muted)">[</span>{@render typeContent(t.element)}<span class="text-(--muted)">; {t.len}]</span>
+		<span class="text-(--muted)">[</span>
+		{@render typeContent(t.element)}
+		<span class="text-(--muted)">; {t.len}]</span>
 	{:else if t.kind === 'ImplTrait'}
-		<span class="text-(--muted)">impl </span>
+		<span class="text-(--muted)">impl</span>
 		{#each t.bounds as b, i (i)}
-			{#if i > 0}<span class="text-(--muted)"> + </span>{/if}
+			{#if i > 0}<span class="text-(--muted)">+</span>{/if}
 			{@render boundContent(b)}
 		{/each}
 	{:else if t.kind === 'RawPointer'}
-		<span class="text-(--muted)">*{t.mutable ? 'mut ' : 'const '}</span>{@render typeContent(t.inner)}
+		<span class="text-(--muted)">*{t.mutable ? 'mut ' : 'const '}</span>
+		{@render typeContent(t.inner)}
 	{:else if t.kind === 'QualifiedPath'}
-		<span class="text-(--muted)">&lt;</span>{@render typeContent(t.self_type)}{#if t.trait}<span class="text-(--muted)"> as </span>{@render typeContent(t.trait)}{/if}<span class="text-(--muted)">&gt;::</span><span class="token-name">{t.name}</span>{#if t.args}{@render genericArgs(t.args)}{/if}
+		<span class="text-(--muted)">&lt;</span>
+		{@render typeContent(t.self_type)}{#if t.trait}<span class="text-(--muted)">as</span>
+			{@render typeContent(t.trait)}{/if}
+		<span class="text-(--muted)">&gt;::</span>
+		<span class="token-name">{t.name}</span>
+		{#if t.args}{@render genericArgs(t.args)}{/if}
 	{:else if t.kind === 'FunctionPointer'}
 		<span class="text-(--muted)">fn(</span>
 		{#each t.sig.inputs as inp, i (i)}
-			{#if i > 0}<span class="text-(--muted)">, </span>{/if}
-			{#if inp.name}<span class="token-name">{inp.name}</span><span class="text-(--muted)">: </span>{/if}
+			{#if i > 0}<span class="text-(--muted)">,</span>{/if}
+			{#if inp.name}<span class="token-name">{inp.name}</span>
+				<span class="text-(--muted)">:</span>{/if}
 			{@render typeContent(inp.type)}
 		{/each}
 		<span class="text-(--muted)">)</span>
-		{#if t.sig.output}<span class="text-(--muted)"> -&gt; </span>{@render typeContent(t.sig.output)}{/if}
+		{#if t.sig.output}<span class="text-(--muted)">-&gt;</span>
+			{@render typeContent(t.sig.output)}{/if}
 	{:else if t.kind === 'Infer'}
 		<span class="token-name">_</span>
 	{:else if t.kind === 'Pat'}
-		{@render typeContent(t.base)}<span class="text-(--muted)"> is {t.pat}</span>
+		{@render typeContent(t.base)}
+		<span class="text-(--muted)">is {t.pat}</span>
 	{/if}
 {/snippet}
 
@@ -420,7 +492,7 @@
 		{#if allParts > 0}
 			<Icon name="chevron-left" class="generic-bracket" size={14} strokeWidth={2.5} />
 			{#each args.args as arg, i (i)}
-				{#if i > 0}<span class="generic-sep">, </span>{/if}
+				{#if i > 0}<span class="generic-sep">,</span>{/if}
 				{#if arg.kind === 'Type'}
 					{@render typeContent(arg.value)}
 				{:else if arg.kind === 'Lifetime'}
@@ -433,15 +505,17 @@
 			{/each}
 			{#if args.constraints && args.constraints.length > 0}
 				{#each args.constraints as c, i (i)}
-					{#if args.args.length > 0 || i > 0}<span class="generic-sep">, </span>{/if}
+					{#if args.args.length > 0 || i > 0}<span class="generic-sep">,</span>{/if}
 					<span class="token-name">{c.name}</span>
 					{#if c.binding.kind === 'Equality'}
-						<span class="text-(--muted)"> = </span>
-						{#if c.binding.value.kind === 'Type'}{@render typeContent(c.binding.value.value)}{:else}<span class="token-name">{c.binding.value.expr}</span>{/if}
+						<span class="text-(--muted)">=</span>
+						{#if c.binding.value.kind === 'Type'}{@render typeContent(
+								c.binding.value.value,
+							)}{:else}<span class="token-name">{c.binding.value.expr}</span>{/if}
 					{:else}
-						<span class="text-(--muted)">: </span>
+						<span class="text-(--muted)">:</span>
 						{#each c.binding.bounds as b, j (j)}
-							{#if j > 0}<span class="text-(--muted)"> + </span>{/if}
+							{#if j > 0}<span class="text-(--muted)">+</span>{/if}
 							{@render boundContent(b)}
 						{/each}
 					{/if}
@@ -452,49 +526,54 @@
 	{:else if args.kind === 'Parenthesized'}
 		<span class="text-(--muted)">(</span>
 		{#each args.inputs as inp, i (i)}
-			{#if i > 0}<span class="text-(--muted)">, </span>{/if}
+			{#if i > 0}<span class="text-(--muted)">,</span>{/if}
 			{@render typeContent(inp)}
 		{/each}
 		<span class="text-(--muted)">)</span>
-		{#if args.output}<span class="text-(--muted)"> -&gt; </span>{@render typeContent(args.output)}{/if}
+		{#if args.output}<span class="text-(--muted)">-&gt;</span>
+			{@render typeContent(args.output)}{/if}
 	{/if}
 {/snippet}
 
 {#snippet boundContent(b: GenericBound)}
 	{#if b.kind === 'Trait'}
 		{#if b.modifier === 'maybe'}<span class="text-(--muted)">?</span>{/if}
-		{#if b.modifier === 'maybe_const'}<span class="text-(--muted)">~const </span>{/if}
+		{#if b.modifier === 'maybe_const'}<span class="text-(--muted)">~const</span>{/if}
 		{@render typeContent(b.trait)}
 	{:else if b.kind === 'Outlives'}
 		<span class="token-name">{b.lifetime}</span>
 	{:else if b.kind === 'Use'}
 		<span class="text-(--muted)">use&lt;</span>
-		{#each b.captures as c, i (i)}{#if i > 0}<span class="text-(--muted)">, </span>{/if}<span class="token-name">{c.name}</span>{/each}
+		{#each b.captures as c, i (i)}{#if i > 0}<span class="text-(--muted)">,</span>{/if}
+			<span class="token-name">{c.name}</span>{/each}
 		<span class="text-(--muted)">&gt;</span>
 	{/if}
 {/snippet}
 
 {#snippet paramBadge(p: GenericParam, strong: boolean)}
 	<code class="badge {strong ? 'badge-strong' : ''} badge-code">
-		{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const </span>{/if}
+		{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const</span>{/if}
 		<span class="token-name">{p.name}</span>
 		{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}
-			<span class="text-(--muted)">: </span>
+			<span class="text-(--muted)">:</span>
 			{#each p.kind.bounds as b, i (i)}
-				{#if i > 0}<span class="text-(--muted)"> + </span>{/if}
+				{#if i > 0}<span class="text-(--muted)">+</span>{/if}
 				{@render boundContent(b)}
 			{/each}
 		{/if}
 		{#if p.kind.kind === 'Lifetime' && p.kind.outlives && p.kind.outlives.length > 0}
-			<span class="text-(--muted)">: </span>
-			{#each p.kind.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)"> + </span>{/if}<span class="token-name">{lt}</span>{/each}
+			<span class="text-(--muted)">:</span>
+			{#each p.kind.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
+				<span class="token-name">{lt}</span>{/each}
 		{/if}
 		{#if p.kind.kind === 'Const'}
-			<span class="text-(--muted)">: </span>{@render typeContent(p.kind.type)}
-			{#if p.kind.default}<span class="text-(--muted)"> = {p.kind.default}</span>{/if}
+			<span class="text-(--muted)">:</span>
+			{@render typeContent(p.kind.type)}
+			{#if p.kind.default}<span class="text-(--muted)">= {p.kind.default}</span>{/if}
 		{/if}
 		{#if p.kind.kind === 'Type' && p.kind.default}
-			<span class="text-(--muted)"> = </span>{@render typeContent(p.kind.default)}
+			<span class="text-(--muted)">=</span>
+			{@render typeContent(p.kind.default)}
 		{/if}
 	</code>
 {/snippet}
@@ -503,16 +582,23 @@
 	<code class="badge badge-code">
 		{#if pred.kind === 'Bound'}
 			{@render typeContent(pred.type)}
-			<span class="text-(--muted)">: </span>
-			{#each pred.bounds as b, i (i)}{#if i > 0}<span class="text-(--muted)"> + </span>{/if}{@render boundContent(b)}{/each}
+			<span class="text-(--muted)">:</span>
+			{#each pred.bounds as b, i (i)}{#if i > 0}<span class="text-(--muted)">
+						+
+					</span>{/if}{@render boundContent(b)}{/each}
 		{:else if pred.kind === 'Lifetime'}
 			<span class="token-name">{pred.lifetime}</span>
-			<span class="text-(--muted)">: </span>
-			{#each pred.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)"> + </span>{/if}<span class="token-name">{lt}</span>{/each}
+			<span class="text-(--muted)">:</span>
+			{#each pred.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
+				<span class="token-name">{lt}</span>{/each}
 		{:else if pred.kind === 'Eq'}
 			{@render typeContent(pred.lhs)}
-			<span class="text-(--muted)"> = </span>
-			{#if pred.rhs.kind === 'Type'}{@render typeContent(pred.rhs.value)}{:else}<span class="token-name">{pred.rhs.expr}</span>{/if}
+			<span class="text-(--muted)">=</span>
+			{#if pred.rhs.kind === 'Type'}{@render typeContent(pred.rhs.value)}{:else}<span
+					class="token-name"
+				>
+					{pred.rhs.expr}
+				</span>{/if}
 		{/if}
 	</code>
 {/snippet}
@@ -600,9 +686,7 @@
 {/snippet}
 
 {#snippet attributesPanel(attrs: string[])}
-	<details
-		class="mt-3 rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2"
-	>
+	<details class="mt-3 rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 		<summary
 			class="cursor-pointer text-xs font-semibold tracking-wider text-(--muted) uppercase select-none"
 		>
@@ -646,7 +730,7 @@
 		{#if member.signature}
 			<SignatureBlock node={member} {theme} variant="flat" />
 		{:else if member.type}
-			<div class="flex flex-wrap items-baseline gap-2 font-(--font-code) text-sm">
+			<div class="flex flex-wrap items-baseline gap-2 text-sm font-(--font-code)">
 				{#if member.kind === 'AssocConst' || member.kind === 'Constant'}
 					<span class="text-(--muted)">const</span>
 					<code class="text-(--ink)">{member.name}</code>
@@ -715,17 +799,17 @@
 		     shown once, in the breadcrumb sub-nav, so we don't repeat it
 		     here (the old header listed the path three times). -->
 		<div class="doc-title-header mb-5">
-			<div class="flex items-baseline gap-3 flex-wrap">
+			<div class="flex flex-wrap items-baseline gap-3">
 				<span
 					class="kind-label"
 					style="color: {kindColors[selectedKind]}"
-					aria-label="{kindLabels[selected.kind]}"
+					aria-label={kindLabels[selected.kind]}
 				>
 					<span class="kind-label-bar" style="background: {kindColors[selectedKind]}"></span>
 					{kindLabels[selected.kind]}
 				</span>
 				<h1
-					class="font-display text-[32px] font-semibold leading-tight tracking-tight text-(--ink) {selected.is_deprecated
+					class="doc-item-title font-display min-w-0 text-[28px] leading-tight font-semibold tracking-tight break-words text-(--ink) sm:text-[32px] {selected.is_deprecated
 						? 'line-through opacity-80'
 						: ''}"
 				>
@@ -739,7 +823,7 @@
 						Deprecated
 					</span>
 				{/if}
-				<div class="ml-auto flex items-center gap-1">
+				<div class="doc-title-actions ml-auto flex items-center gap-1">
 					{#if selected?.span?.file}
 						<span class="source-pill-wrap" title="View source">
 							<Icon name="file-code" size={13} strokeWidth={2} />
@@ -806,7 +890,7 @@
 				{#if selected.signature}
 					<SignatureBlock node={selected} {theme} />
 				{:else}
-					<CodeBlock code={itemDeclaration.inline} lang="rust" {theme} variant="flat" />
+					<CodeBlock code={itemDeclaration.multiline} lang="rust" {theme} variant="flat" />
 				{/if}
 			</div>
 		{/if}
@@ -826,18 +910,40 @@
 					class="section-header mt-7 mb-3 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
 				>
 					<span class="section-bar" style="background: {kindColors.StructField}"></span>
-					<h2 class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)">
+					<h2
+						class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
 						Fields
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{selected.fields.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{selected.fields.length}
+					</span>
 				</div>
-				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)">
-					<CodeBlock
-						code={fieldsToRust(selected.fields)}
-						lang="rust"
-						{theme}
-						variant="flat"
-					/>
+				<div
+					class="corner-squircle divide-y divide-(--panel-border) overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)"
+				>
+					{#each selected.fields as field (field.name)}
+						{@const fieldNode = childNode(field.name)}
+						<article class="px-3 py-3 [contain-intrinsic-size:auto_72px] [content-visibility:auto]">
+							<div
+								class="overflow-hidden rounded-(--radius-control) border border-(--panel-border-soft)"
+							>
+								<CodeBlock code={fieldToRust(field)} lang="rust" {theme} variant="flat" />
+							</div>
+							{#if fieldNode?.docs}
+								<div class="mt-3 text-sm text-(--muted)">
+									<Documentation
+										docs={fieldNode.docs}
+										defaultLang="rust"
+										{theme}
+										docLinks={fieldNode.doc_links ?? {}}
+										{getNodeUrl}
+										{nodeExists}
+									/>
+								</div>
+							{/if}
+						</article>
+					{/each}
 				</div>
 			</section>
 		{/if}
@@ -849,18 +955,45 @@
 					class="section-header mt-7 mb-3 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
 				>
 					<span class="section-bar" style="background: {kindColors.Variant}"></span>
-					<h2 class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)">
+					<h2
+						class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
 						Variants
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{selected.variants.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{selected.variants.length}
+					</span>
 				</div>
-				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)">
-					<CodeBlock
-						code={variantsToRust(selected.variants)}
-						lang="rust"
-						{theme}
-						variant="flat"
-					/>
+				<div
+					class="corner-squircle divide-y divide-(--panel-border) overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid)"
+				>
+					{#each selected.variants as variant (variant.name)}
+						{@const variantNode = childNode(variant.name)}
+						<article class="px-3 py-3 [contain-intrinsic-size:auto_88px] [content-visibility:auto]">
+							<div
+								class="overflow-hidden rounded-(--radius-control) border border-(--panel-border-soft)"
+							>
+								<CodeBlock
+									code={`${variantToRust(variant)}${variantNode?.discriminant ? ` = ${variantNode.discriminant}` : ''}`}
+									lang="rust"
+									{theme}
+									variant="flat"
+								/>
+							</div>
+							{#if variantNode?.docs}
+								<div class="mt-3 text-sm text-(--muted)">
+									<Documentation
+										docs={variantNode.docs}
+										defaultLang="rust"
+										{theme}
+										docLinks={variantNode.doc_links ?? {}}
+										{getNodeUrl}
+										{nodeExists}
+									/>
+								</div>
+							{/if}
+						</article>
+					{/each}
 				</div>
 			</section>
 		{/if}
@@ -927,6 +1060,70 @@
 			</section>
 		{/if}
 
+		{#if selectedKind === 'Crate' && crateItemGroups.length > 0}
+			<section id="crate-items" class="doc-section group">
+				<div
+					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+				>
+					<span class="section-bar" style="background: {kindColors.Module}"></span>
+					<h2
+						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+					>
+						Public API
+					</h2>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{crateItems.length}
+					</span>
+				</div>
+				<div class="space-y-7">
+					{#each crateItemGroups as group (group.kind)}
+						<section aria-labelledby={`crate-items-${group.kind}`}>
+							<div class="mb-2 flex items-center gap-2">
+								<span
+									class="size-2 shrink-0 rounded-sm"
+									style={`background: ${kindColors[group.kind]}`}
+								></span>
+								<h3 id={`crate-items-${group.kind}`} class="text-sm font-semibold text-(--ink)">
+									{group.label}
+								</h3>
+								<span class="font-mono text-[10px] text-(--muted-soft)">{group.items.length}</span>
+							</div>
+							<div
+								class="divide-y divide-(--panel-border-soft) border-y border-(--panel-border-soft)"
+							>
+								{#each group.items as item (item.id)}
+									{@const summary = docsSummary(item.docs)}
+									<div
+										class="crate-item-row grid min-w-0 gap-1 py-2.5 sm:grid-cols-[minmax(8rem,0.38fr)_minmax(0,1fr)] sm:gap-4"
+									>
+										<a
+											href={nodeHref(item.id)}
+											data-sveltekit-noscroll
+											class="min-w-0 self-start font-mono text-[13px] font-semibold text-(--accent) underline-offset-2 hover:underline"
+										>
+											<span class="break-words">{item.name}</span>
+										</a>
+										{#if summary}
+											<div
+												class="crate-item-summary min-w-0 text-[13px] leading-relaxed text-(--muted)"
+											>
+												<!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown renderer escapes raw HTML -->
+												{@html summary}
+											</div>
+										{:else}
+											<span class="text-[12px] text-(--muted-soft)">
+												No documentation provided.
+											</span>
+										{/if}
+									</div>
+								{/each}
+							</div>
+						</section>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 		<!-- Trait definition: associated types/consts, required methods, provided methods.
 		     Uses the same member-row rendering as trait-impl blocks so signatures + docs
 		     show with their own body (docs.rs style). -->
@@ -941,9 +1138,13 @@
 					>
 						Associated items
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{traitAssocItems.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{traitAssocItems.length}
+					</span>
 				</div>
-				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)">
+				<div
+					class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)"
+				>
 					{#each traitAssocItems as member, index (member.id)}
 						{@render implMemberRow(member, index)}
 					{/each}
@@ -962,9 +1163,13 @@
 					>
 						Required methods
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{requiredTraitMethods.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{requiredTraitMethods.length}
+					</span>
 				</div>
-				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)">
+				<div
+					class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)"
+				>
 					{#each requiredTraitMethods as member, index (member.id)}
 						{@render implMemberRow(member, index)}
 					{/each}
@@ -983,9 +1188,13 @@
 					>
 						Provided methods
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{providedTraitMethods.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{providedTraitMethods.length}
+					</span>
 				</div>
-				<div class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)">
+				<div
+					class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)"
+				>
 					{#each providedTraitMethods as member, index (member.id)}
 						{@render implMemberRow(member, index)}
 					{/each}
@@ -1005,7 +1214,9 @@
 					>
 						Methods
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{methodCountValue()}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{methodCountValue()}
+					</span>
 				</div>
 				<div class="space-y-6">
 					{#each methodGroups as group (group.impl.id)}
@@ -1119,7 +1330,9 @@
 					>
 						Trait implementations
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{sourceImpls.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{sourceImpls.length}
+					</span>
 				</div>
 				<div class="space-y-4">
 					<!-- Source (user-written) implementations -->
@@ -1144,11 +1357,11 @@
 									{@render implRow(implBlock)}
 								{/each}
 							</div>
-					</details>
-				{/if}
-			</div>
-		</section>
-	{/if}
+						</details>
+					{/if}
+				</div>
+			</section>
+		{/if}
 
 		<!-- Implementers — shown only on trait / trait-alias pages. The
 		     reviewer's suggestion: replace generic "incoming relationships"
@@ -1164,7 +1377,9 @@
 					>
 						Implementers
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">{implementers.length}</span>
+					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+						{implementers.length}
+					</span>
 				</div>
 				<ul class="flex flex-wrap gap-x-5 gap-y-1.5 font-mono text-sm">
 					{#each implementers as impl (impl.id)}
@@ -1186,7 +1401,6 @@
 				</ul>
 			</section>
 		{/if}
-
 	</div>
 {:else}
 	<p class="text-sm text-(--muted)">Select a node to view details</p>
@@ -1197,13 +1411,19 @@
 		.doc-title-header {
 			position: sticky;
 			top: 0;
-			z-index: 20;
+			z-index: 10;
 			margin-inline: -0.25rem;
 			padding: 0.85rem 0.25rem 0.75rem;
 			border-bottom: 1px solid var(--panel-border-soft);
-			background: color-mix(in srgb, var(--bg) 94%, transparent);
-			backdrop-filter: blur(12px);
-			-webkit-backdrop-filter: blur(12px);
+			background: var(--bg);
+		}
+	}
+
+	@media (max-width: 479.98px) {
+		.doc-title-actions {
+			width: 100%;
+			margin-left: 0;
+			justify-content: flex-end;
 		}
 	}
 
@@ -1240,7 +1460,14 @@
 		color: var(--ink-soft);
 		background: var(--panel);
 		border: 1px solid var(--panel-border-soft);
-		transition: color 0.12s, border-color 0.12s, background 0.12s;
+		transition:
+			color 0.12s,
+			border-color 0.12s,
+			background 0.12s;
+		min-width: 0;
+		max-width: 100%;
+		flex: 1 1 7rem;
+		overflow: hidden;
 	}
 	.source-pill-wrap:hover {
 		color: var(--accent);
@@ -1248,8 +1475,21 @@
 		background: var(--accent-soft);
 	}
 	.source-pill-wrap :global(.source-link) {
+		display: flex;
+		width: 100%;
+		min-width: 0;
+		overflow: hidden;
 		color: inherit;
 		font-size: inherit;
+	}
+	.source-pill-wrap :global(.source-link .token-name) {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.source-pill-wrap :global(.source-link .token-meta) {
+		flex-shrink: 0;
 	}
 	.source-pill-wrap :global(.source-link:hover) {
 		color: inherit;
@@ -1274,5 +1514,20 @@
 	.declaration-block {
 		border-radius: var(--radius-card, 10px);
 		overflow: hidden;
+	}
+
+	.crate-item-summary {
+		display: -webkit-box;
+		overflow: hidden;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
+	}
+	.crate-item-summary :global(p) {
+		margin: 0;
+	}
+	.crate-item-summary :global(code) {
+		font-family: var(--font-code);
+		font-size: 0.9em;
 	}
 </style>

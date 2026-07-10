@@ -1674,6 +1674,13 @@ fn build_graph_with_stats(
         Visibility::Public,
         !workspace_members.contains(crate_name),
     );
+    enrich_crate_node(
+        &mut graph,
+        krate,
+        crate_name,
+        &path_index,
+        &canonical_to_alias,
+    );
 
     for (item_id, summary) in &krate.paths {
         let is_method = method_ids.contains(item_id);
@@ -3764,6 +3771,40 @@ fn ensure_crate_node(
     node.is_external = is_external;
     graph.add_node(node);
     node_cache.insert(crate_name.to_string());
+}
+
+fn enrich_crate_node(
+    graph: &mut Graph,
+    krate: &rdt::Crate,
+    crate_name: &str,
+    path_index: &PathIndex,
+    canonical_to_alias: &HashMap<String, String>,
+) {
+    let Some(item) = krate.index.get(&krate.root) else {
+        return;
+    };
+    let Some(node) = graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == crate_name && node.kind == NodeKind::Crate)
+    else {
+        return;
+    };
+
+    let span = item.span.as_ref().map(map_span);
+    let details = extract_item_details(&krate.index, item);
+    let deprecation = map_deprecation(item.deprecation.as_ref());
+
+    node.line_count = line_count(&span);
+    node.span = span;
+    node.attrs = format_attributes(&item.attrs);
+    node.is_deprecated = deprecation.is_some();
+    node.is_stripped = details.is_stripped;
+    node.deprecation = deprecation;
+    node.stability = map_stability(item.stability.as_deref());
+    node.const_stability = map_stability(item.const_stability.as_deref());
+    node.docs = details.docs;
+    node.doc_links = extract_doc_links(item, krate, crate_name, path_index, canonical_to_alias);
 }
 
 fn ensure_module_nodes(
@@ -6657,6 +6698,47 @@ pub struct Small;
         assert_eq!(report.raw_items, 1);
         assert_eq!(report.local_path_items, 1);
         assert!(!report.is_quarantined());
+    }
+
+    #[test]
+    fn crate_root_preserves_rustdoc_module_metadata() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["docs"] =
+            serde_json::json!("Crate-level documentation with a [`fixture`] link.");
+        value["index"]["0"]["links"] = serde_json::json!({ "fixture": 0 });
+        value["index"]["0"]["attrs"] = serde_json::json!([{ "other": "#![no_std]" }]);
+        value["index"]["0"]["span"] = serde_json::json!({
+            "filename": "src/lib.rs",
+            "begin": [1, 0],
+            "end": [12, 1]
+        });
+
+        let (graph, _) = extract_graph_validated(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("crate root metadata parses");
+        let root = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture" && node.kind == NodeKind::Crate)
+            .expect("crate root node");
+
+        assert_eq!(
+            root.docs.as_deref(),
+            Some("Crate-level documentation with a [`fixture`] link.")
+        );
+        assert_eq!(
+            root.span.as_ref().map(|span| span.file.as_str()),
+            Some("src/lib.rs")
+        );
+        assert_eq!(root.line_count, Some(12));
+        assert_eq!(root.attrs, vec!["#![no_std]"]);
+        assert_eq!(
+            root.doc_links.get("fixture").map(String::as_str),
+            Some("fixture")
+        );
     }
 
     #[test]

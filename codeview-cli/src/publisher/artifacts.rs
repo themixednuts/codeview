@@ -134,7 +134,7 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
             .await
             .map_err(PublishError::Transient)?;
         if !staleness.is_stale() {
-            if hosted_artifacts_exist(&r2, storage_name, version)
+            if hosted_artifacts_are_current(&r2, storage_name, version)
                 .await
                 .map_err(PublishError::Transient)?
             {
@@ -271,12 +271,12 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         && existing.graph_hash == graph_hash
         && existing.version == version
     {
-        if !hosted_artifacts_exist(&r2, storage_name, version)
+        if !hosted_artifacts_are_current(&r2, storage_name, version)
             .await
             .map_err(PublishError::Transient)?
         {
             eprintln!(
-                "[parse-one] graph unchanged but hosted artifacts missing; rebuilding artifacts"
+                "[parse-one] graph unchanged but hosted artifacts are missing or stale; rebuilding artifacts"
             );
         } else {
             eprintln!("[parse-one] graph unchanged — refreshing registry only");
@@ -467,15 +467,52 @@ fn find_unpacked_crate_dir(root: &std::path::Path) -> Option<std::path::PathBuf>
     })
 }
 
-async fn hosted_artifacts_exist(
+async fn hosted_artifacts_are_current(
     r2: &Arc<dyn R2>,
     storage_name: &str,
     version: &str,
 ) -> anyhow::Result<bool> {
-    Ok(r2
+    let Some(bytes) = r2
         .get(&hosted_artifacts::meta_key(storage_name, version))
         .await?
-        .is_some())
+    else {
+        return Ok(false);
+    };
+    Ok(hosted_metadata_is_current(&bytes, storage_name, version))
+}
+
+#[derive(serde::Deserialize)]
+struct HostedMetadataContract {
+    schema_version: u32,
+    name: String,
+    version: String,
+    index: serde_json::Value,
+    artifacts: HostedArtifactLayout,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HostedArtifactLayout {
+    node_view_bucket_count: usize,
+    tree_children_bucket_count: usize,
+    alias_bucket_count: usize,
+    search_prefix_length: usize,
+    kind_index: bool,
+}
+
+fn hosted_metadata_is_current(bytes: &[u8], storage_name: &str, version: &str) -> bool {
+    let Ok(metadata) = serde_json::from_slice::<HostedMetadataContract>(bytes) else {
+        return false;
+    };
+    metadata.schema_version == shards::STATIC_SCHEMA_VERSION
+        && metadata.name == storage_name
+        && metadata.version == version
+        && metadata.index.is_object()
+        && metadata.artifacts.kind_index
+        && metadata.artifacts.node_view_bucket_count > 0
+        && metadata.artifacts.tree_children_bucket_count > 0
+        && metadata.artifacts.alias_bucket_count > 0
+        && metadata.artifacts.search_prefix_length == 2
 }
 
 /// crates.io and Rust both prefer hyphenated display names but the
@@ -511,5 +548,46 @@ fn classify_rustdoc_error(err: RustdocError) -> PublishError {
         RustdocError::MissingRootPackage => {
             PublishError::Transient(anyhow::anyhow!("parser missing root package"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{hosted_metadata_is_current, shards};
+
+    fn metadata(schema_version: u32, name: &str, version: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": schema_version,
+            "name": name,
+            "version": version,
+            "index": {},
+            "artifacts": {
+                "nodeViewBucketCount": 128,
+                "treeChildrenBucketCount": 128,
+                "aliasBucketCount": 128,
+                "searchPrefixLength": 2,
+                "kindIndex": true
+            }
+        }))
+        .expect("serialize metadata")
+    }
+
+    #[test]
+    fn hosted_metadata_requires_the_current_contract() {
+        assert!(hosted_metadata_is_current(
+            &metadata(shards::STATIC_SCHEMA_VERSION, "serde", "1.0.228"),
+            "serde",
+            "1.0.228"
+        ));
+        assert!(!hosted_metadata_is_current(
+            &metadata(1, "serde", "1.0.228"),
+            "serde",
+            "1.0.228"
+        ));
+        assert!(!hosted_metadata_is_current(
+            &metadata(shards::STATIC_SCHEMA_VERSION, "serde", "1.0.227"),
+            "serde",
+            "1.0.228"
+        ));
     }
 }

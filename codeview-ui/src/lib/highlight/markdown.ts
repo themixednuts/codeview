@@ -30,8 +30,10 @@ function intraDocLinksPlugin(md: MarkdownIt): void {
 }
 
 /**
- * Inline rule to match [path::Item] or [`path::Item`] patterns
- * that are intra-doc links (not standard markdown links).
+ * Inline rule to match shortcut links (`[path::Item]`, [`path::Item`]) and
+ * rustdoc reference links (`[label][path::Item]`). The latter are not normal
+ * Markdown references because rustdoc carries their targets in `Item.links`
+ * instead of emitting reference definitions in the documentation string.
  */
 function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 	const start = state.pos;
@@ -57,11 +59,21 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 	const closeBracket = pos - 1;
 	const content = state.src.slice(start + 1, closeBracket);
 
-	// Check it's not followed by ( or [ (that would be a standard link)
+	const docLinks = (state.env as RenderEnvironment | undefined)?.docLinks;
+	if (!docLinks) return false;
+
+	let lookupContent = content;
+	let end = pos;
+	// A normal inline Markdown destination is handled by markdown-it and then
+	// resolved through the renderer hook below.
 	if (pos < max) {
 		const nextChar = state.src.charCodeAt(pos);
-		if (nextChar === 0x28 /* ( */ || nextChar === 0x5b /* [ */) {
-			return false;
+		if (nextChar === 0x28 /* ( */) return false;
+		if (nextChar === 0x5b /* [ */) {
+			const referenceEnd = state.src.indexOf(']', pos + 1);
+			if (referenceEnd < 0) return false;
+			lookupContent = state.src.slice(pos + 1, referenceEnd) || content;
+			end = referenceEnd + 1;
 		}
 	}
 
@@ -70,16 +82,11 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 	// Display content (without backticks)
 	const displayContent = hasBackticks ? content.slice(1, -1) : content;
 
-	// Check if this is a known intra-doc link
-	const docLinks = (state.env as RenderEnvironment | undefined)?.docLinks;
-
-	if (!docLinks) {
-		return false;
-	}
-
-	// Try lookup with original content first (may have backticks), then without
+	// Try the explicit reference target first, then shortcut-label variants.
 	let nodeId: string | undefined;
-	if (content in docLinks) {
+	if (lookupContent in docLinks) {
+		nodeId = docLinks[lookupContent];
+	} else if (content in docLinks) {
 		nodeId = docLinks[content];
 	} else if (displayContent in docLinks) {
 		nodeId = docLinks[displayContent];
@@ -111,7 +118,7 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 		state.push('link_close', 'a', -1);
 	}
 
-	state.pos = pos;
+	state.pos = end;
 	return true;
 }
 

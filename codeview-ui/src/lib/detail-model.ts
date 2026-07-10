@@ -7,6 +7,7 @@ import type {
 	TocEntry,
 	WhereUsedRef,
 } from '$lib/schema';
+import { isPublic } from '$lib/display-names';
 
 export type SelectedEdges = {
 	incoming: Edge[];
@@ -44,7 +45,61 @@ export type MaterializedDetailDocModel = Omit<
 	providedTraitMethods: Node[];
 	/** Trait-definition associated types/consts. */
 	traitAssocItems: Node[];
+	crateItems: Node[];
 };
+
+const CRATE_ITEM_KINDS = new Set<Node['kind']>([
+	'Module',
+	'Struct',
+	'Enum',
+	'Union',
+	'Trait',
+	'TraitAlias',
+	'Function',
+	'TypeAlias',
+	'Constant',
+	'Static',
+	'Macro',
+	'ProcMacro',
+	'Primitive',
+]);
+
+const CRATE_ITEM_KIND_ORDER = new Map<Node['kind'], number>(
+	Array.from(CRATE_ITEM_KINDS, (kind, index) => [kind, index]),
+);
+
+function collectCrateItems(detail: NodeDetail, relatedNodeMap: Map<string, Node>): Node[] {
+	if (detail.node.kind !== 'Crate') return [];
+	const seen = new Set<string>();
+	const items: Node[] = [];
+	for (const edge of detail.edges) {
+		if (
+			edge.from !== detail.node.id ||
+			!['Contains', 'Defines', 'ReExports'].includes(edge.kind) ||
+			seen.has(edge.to)
+		) {
+			continue;
+		}
+		const node = relatedNodeMap.get(edge.to);
+		if (
+			!node ||
+			node.is_external ||
+			!CRATE_ITEM_KINDS.has(node.kind) ||
+			!isPublic(node.visibility) ||
+			(node.kind === 'Module' && node.name === detail.node.name)
+		) {
+			continue;
+		}
+		seen.add(node.id);
+		items.push(node);
+	}
+	return items.sort((a, b) => {
+		const kindOrder =
+			(CRATE_ITEM_KIND_ORDER.get(a.kind) ?? Number.MAX_SAFE_INTEGER) -
+			(CRATE_ITEM_KIND_ORDER.get(b.kind) ?? Number.MAX_SAFE_INTEGER);
+		return kindOrder || a.name.localeCompare(b.name);
+	});
+}
 
 function isTraitImpl(node: Node): boolean {
 	if (node.kind !== 'Impl') return false;
@@ -193,6 +248,7 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 
 	const selected = detail.node;
 	const relatedNodeMap = buildRelatedNodeMap(detail);
+	const crateItems = collectCrateItems(detail, relatedNodeMap);
 	const selectedEdges = {
 		incoming: detail.edges.filter((edge) => edge.to === selected.id),
 		outgoing: detail.edges.filter((edge) => edge.from === selected.id),
@@ -241,8 +297,18 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 	);
 	const totalImpls = sourceImpls.length + blanketImpls.length;
 	const tocEntries: TocEntry[] = [];
+	if ((selected.fields?.length ?? 0) > 0)
+		tocEntries.push({ anchor: 'fields', title: 'Fields', count: selected.fields?.length ?? 0 });
+	if ((selected.variants?.length ?? 0) > 0)
+		tocEntries.push({
+			anchor: 'variants',
+			title: 'Variants',
+			count: selected.variants?.length ?? 0,
+		});
 	if (selected.docs)
 		tocEntries.push({ anchor: 'documentation', title: 'Documentation', count: null });
+	if (crateItems.length > 0)
+		tocEntries.push({ anchor: 'crate-items', title: 'Crate items', count: crateItems.length });
 	if (traitItems.assoc.length > 0) {
 		tocEntries.push({
 			anchor: 'associated-items',
@@ -371,5 +437,6 @@ export function materializeDetailDocModel(
 		requiredTraitMethods: nodeList(resolvedModel.requiredTraitMethodIds, relatedNodeMap),
 		providedTraitMethods: nodeList(resolvedModel.providedTraitMethodIds, relatedNodeMap),
 		traitAssocItems: nodeList(resolvedModel.traitAssocItemIds, relatedNodeMap),
+		crateItems: detail ? collectCrateItems(detail, relatedNodeMap) : [],
 	};
 }

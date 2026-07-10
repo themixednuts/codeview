@@ -14,6 +14,10 @@ import type {
 	TreeNodeDTO,
 } from '$lib/schema';
 import { STATIC_ARTIFACT_SCHEMA_VERSION } from '$lib/schema';
+import {
+	HOSTED_ARTIFACT_CACHE_NAMESPACE,
+	isCurrentHostedArtifactMetadata,
+} from '$lib/hosted-contract';
 import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
 import { isStdCrate } from '$lib/std';
 import type {
@@ -102,7 +106,6 @@ const ACTIVE_GITHUB_RUN_STATUSES = [
 	'waiting',
 	'requested',
 ] as const;
-const HOSTED_ARTIFACT_CACHE_NAMESPACE = 'hosted-kind-index-1';
 
 type GitHubWorkflowRun = {
 	id?: number;
@@ -244,7 +247,8 @@ function buildGitHubFileUrl(metadata: PackageMetadata, filePath: string): string
 const VERSION_ALIAS_VALUES = ['latest', 'stable', 'beta', 'nightly'] as const;
 type VersionAlias = (typeof VERSION_ALIAS_VALUES)[number];
 const VERSION_ALIASES = new Set<string>(VERSION_ALIAS_VALUES);
-const REF_ALIAS_TTL_MS = 60_000;
+const REF_TTL_MS = 5_000;
+const MUTABLE_JSON_TTL_MS = 30_000;
 const REF_CACHE_MAX = 512;
 const JSON_CACHE_MAX = 128;
 const ARTIFACT_JSON_CACHE_MAX = 256;
@@ -515,19 +519,9 @@ function isCurrentHostedMeta(
 	meta: HostedMetaArtifact | null,
 	ref?: ArtifactRef,
 ): meta is HostedMetaArtifact {
-	const artifacts = meta?.artifacts;
-	return Boolean(
-		meta?.schema_version === STATIC_ARTIFACT_SCHEMA_VERSION &&
-		meta.index &&
-		(!ref || (meta.name === ref.storageName && meta.version === ref.version)) &&
-		artifacts?.kindIndex === true &&
-		Number.isInteger(artifacts.nodeViewBucketCount) &&
-		artifacts.nodeViewBucketCount > 0 &&
-		Number.isInteger(artifacts.treeChildrenBucketCount) &&
-		artifacts.treeChildrenBucketCount > 0 &&
-		Number.isInteger(artifacts.aliasBucketCount) &&
-		artifacts.aliasBucketCount > 0 &&
-		artifacts.searchPrefixLength === 2,
+	return isCurrentHostedArtifactMetadata(
+		meta,
+		ref ? { name: ref.storageName, version: ref.version } : undefined,
 	);
 }
 
@@ -644,7 +638,12 @@ function readR2JsonEffect<T>(r2: R2Bucket, key: string): Effect.Effect<T | null,
 const artifactJsonCache = new Map<string, Promise<unknown | null>>();
 const artifactJsonInflight = new Map<string, Promise<unknown | null>>();
 const sourceFileCache = new Map<string, string>();
-const jsonCache = new Map<string, Promise<unknown | null>>();
+type JsonCacheEntry = {
+	value: Promise<unknown | null>;
+	expiresAt: number;
+};
+
+const jsonCache = new Map<string, JsonCacheEntry>();
 const SOURCE_FILE_CACHE_MAX = 512;
 
 function artifactR2Key(ref: ArtifactRef, path: string): string {
@@ -799,10 +798,15 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
-	function readJson<T>(key: string): Promise<T | null> {
+	function readJson<T>(key: string, ttlMs = MUTABLE_JSON_TTL_MS): Promise<T | null> {
+		const now = Date.now();
 		let cached = jsonCache.get(key);
+		if (cached && cached.expiresAt <= now) {
+			jsonCache.delete(key);
+			cached = undefined;
+		}
 		if (!cached) {
-			cached = Effect.runPromise(
+			const value = Effect.runPromise(
 				readR2JsonEffect<T>(env.CRATE_GRAPHS, key).pipe(
 					Effect.catch((err) =>
 						Effect.sync(() => {
@@ -813,6 +817,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					),
 				),
 			);
+			cached = { value, expiresAt: now + ttlMs };
 			jsonCache.set(key, cached);
 			while (jsonCache.size > JSON_CACHE_MAX) {
 				const oldestKey = jsonCache.keys().next().value;
@@ -820,7 +825,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				jsonCache.delete(oldestKey);
 			}
 		}
-		return cached as Promise<T | null>;
+		return cached.value as Promise<T | null>;
 	}
 
 	async function readArtifactJson<T>(ref: ArtifactRef, path: string): Promise<T | null> {
@@ -841,7 +846,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	}
 
 	async function readCrateRefs(storageName: string): Promise<CrateRefFile | null> {
-		const raw = await readJson<unknown>(refsKey(storageName));
+		const raw = await readJson<unknown>(refsKey(storageName), REF_TTL_MS);
 		if (!raw) return null;
 		const refs = parseCrateRefs(raw);
 		if (!refs) {
@@ -854,23 +859,18 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	async function resolveRefForArtifactUncached(
 		name: string,
 		version: string,
-	): Promise<{ ref: ArtifactRef | null; cacheMode: 'none' | 'short' | 'forever' }> {
-		let foundRefs = false;
+	): Promise<ArtifactRef | null> {
 		for (const variant of uniqueCrateNameVariants(name)) {
 			const refs = await readCrateRefs(variant);
 			if (!refs) continue;
-			foundRefs = true;
 			const ref = resolveRefFromRefs(refs, version);
 			if (!ref) continue;
 			const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
 			if (!isCurrentHostedMeta(meta, ref)) continue;
-			return {
-				ref,
-				cacheMode: VERSION_ALIASES.has(version) ? 'short' : 'forever',
-			};
+			return ref;
 		}
 
-		return { ref: null, cacheMode: foundRefs ? 'short' : 'none' };
+		return null;
 	}
 
 	async function resolveRefForArtifact(name: string, version: string): Promise<ArtifactRef | null> {
@@ -879,21 +879,15 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		if (cached) return cached;
 
 		const pending = resolveRefForArtifactUncached(name, version)
-			.then(({ ref, cacheMode }) => {
-				if (cacheMode === 'none') {
-					resolvedRefCache.delete(key);
-					return ref;
-				}
-				const expiresAt =
-					cacheMode === 'forever' && ref?.graphHash ? null : Date.now() + REF_ALIAS_TTL_MS;
-				setCachedResolvedRef(key, Promise.resolve(ref), expiresAt);
+			.then((ref) => {
+				setCachedResolvedRef(key, Promise.resolve(ref), Date.now() + REF_TTL_MS);
 				return ref;
 			})
 			.catch((err) => {
 				resolvedRefCache.delete(key);
 				throw err;
 			});
-		setCachedResolvedRef(key, pending, Date.now() + REF_ALIAS_TTL_MS);
+		setCachedResolvedRef(key, pending, Date.now() + REF_TTL_MS);
 		return pending;
 	}
 
@@ -901,14 +895,12 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		name: string,
 		limit: number,
 	): Promise<string[] | null> {
-		let foundRefs = false;
 		for (const variant of uniqueCrateNameVariants(name)) {
 			const refs = await readCrateRefs(variant);
 			if (!refs) continue;
-			foundRefs = true;
 			return refs.versions.map((entry) => entry.version).slice(0, limit);
 		}
-		return foundRefs ? [] : null;
+		return null;
 	}
 
 	async function listRegistryVersions(name: string, limit: number): Promise<string[]> {

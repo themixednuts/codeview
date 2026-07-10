@@ -136,4 +136,35 @@ describe('detail doc model', () => {
 		expect(materialized.providedTraitMethods.map((m) => m.name)).toEqual(['to_string']);
 		expect(materialized.traitAssocItems.map((m) => m.name)).toEqual(['Output']);
 	});
+
+	it('materializes direct public crate items without internals or duplicate re-exports', () => {
+		const selected = node('demo', 'demo', 'Crate', { docs: 'Demo crate.' });
+		const module = node('demo::api', 'api', 'Module', { docs: 'Public API.' });
+		const structure = node('demo::Widget', 'Widget', 'Struct');
+		const privateFunction = node('demo::hidden', 'hidden', 'Function', {
+			visibility: { kind: 'Inherited' },
+		});
+		const external = node('dep::Thing', 'Thing', 'Struct', { is_external: true });
+		const duplicateRootModule = node('demo~module-0', 'demo', 'Module');
+		const detail: NodeDetail = {
+			node: selected,
+			relatedNodes: [module, structure, privateFunction, external, duplicateRootModule],
+			edges: [
+				{ from: selected.id, to: module.id, kind: 'Contains', confidence: 'Static' },
+				{ from: selected.id, to: structure.id, kind: 'Contains', confidence: 'Static' },
+				{ from: selected.id, to: structure.id, kind: 'ReExports', confidence: 'Static' },
+				{ from: selected.id, to: privateFunction.id, kind: 'Contains', confidence: 'Static' },
+				{ from: selected.id, to: external.id, kind: 'ReExports', confidence: 'Static' },
+				{ from: selected.id, to: duplicateRootModule.id, kind: 'Contains', confidence: 'Static' },
+			],
+		};
+
+		const model = materializeDetailDocModel(detail);
+		expect(model.crateItems.map((item) => item.id)).toEqual([module.id, structure.id]);
+		expect(model.tocEntries).toContainEqual({
+			anchor: 'crate-items',
+			title: 'Crate items',
+			count: 2,
+		});
+	});
 });

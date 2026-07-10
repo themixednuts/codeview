@@ -49,4 +49,16 @@ describe('rustdoc markdown links', () => {
 		expect(second).toContain('href="#second::Item"');
 		expect(second).not.toContain('first::Item');
 	});
+
+	it('resolves rustdoc reference-style links using their visible label', () => {
+		const html = renderMarkdown('The complete list is [here][crate::de].', {
+			'crate::de': 'serde::de',
+		});
+
+		expect(html).toContain('href="#serde::de"');
+		expect(html).toContain('data-node-id="serde::de"');
+		expect(html).toContain('>here</a>');
+		expect(html).not.toContain('[here]');
+		expect(html).not.toContain('crate::de');
+	});
 });

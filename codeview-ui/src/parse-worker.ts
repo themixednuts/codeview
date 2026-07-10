@@ -7,6 +7,7 @@ import {
 	type WorkflowStepContext,
 } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import { isCurrentHostedArtifactMetadata } from './lib/hosted-contract';
 import {
 	crateStatusTag,
 	isParseRequestMessage,
@@ -71,8 +72,7 @@ const ACTIVE_GITHUB_RUN_STATUSES = [
 const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
 const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
 const GITHUB_CALLBACK_WAIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
-const MAX_ORPHANED_PROCESSING_RECONCILE_MS =
-	GITHUB_CALLBACK_WAIT_TIMEOUT_MS + 15 * 60 * 1000;
+const MAX_ORPHANED_PROCESSING_RECONCILE_MS = GITHUB_CALLBACK_WAIT_TIMEOUT_MS + 15 * 60 * 1000;
 const GITHUB_CALLBACK_WAIT_TIMEOUT = '6 hours';
 const WORKFLOW_STATUS_STEP_CONFIG = {
 	retries: { limit: 8, delay: '5 seconds', backoff: 'exponential' },
@@ -810,9 +810,7 @@ function statusIsNewerThanPlan(status: StoredParseStatus, plan: WorkPlanArtifact
 }
 
 function planReasonParserTarget(reason: string | undefined): string | null {
-	const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(
-		reason ?? '',
-	);
+	const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(reason ?? '');
 	return match?.[1] ?? null;
 }
 
@@ -884,14 +882,19 @@ async function plannedItemSatisfiedByFreshness(
 	plan: WorkPlanArtifact | null,
 ): Promise<boolean> {
 	const freshness = await readFreshnessEntry(env, item).catch((err) => {
-		console.warn(`planned freshness lookup failed ${item.name}@${item.version}: ${errorMessage(err)}`);
+		console.warn(
+			`planned freshness lookup failed ${item.name}@${item.version}: ${errorMessage(err)}`,
+		);
 		return null;
 	});
 	if (!freshness) return false;
 
 	const parserTarget = planReasonParserTarget(item.reason);
 	if (parserTarget)
-		return revisionMatches(freshness.parserRevision, parserTarget) || freshnessParsedAfterPlan(freshness, plan);
+		return (
+			revisionMatches(freshness.parserRevision, parserTarget) ||
+			freshnessParsedAfterPlan(freshness, plan)
+		);
 
 	const schemaTarget = planReasonSchemaTarget(item.reason);
 	if (schemaTarget !== null)
@@ -971,7 +974,11 @@ async function plannedQueueMessageStillNeeded(
 	if (request.source !== 'planned') return true;
 	const current = await currentPlanItemForRequest(env, request);
 	if (!current) {
-		await retireStalePlannedRequest(env, request, 'Planned parse request was superseded before dispatch');
+		await retireStalePlannedRequest(
+			env,
+			request,
+			'Planned parse request was superseded before dispatch',
+		);
 		return false;
 	}
 	if (await plannedItemSatisfiedByFreshness(env, current.item, current.plan)) {
@@ -1118,6 +1125,15 @@ async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: strin
 	const storageName = parsed.storageName || hyphenateCrateName(name);
 	const meta = await env.CRATE_GRAPHS.get(`rust/${storageName}/${target.version}/site/meta.json`);
 	if (!meta) throw new Error(`missing hosted metadata for ${name}@${version}`);
+	const metadata = await meta.json<unknown>();
+	if (
+		!isCurrentHostedArtifactMetadata(metadata, {
+			name: storageName,
+			version: target.version,
+		})
+	) {
+		throw new Error(`hosted metadata contract is stale for ${name}@${version}`);
+	}
 }
 
 async function reconcileFinalizingParses(
@@ -1851,17 +1867,21 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 					return false;
 				});
 			if (recovered) {
-				await step.do('mark ready after github wait timeout', WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
-					logWorkflowRetry(ctx, params);
-					await updateStatus(this.env, {
-						kind: params.kind,
-						name: params.name,
-						version: params.version,
-						status: 'ready',
-						requestId: params.requestId,
-						workflowId,
-					});
-				});
+				await step.do(
+					'mark ready after github wait timeout',
+					WORKFLOW_STATUS_STEP_CONFIG,
+					async (ctx) => {
+						logWorkflowRetry(ctx, params);
+						await updateStatus(this.env, {
+							kind: params.kind,
+							name: params.name,
+							version: params.version,
+							status: 'ready',
+							requestId: params.requestId,
+							workflowId,
+						});
+					},
+				);
 				return { ok: true, recovered: 'artifacts-after-timeout' };
 			}
 
@@ -1901,15 +1921,11 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
 		}
 
 		try {
-			await step.do(
-				'verify r2 artifacts',
-				WORKFLOW_ARTIFACT_VERIFY_STEP_CONFIG,
-				async (ctx) => {
-					logWorkflowRetry(ctx, params);
-					await verifyArtifacts(this.env, params.name, params.version);
-					return true;
-				},
-			);
+			await step.do('verify r2 artifacts', WORKFLOW_ARTIFACT_VERIFY_STEP_CONFIG, async (ctx) => {
+				logWorkflowRetry(ctx, params);
+				await verifyArtifacts(this.env, params.name, params.version);
+				return true;
+			});
 		} catch (err) {
 			await step.do(
 				'mark artifact verification failed',
@@ -1955,13 +1971,11 @@ async function reconcileExistingWorkflowInstance(
 	request: ParseRequestMessage,
 	workflowId: string,
 ): Promise<void> {
-	let status:
-		| {
-				status: string;
-				error?: { name?: string; message?: string };
-				output?: unknown;
-		  }
-		| null = null;
+	let status: {
+		status: string;
+		error?: { name?: string; message?: string };
+		output?: unknown;
+	} | null = null;
 	try {
 		const instance = await env.PARSE_WORKFLOW.get(workflowId);
 		status = await instance.status();
@@ -2097,7 +2111,11 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 		return;
 	}
 	if (!begin.leased) {
-		await deferQueueMessage(message as Message<ParseRequestMessage>, env, begin.retryAfterSeconds ?? 30);
+		await deferQueueMessage(
+			message as Message<ParseRequestMessage>,
+			env,
+			begin.retryAfterSeconds ?? 30,
+		);
 		return;
 	}
 	try {

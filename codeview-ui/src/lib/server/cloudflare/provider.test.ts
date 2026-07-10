@@ -230,6 +230,7 @@ function hostedNodeViewArtifact(
 describe('createCloudflareProvider', () => {
 	afterEach(() => {
 		mockAuthState.value = null;
+		vi.useRealTimers();
 		vi.unstubAllGlobals();
 	});
 
@@ -300,6 +301,39 @@ describe('createCloudflareProvider', () => {
 			error: 'No static graph is published for demo@1.0.0.',
 			action: 'docs_unavailable',
 		});
+	});
+
+	test('refreshes exact-version refs after a hosted artifact is replaced', async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date('2026-07-09T00:00:00.000Z'));
+		const name = 'mutable-ref-demo';
+		const version = '1.0.0';
+		const refsKey = `rust/_refs/${name}.json`;
+		const metaKey = `rust/${name}/${version}/site/meta.json`;
+		const refs = (graphHash: string) => ({
+			schemaVersion: 1,
+			storageName: name,
+			displayName: name,
+			aliases: { latest: { version, graphHash } },
+			versions: [{ version, graphHash }],
+		});
+		const objects = new Map<string, unknown>([
+			[refsKey, refs('old-hash')],
+			[metaKey, { schema_version: 1, name, version }],
+		]);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.getCrateStatus(name, version)).resolves.toMatchObject({
+			status: 'failed',
+		});
+
+		objects.set(refsKey, refs('new-hash'));
+		objects.set(metaKey, hostedMeta(128, version, {}, name));
+		vi.advanceTimersByTime(5_001);
+
+		await expect(provider.getCrateStatus(name, version)).resolves.toEqual({ status: 'ready' });
 	});
 
 	test('does not assemble node views from base shards', async () => {
