@@ -721,7 +721,7 @@
 
 	function commitFilter(nextFilter: string) {
 		clearFilterInputTimer();
-		if (nextFilter === filter) {
+		if (nextFilter === activeFilter) {
 			return;
 		}
 		filterOverride = nextFilter;
