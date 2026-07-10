@@ -4067,6 +4067,10 @@ fn type_to_id(ty: &rdt::Type) -> Option<rdt::Id> {
     match ty {
         rdt::Type::ResolvedPath(path) => Some(path.id),
         rdt::Type::QualifiedPath { self_type, .. } => type_to_id(self_type),
+        rdt::Type::Slice(inner) | rdt::Type::BorrowedRef { type_: inner, .. } => type_to_id(inner),
+        rdt::Type::Array { type_, .. }
+        | rdt::Type::Pat { type_, .. }
+        | rdt::Type::RawPointer { type_, .. } => type_to_id(type_),
         _ => None,
     }
 }
@@ -6790,6 +6794,27 @@ pub struct Small;
         assert!(graph.edges.iter().any(|edge| {
             edge.from == "fixture" && edge.to == "fixture::Child" && edge.kind == EdgeKind::Contains
         }));
+    }
+
+    #[test]
+    fn impl_owner_resolution_unwraps_reference_and_pointer_types() {
+        let path = rdt::Type::ResolvedPath(rdt::Path {
+            path: "fixture::Thing".to_string(),
+            id: rdt::Id(42),
+            args: None,
+        });
+        let borrowed = rdt::Type::BorrowedRef {
+            lifetime: Some("'a".to_string()),
+            is_mutable: false,
+            type_: Box::new(path.clone()),
+        };
+        let pointer = rdt::Type::RawPointer {
+            is_mutable: true,
+            type_: Box::new(borrowed),
+        };
+
+        assert_eq!(type_to_id(&path), Some(rdt::Id(42)));
+        assert_eq!(type_to_id(&pointer), Some(rdt::Id(42)));
     }
 
     #[test]

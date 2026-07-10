@@ -434,7 +434,9 @@ pub(crate) fn ancestor_summaries(
 }
 
 pub(crate) fn is_local_page_node(node: &Node) -> bool {
-    !node.is_external && node.kind != NodeKind::Impl
+    !node.is_external
+        && node.kind != NodeKind::Impl
+        && !(node.parent_impl.is_some() && node.id.contains("::impl-"))
 }
 
 pub(crate) fn is_searchable_node(node: &Node) -> bool {
@@ -929,6 +931,8 @@ mod tests {
     }
 
     fn graph_with_external_and_impls() -> CrateGraph {
+        let mut trait_impl_method = node("demo::impl-1::clone", "clone", NodeKind::Function);
+        trait_impl_method.parent_impl = Some("demo::impl-1".to_string());
         CrateGraph {
             id: "demo".to_string(),
             name: "demo".to_string(),
@@ -938,7 +942,7 @@ mod tests {
                 node("demo::Thing", "Thing", NodeKind::Struct),
                 node("demo::make", "make", NodeKind::Function),
                 node("demo::impl-1", "impl Clone for Thing", NodeKind::Impl),
-                node("demo::impl-1::clone", "clone", NodeKind::Function),
+                trait_impl_method,
                 node("demo::Wrapper", "Wrapper", NodeKind::Module),
                 node("demo::Adopted", "Adopted", NodeKind::Struct),
                 external_node("core", "core", NodeKind::Crate),
@@ -1100,10 +1104,11 @@ mod tests {
             "tree shards should only expose routeable local pages"
         );
 
-        assert_eq!(
-            children.get("demo::Thing"),
-            Some(&vec!["demo::impl-1::clone".to_string()]),
-            "impl members should be attached directly to their owning type",
+        assert!(
+            !children
+                .values()
+                .any(|ids| ids.iter().any(|id| id == "demo::impl-1::clone")),
+            "trait-impl members belong in type documentation, not the navigation tree",
         );
 
         let manifest = build_manifest(
@@ -1115,7 +1120,7 @@ mod tests {
                 tree_children: Vec::new(),
             },
         );
-        assert_eq!(manifest.node_count, 6);
+        assert_eq!(manifest.node_count, 5);
         assert!(manifest.roots.iter().all(|root| !root.node.is_external));
         assert!(
             manifest
@@ -1143,6 +1148,7 @@ mod tests {
             .collect();
         assert!(!search_ids.contains(&"core::clone::Clone"));
         assert!(!search_ids.contains(&"demo::impl-1"));
+        assert!(!search_ids.contains(&"demo::impl-1::clone"));
         assert!(search_ids.contains(&"demo::Thing"));
     }
 }

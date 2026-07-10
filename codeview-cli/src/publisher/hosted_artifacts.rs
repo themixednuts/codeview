@@ -787,6 +787,9 @@ mod tests {
         graph
             .nodes
             .push(node("demo::impl-1", "impl Clone for Thing", NodeKind::Impl));
+        let mut trait_impl_method = node("demo::impl-1::clone", "clone", NodeKind::Function);
+        trait_impl_method.parent_impl = Some("demo::impl-1".to_string());
+        graph.nodes.push(trait_impl_method);
         graph.nodes.push(external_node(
             "core::clone::Clone",
             "Clone",
@@ -807,6 +810,7 @@ mod tests {
 
         assert!(search_ids.contains(&"demo::Thing".to_string()));
         assert!(!search_ids.contains(&"demo::impl-1".to_string()));
+        assert!(!search_ids.contains(&"demo::impl-1::clone".to_string()));
         assert!(!search_ids.contains(&"core::clone::Clone".to_string()));
     }
 

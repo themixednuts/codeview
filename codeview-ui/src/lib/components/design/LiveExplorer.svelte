@@ -1107,6 +1107,7 @@
 						{@const isActive = kindFilter.has(facet.kind)}
 						<a
 							href={resolveAppPath(kindHref(facet.kind))}
+							data-sveltekit-preload-data="off"
 							data-sveltekit-noscroll
 							data-sveltekit-keepfocus
 							class="badge badge-sm no-underline transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
