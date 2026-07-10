@@ -357,13 +357,13 @@ fn build_node_view_entries(
 ) -> anyhow::Result<Vec<MeasuredNodeEntry>> {
     let edge_lookup = EdgeLookup::new(&graph.edges);
 
-    let local_node_count = graph.nodes.iter().filter(|node| !node.is_external).count();
-    let mut entries = Vec::with_capacity(local_node_count);
-    for node in graph
+    let local_node_count = graph
         .nodes
         .iter()
-        .filter(|node| !node.is_external && node.kind != NodeKind::Impl)
-    {
+        .filter(|node| is_local_page_node(node))
+        .count();
+    let mut entries = Vec::with_capacity(local_node_count);
+    for node in graph.nodes.iter().filter(|node| is_local_page_node(node)) {
         // Second-hop edges from impl blocks → methods/assoc items so the type
         // page can list trait-impl members (signatures + docs) like docs.rs.
         let edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
@@ -545,9 +545,13 @@ fn build_meta(
             .collect();
         root_children.insert(root_id, children);
     }
-    let local_node_count = graph.nodes.iter().filter(|node| !node.is_external).count();
+    let local_node_count = graph
+        .nodes
+        .iter()
+        .filter(|node| is_local_page_node(node))
+        .count();
     let mut local_kind_counts = BTreeMap::new();
-    for node in graph.nodes.iter().filter(|node| !node.is_external) {
+    for node in graph.nodes.iter().filter(|node| is_local_page_node(node)) {
         *local_kind_counts
             .entry(format!("{:?}", node.kind))
             .or_insert(0) += 1;
@@ -829,21 +833,18 @@ mod tests {
         assert_eq!(struct_shard.kind, NodeKind::Struct);
         assert_eq!(struct_shard.entries[0].id, "demo::Thing");
 
-        let impl_artifact = set
-            .artifacts
-            .iter()
-            .find(|artifact| artifact.key == "rust/demo/1.0.0/site/kinds/Impl.json")
-            .expect("impl kind shard");
-        let impl_shard: HostedKindShard =
-            serde_json::from_slice(&impl_artifact.body).expect("deserialize impl shard");
-        assert_eq!(impl_shard.entries[0].id, "demo::impl-1");
+        assert!(
+            set.artifacts
+                .iter()
+                .all(|artifact| artifact.key != "rust/demo/1.0.0/site/kinds/Impl.json")
+        );
 
         assert!(
             set.artifacts
                 .iter()
                 .all(|artifact| artifact.key != "rust/demo/1.0.0/site/kinds/Trait.json")
         );
-        assert_eq!(set.report.kind_index_entry_count, 4);
+        assert_eq!(set.report.kind_index_entry_count, 3);
     }
 
     #[test]

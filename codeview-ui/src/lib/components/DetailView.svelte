@@ -336,7 +336,7 @@
 				{requiredTraitMethods}
 				{providedTraitMethods}
 				{traitAssocItems}
-				crateItems={detailModel.crateItems}
+				directItems={detailModel.directItems}
 				{kindLabels}
 				{displayNode}
 				{implementers}
@@ -361,7 +361,7 @@
 						{requiredTraitMethods}
 						{providedTraitMethods}
 						{traitAssocItems}
-						crateItems={detailModel.crateItems}
+						directItems={detailModel.directItems}
 						{kindLabels}
 						{displayNode}
 						{implementers}

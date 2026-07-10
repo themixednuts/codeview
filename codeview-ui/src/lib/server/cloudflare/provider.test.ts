@@ -421,6 +421,9 @@ describe('createCloudflareProvider', () => {
 				visibility: { kind: 'Public' },
 			},
 		]);
+		await expect(
+			provider.searchNodesDirect?.(crateName, version, '', 10, ['Impl']),
+		).resolves.toEqual([]);
 	});
 
 	test('uses live crates.io metadata for top crates', async () => {

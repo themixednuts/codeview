@@ -17,15 +17,15 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { resolveAppPath } from '$lib/app-paths';
 	import { crateVersionsCtx, docLayoutCtx, expandPathCtx, resolvedThemeCtx } from '$lib/context';
-	import { visibilityLabel } from '$lib/display-names';
+	import { nodeKindOrder, visibilityLabel } from '$lib/display-names';
 	import { toDesignNode } from '$lib/design/live-node';
 	import { buildNodeRelationshipGroups } from '$lib/design/relationship-groups';
 	import { materializeDetailDocModel } from '$lib/detail-model';
 	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
+	import { searchNodes } from '$lib/rpc/search.remote';
 	import { isHosted } from '$lib/platform';
 	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
 	import {
-		kindFilterHref,
 		parseExplorerState,
 		serializeExplorerState,
 		type ExplorerDocLayout,
@@ -58,20 +58,16 @@
 		debugInfo = null,
 		filter,
 		kindParams,
-		searchQuery,
 		selectedNodeId,
 		treeRoots,
 		canonicalCrateName,
 		kindFacets,
-		activeKinds,
-		kindFilter,
 		rootChildren = null,
 		prefetchedTreeChildren = [],
 		status,
 		progressNodeCount,
 		showGraphBlanketImpls,
 		getNodeUrl,
-		onToggleKind,
 		onRetryTree,
 		nodeView,
 		nodeId,
@@ -90,20 +86,16 @@
 		} | null;
 		filter: string;
 		kindParams: NodeKind[];
-		searchQuery: Promise<NodeSummary[]> | null;
 		selectedNodeId: string;
 		treeRoots: TreeNodeDTO[] | null;
 		canonicalCrateName: string | undefined;
 		kindFacets: KindFacet[];
-		activeKinds: Set<NodeKind>;
-		kindFilter: Set<NodeKind>;
 		rootChildren?: { id: string; children: TreeNodeDTO[] } | null;
 		prefetchedTreeChildren?: Array<{ id: string; children: TreeNodeDTO[] }>;
 		status: CrateStatusValue;
 		progressNodeCount: number;
 		showGraphBlanketImpls: boolean;
 		getNodeUrl: (id: string) => string;
-		onToggleKind: (kind: NodeKind) => void;
 		onRetryTree?: (reset: () => void) => void;
 		nodeView: NodeView | null;
 		nodeId: string;
@@ -134,10 +126,7 @@
 	let filterInputTimer: ReturnType<typeof setTimeout> | null = null;
 	let filterDraft = $state('');
 	let filterOverride = $state<string | null>(null);
-	let searchResults = $state.raw<NodeSummary[]>([]);
-	let searchLoading = $state(false);
-	let searchError = $state<string | null>(null);
-	let searchRetryNonce = $state(0);
+	let kindOverride = $state.raw<NodeKind[] | null>(null);
 
 	const attachTreeFilterInput: Attachment<HTMLInputElement> = (node) => {
 		treeFilterInput = node;
@@ -161,9 +150,14 @@
 		mobileTreeOpen = !mobileTreeOpen;
 	}
 
-	// Event-driven close: navigation (tree link / search hit) dismisses the drawer.
-	// No $effect — Svelte 5 prefers derived state + explicit event handlers.
-	afterNavigate(closeMobileTree);
+	// A real navigation has authoritative URL state. replaceState updates stay
+	// immediate through the local overrides below and do not trigger this hook.
+	afterNavigate(() => {
+		closeMobileTree();
+		filterOverride = null;
+		kindOverride = null;
+		filterDraft = filter;
+	});
 
 	onMount(() => {
 		hydrated = true;
@@ -201,18 +195,46 @@
 		selected ? toDesignNode(selected, { ancestors, getNodeUrl }) : null,
 	);
 	const selectedPath = $derived(selectedDesign?.path ?? selected?.id ?? selectedNodeId);
+	const activeFilter = $derived(filterOverride ?? filter);
+	const effectiveKindParams = $derived(
+		(kindOverride ?? kindParams).filter((kind) => kind !== 'Impl'),
+	);
+	const kindFilter = $derived.by(() => new Set<NodeKind>(effectiveKindParams));
 	const totalItems = $derived.by(() => {
 		return kindFacets.reduce((total, facet) => total + facet.count, 0);
 	});
 	const populatedKinds = $derived(
-		kindFacets.filter((facet) => facet.count > 0 || activeKinds.has(facet.kind)),
+		kindFacets.filter(
+			(facet) => facet.kind !== 'Impl' && (facet.count > 0 || kindFilter.has(facet.kind)),
+		),
 	);
 	const selectedEdges = $derived(detailModel.selectedEdges);
-	const relationshipTotal = $derived(selectedEdges.incoming.length + selectedEdges.outgoing.length);
 	const relationshipGroups = $derived(buildNodeRelationshipGroups(detail, selectedEdges));
+	const relationshipTotal = $derived.by(() =>
+		[...relationshipGroups.incoming, ...relationshipGroups.outgoing].reduce(
+			(total, group) =>
+				total + group.items.reduce((groupTotal, item) => groupTotal + item.count, 0),
+			0,
+		),
+	);
 	const docSummary = $derived(docsSummary(selected?.docs));
-	const activeFilter = $derived(filterOverride ?? filter);
-	const hasActiveTreeFilter = $derived(Boolean(activeFilter) || kindFilter.size > 0);
+	const searchQuery = $derived(
+		activeFilter.trim() || effectiveKindParams.length > 0
+			? searchNodes({
+					crate: canonicalCrateName ?? crateName,
+					version,
+					q: activeFilter,
+					kinds: effectiveKindParams,
+				})
+			: null,
+	);
+	const searchResults = $derived(searchQuery?.current ?? []);
+	const searchLoading = $derived(searchQuery?.loading ?? false);
+	const searchError = $derived.by(() => {
+		const error = searchQuery?.error;
+		return error ? (error instanceof Error ? error.message : String(error)) : null;
+	});
+	const hasActiveTreeFilter = $derived(Boolean(activeFilter.trim()) || kindFilter.size > 0);
 	const emptySearchMessage = $derived(
 		activeFilter ? `No results for "${activeFilter}"` : 'No items match these filters',
 	);
@@ -220,45 +242,6 @@
 		if (filterOverride !== null && filter !== filterOverride) return;
 		filterOverride = null;
 		filterDraft = filter;
-	});
-
-	$effect(() => {
-		const query = searchQuery;
-		const retryNonce = searchRetryNonce;
-		if (!hasActiveTreeFilter) {
-			searchResults = [];
-			searchLoading = false;
-			searchError = null;
-			return;
-		}
-		if (!query) {
-			searchResults = [];
-			searchLoading = true;
-			searchError = null;
-			return;
-		}
-
-		let cancelled = false;
-		void retryNonce;
-		searchLoading = true;
-		searchError = null;
-		query.then(
-			(results) => {
-				if (cancelled) return;
-				searchResults = results;
-				searchLoading = false;
-			},
-			(err) => {
-				if (cancelled) return;
-				searchResults = [];
-				searchError = err instanceof Error ? err.message : String(err);
-				searchLoading = false;
-			},
-		);
-
-		return () => {
-			cancelled = true;
-		};
 	});
 
 	$effect(() => {
@@ -272,6 +255,7 @@
 		localViewOverride = null;
 		localDocLayoutOverride = null;
 		filterOverride = null;
+		kindOverride = null;
 		filterDraft = filter;
 	});
 
@@ -377,6 +361,7 @@
 	}
 
 	function shouldIncludeTreeNode(node: NodeSummary): boolean {
+		if (node.kind === 'Impl') return false;
 		if (showGraphBlanketImpls) return true;
 		if (node.id === selectedNodeId) return true;
 		return !isBlanketImplNode(node);
@@ -694,7 +679,8 @@
 	}
 
 	function updateExplorerState(patch: Partial<ExplorerViewState>): Promise<void> | void {
-		const nextUrl = serializeExplorerState(page.url, patch);
+		const baseUrl = browser ? new URL(window.location.href) : page.url;
+		const nextUrl = serializeExplorerState(baseUrl, patch);
 		if (browser) {
 			if (patch.view !== undefined) localViewOverride = patch.view;
 			if (patch.layout !== undefined) localDocLayoutOverride = patch.layout;
@@ -711,7 +697,7 @@
 
 	function replaceExplorerState(patch: Partial<ExplorerViewState>) {
 		if (!browser) return;
-		replaceState(serializeExplorerState(page.url, patch), page.state);
+		replaceState(serializeExplorerState(new URL(window.location.href), patch), page.state);
 	}
 
 	function currentExtraExpandedIds(): string[] {
@@ -739,13 +725,7 @@
 			return;
 		}
 		filterOverride = nextFilter;
-		const navigation = updateExplorerState({ q: nextFilter });
-		if (navigation) {
-			void navigation.catch((err) => {
-				searchError = err instanceof Error ? err.message : String(err);
-				searchLoading = false;
-			});
-		}
+		updateExplorerState({ q: nextFilter });
 	}
 
 	function scheduleFilterUpdate(nextFilter: string) {
@@ -753,7 +733,7 @@
 		filterInputTimer = setTimeout(() => {
 			filterInputTimer = null;
 			commitFilter(nextFilter);
-		}, 180);
+		}, 100);
 	}
 
 	function handleFilterInput(event: Event) {
@@ -774,17 +754,26 @@
 	}
 
 	function retrySearch() {
-		searchRetryNonce += 1;
-		searchError = null;
-		searchLoading = true;
-		const navigation = updateExplorerState({ q: activeFilter });
-		if (navigation) {
-			void navigation.catch((err) => {
-				searchError = err instanceof Error ? err.message : String(err);
-				searchLoading = false;
-			});
-		}
-		void invalidateAll();
+		if (searchQuery) void searchQuery.refresh();
+		else void invalidateAll();
+	}
+
+	function toggleKind(kind: NodeKind) {
+		const next = new Set<NodeKind>(effectiveKindParams);
+		if (next.has(kind)) next.delete(kind);
+		else next.add(kind);
+		kindOverride = nodeKindOrder.filter((candidate) => next.has(candidate));
+		updateExplorerState({ k: kindOverride });
+	}
+
+	function kindHref(kind: NodeKind): string {
+		const next = new Set<NodeKind>(effectiveKindParams);
+		if (next.has(kind)) next.delete(kind);
+		else next.add(kind);
+		const url = serializeExplorerState(browser ? new URL(window.location.href) : page.url, {
+			k: nodeKindOrder.filter((candidate) => next.has(candidate)),
+		});
+		return `${url.pathname}${url.search}`;
 	}
 
 	function docsSummary(docs: string | null | undefined): string | null {
@@ -1105,7 +1094,7 @@
 					<Icon name="search" size={12} />
 				</span>
 				<span class="kbd absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">S</span>
-				{#each kindParams as kind (kind)}
+				{#each effectiveKindParams as kind (kind)}
 					<input type="hidden" name="k" value={kind} />
 				{/each}
 				{#if showGraphBlanketImpls}
@@ -1115,9 +1104,9 @@
 			{#if populatedKinds.length > 0}
 				<div class="mt-2 flex flex-wrap gap-1">
 					{#each populatedKinds as facet (facet.kind)}
-						{@const isActive = activeKinds.has(facet.kind)}
+						{@const isActive = kindFilter.has(facet.kind)}
 						<a
-							href={resolveAppPath(kindFilterHref(page.url, facet.kind, isActive))}
+							href={resolveAppPath(kindHref(facet.kind))}
 							data-sveltekit-noscroll
 							data-sveltekit-keepfocus
 							class="badge badge-sm no-underline transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
@@ -1134,7 +1123,7 @@
 									return;
 								}
 								event.preventDefault();
-								onToggleKind(facet.kind);
+								toggleKind(facet.kind);
 							}}
 						>
 							{facet.label}

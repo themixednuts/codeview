@@ -35,18 +35,32 @@ describe('relationship groups', () => {
 
 		const groups = buildNodeRelationshipGroups(detail);
 
-		expect(groups.outgoing.map((group) => group.rel)).toEqual(['defines', 'uses']);
-		expect(groups.outgoing[0].label).toBe('defines');
-		expect(groups.outgoing[1].label).toBe('uses');
-		expect(groups.outgoing[1].items.map((item) => [item.node.name, item.count])).toEqual([
+		expect(groups.outgoing.map((group) => group.rel)).toEqual(['uses']);
+		expect(groups.outgoing[0].label).toBe('uses');
+		expect(groups.outgoing[0].items.map((item) => [item.node.name, item.count])).toEqual([
 			['Alpha', 2],
 			['Beta', 1],
 		]);
-		expect('docs' in groups.outgoing[1].items[0].node).toBe(false);
+		expect('docs' in groups.outgoing[0].items[0].node).toBe(false);
 
 		expect(groups.incoming.map((group) => group.rel)).toEqual(['calls']);
 		expect(groups.incoming[0].label).toBe('called by');
 		expect(groups.incoming[0].items).toHaveLength(1);
 		expect(groups.incoming[0].items[0].node.id).toBe(beta.id);
+	});
+
+	it('omits implementation records because they do not have standalone routes', () => {
+		const selected = node('demo::Selected', 'Selected');
+		const impl = node('demo::impl-1', 'impl Trait for type', 'Impl');
+		const detail: NodeDetail = {
+			node: selected,
+			relatedNodes: [impl],
+			edges: [
+				{ from: impl.id, to: selected.id, kind: 'UsesType', confidence: 'Static' },
+				{ from: selected.id, to: impl.id, kind: 'Defines', confidence: 'Static' },
+			],
+		};
+
+		expect(buildNodeRelationshipGroups(detail)).toEqual({ incoming: [], outgoing: [] });
 	});
 });

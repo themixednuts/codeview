@@ -66,7 +66,7 @@
 		requiredTraitMethods={model.requiredTraitMethods}
 		providedTraitMethods={model.providedTraitMethods}
 		traitAssocItems={model.traitAssocItems}
-		crateItems={model.crateItems}
+		directItems={model.directItems}
 		{kindLabels}
 		{displayNode}
 		implementers={model.whereUsed}

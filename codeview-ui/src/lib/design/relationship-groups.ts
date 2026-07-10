@@ -14,7 +14,9 @@ export function buildRelationshipGroups(
 		const relation = edgeKindToRelation(edge.kind);
 		const otherId = direction === 'incoming' ? edge.from : edge.to;
 		const other = relatedNodeMap.get(otherId);
-		if (!other) continue;
+		// Impl blocks are embedded documentation records, not routeable pages.
+		// Their trait members are rendered on the owning type instead.
+		if (!other || other.kind === 'Impl') continue;
 		const bucket = groups.get(relation.token) ?? new Map();
 		const existing = bucket.get(otherId);
 		if (existing) existing.count += 1;

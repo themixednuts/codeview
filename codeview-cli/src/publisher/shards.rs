@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use codeview_core::{CrateGraph, Edge, Node, NodeKind, Visibility};
+use codeview_core::{CrateGraph, Edge, EdgeKind, Node, NodeKind, Visibility};
 use serde::{Deserialize, Serialize};
 
 pub const STATIC_SCHEMA_VERSION: u32 = 2;
@@ -236,19 +236,71 @@ pub struct StaticTreeChildrenShard {
 pub(crate) fn build_tree_relations(
     graph: &CrateGraph,
 ) -> (HashMap<String, Vec<String>>, HashMap<String, String>) {
+    let nodes_by_id: HashMap<&str, &Node> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut structural_outgoing: HashMap<&str, Vec<&Edge>> = HashMap::new();
+    for edge in &graph.edges {
+        if matches!(edge.kind, EdgeKind::Contains | EdgeKind::Defines) {
+            structural_outgoing
+                .entry(edge.from.as_str())
+                .or_default()
+                .push(edge);
+        }
+    }
+
     let mut children: HashMap<String, Vec<String>> = HashMap::new();
     let mut parents: HashMap<String, String> = HashMap::new();
-    for edge in &graph.edges {
-        if matches!(
-            edge.kind,
-            codeview_core::EdgeKind::Contains | codeview_core::EdgeKind::Defines
-        ) {
-            children
-                .entry(edge.from.clone())
-                .or_default()
-                .push(edge.to.clone());
-            parents.entry(edge.to.clone()).or_insert(edge.from.clone());
+    let mut seen = HashSet::new();
+
+    let mut add_relation = |parent: &str, child: &str| {
+        if parent == child || !seen.insert((parent.to_string(), child.to_string())) {
+            return;
         }
+        children
+            .entry(parent.to_string())
+            .or_default()
+            .push(child.to_string());
+        parents
+            .entry(child.to_string())
+            .or_insert_with(|| parent.to_string());
+    };
+
+    for edge in &graph.edges {
+        if !matches!(edge.kind, EdgeKind::Contains | EdgeKind::Defines) {
+            continue;
+        }
+
+        let source = nodes_by_id.get(edge.from.as_str());
+        let target = nodes_by_id.get(edge.to.as_str());
+        if source.is_some_and(|node| node.kind == NodeKind::Impl) {
+            continue;
+        }
+
+        if target.is_some_and(|node| node.kind == NodeKind::Impl) {
+            // An impl is documentation attached to its owning type, not a page.
+            // Prefer the semantic Defines owner and collapse its routeable
+            // members directly beneath that owner in the navigation tree.
+            if edge.kind == EdgeKind::Defines {
+                for member_edge in structural_outgoing
+                    .get(edge.to.as_str())
+                    .into_iter()
+                    .flatten()
+                {
+                    if nodes_by_id
+                        .get(member_edge.to.as_str())
+                        .is_some_and(|node| is_local_page_node(node))
+                    {
+                        add_relation(edge.from.as_str(), member_edge.to.as_str());
+                    }
+                }
+            }
+            continue;
+        }
+
+        add_relation(edge.from.as_str(), edge.to.as_str());
     }
     (children, parents)
 }
@@ -382,11 +434,11 @@ pub(crate) fn ancestor_summaries(
 }
 
 pub(crate) fn is_local_page_node(node: &Node) -> bool {
-    !node.is_external
+    !node.is_external && node.kind != NodeKind::Impl
 }
 
 pub(crate) fn is_searchable_node(node: &Node) -> bool {
-    is_local_page_node(node) && node.kind != NodeKind::Impl
+    is_local_page_node(node)
 }
 
 pub(crate) fn has_local_tree_children(
@@ -1038,12 +1090,20 @@ mod tests {
             tree_shards.values().all(|shard| {
                 !shard.parents.contains_key("core")
                     && !shard.parents.contains_key("demo::Wrapper")
-                    && shard
-                        .parents
-                        .values()
-                        .all(|entry| entry.children.iter().all(|child| !child.node.is_external))
+                    && !shard.parents.contains_key("demo::impl-1")
+                    && shard.parents.values().all(|entry| {
+                        entry.children.iter().all(|child| {
+                            !child.node.is_external && child.node.kind != NodeKind::Impl
+                        })
+                    })
             }),
-            "tree shards should not expose external nodes as crate navigation"
+            "tree shards should only expose routeable local pages"
+        );
+
+        assert_eq!(
+            children.get("demo::Thing"),
+            Some(&vec!["demo::impl-1::clone".to_string()]),
+            "impl members should be attached directly to their owning type",
         );
 
         let manifest = build_manifest(
@@ -1055,7 +1115,7 @@ mod tests {
                 tree_children: Vec::new(),
             },
         );
-        assert_eq!(manifest.node_count, 7);
+        assert_eq!(manifest.node_count, 6);
         assert!(manifest.roots.iter().all(|root| !root.node.is_external));
         assert!(
             manifest

@@ -45,10 +45,10 @@ export type MaterializedDetailDocModel = Omit<
 	providedTraitMethods: Node[];
 	/** Trait-definition associated types/consts. */
 	traitAssocItems: Node[];
-	crateItems: Node[];
+	directItems: Node[];
 };
 
-const CRATE_ITEM_KINDS = new Set<Node['kind']>([
+const DIRECT_ITEM_KINDS = new Set<Node['kind']>([
 	'Module',
 	'Struct',
 	'Enum',
@@ -64,12 +64,13 @@ const CRATE_ITEM_KINDS = new Set<Node['kind']>([
 	'Primitive',
 ]);
 
-const CRATE_ITEM_KIND_ORDER = new Map<Node['kind'], number>(
-	Array.from(CRATE_ITEM_KINDS, (kind, index) => [kind, index]),
+const DIRECT_ITEM_KIND_ORDER = new Map<Node['kind'], number>(
+	Array.from(DIRECT_ITEM_KINDS, (kind, index) => [kind, index]),
 );
 
-function collectCrateItems(detail: NodeDetail, relatedNodeMap: Map<string, Node>): Node[] {
-	if (detail.node.kind !== 'Crate') return [];
+function collectDirectItems(detail: NodeDetail, relatedNodeMap: Map<string, Node>): Node[] {
+	if (detail.node.kind !== 'Crate' && detail.node.kind !== 'Module') return [];
+	const publicOnly = detail.node.kind === 'Crate';
 	const seen = new Set<string>();
 	const items: Node[] = [];
 	for (const edge of detail.edges) {
@@ -84,8 +85,8 @@ function collectCrateItems(detail: NodeDetail, relatedNodeMap: Map<string, Node>
 		if (
 			!node ||
 			node.is_external ||
-			!CRATE_ITEM_KINDS.has(node.kind) ||
-			!isPublic(node.visibility) ||
+			!DIRECT_ITEM_KINDS.has(node.kind) ||
+			(publicOnly && !isPublic(node.visibility)) ||
 			(node.kind === 'Module' && node.name === detail.node.name)
 		) {
 			continue;
@@ -95,8 +96,8 @@ function collectCrateItems(detail: NodeDetail, relatedNodeMap: Map<string, Node>
 	}
 	return items.sort((a, b) => {
 		const kindOrder =
-			(CRATE_ITEM_KIND_ORDER.get(a.kind) ?? Number.MAX_SAFE_INTEGER) -
-			(CRATE_ITEM_KIND_ORDER.get(b.kind) ?? Number.MAX_SAFE_INTEGER);
+			(DIRECT_ITEM_KIND_ORDER.get(a.kind) ?? Number.MAX_SAFE_INTEGER) -
+			(DIRECT_ITEM_KIND_ORDER.get(b.kind) ?? Number.MAX_SAFE_INTEGER);
 		return kindOrder || a.name.localeCompare(b.name);
 	});
 }
@@ -248,7 +249,7 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 
 	const selected = detail.node;
 	const relatedNodeMap = buildRelatedNodeMap(detail);
-	const crateItems = collectCrateItems(detail, relatedNodeMap);
+	const directItems = collectDirectItems(detail, relatedNodeMap);
 	const selectedEdges = {
 		incoming: detail.edges.filter((edge) => edge.to === selected.id),
 		outgoing: detail.edges.filter((edge) => edge.from === selected.id),
@@ -307,8 +308,8 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 		});
 	if (selected.docs)
 		tocEntries.push({ anchor: 'documentation', title: 'Documentation', count: null });
-	if (crateItems.length > 0)
-		tocEntries.push({ anchor: 'crate-items', title: 'Crate items', count: crateItems.length });
+	if (directItems.length > 0)
+		tocEntries.push({ anchor: 'items', title: 'Items', count: directItems.length });
 	if (traitItems.assoc.length > 0) {
 		tocEntries.push({
 			anchor: 'associated-items',
@@ -437,6 +438,6 @@ export function materializeDetailDocModel(
 		requiredTraitMethods: nodeList(resolvedModel.requiredTraitMethodIds, relatedNodeMap),
 		providedTraitMethods: nodeList(resolvedModel.providedTraitMethodIds, relatedNodeMap),
 		traitAssocItems: nodeList(resolvedModel.traitAssocItemIds, relatedNodeMap),
-		crateItems: detail ? collectCrateItems(detail, relatedNodeMap) : [],
+		directItems: detail ? collectDirectItems(detail, relatedNodeMap) : [],
 	};
 }

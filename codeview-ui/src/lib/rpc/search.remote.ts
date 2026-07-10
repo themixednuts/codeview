@@ -10,7 +10,7 @@ import { NodeIdsSchema, SearchNodesInputSchema, type SearchNodesInput } from './
 const DEFAULT_SEARCH_LIMIT = 500;
 
 function matchesNodeSearch(node: NodeSummary, queryText: string, kinds: Set<NodeKind>): boolean {
-	if (node.is_external) return false;
+	if (node.is_external || node.kind === 'Impl') return false;
 	if (kinds.size > 0 && !kinds.has(node.kind)) return false;
 	if (!queryText) return true;
 	const lower = queryText.toLowerCase();

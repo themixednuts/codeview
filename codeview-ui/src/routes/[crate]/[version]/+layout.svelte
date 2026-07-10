@@ -1,5 +1,4 @@
 <script lang="ts">
-	import type { NodeKind } from '$lib/graph';
 	import type { KindFacet, TreeNodeDTO } from '$lib/schema';
 	import {
 		getNodeUrlCtx,
@@ -12,14 +11,13 @@
 		type ExpandPath,
 	} from '$lib/context';
 	import { page } from '$app/state';
-	import { afterNavigate, beforeNavigate, goto, invalidate, replaceState } from '$app/navigation';
+	import { afterNavigate, beforeNavigate, goto, invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/environment';
 	import type { Snippet } from 'svelte';
 	import { getLocalCrates } from '$lib/rpc/crate.remote';
 	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
 	import { getStaticTreeRoots, getTreeRoots } from '$lib/rpc/roots.remote';
-	import { searchNodes } from '$lib/rpc/search.remote';
 	import { nodeIdFromPath, nodeUrlForRoute } from '$lib/url';
 	import { hyphenateCrateName } from '$lib/crate-names';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
@@ -30,7 +28,6 @@
 	import { perf } from '$lib/perf';
 	import { perfTick } from '$lib/perf.svelte';
 	import { getLogger } from '$lib/log';
-	import { nodeKindOrder } from '$lib/display-names';
 	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
 	import { isHosted } from '$lib/platform';
 	import { hasNonEmptyArray, preferNonEmptyArray } from '$lib/load-precedence';
@@ -389,29 +386,7 @@
 	// Search / filter state from URL
 	const filter = $derived(viewState.q);
 	const showGraphBlanketImpls = $derived(viewState.gbi);
-	const activeKinds = $derived.by(() => new Set<NodeKind>(viewState.k));
-	const kindFilter = $derived(activeKinds);
-	const kindParamList = $derived.by<NodeKind[]>(() => viewState.k);
-	const searchQuery = $derived(
-		filter || kindParamList.length > 0
-			? searchNodes({ crate: crateName, version, q: filter, kinds: kindParamList })
-			: null,
-	);
-	function updateExplorerState(patch: Parameters<typeof serializeExplorerState>[1]) {
-		const next = serializeExplorerState(page.url, patch);
-		if (browser) {
-			replaceState(next, page.state);
-			return;
-		}
-		void goto(next, { replaceState: true, noScroll: true, keepFocus: true });
-	}
-
-	function toggleKindFilter(kind: NodeKind) {
-		const next = new Set<NodeKind>(viewState.k);
-		if (next.has(kind)) next.delete(kind);
-		else next.add(kind);
-		updateExplorerState({ k: nodeKindOrder.filter((candidate) => next.has(candidate)) });
-	}
+	const kindParamList = $derived(viewState.k);
 
 	// Derive selected node ID from the current path
 	const selectedNodeId = $derived.by(() => {
@@ -549,13 +524,10 @@
 				: null}
 			{filter}
 			kindParams={kindParamList}
-			{searchQuery}
 			{selectedNodeId}
 			{treeRoots}
 			{canonicalCrateName}
 			{kindFacets}
-			{activeKinds}
-			{kindFilter}
 			{rootChildren}
 			{prefetchedTreeChildren}
 			status={effectiveCrateStatus}
@@ -564,7 +536,6 @@
 			{getNodeUrl}
 			nodeView={data?.nodeView ?? null}
 			nodeId={selectedNodeId}
-			onToggleKind={toggleKindFilter}
 			onRetryTree={(reset) => {
 				void refreshRemote(metaProxy);
 				void refreshRemote(rootsProxy);

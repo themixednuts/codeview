@@ -30,7 +30,7 @@
 		impl: Node;
 		methods: Node[];
 	};
-	type CrateItemGroup = {
+	type DirectItemGroup = {
 		kind: NodeKind;
 		label: string;
 		items: Node[];
@@ -45,7 +45,7 @@
 		requiredTraitMethods = [],
 		providedTraitMethods = [],
 		traitAssocItems = [],
-		crateItems = [],
+		directItems = [],
 		kindLabels,
 		displayNode,
 		implementers = [],
@@ -66,7 +66,7 @@
 		requiredTraitMethods?: Node[];
 		providedTraitMethods?: Node[];
 		traitAssocItems?: Node[];
-		crateItems?: Node[];
+		directItems?: Node[];
 		kindLabels: Record<NodeKind, string>;
 		displayNode: (id: string) => string;
 		implementers?: { id: string; name: string }[];
@@ -91,7 +91,11 @@
 	const unknownVisibility: Visibility = { kind: 'Unknown' };
 	const selectedVisibility = $derived(safeVisibility(selected));
 	const selectedIsPublic = $derived(isPublic(selectedVisibility));
-	const selectedVisibilityLabel = $derived(visibilityLabel(selectedVisibility));
+	const selectedVisibilityLabel = $derived(
+		selectedVisibility.kind === 'Unknown' || selectedVisibility.kind === 'Inherited'
+			? 'Private'
+			: visibilityLabel(selectedVisibility),
+	);
 	const traitImplGroupById = $derived(
 		new Map<string, MethodGroup>(
 			traitImplGroups.map((group: MethodGroup) => [group.impl.id, group] as const),
@@ -101,9 +105,9 @@
 	/** Canonical rustfmt-style declaration for the selected item.
 	 *  Falls back to null for kinds without a meaningful declaration. */
 	const itemDeclaration = $derived(selected ? formatItemDeclaration(selected) : null);
-	const crateItemGroups = $derived.by(() => {
-		const groups: CrateItemGroup[] = [];
-		for (const item of crateItems) {
+	const directItemGroups = $derived.by(() => {
+		const groups: DirectItemGroup[] = [];
+		for (const item of directItems) {
 			let group = groups.find((candidate) => candidate.kind === item.kind);
 			if (!group) {
 				group = { kind: item.kind, label: crateItemGroupLabel(item.kind), items: [] };
@@ -153,12 +157,23 @@
 
 	function hasInternalNode(value: unknown): boolean {
 		const nodeId = safeNodeId(value);
-		return !!nodeId && !!getNodeUrl && !!nodeExists?.(nodeId) && !isExternalNode(nodeId);
+		return (
+			!!nodeId &&
+			!!getNodeUrl &&
+			!!nodeExists?.(nodeId) &&
+			isRoutableNode(nodeId) &&
+			!isExternalNode(nodeId)
+		);
 	}
 
 	function hasExternalNode(value: unknown): boolean {
 		const nodeId = safeNodeId(value);
-		return !!nodeId && !!getNodeUrl && isExternalNode(nodeId);
+		return !!nodeId && !!getNodeUrl && isRoutableNode(nodeId) && isExternalNode(nodeId);
+	}
+
+	function isRoutableNode(value: unknown): boolean {
+		const nodeId = safeNodeId(value);
+		return !!nodeId && nodeMeta?.(nodeId)?.kind !== 'Impl';
 	}
 
 	function nodeHref(value: unknown): string {
@@ -1060,8 +1075,8 @@
 			</section>
 		{/if}
 
-		{#if selectedKind === 'Crate' && crateItemGroups.length > 0}
-			<section id="crate-items" class="doc-section group">
+		{#if (selectedKind === 'Crate' || selectedKind === 'Module') && directItemGroups.length > 0}
+			<section id="items" class="doc-section group">
 				<div
 					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
 				>
@@ -1069,21 +1084,21 @@
 					<h2
 						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
 					>
-						Public API
+						{selectedKind === 'Crate' ? 'Public API' : 'Items'}
 					</h2>
 					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
-						{crateItems.length}
+						{directItems.length}
 					</span>
 				</div>
 				<div class="space-y-7">
-					{#each crateItemGroups as group (group.kind)}
-						<section aria-labelledby={`crate-items-${group.kind}`}>
+					{#each directItemGroups as group (group.kind)}
+						<section aria-labelledby={`items-${group.kind}`}>
 							<div class="mb-2 flex items-center gap-2">
 								<span
 									class="size-2 shrink-0 rounded-sm"
 									style={`background: ${kindColors[group.kind]}`}
 								></span>
-								<h3 id={`crate-items-${group.kind}`} class="text-sm font-semibold text-(--ink)">
+								<h3 id={`items-${group.kind}`} class="text-sm font-semibold text-(--ink)">
 									{group.label}
 								</h3>
 								<span class="font-mono text-[10px] text-(--muted-soft)">{group.items.length}</span>

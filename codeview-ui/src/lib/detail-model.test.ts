@@ -160,11 +160,37 @@ describe('detail doc model', () => {
 		};
 
 		const model = materializeDetailDocModel(detail);
-		expect(model.crateItems.map((item) => item.id)).toEqual([module.id, structure.id]);
+		expect(model.directItems.map((item) => item.id)).toEqual([module.id, structure.id]);
 		expect(model.tocEntries).toContainEqual({
-			anchor: 'crate-items',
-			title: 'Crate items',
+			anchor: 'items',
+			title: 'Items',
 			count: 2,
 		});
+	});
+
+	it('materializes documented and undocumented children on internal module pages', () => {
+		const selected = node('demo::internal', 'internal', 'Module', {
+			visibility: { kind: 'Inherited' },
+		});
+		const publicStruct = node('demo::internal::Widget', 'Widget', 'Struct', {
+			docs: 'A public widget.',
+		});
+		const privateFunction = node('demo::internal::build', 'build', 'Function', {
+			visibility: { kind: 'Inherited' },
+		});
+		const impl = node('demo::impl-1', 'impl Widget', 'Impl');
+		const detail: NodeDetail = {
+			node: selected,
+			relatedNodes: [publicStruct, privateFunction, impl],
+			edges: [
+				{ from: selected.id, to: publicStruct.id, kind: 'Contains', confidence: 'Static' },
+				{ from: selected.id, to: privateFunction.id, kind: 'Defines', confidence: 'Static' },
+				{ from: selected.id, to: impl.id, kind: 'Contains', confidence: 'Static' },
+			],
+		};
+
+		const model = materializeDetailDocModel(detail);
+		expect(model.directItems.map((item) => item.id)).toEqual([publicStruct.id, privateFunction.id]);
+		expect(model.tocEntries).toContainEqual({ anchor: 'items', title: 'Items', count: 2 });
 	});
 });

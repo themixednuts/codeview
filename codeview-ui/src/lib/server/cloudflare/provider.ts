@@ -476,7 +476,7 @@ function searchSummaries(
 	const needle = queryText.trim().toLowerCase();
 	if (!needle) return [];
 	return entries
-		.filter((entry) => kinds.size === 0 || kinds.has(entry.kind))
+		.filter((entry) => entry.kind !== 'Impl' && (kinds.size === 0 || kinds.has(entry.kind)))
 		.map((entry): SearchEntry | null => {
 			const name = entry.name.toLowerCase();
 			const id = entry.id.toLowerCase();
@@ -956,18 +956,19 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		kinds: Set<NodeKind>,
 		limit: number,
 	): Promise<NodeSummary[]> {
-		if (kinds.size === 0) return [];
+		const pageKinds = Array.from(kinds).filter((kind) => kind !== 'Impl');
+		if (pageKinds.length === 0) return [];
 		const shards = await Promise.all(
-			Array.from(kinds)
-				.sort()
-				.map((kind) => loadHostedKindShardFromRef(ref, kind)),
+			pageKinds.sort().map((kind) => loadHostedKindShardFromRef(ref, kind)),
 		);
 		const completeShards = shards.filter((shard): shard is HostedKindShard => shard !== null);
 		if (completeShards.length !== shards.length) {
 			log.error`Incomplete kind index for ${ref.storageName}@${ref.version}`;
 			return [];
 		}
-		const entries = completeShards.flatMap((shard) => shard.entries);
+		const entries = completeShards
+			.flatMap((shard) => shard.entries)
+			.filter((entry) => entry.kind !== 'Impl');
 		if (shards.length <= 1) return entries.slice(0, limit);
 		return entries.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
 	}
