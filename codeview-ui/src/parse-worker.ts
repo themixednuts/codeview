@@ -13,9 +13,12 @@ import {
 	makeParseRequest,
 	parseStatusObject,
 	parseWorkflowId,
+	registerQueuedParseRequest,
+	shouldAcceptQueuedParseRequest,
 	type BeginParseResponse,
 	type ParseCompletionPayload,
 	type ParseQueueSnapshot,
+	type QueueParseResponse,
 	type ParseRequestMessage,
 	type ParseStatusEvent,
 	type ParseWorkflowParams,
@@ -978,20 +981,14 @@ async function plannedQueueMessageStillNeeded(
 	return true;
 }
 
-async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): Promise<void> {
+async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): Promise<boolean> {
 	const request = makeParseRequest(item.name, item.version, true, 'planned', item.kind);
 	const workflowId = parseWorkflowId(request.requestId);
-	await updateStatus(env, {
-		kind: request.kind,
-		name: request.name,
-		version: request.version,
-		status: 'processing',
-		step: 'queued',
-		requestId: request.requestId,
-		workflowId,
-	});
+	const registration = await registerQueuedParseRequest(env.PARSE_STATUS, request);
+	if (!registration.accepted) return false;
 	try {
 		await env.PARSE_REQUESTS!.send(request);
+		return true;
 	} catch (err) {
 		await updateStatus(env, {
 			kind: request.kind,
@@ -1084,9 +1081,12 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
 			skipped += 1;
 			continue;
 		}
-		await enqueuePlannedItem(env, item);
-		queued += 1;
-		remaining -= 1;
+		if (await enqueuePlannedItem(env, item)) {
+			queued += 1;
+			remaining -= 1;
+		} else {
+			skipped += 1;
+		}
 	}
 	return { ...pressure, activeTarget, availableSlots, budgetLimited: false, queued, skipped };
 }
@@ -1371,6 +1371,9 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		if (url.pathname === '/begin' && request.method === 'POST') {
 			return json(await this.beginParse(await readJson<ParseRequestMessage>(request)));
 		}
+		if (url.pathname === '/queued' && request.method === 'POST') {
+			return json(this.registerQueuedParse(await readJson<ParseRequestMessage>(request)));
+		}
 		if (url.pathname === '/event' && request.method === 'POST') {
 			return json(await this.recordEvent(await readJson<ParseStatusEvent>(request)));
 		}
@@ -1590,6 +1593,75 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		return { leased: true };
 	}
 
+	private writeQueuedStatus(message: ParseRequestMessage): StoredParseStatus {
+		const workflowId = parseWorkflowId(message.requestId);
+		const now = databaseNow();
+		this.ctx.storage.sql.exec(
+			`INSERT INTO statuses (
+				ecosystem, kind, name, version, status, step, error, action,
+				request_id, workflow_id, github_run_id, github_run_url,
+				requested_by_provider, requested_by_id, requested_by_login, requested_by_avatar_url,
+				created_at, updated_at, sequence
+			)
+			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, 1)
+			ON CONFLICT(ecosystem, name, version) DO UPDATE SET
+				kind = excluded.kind,
+				status = excluded.status,
+				step = excluded.step,
+				error = NULL,
+				action = NULL,
+				github_run_id = CASE
+					WHEN statuses.request_id = excluded.request_id THEN statuses.github_run_id
+					ELSE NULL
+				END,
+				github_run_url = CASE
+					WHEN statuses.request_id = excluded.request_id THEN statuses.github_run_url
+					ELSE NULL
+				END,
+				created_at = CASE
+					WHEN statuses.request_id = excluded.request_id THEN statuses.created_at
+					ELSE excluded.created_at
+				END,
+				request_id = excluded.request_id,
+				workflow_id = excluded.workflow_id,
+				requested_by_provider = excluded.requested_by_provider,
+				requested_by_id = excluded.requested_by_id,
+				requested_by_login = excluded.requested_by_login,
+				requested_by_avatar_url = excluded.requested_by_avatar_url,
+				updated_at = excluded.updated_at,
+				sequence = statuses.sequence + 1`,
+			'rust',
+			message.kind,
+			message.name,
+			message.version,
+			'processing',
+			'queued',
+			message.requestId,
+			workflowId,
+			message.requestedBy?.provider ?? null,
+			message.requestedBy?.id ?? null,
+			message.requestedBy?.login ?? null,
+			message.requestedBy?.avatarUrl ?? null,
+			message.requestedAt,
+			now,
+		);
+		const status = this.getStatus(message.name, message.version);
+		if (!status) throw new Error('failed to register queued parse');
+		this.broadcast(crateStatusTag(message.name, message.version), status);
+		this.broadcast('processing:rust', { type: 'processing', count: this.processing(100).length });
+		return status;
+	}
+
+	private registerQueuedParse(message: ParseRequestMessage): QueueParseResponse {
+		if (!isParseRequestMessage(message)) throw new Error('invalid parse request');
+		const existing = this.getStatus(message.name, message.version);
+		if (!shouldAcceptQueuedParseRequest(existing, message)) {
+			if (!existing) throw new Error('queued parse registration state is unavailable');
+			return { accepted: false, status: existing };
+		}
+		return { accepted: true, status: this.writeQueuedStatus(message) };
+	}
+
 	private beginParse(message: ParseRequestMessage): BeginParseResponse {
 		if (!isParseRequestMessage(message)) throw new Error('invalid parse request');
 		const existing = this.getStatus(message.name, message.version);
@@ -1616,44 +1688,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		}
 
 		const workflowId = parseWorkflowId(message.requestId);
-		const now = databaseNow();
-		this.ctx.storage.sql.exec(
-			`INSERT INTO statuses (
-				ecosystem, kind, name, version, status, step, error, action,
-				request_id, workflow_id,
-				requested_by_provider, requested_by_id, requested_by_login, requested_by_avatar_url,
-				created_at, updated_at, sequence
-			)
-			VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-			ON CONFLICT(ecosystem, name, version) DO UPDATE SET
-				kind = excluded.kind,
-				status = excluded.status,
-				step = excluded.step,
-				error = NULL,
-				action = NULL,
-				request_id = excluded.request_id,
-				workflow_id = excluded.workflow_id,
-				requested_by_provider = excluded.requested_by_provider,
-				requested_by_id = excluded.requested_by_id,
-				requested_by_login = excluded.requested_by_login,
-				requested_by_avatar_url = excluded.requested_by_avatar_url,
-				updated_at = excluded.updated_at,
-				sequence = statuses.sequence + 1`,
-			'rust',
-			message.kind,
-			message.name,
-			message.version,
-			'processing',
-			'queued',
-			message.requestId,
-			workflowId,
-			message.requestedBy?.provider ?? null,
-			message.requestedBy?.id ?? null,
-			message.requestedBy?.login ?? null,
-			message.requestedBy?.avatarUrl ?? null,
-			now,
-			now,
-		);
+		this.writeQueuedStatus(message);
 
 		const lease = this.tryLease(message);
 		if (!lease.leased) {

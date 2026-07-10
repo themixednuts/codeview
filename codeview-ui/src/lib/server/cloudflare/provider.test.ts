@@ -78,13 +78,43 @@ function fakeRateLimit(success = true): RateLimit {
 	} as unknown as RateLimit;
 }
 
-function fakeParseStatusNamespace(status: unknown): DurableObjectNamespace {
+function fakeParseStatusNamespace(
+	initialStatus: unknown,
+	registrations: unknown[] = [],
+): DurableObjectNamespace {
+	let status = initialStatus;
 	const stub = {
-		async fetch(input: RequestInfo | URL) {
+		async fetch(input: RequestInfo | URL, init?: RequestInit) {
 			const url = new URL(input instanceof Request ? input.url : input.toString());
-			return url.pathname === '/status'
-				? Response.json(status)
-				: new Response(null, { status: 404 });
+			if (url.pathname === '/queued') {
+				const message = (
+					input instanceof Request
+						? await input.clone().json()
+						: JSON.parse(String(init?.body ?? '{}'))
+				) as Record<string, unknown>;
+				registrations.push(message);
+				status = {
+					ecosystem: 'rust',
+					kind: message.kind,
+					name: message.name,
+					version: message.version,
+					status: 'processing',
+					step: 'queued',
+					requestId: message.requestId,
+					workflowId: `parse-${message.requestId}`,
+					createdAt: message.requestedAt,
+					updatedAt: message.requestedAt,
+					sequence: 1,
+				};
+				return Response.json({ accepted: true, status });
+			}
+			if (url.pathname === '/status') return Response.json(status);
+			if (url.pathname === '/processing') {
+				return Response.json(
+					(status as { status?: string } | null)?.status === 'processing' ? [status] : [],
+				);
+			}
+			return new Response(null, { status: 404 });
 		},
 	};
 	return {
@@ -611,9 +641,11 @@ describe('createCloudflareProvider', () => {
 	test('enqueues hosted parse requests', async () => {
 		const objects = new Map<string, unknown>();
 		const sent: unknown[] = [];
+		const registrations: unknown[] = [];
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
 			PARSE_REQUESTS: fakeQueue(sent),
+			PARSE_STATUS: fakeParseStatusNamespace(null, registrations),
 			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
@@ -629,13 +661,28 @@ describe('createCloudflareProvider', () => {
 			force: false,
 			source: 'ui',
 		});
+		expect(registrations).toHaveLength(1);
+		expect(registrations[0]).toMatchObject({
+			kind: 'crate',
+			name: 'serde',
+			version: '1.0.228',
+		});
 
 		await expect(provider.getCrateStatus('serde', '1.0.228')).resolves.toEqual({
-			status: 'failed',
-			error: 'No static graph is published for serde@1.0.228.',
-			action: 'docs_unavailable',
+			status: 'processing',
+			step: 'queued',
+			error: undefined,
+			action: undefined,
+			installedVersion: undefined,
 		});
-		await expect(provider.getProcessingCrates(5)).resolves.toEqual([]);
+		await expect(provider.getProcessingCrates(5)).resolves.toEqual([
+			{
+				id: 'serde',
+				name: 'serde',
+				version: '1.0.228',
+				description: 'queued',
+			},
+		]);
 	});
 
 	test('fails closed when hosted parse rate limiting is missing', async () => {

@@ -73,6 +73,11 @@ export type BeginParseResponse = {
 	status: StoredParseStatus;
 };
 
+export type QueueParseResponse = {
+	accepted: boolean;
+	status: StoredParseStatus;
+};
+
 export type ParseStatusEvent = {
 	kind?: ParseRequestKind;
 	name: string;
@@ -95,6 +100,35 @@ export function crateStatusTag(name: string, version: string): string {
 export function parseStatusObject(namespace: DurableObjectNamespace): DurableObjectStub {
 	const id = namespace.idFromName(PARSE_STATUS_OBJECT_NAME);
 	return namespace.get(id);
+}
+
+export async function registerQueuedParseRequest(
+	namespace: DurableObjectNamespace,
+	message: ParseRequestMessage,
+): Promise<QueueParseResponse> {
+	const response = await parseStatusObject(namespace).fetch('https://status/queued', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json; charset=utf-8' },
+		body: JSON.stringify(message),
+	});
+	if (!response.ok) {
+		throw new Error(`parse queue registration failed: ${response.status}`);
+	}
+	return (await response.json()) as QueueParseResponse;
+}
+
+export function shouldAcceptQueuedParseRequest(
+	existing: StoredParseStatus | null,
+	message: ParseRequestMessage,
+): boolean {
+	if (!existing) return true;
+	if (existing.status === 'processing') return false;
+	const requestedAt = Date.parse(message.requestedAt);
+	const existingUpdatedAt = Date.parse(existing.updatedAt);
+	return (
+		Number.isFinite(requestedAt) &&
+		(!Number.isFinite(existingUpdatedAt) || requestedAt > existingUpdatedAt)
+	);
 }
 
 export function parseWorkflowId(requestId: string): string {
@@ -142,6 +176,7 @@ export function isParseRequestMessage(value: unknown): value is ParseRequestMess
 		typeof candidate.requestId === 'string' &&
 		candidate.requestId.length > 0 &&
 		typeof candidate.requestedAt === 'string' &&
+		Number.isFinite(Date.parse(candidate.requestedAt)) &&
 		(candidate.source === 'ui' || candidate.source === 'manual' || candidate.source === 'planned') &&
 		(candidate.requestedBy === undefined || isParseRequestActor(candidate.requestedBy))
 	);

@@ -47,6 +47,7 @@ import {
 	makeParseRequest,
 	parseStatusObject,
 	parseWorkflowId,
+	registerQueuedParseRequest,
 	type ParseRequestMessage,
 	type ParseStatusEvent,
 	type ParseQueueSnapshot as StoredParseQueueSnapshot,
@@ -1968,18 +1969,18 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				parseContext.actor,
 			);
 			const workflowId = parseWorkflowId(parseRequest.requestId);
-			await recordHostedParseEvent({
-				kind: parseRequest.kind,
-				name: parseRequest.name,
-				version: parseRequest.version,
-				status: 'processing',
-				step: 'queued',
-				requestId: parseRequest.requestId,
-				workflowId,
-				requestedBy: parseRequest.requestedBy,
-			}).catch((err) => {
-				log.warn`parse ledger queue write failed for ${name}@${version}: ${String(err)}`;
-			});
+			if (env.PARSE_STATUS) {
+				try {
+					const registration = await registerQueuedParseRequest(env.PARSE_STATUS, parseRequest);
+					if (!registration.accepted) return Result.ok(undefined);
+				} catch (err) {
+					return Result.err(
+						new NotAvailableError({
+							message: `Hosted parse queue registration failed: ${errorMessage(err)}`,
+						}),
+					);
+				}
+			}
 			try {
 				await env.PARSE_REQUESTS.send(parseRequest);
 			} catch (err) {
