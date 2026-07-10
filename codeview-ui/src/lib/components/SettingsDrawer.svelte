@@ -11,22 +11,20 @@
 		type EditorId,
 		writePref,
 	} from '$lib/preferences';
-	import {
-		SunIcon,
-		MoonIcon,
-		MonitorIcon,
-		ExternalLinkIcon,
-		LinkIcon,
-		DatabaseIcon,
-		GlobeIcon,
-		ZapIcon,
-		SettingsIcon,
-		GitBranchIcon,
-		GitForkIcon,
-		BookOpenIcon,
-		PanelRightIcon,
-		Columns2Icon,
-	} from '@lucide/svelte';
+	import SunIcon from '@lucide/svelte/icons/sun';
+	import MoonIcon from '@lucide/svelte/icons/moon';
+	import MonitorIcon from '@lucide/svelte/icons/monitor';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import LinkIcon from '@lucide/svelte/icons/link';
+	import DatabaseIcon from '@lucide/svelte/icons/database';
+	import GlobeIcon from '@lucide/svelte/icons/globe';
+	import ZapIcon from '@lucide/svelte/icons/zap';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
+	import GitForkIcon from '@lucide/svelte/icons/git-fork';
+	import BookOpenIcon from '@lucide/svelte/icons/book-open';
+	import PanelRightIcon from '@lucide/svelte/icons/panel-right';
+	import Columns2Icon from '@lucide/svelte/icons/columns-2';
 	import type {
 		Theme,
 		AccentMode,

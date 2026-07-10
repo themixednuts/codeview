@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Span } from '$lib/graph';
 	import type { Attachment } from 'svelte/attachments';
-	import { LoaderCircleIcon } from '@lucide/svelte';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
@@ -41,7 +41,9 @@
 	const sourceContent = $derived(sourceData?.content ?? null);
 	const absolutePath = $derived(sourceData?.absolutePath ?? null);
 	const repoUrl = $derived(sourceData?.repoUrl ?? null);
-	const sourceHref = $derived(docsRsSourceUrl(crateName, crateVersion, span?.file, span?.line) ?? '#');
+	const sourceHref = $derived(
+		docsRsSourceUrl(crateName, crateVersion, span?.file, span?.line) ?? '#',
+	);
 
 	$effect(() => {
 		if (!isOpen || !span) {

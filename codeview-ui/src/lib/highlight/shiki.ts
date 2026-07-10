@@ -1,4 +1,15 @@
-import { createHighlighter, type Highlighter, type BundledLanguage } from 'shiki';
+import { createHighlighterCore, type HighlighterCore } from 'shiki/core';
+import { createJavaScriptRegexEngine } from 'shiki/engine/javascript';
+import rust from '@shikijs/langs/rust';
+import typescript from '@shikijs/langs/typescript';
+import javascript from '@shikijs/langs/javascript';
+import json from '@shikijs/langs/json';
+import toml from '@shikijs/langs/toml';
+import bash from '@shikijs/langs/bash';
+import sql from '@shikijs/langs/sql';
+import type { SupportedLanguage } from './languages';
+export { getDefaultLanguage, normalizeLanguage } from './languages';
+export type { ProjectType, SupportedLanguage } from './languages';
 // Eager imports force Vite/rolldown to bundle each theme — `themes: ['name']`
 // alone leaves them dynamic and they fall out of the build. We re-alias
 // `one-dark-pro` (the only "One Dark" shiki ships) as `one-dark` so the
@@ -13,39 +24,6 @@ import githubLight from '@shikijs/themes/github-light';
 import githubDark from '@shikijs/themes/github-dark';
 
 const oneDark = { ...oneDarkPro, name: 'one-dark' };
-
-// Supported languages - extend this as needed
-export type SupportedLanguage =
-	| 'rust'
-	| 'typescript'
-	| 'javascript'
-	| 'json'
-	| 'toml'
-	| 'bash'
-	| 'sql'
-	| 'text';
-
-// Map of language aliases to canonical names
-const languageAliases: Record<string, SupportedLanguage> = {
-	rs: 'rust',
-	ts: 'typescript',
-	js: 'javascript',
-	sh: 'bash',
-	shell: 'bash',
-	zsh: 'bash',
-	plaintext: 'text',
-	txt: 'text',
-	'': 'text',
-};
-
-// Default language per project type (extensible)
-export type ProjectType = 'rust' | 'typescript' | 'javascript';
-
-const defaultLanguages: Record<ProjectType, SupportedLanguage> = {
-	rust: 'rust',
-	typescript: 'typescript',
-	javascript: 'javascript',
-};
 
 /**
  * All shiki themes the Tweaks panel can pick. Output is generated with
@@ -63,12 +41,13 @@ const CODE_THEMES = [
 	'github-dark',
 ] as const;
 
-let highlighterPromise: Promise<Highlighter> | null = null;
+let highlighterPromise: Promise<HighlighterCore> | null = null;
 
-// Lazy-load the highlighter with the 8 themes the user can switch between.
-async function getHighlighter(): Promise<Highlighter> {
+// Keep the browser bundle limited to the languages Codeview actually renders.
+// Importing Shiki's umbrella entry emits every bundled grammar as an asset.
+async function getHighlighter(): Promise<HighlighterCore> {
 	if (!highlighterPromise) {
-		highlighterPromise = createHighlighter({
+		highlighterPromise = createHighlighterCore({
 			themes: [
 				solarizedLight,
 				solarizedDark,
@@ -79,21 +58,11 @@ async function getHighlighter(): Promise<Highlighter> {
 				githubLight,
 				githubDark,
 			],
-			langs: ['rust', 'typescript', 'javascript', 'json', 'toml', 'bash', 'sql'],
+			langs: [rust, typescript, javascript, json, toml, bash, sql],
+			engine: createJavaScriptRegexEngine(),
 		});
 	}
 	return highlighterPromise;
-}
-
-// Normalize language identifier
-export function normalizeLanguage(lang: string): SupportedLanguage {
-	const lower = lang.toLowerCase().trim();
-	return languageAliases[lower] ?? (lower as SupportedLanguage) ?? 'text';
-}
-
-// Get default language for a project type
-export function getDefaultLanguage(projectType: ProjectType = 'rust'): SupportedLanguage {
-	return defaultLanguages[projectType];
 }
 
 // Highlight code with the given language. The `theme` argument is kept
@@ -124,7 +93,7 @@ export async function highlightCode(
 
 	try {
 		const html = highlighter.codeToHtml(code, {
-			lang: lang as BundledLanguage,
+			lang,
 			themes: themesMap,
 			// defaultColor: false → no top-level color attr; everything goes
 			// through --shiki-{theme} CSS vars + the [data-code-theme] selectors

@@ -14,11 +14,8 @@ import type {
 	KindFacet,
 	TreeNodeDTO,
 	NodeView,
-	NodeViewBase,
 } from '$lib/schema';
 import { kindLabels, nodeKindOrder } from '$lib/display-names';
-import { buildDetailDocModel } from '$lib/detail-model';
-import { buildNodeRelationshipGroups } from '$lib/design/relationship-groups';
 import { getLogger } from '$lib/log';
 import { summarizeNode } from '$lib/node-summary';
 import type { NodeViewInput } from './schemas';
@@ -170,16 +167,6 @@ function buildKindFacets(kindCounts: Record<string, number>): KindFacet[] {
 		label: kindLabels[kind],
 		count: kindCounts[kind] ?? 0,
 	}));
-}
-
-function composeNodeView({ detail, ancestors }: NodeViewBase): NodeView {
-	const docModel = buildDetailDocModel(detail);
-	return {
-		detail,
-		ancestors,
-		docModel,
-		relationshipGroups: buildNodeRelationshipGroups(detail, docModel.selectedEdges),
-	};
 }
 
 // ── Loader class ──────────────────────────────────────────────────────
@@ -499,8 +486,8 @@ export class Resolver {
 		});
 	}
 
-	async crateMeta(name: string, version: string): Promise<CrateMeta | null> {
-		const provider = await this.#loader.provider();
+	async crateMeta(name: string, version: string, p?: Provider): Promise<CrateMeta | null> {
+		const provider = await this.#loader.provider(p);
 		const [index, versions, treeMeta] = await Effect.runPromise(
 			Effect.all(
 				[
@@ -524,12 +511,12 @@ export class Resolver {
 		return { index, versions, kindCounts, kindFacets: buildKindFacets(kindCounts) };
 	}
 
-	async treeRoots(name: string, version: string): Promise<TreeNodeDTO[]> {
-		const provider = await this.#loader.provider();
+	async treeRoots(name: string, version: string, p?: Provider): Promise<TreeNodeDTO[]> {
+		const provider = await this.#loader.provider(p);
 		if (isHosted && provider.loadTreeRootsDirect) {
 			return (await provider.loadTreeRootsDirect(name, version)) ?? [];
 		}
-		const idx = await this.treeIndex(name, version);
+		const idx = await this.treeIndex(name, version, provider);
 		if (idx) {
 			const rootIds = idx.getRootIds();
 			const roots: TreeNodeDTO[] = [];
@@ -547,12 +534,12 @@ export class Resolver {
 		return [];
 	}
 
-	async nodeView({ name, version, nodeId }: NodeViewInput): Promise<NodeView | null> {
-		const provider = await this.#loader.provider();
+	async nodeView({ name, version, nodeId }: NodeViewInput, p?: Provider): Promise<NodeView | null> {
+		const provider = await this.#loader.provider(p);
 		const resolvedVersion = version ?? 'latest';
 		if (isHosted && provider.loadNodeViewDirect) {
 			const direct = await provider.loadNodeViewDirect(name, resolvedVersion, nodeId);
-			return direct ? composeNodeView(direct) : null;
+			return direct;
 		}
 		const ws = await this.#loader.localWorkspace(provider);
 		if (isHosted) {
@@ -571,14 +558,12 @@ export class Resolver {
 					{ concurrency: 2 },
 				),
 			);
-			if (detail) return composeNodeView({ detail, ancestors: ancestors ?? [] });
+			if (detail) return { detail, ancestors: ancestors ?? [] };
 		}
 		const [detail, idx] = await Effect.runPromise(
 			Effect.all(
 				[
-					Effect.promise(() =>
-						this.nodeDetail({ nodeId, version: resolvedVersion }, provider, ws),
-					),
+					Effect.promise(() => this.nodeDetail({ nodeId, version: resolvedVersion }, provider, ws)),
 					Effect.promise(() => this.treeIndex(name, resolvedVersion, provider)),
 				] as const,
 				{ concurrency: 2 },
@@ -615,7 +600,7 @@ export class Resolver {
 				(await provider.loadTreeAncestorsDirect(name, resolvedVersion, resolvedNodeId)) ?? [];
 		}
 
-		return composeNodeView({ detail: resolvedDetail, ancestors });
+		return { detail: resolvedDetail, ancestors };
 	}
 
 	/**
@@ -680,12 +665,17 @@ export class Resolver {
 		return ancestors;
 	}
 
-	async treeChildren(name: string, version: string, parentId: string): Promise<TreeNodeDTO[]> {
-		const provider = await this.#loader.provider();
+	async treeChildren(
+		name: string,
+		version: string,
+		parentId: string,
+		p?: Provider,
+	): Promise<TreeNodeDTO[]> {
+		const provider = await this.#loader.provider(p);
 		if (isHosted && provider.loadTreeChildrenDirect) {
 			return (await provider.loadTreeChildrenDirect(name, version, parentId)) ?? [];
 		}
-		const idx = await this.treeIndex(name, version);
+		const idx = await this.treeIndex(name, version, provider);
 		if (idx) {
 			return this.#childDTOs(idx, parentId);
 		}

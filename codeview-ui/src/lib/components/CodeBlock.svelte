@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { highlightCode, type SupportedLanguage } from '$lib/highlight';
+	import type { SupportedLanguage } from '$lib/highlight/languages';
 
 	let {
 		code,
@@ -44,7 +44,8 @@
 		let cancelled = false;
 		highlightedHtml = '';
 
-		void highlightCode(nextCode, nextLang, nextTheme, options)
+		void import('$lib/highlight/shiki')
+			.then(({ highlightCode }) => highlightCode(nextCode, nextLang, nextTheme, options))
 			.then((html) => {
 				if (!cancelled) highlightedHtml = html;
 			})

@@ -12,9 +12,19 @@ if (!command) {
 	process.exit(2);
 }
 
+// Vite+ may evaluate the SvelteKit config in more than one process. Keep the
+// app/version identifier identical across every phase of this command so the
+// SSR bootstrap and client runtime agree on their generated global name.
+const codeviewVersion =
+	process.env.CODEVIEW_VERSION ??
+	process.env.GITHUB_SHA ??
+	process.env.CF_VERSION_METADATA_ID ??
+	`${Date.now()}`;
+
 const child = spawn(command, args, {
 	env: {
 		...process.env,
+		CODEVIEW_VERSION: codeviewVersion,
 		PUBLIC_CODEVIEW_PLATFORM: platform,
 	},
 	shell: process.platform === 'win32',

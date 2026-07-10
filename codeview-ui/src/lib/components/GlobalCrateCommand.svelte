@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { Icon, KindBadge } from '$lib/components/design';
+	import Icon from '$lib/components/design/Icon.svelte';
+	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import * as Command from '$lib/shadcn/ui/command';
 	import * as Dialog from '$lib/shadcn/ui/dialog';
 	import { searchRegistry } from '$lib/rpc/crate.remote';
@@ -39,7 +40,9 @@
 	}
 
 	function crateHref(crate: CrateSearchResult): string {
-		return resolve(`/${encodeURIComponent(crate.id ?? crate.name)}/${encodeURIComponent(crate.version)}`);
+		return resolve(
+			`/${encodeURIComponent(crate.id ?? crate.name)}/${encodeURIComponent(crate.version)}`,
+		);
 	}
 
 	async function resolveResource<T>(resource: RemoteResource<T>): Promise<T> {
@@ -81,7 +84,6 @@
 		}, 180);
 		return () => clearTimeout(timer);
 	});
-
 </script>
 
 <Dialog.Root bind:open>
@@ -104,7 +106,9 @@
 			<Command.List class="max-h-[420px]">
 				{#if loading}
 					<div class="flex items-center gap-2 px-4 py-5 text-sm text-(--muted)">
-						<span class="size-3 animate-spin rounded-full border border-(--accent) border-t-transparent"></span>
+						<span
+							class="size-3 animate-spin rounded-full border border-(--accent) border-t-transparent"
+						></span>
 						<span>Searching</span>
 					</div>
 				{:else if canSearch && results.length > 0}

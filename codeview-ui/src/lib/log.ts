@@ -2,9 +2,9 @@ import { Result } from 'better-result';
 import {
 	configure,
 	getConsoleSink,
-	getStreamSink,
 	getLogger as _getLogger,
 	type LogLevel,
+	type Sink,
 	isLogLevel,
 } from '@logtape/logtape';
 
@@ -55,55 +55,13 @@ function resolveLogLevel(): LogLevel {
 	return 'info';
 }
 
-async function buildFileSink(): Promise<Record<string, ReturnType<typeof getStreamSink>>> {
-	if (isBrowser || isCloudflare) return {};
-	try {
-		const logFile = process.env.LOG_FILE;
-		if (!logFile) return {};
-		const { createWriteStream } = await import('node:fs');
-		const ws = createWriteStream(logFile, { flags: 'a' });
-		const webStream = globalThis.WritableStream
-			? new WritableStream({
-					write(chunk) {
-						ws.write(chunk);
-					},
-					close() {
-						ws.end();
-					},
-				})
-			: null;
-		if (!webStream) return {};
-		return {
-			file: getStreamSink(webStream, {
-				formatter: (record) => {
-					const ts = new Date(record.timestamp).toISOString();
-					const level = record.level.toUpperCase();
-					const cat = record.category.slice(1).join(':');
-					const msg = record.message.map((p) => (typeof p === 'function' ? p() : p)).join('');
-					const props =
-						record.properties && Object.keys(record.properties).length > 0
-							? ' ' +
-								Result.try(() => JSON.stringify(record.properties)).unwrapOr('[unserializable]')
-							: '';
-					return `${ts} ${level} [${cat}] ${msg}${props}\n`;
-				},
-			}),
-		};
-	} catch {
-		return {};
-	}
-}
-
-export async function setupLogging(): Promise<void> {
+export async function setupLogging(extraSinks: Record<string, Sink> = {}): Promise<void> {
 	if (configured) return;
 	configured = true;
 
 	const perfEnabled = isPerfEnabled();
 	const logLevel = resolveLogLevel();
-	const fileSinks = await buildFileSink();
-	const hasFile = 'file' in fileSinks;
-
-	const allSinks = hasFile ? ['console', 'file'] : ['console'];
+	const allSinks = ['console', ...Object.keys(extraSinks)];
 
 	await configure({
 		sinks: {
@@ -120,7 +78,7 @@ export async function setupLogging(): Promise<void> {
 					return [`${prefix} ${msg}${props}`];
 				},
 			}),
-			...fileSinks,
+			...extraSinks,
 		},
 		loggers: [
 			{

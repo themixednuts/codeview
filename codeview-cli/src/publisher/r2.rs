@@ -445,9 +445,9 @@ impl LocalMiniflareBackend {
             .unwrap_or_else(|| PathBuf::from("."));
         let script_path = cwd.join("scripts").join("bulk-put-local.ts");
         let persist_to = self
-            .r2_persist_to()
+            .persist_to
             .to_str()
-            .context("R2 persist path is not valid UTF-8")?
+            .context("persist_to path is not valid UTF-8")?
             .to_string();
 
         let mut cmd = tokio::process::Command::new("bun");
@@ -573,10 +573,6 @@ impl LocalMiniflareBackend {
         self.persist_to
             .to_str()
             .context("persist_to path is not valid UTF-8")
-    }
-
-    fn r2_persist_to(&self) -> PathBuf {
-        self.persist_to.join("v3").join("r2")
     }
 }
 

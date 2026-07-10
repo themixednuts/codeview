@@ -246,9 +246,7 @@ const PolyTraitSchema: v.GenericSchema<PolyTrait> = v.lazy(() =>
 
 const FunctionPointerSigSchema: v.GenericSchema<FunctionPointerSig> = v.lazy(() =>
 	v.object({
-		inputs: v.array(
-			v.object({ name: v.string(), type: TypeRefSchema }),
-		),
+		inputs: v.array(v.object({ name: v.string(), type: TypeRefSchema })),
 		output: v.optional(v.nullable(TypeRefSchema)),
 		is_unsafe: v.boolean(),
 		is_const: v.boolean(),
@@ -524,76 +522,6 @@ export const NodeDetailSchema = v.object({
 	relatedNodes: v.array(NodeSchema),
 });
 
-export const SelectedEdgesSchema = v.object({
-	incoming: v.array(EdgeSchema),
-	outgoing: v.array(EdgeSchema),
-});
-
-export const DetailMethodGroupSchema = v.object({
-	implId: v.string(),
-	methodIds: v.array(v.string()),
-});
-
-export const TocEntrySchema = v.object({
-	anchor: v.string(),
-	title: v.string(),
-	count: v.nullable(v.number()),
-});
-
-export const WhereUsedRefSchema = v.object({
-	id: v.string(),
-	name: v.string(),
-});
-
-export const DetailDocModelSchema = v.object({
-	selectedEdges: SelectedEdgesSchema,
-	filteredEdges: SelectedEdgesSchema,
-	relatedNodeIds: v.array(v.string()),
-	implBlockIds: v.array(v.string()),
-	sourceImplIds: v.array(v.string()),
-	blanketImplIds: v.array(v.string()),
-	methodGroups: v.array(DetailMethodGroupSchema),
-	traitImplGroups: v.optional(v.array(DetailMethodGroupSchema)),
-	/** Trait-definition associated items (required methods). Empty on non-trait pages. */
-	requiredTraitMethodIds: v.optional(v.array(v.string())),
-	/** Trait-definition associated items (provided/default methods). Empty on non-trait pages. */
-	providedTraitMethodIds: v.optional(v.array(v.string())),
-	/** Trait-definition associated types/consts. Empty on non-trait pages. */
-	traitAssocItemIds: v.optional(v.array(v.string())),
-	methodCount: v.number(),
-	totalImpls: v.number(),
-	tocEntries: v.array(TocEntrySchema),
-	whereUsed: v.array(WhereUsedRefSchema),
-});
-
-export const DesignRelationSchema = v.picklist([
-	'contains',
-	'reexports',
-	'defines',
-	'implements',
-	'uses',
-	'calls',
-	'calls-runtime',
-	'derives',
-]);
-
-export const RelationshipGroupItemSchema = v.object({
-	node: NodeSummarySchema,
-	count: v.number(),
-});
-
-export const RelationshipGroupSchema = v.object({
-	rel: DesignRelationSchema,
-	label: v.string(),
-	color: v.string(),
-	items: v.array(RelationshipGroupItemSchema),
-});
-
-export const RelationshipGroupsSchema = v.object({
-	incoming: v.array(RelationshipGroupSchema),
-	outgoing: v.array(RelationshipGroupSchema),
-});
-
 /** getSource response */
 export const SourceResultSchema = v.object({
 	error: v.nullable(v.string()),
@@ -739,15 +667,47 @@ export type NodeDetail = {
 	edges: Edge[];
 	relatedNodes: Node[];
 };
-export type SelectedEdges = v.InferOutput<typeof SelectedEdgesSchema>;
-export type DetailMethodGroup = v.InferOutput<typeof DetailMethodGroupSchema>;
-export type TocEntry = v.InferOutput<typeof TocEntrySchema>;
-export type WhereUsedRef = v.InferOutput<typeof WhereUsedRefSchema>;
-export type DetailDocModel = v.InferOutput<typeof DetailDocModelSchema>;
-export type DesignRelation = v.InferOutput<typeof DesignRelationSchema>;
-export type RelationshipGroupItem = v.InferOutput<typeof RelationshipGroupItemSchema>;
-export type RelationshipGroup = v.InferOutput<typeof RelationshipGroupSchema>;
-export type RelationshipGroups = v.InferOutput<typeof RelationshipGroupsSchema>;
+export type SelectedEdges = { incoming: Edge[]; outgoing: Edge[] };
+export type DetailMethodGroup = { implId: string; methodIds: string[] };
+export type TocEntry = { anchor: string; title: string; count: number | null };
+export type WhereUsedRef = { id: string; name: string };
+export type DetailDocModel = {
+	selectedEdges: SelectedEdges;
+	filteredEdges: SelectedEdges;
+	relatedNodeIds: string[];
+	implBlockIds: string[];
+	sourceImplIds: string[];
+	blanketImplIds: string[];
+	methodGroups: DetailMethodGroup[];
+	traitImplGroups: DetailMethodGroup[];
+	requiredTraitMethodIds: string[];
+	providedTraitMethodIds: string[];
+	traitAssocItemIds: string[];
+	methodCount: number;
+	totalImpls: number;
+	tocEntries: TocEntry[];
+	whereUsed: WhereUsedRef[];
+};
+export type DesignRelation =
+	| 'contains'
+	| 'reexports'
+	| 'defines'
+	| 'implements'
+	| 'uses'
+	| 'calls'
+	| 'calls-runtime'
+	| 'derives';
+export type RelationshipGroupItem = { node: NodeSummary; count: number };
+export type RelationshipGroup = {
+	rel: DesignRelation;
+	label: string;
+	color: string;
+	items: RelationshipGroupItem[];
+};
+export type RelationshipGroups = {
+	incoming: RelationshipGroup[];
+	outgoing: RelationshipGroup[];
+};
 export type SourceResult = v.InferOutput<typeof SourceResultSchema>;
 export type CrateStatus = v.InferOutput<typeof CrateStatusSchema>;
 export type CrateSearchResult = v.InferOutput<typeof CrateSearchResultSchema>;
@@ -766,7 +726,7 @@ export const TreeNodeDTOSchema = v.object({
 });
 export type TreeNodeDTO = v.InferOutput<typeof TreeNodeDTOSchema>;
 
-export const STATIC_ARTIFACT_SCHEMA_VERSION = 1;
+export const STATIC_ARTIFACT_SCHEMA_VERSION = 2;
 
 export const StaticCrateManifestSchema = v.object({
 	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),
@@ -856,21 +816,13 @@ export const CrateMetaSchema = v.object({
 });
 export type CrateMeta = v.InferOutput<typeof CrateMetaSchema>;
 
-/** Base per-node response as stored in hosted artifacts. */
-export const NodeViewBaseSchema = v.object({
-	detail: NodeDetailSchema,
-	ancestors: v.array(NodeSummarySchema),
-});
-export type NodeViewBase = v.InferOutput<typeof NodeViewBaseSchema>;
-
-/** Combined per-node response: detail + ancestors + server-composed render DTOs. */
+/** Canonical per-node response shared by hosted artifacts and RPCs. */
 export const NodeViewSchema = v.object({
 	detail: NodeDetailSchema,
 	ancestors: v.array(NodeSummarySchema),
-	docModel: DetailDocModelSchema,
-	relationshipGroups: RelationshipGroupsSchema,
 });
 export type NodeView = v.InferOutput<typeof NodeViewSchema>;
+export type NodeViewBase = NodeView;
 
 export const StaticNodeShardSchema = v.object({
 	schema_version: v.literal(STATIC_ARTIFACT_SCHEMA_VERSION),

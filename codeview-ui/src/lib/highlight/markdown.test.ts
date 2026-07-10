@@ -28,4 +28,25 @@ describe('rustdoc markdown links', () => {
 		expect(html).toContain('href="#rand::RngExt::random"');
 		expect(html).toContain('<code>From&lt;Range&gt;</code>');
 	});
+
+	it('escapes raw HTML from crate documentation', () => {
+		const html = renderMarkdown(
+			'<img src=x onerror="globalThis.pwned=true"><script>globalThis.pwned=true</script>',
+		);
+
+		expect(html).not.toContain('<img');
+		expect(html).not.toContain('<script>');
+		expect(html).toContain('&lt;img');
+		expect(html).toContain('&lt;script&gt;');
+	});
+
+	it('keeps per-render link maps isolated', () => {
+		const first = renderMarkdown('[`Item`]', { Item: 'first::Item' });
+		const second = renderMarkdown('[`Item`]', { Item: 'second::Item' });
+
+		expect(first).toContain('href="#first::Item"');
+		expect(first).not.toContain('second::Item');
+		expect(second).toContain('href="#second::Item"');
+		expect(second).not.toContain('first::Item');
+	});
 });

@@ -2,7 +2,7 @@
 	import { browser } from '$app/environment';
 	import type { Node } from '$lib/schema';
 	import { kindLabels } from '$lib/display-names';
-	import { parseDocumentation } from '$lib/highlight';
+	import { parseDocumentation } from '$lib/highlight/documentation';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import SquareIcon from '@lucide/svelte/icons/square';

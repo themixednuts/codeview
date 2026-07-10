@@ -25,7 +25,6 @@ const MIN_NODE_VIEW_BUCKETS: u32 = 128;
 const MAX_NODE_VIEW_BUCKETS: u32 = 4096;
 const TREE_CHILDREN_BUCKETS: u32 = 128;
 const ALIAS_BUCKETS: u32 = 128;
-const NODE_VIEW_ENTRY_LIMIT: usize = 100_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostedArtifactConfig {
@@ -39,8 +38,6 @@ pub struct HostedArtifactConfig {
     pub tree_children_buckets: u32,
     #[serde(rename = "aliasBuckets")]
     pub alias_buckets: u32,
-    #[serde(rename = "nodeViewEntryLimit")]
-    pub node_view_entry_limit: usize,
 }
 
 impl Default for HostedArtifactConfig {
@@ -51,7 +48,6 @@ impl Default for HostedArtifactConfig {
             max_node_view_buckets: MAX_NODE_VIEW_BUCKETS,
             tree_children_buckets: TREE_CHILDREN_BUCKETS,
             alias_buckets: ALIAS_BUCKETS,
-            node_view_entry_limit: NODE_VIEW_ENTRY_LIMIT,
         }
     }
 }
@@ -75,8 +71,6 @@ pub struct HostedBuildReport {
     pub node_view_bucket_count: u32,
     #[serde(rename = "nodeViewLargestBucketRawBytes")]
     pub node_view_largest_bucket_raw_bytes: usize,
-    #[serde(rename = "nodeViewDeferredEntries")]
-    pub node_view_deferred_entries: usize,
     #[serde(rename = "treeBucketCount")]
     pub tree_bucket_count: u32,
     #[serde(rename = "aliasCount")]
@@ -124,44 +118,22 @@ pub struct HostedArtifactInfo {
     pub target_raw_shard_bytes: usize,
     #[serde(rename = "searchPrefixLength")]
     pub search_prefix_length: u32,
-    #[serde(rename = "nodeViewEntryLimit")]
-    pub node_view_entry_limit: usize,
     #[serde(rename = "kindIndex")]
     pub kind_index: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostedNodeDetail {
+    pub node: Node,
     pub edges: Vec<Edge>,
     #[serde(rename = "relatedNodes")]
-    pub related_nodes: Vec<NodeSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HostedNodeViewStats {
-    #[serde(rename = "incomingEdges")]
-    pub incoming_edges: usize,
-    #[serde(rename = "outgoingEdges")]
-    pub outgoing_edges: usize,
-    #[serde(rename = "relatedNodes")]
-    pub related_nodes: usize,
-    #[serde(rename = "includedIncomingEdges")]
-    pub included_incoming_edges: usize,
-    #[serde(rename = "includedOutgoingEdges")]
-    pub included_outgoing_edges: usize,
-    #[serde(rename = "truncatedIncomingEdges")]
-    pub truncated_incoming_edges: usize,
-    #[serde(rename = "truncatedOutgoingEdges")]
-    pub truncated_outgoing_edges: usize,
+    pub related_nodes: Vec<Node>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostedNodeViewEntry {
-    #[serde(rename = "nodeId")]
-    pub node_id: String,
     pub detail: HostedNodeDetail,
     pub ancestors: Vec<NodeSummary>,
-    pub stats: HostedNodeViewStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,14 +213,13 @@ pub fn build_with_config(
         .collect();
     let (children_map, parents) = super::shards::build_tree_relations(graph);
 
-    let local_node_count = graph.nodes.iter().filter(|node| !node.is_external).count();
-    let should_materialize_node_views = local_node_count <= config.node_view_entry_limit;
-    let node_entries = if should_materialize_node_views {
-        build_node_view_entries(graph, &nodes_by_id, &parents)?
-    } else {
-        Vec::new()
-    };
+    let node_entries = build_node_view_entries(graph, &nodes_by_id, &parents)?;
     let node_view_total_raw_bytes: usize = node_entries.iter().map(|entry| entry.raw_bytes).sum();
+    let node_view_entry_count = node_entries.len();
+    let largest_entry = node_entries
+        .iter()
+        .max_by_key(|entry| entry.raw_bytes)
+        .map(|entry| (entry.node_id.clone(), entry.raw_bytes));
     let node_view_bucket_count = if node_entries.is_empty() {
         0
     } else {
@@ -267,8 +238,8 @@ pub fn build_with_config(
             storage_name,
             node_view_bucket_count,
             node_entries
-                .iter()
-                .map(|entry| (entry.node_id.as_str(), &entry.value)),
+                .into_iter()
+                .map(|entry| (entry.node_id, entry.value)),
         )?
     };
     let tree_shards = build_tree_shards(
@@ -337,25 +308,16 @@ pub fn build_with_config(
         )?;
     }
 
-    let largest_entry = node_entries
-        .iter()
-        .max_by_key(|entry| entry.raw_bytes)
-        .map(|entry| (entry.node_id.clone(), entry.raw_bytes));
     let report_key = format!("{prefix}/report.json");
     let base_artifact_total_raw_bytes: usize =
         artifacts.iter().map(|artifact| artifact.body.len()).sum();
     let mut report = HostedBuildReport {
-        node_view_entries: node_entries.len(),
+        node_view_entries: node_view_entry_count,
         node_view_total_raw_bytes,
         node_view_largest_entry_raw_bytes: largest_entry.as_ref().map_or(0, |(_, bytes)| *bytes),
         node_view_largest_entry_id: largest_entry.map(|(id, _)| id),
         node_view_bucket_count,
         node_view_largest_bucket_raw_bytes: largest_bucket_raw_bytes,
-        node_view_deferred_entries: if should_materialize_node_views {
-            0
-        } else {
-            local_node_count
-        },
         tree_bucket_count: config.tree_children_buckets,
         alias_count: graph.aliases.len(),
         alias_bucket_count: config.alias_buckets,
@@ -402,35 +364,16 @@ fn build_node_view_entries(
         .iter()
         .filter(|node| !node.is_external && node.kind != NodeKind::Impl)
     {
-        let incoming_edges = edge_lookup.incoming_count(node.id.as_str());
-        let outgoing_edges = edge_lookup.outgoing_count(node.id.as_str());
         // Second-hop edges from impl blocks → methods/assoc items so the type
         // page can list trait-impl members (signatures + docs) like docs.rs.
         let edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
         let related_nodes = collect_related(node.id.as_str(), &edges, |endpoint| {
-            nodes_by_id.get(endpoint).map(|node| summarise_node(node))
+            nodes_by_id.get(endpoint).map(|node| (*node).clone())
         });
         let ancestors = ancestor_summaries(node.id.as_str(), parents, nodes_by_id);
-        let included_outgoing = edges
-            .iter()
-            .filter(|edge| edge.from == node.id)
-            .count();
-        let included_incoming = edges
-            .iter()
-            .filter(|edge| edge.to == node.id)
-            .count();
         let value = HostedNodeViewEntry {
-            node_id: node.id.clone(),
-            stats: HostedNodeViewStats {
-                incoming_edges,
-                outgoing_edges,
-                related_nodes: related_nodes.len(),
-                included_incoming_edges: included_incoming,
-                included_outgoing_edges: included_outgoing,
-                truncated_incoming_edges: 0,
-                truncated_outgoing_edges: 0,
-            },
             detail: HostedNodeDetail {
+                node: node.clone(),
                 edges,
                 related_nodes,
             },
@@ -448,15 +391,15 @@ fn build_node_view_entries(
     Ok(entries)
 }
 
-fn build_node_view_shards<'a>(
+fn build_node_view_shards(
     graph: &CrateGraph,
     storage_name: &str,
     bucket_count: u32,
-    entries: impl Iterator<Item = (&'a str, &'a HostedNodeViewEntry)>,
+    entries: impl Iterator<Item = (String, HostedNodeViewEntry)>,
 ) -> anyhow::Result<(BTreeMap<String, HostedNodeViewShard>, usize)> {
     let mut shards: BTreeMap<String, HostedNodeViewShard> = BTreeMap::new();
     for (node_id, entry) in entries {
-        let bucket = node_view_bucket(node_id, bucket_count);
+        let bucket = node_view_bucket(&node_id, bucket_count);
         let shard = shards
             .entry(bucket.clone())
             .or_insert_with(|| HostedNodeViewShard {
@@ -467,7 +410,7 @@ fn build_node_view_shards<'a>(
                 bucket_count,
                 entries: BTreeMap::new(),
             });
-        shard.entries.insert(node_id.to_string(), entry.clone());
+        shard.entries.insert(node_id, entry);
     }
 
     let mut largest_bucket_raw_bytes = 0usize;
@@ -635,7 +578,6 @@ fn build_meta(
             alias_bucket_count: config.alias_buckets,
             target_raw_shard_bytes: config.target_raw_shard_bytes,
             search_prefix_length: 2,
-            node_view_entry_limit: config.node_view_entry_limit,
             kind_index: true,
         },
     }
@@ -905,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_node_views_exclude_external_pages_but_keep_related_summaries() {
+    fn hosted_node_views_exclude_external_pages_but_keep_full_related_nodes() {
         let mut graph = graph();
         graph.nodes.push(external_node(
             "core::convert::TryFrom",
@@ -952,7 +894,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_node_view_keeps_full_high_fanout_edges_with_stats() {
+    fn hosted_node_view_keeps_full_high_fanout_edges() {
         let mut graph = graph();
         let extra_callers = 144;
         for index in 0..extra_callers {
@@ -975,12 +917,6 @@ mod tests {
             serde_json::from_slice(&artifact.body).expect("deserialize local bucket");
         let entry = shard.entries.get("demo::Thing").expect("local node entry");
 
-        assert_eq!(entry.stats.incoming_edges, 2 + extra_callers);
-        assert_eq!(
-            entry.stats.included_incoming_edges,
-            entry.stats.incoming_edges
-        );
-        assert_eq!(entry.stats.truncated_incoming_edges, 0);
         assert_eq!(entry.detail.edges.len(), 2 + extra_callers);
         assert_eq!(entry.detail.related_nodes.len(), 2 + extra_callers);
         assert!(
@@ -994,20 +930,19 @@ mod tests {
     }
 
     #[test]
-    fn hosted_node_views_can_be_deferred_for_large_crates() {
+    fn hosted_node_views_are_always_materialized() {
         let config = HostedArtifactConfig {
-            node_view_entry_limit: 1,
+            target_raw_shard_bytes: 1,
             ..HostedArtifactConfig::default()
         };
 
         let set = build_with_config(&graph(), "demo", config).expect("build hosted artifacts");
-        assert_eq!(set.report.node_view_entries, 0);
-        assert_eq!(set.report.node_view_bucket_count, 0);
-        assert_eq!(set.report.node_view_deferred_entries, 3);
+        assert_eq!(set.report.node_view_entries, 3);
+        assert!(set.report.node_view_bucket_count > 0);
         assert!(
             set.artifacts
                 .iter()
-                .all(|artifact| { !artifact.key.starts_with("rust/demo/1.0.0/site/node-views/") })
+                .any(|artifact| { artifact.key.starts_with("rust/demo/1.0.0/site/node-views/") })
         );
 
         let meta_artifact = set
@@ -1017,6 +952,6 @@ mod tests {
             .expect("hosted meta");
         let meta: HostedMetaArtifact =
             serde_json::from_slice(&meta_artifact.body).expect("deserialize hosted meta");
-        assert_eq!(meta.hosted_artifacts.node_view_bucket_count, 0);
+        assert!(meta.hosted_artifacts.node_view_bucket_count > 0);
     }
 }

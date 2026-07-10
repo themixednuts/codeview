@@ -2,7 +2,7 @@
 	import { probeAvailableDocsVersion, triggerCrateParse } from '$lib/rpc/crate.remote';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { LoaderCircleIcon } from '@lucide/svelte';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { isHosted } from '$lib/platform';
 	import { isStdCrate } from '$lib/std';
 	import { normalizeCrateName } from '$lib/crate-names';

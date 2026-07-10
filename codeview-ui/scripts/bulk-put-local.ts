@@ -28,7 +28,7 @@
  *   bun scripts/bulk-put-local.ts \
  *     --binding CRATE_GRAPHS \
  *     --bucket crate-graphs \
- *     --persist-to .wrangler/state/v3/r2
+ *     --persist-to .wrangler/state
  */
 
 import { Miniflare } from 'miniflare';
@@ -81,7 +81,9 @@ async function main(): Promise<void> {
 		modules: true,
 		script: 'export default { async fetch() { return new Response(); } };',
 		r2Buckets: { [args.binding]: args.bucket },
-		r2Persist: args.persistTo,
+		// Match Wrangler's local persistence contract. Wrangler passes the v3
+		// root as Miniflare's default root and lets each plugin own its directory.
+		defaultPersistRoot: `${args.persistTo}/v3`,
 		log: undefined,
 	});
 	await mf.ready;

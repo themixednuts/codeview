@@ -10,17 +10,7 @@ import { isStdCrate } from '$lib/std';
 /** Version aliases that should be resolved to a concrete semver and redirected. */
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
 const INVALID_VERSION_SENTINELS = new Set(['undefined']);
-const LOAD_TIMEOUT_MS = 120;
-const MAX_PREFETCH_TREE_CHILDREN = 64;
-
-function withTimeout<T>(promise: Promise<T>, fallback: T, timeoutMs = LOAD_TIMEOUT_MS): Promise<T> {
-	return Promise.race([
-		promise,
-		new Promise<T>((resolve) => {
-			setTimeout(() => resolve(fallback), timeoutMs);
-		}),
-	]);
-}
+const MAX_PREFETCH_TREE_CHILDREN = 12;
 
 function readExpandedIds(url: URL): string[] {
 	return parseExplorerState(url).ex.slice(0, MAX_PREFETCH_TREE_CHILDREN);
@@ -101,22 +91,20 @@ export const load: LayoutServerLoad = async (event) => {
 	// Node detail is primary route content, not a secondary enhancement.
 	// Await it in load so SSR and client navigations render the same stable
 	// layout instead of committing a pending shell and shifting when data arrives.
-	const nodeView = await resolve.nodeView({ name, version, nodeId }).catch(() => null);
-	const crateMap =
+	const [nodeView, crateMap, meta, roots] = await Promise.all([
+		resolve.nodeView({ name, version, nodeId }, provider).catch(() => null),
 		rest === ''
-			? await provider
+			? provider
 					.loadCrateMap(name, version, { maxHierarchyModules: 180, maxMatrixModules: 24 })
 					.catch(() => null)
-			: null;
-
-	const [meta, roots] = await Promise.all([
-		withTimeout(resolve.crateMeta(name, version), null),
-		withTimeout(resolve.treeRoots(name, version), null),
+			: Promise.resolve(null),
+		resolve.crateMeta(name, version, provider).catch(() => null),
+		resolve.treeRoots(name, version, provider).catch(() => null),
 	]);
 
 	const rootId = roots?.[0]?.node.id;
 	const rootChildrenPromise = rootId
-		? withTimeout(resolve.treeChildren(name, version, rootId), [], 80)
+		? resolve.treeChildren(name, version, rootId, provider).catch(() => [])
 		: Promise.resolve(null);
 
 	const prefetchIds = new Set<string>();
@@ -133,7 +121,7 @@ export const load: LayoutServerLoad = async (event) => {
 				.slice(0, MAX_PREFETCH_TREE_CHILDREN)
 				.map(async (id) => ({
 					id,
-					children: await withTimeout(resolve.treeChildren(name, version, id), [], 80),
+					children: await resolve.treeChildren(name, version, id, provider).catch(() => []),
 				})),
 		),
 	]);

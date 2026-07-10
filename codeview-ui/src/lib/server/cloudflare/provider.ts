@@ -9,14 +9,11 @@ import type {
 	NodeSummary,
 	NodeViewBase,
 	StaticCrateCatalog,
-	StaticCrateManifest,
-	StaticNodeDetailEntry,
-	StaticNodeDetailShard,
-	StaticNodeShard,
 	StaticSearchManifest,
 	StaticSearchShard,
 	TreeNodeDTO,
 } from '$lib/schema';
+import { STATIC_ARTIFACT_SCHEMA_VERSION } from '$lib/schema';
 import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
 import { isStdCrate } from '$lib/std';
 import type {
@@ -45,7 +42,6 @@ import {
 	normalizeCrateName,
 } from '../validation';
 import { getLogger } from '$lib/log';
-import { summarizeNode } from '$lib/node-summary';
 import { actorFromUser, getAuthStateFromRequest } from '../auth';
 import {
 	makeParseRequest,
@@ -93,9 +89,6 @@ type AppEnv = Env & {
 };
 
 type SearchEntry = NodeSummary & { score?: number };
-const NODE_VIEW_BUCKETS = 128;
-const DEFAULT_SITE_TREE_BUCKETS = 128;
-const DEFAULT_SITE_ALIAS_BUCKETS = 128;
 const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
 const DEFAULT_PLAN_DRAIN_ACTIVE_TARGET = 4;
 const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 2;
@@ -439,13 +432,13 @@ function fnv1a32(value: string): number {
 	return hash >>> 0;
 }
 
-function nodeViewBucket(nodeId: string, bucketCount = NODE_VIEW_BUCKETS): string {
+function nodeViewBucket(nodeId: string, bucketCount: number): string {
 	const bucket = fnv1a32(nodeId) % bucketCount;
 	const width = Math.max(3, (bucketCount - 1).toString(16).length);
 	return bucket.toString(16).padStart(width, '0');
 }
 
-function treeChildrenBucket(parentId: string, bucketCount = NODE_VIEW_BUCKETS): string {
+function treeChildrenBucket(parentId: string, bucketCount: number): string {
 	const bucket = fnv1a32(parentId) % bucketCount;
 	const width = Math.max(3, (bucketCount - 1).toString(16).length);
 	return bucket.toString(16).padStart(width, '0');
@@ -496,13 +489,12 @@ function searchSummaries(
 }
 
 type HostedArtifactInfo = {
-	nodeViewBucketCount?: number;
-	treeChildrenBucketCount?: number;
-	aliasBucketCount?: number;
-	targetRawShardBytes?: number;
-	searchPrefixLength?: number;
-	nodeViewEntryLimit?: number;
-	kindIndex?: boolean;
+	nodeViewBucketCount: number;
+	treeChildrenBucketCount: number;
+	aliasBucketCount: number;
+	targetRawShardBytes: number;
+	searchPrefixLength: number;
+	kindIndex: boolean;
 };
 
 type HostedMetaArtifact = {
@@ -515,26 +507,43 @@ type HostedMetaArtifact = {
 	kindCounts: Record<string, number>;
 	roots: TreeNodeDTO[];
 	rootChildren: Record<string, TreeNodeDTO[]>;
-	artifacts?: HostedArtifactInfo;
+	artifacts: HostedArtifactInfo;
 };
 
-type HostedNodeDetail = Omit<NodeDetail, 'node' | 'relatedNodes'> & {
-	relatedNodes: NodeSummary[];
-};
+function isCurrentHostedMeta(
+	meta: HostedMetaArtifact | null,
+	ref?: ArtifactRef,
+): meta is HostedMetaArtifact {
+	const artifacts = meta?.artifacts;
+	return Boolean(
+		meta?.schema_version === STATIC_ARTIFACT_SCHEMA_VERSION &&
+		meta.index &&
+		(!ref || (meta.name === ref.storageName && meta.version === ref.version)) &&
+		artifacts?.kindIndex === true &&
+		Number.isInteger(artifacts.nodeViewBucketCount) &&
+		artifacts.nodeViewBucketCount > 0 &&
+		Number.isInteger(artifacts.treeChildrenBucketCount) &&
+		artifacts.treeChildrenBucketCount > 0 &&
+		Number.isInteger(artifacts.aliasBucketCount) &&
+		artifacts.aliasBucketCount > 0 &&
+		artifacts.searchPrefixLength === 2,
+	);
+}
+
+function isCurrentHostedArtifact(
+	artifact: { schema_version: number; name: string; version: string } | null,
+	ref: ArtifactRef,
+): boolean {
+	return Boolean(
+		artifact?.schema_version === STATIC_ARTIFACT_SCHEMA_VERSION &&
+		artifact.name === ref.storageName &&
+		artifact.version === ref.version,
+	);
+}
 
 type HostedNodeViewEntry = {
-	nodeId: string;
-	detail: HostedNodeDetail;
+	detail: NodeDetail;
 	ancestors: NodeSummary[];
-	stats?: {
-		incomingEdges?: number;
-		outgoingEdges?: number;
-		relatedNodes?: number;
-		includedIncomingEdges?: number;
-		includedOutgoingEdges?: number;
-		truncatedIncomingEdges?: number;
-		truncatedOutgoingEdges?: number;
-	};
 };
 
 type HostedNodeViewShard = {
@@ -542,7 +551,7 @@ type HostedNodeViewShard = {
 	name: string;
 	version: string;
 	bucket: string;
-	bucketCount?: number;
+	bucketCount: number;
 	entries: Record<string, HostedNodeViewEntry>;
 };
 
@@ -551,7 +560,7 @@ type HostedTreeChildrenShard = {
 	name: string;
 	version: string;
 	bucket: string;
-	bucketCount?: number;
+	bucketCount: number;
 	parents: Record<
 		string,
 		{
@@ -577,97 +586,9 @@ type HostedAliasShard = {
 	name: string;
 	version: string;
 	bucket: string;
-	bucketCount?: number;
+	bucketCount: number;
 	aliases: Record<string, { canonicalId: string; canonicalPath?: string }>;
 };
-
-function nodeFromSummary(summary: NodeSummary): Node {
-	const node: Node = {
-		id: summary.id,
-		name: summary.name,
-		kind: summary.kind,
-		visibility: summary.visibility,
-		attrs: [],
-	};
-	if (summary.is_external !== undefined) node.is_external = summary.is_external;
-	if (summary.is_deprecated !== undefined) node.is_deprecated = summary.is_deprecated;
-	if (summary.impl_trait !== undefined) node.impl_trait = summary.impl_trait;
-	if (summary.impl_category !== undefined) node.impl_category = summary.impl_category;
-	if (summary.generics !== undefined) node.generics = summary.generics;
-	return node;
-}
-
-function edgeKey(edge: Edge): string {
-	return `${edge.from}|${edge.to}|${edge.kind}`;
-}
-
-/**
- * Older hosted shards only store first-hop edges on a type page. Trait-impl
- * methods hang off the impl node via Contains/Defines, so expand those
- * second-hop edges at read time (and hydrate their nodes from nodes/*.json).
- * New publishes already include the expanded edges; this remains a no-op then.
- */
-async function expandImplMemberEdges(
-	_ref: ArtifactRef,
-	nodeId: string,
-	baseEdges: Edge[],
-	_loadNode: (id: string) => Promise<Node | null>,
-	loadDetailEntry: (id: string) => Promise<StaticNodeDetailEntry | null>,
-): Promise<Edge[]> {
-	// Fast path: shards already include second-hop impl→member edges.
-	const alreadyExpanded = baseEdges.some(
-		(edge) =>
-			edge.from !== nodeId &&
-			(edge.kind === 'Defines' || edge.kind === 'Contains') &&
-			baseEdges.some(
-				(parent) =>
-					parent.from === nodeId &&
-					parent.to === edge.from &&
-					(parent.kind === 'Defines' || parent.kind === 'Contains'),
-			),
-	);
-	if (alreadyExpanded) return baseEdges;
-
-	const edges = [...baseEdges];
-	const seen = new Set(edges.map(edgeKey));
-	// Cap fan-out: types with huge impl sets should not stampede R2 on every view.
-	const MAX_IMPLS = 24;
-	const implIds = baseEdges
-		.filter(
-			(edge) =>
-				edge.from === nodeId && (edge.kind === 'Defines' || edge.kind === 'Contains'),
-		)
-		.map((edge) => edge.to)
-		.slice(0, MAX_IMPLS);
-
-	if (implIds.length === 0) return edges;
-
-	await Effect.runPromise(
-		Effect.forEach(
-			implIds,
-			(implId) =>
-				Effect.promise(async () => {
-					const implEntry = await loadDetailEntry(implId);
-					if (!implEntry) return;
-					for (const edge of implEntry.edges) {
-						if (
-							edge.from !== implId ||
-							(edge.kind !== 'Defines' && edge.kind !== 'Contains')
-						) {
-							continue;
-						}
-						const key = edgeKey(edge);
-						if (seen.has(key)) continue;
-						seen.add(key);
-						edges.push(edge);
-					}
-				}),
-			{ concurrency: 6, discard: true },
-		),
-	);
-
-	return edges;
-}
 
 function readR2JsonEffect<T>(r2: R2Bucket, key: string): Effect.Effect<T | null, R2JsonError> {
 	return Effect.gen(function* () {
@@ -941,7 +862,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			const ref = resolveRefFromRefs(refs, version);
 			if (!ref) continue;
 			const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
-			if (meta?.schema_version !== 1) continue;
+			if (!isCurrentHostedMeta(meta, ref)) continue;
 			return {
 				ref,
 				cacheMode: VERSION_ALIASES.has(version) ? 'short' : 'forever',
@@ -1019,7 +940,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		const ref = await resolveRefForArtifact(name, version);
 		if (!ref) return null;
 		const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
-		return meta?.schema_version === 1 ? { ref, meta } : null;
+		return isCurrentHostedMeta(meta, ref) ? { ref, meta } : null;
 	}
 
 	async function loadHostedMetaArtifact(
@@ -1029,98 +950,31 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		return (await loadHostedContext(name, version))?.meta ?? null;
 	}
 
-	/**
-	 * Per-isolate cache of `manifest.populatedShards` indexed for O(1) lookup.
-	 * Each entry is either:
-	 *   - `null`  : manifest missing or malformed, so no shard is trusted.
-	 *   - `Map<kind, Set<bucket>>` : the typed lookup tables.
-	 *
-	 * The manifest body is cached by the artifact JSON reader; this extra layer
-	 * avoids the JSON.parse + Set construction on every shard lookup (which
-	 * happens dozens of times per page render for large crates).
-	 */
-	type PopulatedKind = 'nodes' | 'nodeDetails' | 'treeChildren';
-	const populatedShardsCache = new Map<string, Map<PopulatedKind, Set<string>> | null>();
-
-	async function populatedShardMap(
+	async function loadHostedKindShardFromRef(
 		ref: ArtifactRef,
-	): Promise<Map<PopulatedKind, Set<string>> | null> {
-		const cacheKey = `${ref.storageName}@${ref.version}`;
-		let entry = populatedShardsCache.get(cacheKey);
-		if (entry === undefined) {
-			const manifest = await readArtifactJson<StaticCrateManifest>(ref, 'manifest.json');
-			if (!manifest?.populatedShards) {
-				populatedShardsCache.set(cacheKey, null);
-				return null;
-			}
-			entry = new Map<PopulatedKind, Set<string>>([
-				['nodes', new Set(manifest.populatedShards.nodes)],
-				['nodeDetails', new Set(manifest.populatedShards.nodeDetails)],
-				['treeChildren', new Set(manifest.populatedShards.treeChildren)],
-			]);
-			populatedShardsCache.set(cacheKey, entry);
-		}
-		return entry;
+		kind: NodeKind,
+	): Promise<HostedKindShard | null> {
+		const shard = await readArtifactJson<HostedKindShard>(ref, `site/kinds/${kind}.json`);
+		return isCurrentHostedArtifact(shard, ref) && shard?.kind === kind ? shard : null;
 	}
 
-	async function populatedShardBuckets(ref: ArtifactRef, kind: PopulatedKind): Promise<string[]> {
-		return Array.from((await populatedShardMap(ref))?.get(kind) ?? []);
-	}
-
-	async function isShardPopulated(
-		ref: ArtifactRef,
-		kind: PopulatedKind,
-		bucket: string,
-	): Promise<boolean> {
-		return (await populatedShardMap(ref))?.get(kind)?.has(bucket) ?? false;
-	}
-
-	async function loadNodeFromRef(ref: ArtifactRef, nodeId: string): Promise<Node | null> {
-		const bucket = nodeViewBucket(nodeId);
-		if (!(await isShardPopulated(ref, 'nodes', bucket))) return null;
-		const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
-		return shard?.nodes[nodeId] ?? null;
-	}
-
-	async function filterNodesFromShards(
+	async function filterNodesFromKindIndex(
 		ref: ArtifactRef,
 		kinds: Set<NodeKind>,
 		limit: number,
 	): Promise<NodeSummary[]> {
 		if (kinds.size === 0) return [];
-		const entries: NodeSummary[] = [];
-		for (const bucket of await populatedShardBuckets(ref, 'nodes')) {
-			const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
-			if (!shard) continue;
-			for (const node of Object.values(shard.nodes)) {
-				if (node.is_external || !kinds.has(node.kind)) continue;
-				entries.push(summarizeNode(node));
-			}
-		}
-		return entries.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
-	}
-
-	async function loadHostedKindShardFromRef(
-		ref: ArtifactRef,
-		kind: NodeKind,
-	): Promise<HostedKindShard | null> {
-		return readArtifactJson<HostedKindShard>(ref, `site/kinds/${kind}.json`);
-	}
-
-	async function filterNodesFromKindIndex(
-		ref: ArtifactRef,
-		meta: HostedMetaArtifact,
-		kinds: Set<NodeKind>,
-		limit: number,
-	): Promise<NodeSummary[] | null> {
-		if (kinds.size === 0) return [];
-		if (!meta.artifacts?.kindIndex) return null;
 		const shards = await Promise.all(
 			Array.from(kinds)
 				.sort()
 				.map((kind) => loadHostedKindShardFromRef(ref, kind)),
 		);
-		const entries = shards.flatMap((shard) => shard?.entries ?? []);
+		const completeShards = shards.filter((shard): shard is HostedKindShard => shard !== null);
+		if (completeShards.length !== shards.length) {
+			log.error`Incomplete kind index for ${ref.storageName}@${ref.version}`;
+			return [];
+		}
+		const entries = completeShards.flatMap((shard) => shard.entries);
 		if (shards.length <= 1) return entries.slice(0, limit);
 		return entries.sort((a, b) => a.id.localeCompare(b.id)).slice(0, limit);
 	}
@@ -1130,131 +984,15 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		meta: HostedMetaArtifact,
 		nodeId: string,
 	): Promise<string | null> {
-		const bucket = nodeViewBucket(
-			nodeId,
-			meta.artifacts?.aliasBucketCount ?? DEFAULT_SITE_ALIAS_BUCKETS,
-		);
+		const bucket = nodeViewBucket(nodeId, meta.artifacts.aliasBucketCount);
 		const shard = await readArtifactJson<HostedAliasShard>(ref, `site/aliases/${bucket}.json`);
-		return shard?.aliases[nodeId]?.canonicalId ?? null;
-	}
-
-	/**
-	 * Per-crate path aliases (`public_path → canonical_id`). Cached in-process
-	 * per (name, version) since the file is small and lookups happen on every
-	 * nodeView fetch.
-	 *
-	 * NOTE: This is a process-lifetime cache. For Cloudflare Workers each
-	 * request gets a fresh isolate, so the first lookup pays the R2 read; the
-	 * file is tiny enough that this is negligible.
-	 */
-	const aliasCache = new Map<string, Map<string, string> | null>();
-
-	async function loadCrateAliasesFromRef(ref: ArtifactRef): Promise<Map<string, string> | null> {
-		const key = `${ref.storageName}@${ref.version}`;
-		if (aliasCache.has(key)) return aliasCache.get(key) ?? null;
-		const map = await readArtifactJson<Record<string, string>>(ref, 'aliases.json');
-		const result = map ? new Map(Object.entries(map)) : null;
-		aliasCache.set(key, result);
-		return result;
-	}
-
-	async function loadNodeDetailEntryFromRef(
-		ref: ArtifactRef,
-		nodeId: string,
-	): Promise<StaticNodeDetailEntry | null> {
-		const bucket = nodeViewBucket(nodeId);
-		if (!(await isShardPopulated(ref, 'nodeDetails', bucket))) return null;
-		const shard = await readArtifactJson<StaticNodeDetailShard>(ref, `node-details/${bucket}.json`);
-		return shard?.details[nodeId] ?? null;
-	}
-
-	async function assembleNodeViewFromShards(
-		ref: ArtifactRef,
-		nodeId: string,
-	): Promise<NodeViewBase | null> {
-		let resolvedId = nodeId;
-		let [entry, node] = await Effect.runPromise(
-			Effect.all(
-				[
-					Effect.promise(() => loadNodeDetailEntryFromRef(ref, resolvedId)),
-					Effect.promise(() => loadNodeFromRef(ref, resolvedId)),
-				] as const,
-				{ concurrency: 2 },
-			),
-		);
-
-		// Alias resolution — `nodeId` may be a public re-export path (e.g.
-		// `core::async_iter::AsyncIterator`) that doesn't correspond to a
-		// stored node. Resolve via `aliases.json` to the canonical ID.
-		if ((!entry || !node) && !resolvedId.endsWith('!alias-checked')) {
-			const aliases = await loadCrateAliasesFromRef(ref);
-			const canonical = aliases?.get(nodeId);
-			if (canonical && canonical !== nodeId) {
-				resolvedId = canonical;
-				[entry, node] = await Effect.runPromise(
-					Effect.all(
-						[
-							Effect.promise(() => loadNodeDetailEntryFromRef(ref, resolvedId)),
-							Effect.promise(() => loadNodeFromRef(ref, resolvedId)),
-						] as const,
-						{ concurrency: 2 },
-					),
-				);
-			}
+		if (
+			!isCurrentHostedArtifact(shard, ref) ||
+			shard?.bucketCount !== meta.artifacts.aliasBucketCount
+		) {
+			return null;
 		}
-
-		if (!entry || !node) return null;
-
-		// Expand impl → member edges (older shards only store first-hop edges).
-		const edges = await expandImplMemberEdges(
-			ref,
-			resolvedId,
-			entry.edges,
-			(id) => loadNodeFromRef(ref, id),
-			(id) => loadNodeDetailEntryFromRef(ref, id),
-		);
-		const relatedIds = new Set(entry.relatedIds);
-		for (const edge of edges) {
-			if (edge.from !== resolvedId) relatedIds.add(edge.from);
-			if (edge.to !== resolvedId) relatedIds.add(edge.to);
-		}
-
-		const relatedNodes = new Map<string, Node>();
-		const relatedBuckets = new Map<string, string[]>();
-		for (const id of relatedIds) {
-			const bucket = nodeViewBucket(id);
-			(relatedBuckets.get(bucket) ?? relatedBuckets.set(bucket, []).get(bucket)!).push(id);
-		}
-
-		await Effect.runPromise(
-			Effect.forEach(
-				Array.from(relatedBuckets.entries()),
-				([bucket, ids]) =>
-					Effect.promise(async () => {
-						// Skip empty buckets. The populated-shards manifest tells us
-						// before we pay the R2 round-trip.
-						if (!(await isShardPopulated(ref, 'nodes', bucket))) return;
-						const shard = await readArtifactJson<StaticNodeShard>(ref, `nodes/${bucket}.json`);
-						if (!shard) return;
-						for (const id of ids) {
-							const related = shard.nodes[id];
-							if (related) relatedNodes.set(id, related);
-						}
-					}),
-				{ concurrency: 8, discard: true },
-			),
-		);
-
-		return {
-			detail: {
-				node,
-				edges,
-				relatedNodes: Array.from(relatedIds)
-					.map((id) => relatedNodes.get(id))
-					.filter((related): related is Node => Boolean(related)),
-			},
-			ancestors: entry.ancestors,
-		};
+		return shard.aliases[nodeId]?.canonicalId ?? null;
 	}
 
 	async function loadMaterializedNodeView(
@@ -1263,14 +1001,16 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		nodeId: string,
 	): Promise<NodeViewBase | null> {
 		async function loadEntry(id: string): Promise<HostedNodeViewEntry | null> {
-			const bucketCount = hostedMeta.artifacts?.nodeViewBucketCount ?? NODE_VIEW_BUCKETS;
-			if (bucketCount <= 0) return null;
+			const bucketCount = hostedMeta.artifacts.nodeViewBucketCount;
 			const bucket = nodeViewBucket(id, bucketCount);
 			const shard = await readArtifactJson<HostedNodeViewShard>(
 				hostedRef,
 				`site/node-views/${bucket}.json`,
 			);
-			return shard?.entries[id] ?? null;
+			if (!isCurrentHostedArtifact(shard, hostedRef) || shard?.bucketCount !== bucketCount) {
+				return null;
+			}
+			return shard.entries[id] ?? null;
 		}
 
 		let resolvedId = nodeId;
@@ -1282,76 +1022,12 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				entry = await loadEntry(resolvedId);
 			}
 		}
-		const node = entry ? await loadNodeFromRef(hostedRef, resolvedId) : null;
-		if (!entry || !node) return null;
-
-		// Older node-views only store first-hop edges; expand impl members at
-		// read time so trait-impl methods appear without a full republish.
-		const edges = await expandImplMemberEdges(
-			hostedRef,
-			resolvedId,
-			entry.detail.edges,
-			(id) => loadNodeFromRef(hostedRef, id),
-			(id) => loadNodeDetailEntryFromRef(hostedRef, id),
-		);
-
-		// Node-view shards store relatedNodes as summaries (no signature/docs).
-		// Hydrate full Node payloads from nodes/{bucket}.json so trait-impl
-		// methods can render the way docs.rs does.
-		const relatedById = new Map<string, Node>();
-		const summaryById = new Map(entry.detail.relatedNodes.map((s) => [s.id, s] as const));
-		const relatedIds = new Set<string>();
-		for (const edge of edges) {
-			if (edge.from !== resolvedId) relatedIds.add(edge.from);
-			if (edge.to !== resolvedId) relatedIds.add(edge.to);
-		}
-		for (const id of summaryById.keys()) relatedIds.add(id);
-
-		const relatedBuckets = new Map<string, string[]>();
-		for (const id of relatedIds) {
-			const bucket = nodeViewBucket(id);
-			(relatedBuckets.get(bucket) ?? relatedBuckets.set(bucket, []).get(bucket)!).push(id);
-		}
-
-		await Effect.runPromise(
-			Effect.forEach(
-				Array.from(relatedBuckets.entries()),
-				([bucket, ids]) =>
-					Effect.promise(async () => {
-						if (!(await isShardPopulated(hostedRef, 'nodes', bucket))) return;
-						const shard = await readArtifactJson<StaticNodeShard>(
-							hostedRef,
-							`nodes/${bucket}.json`,
-						);
-						if (!shard) return;
-						for (const id of ids) {
-							const related = shard.nodes[id];
-							if (related) relatedById.set(id, related);
-						}
-					}),
-				{ concurrency: 8, discard: true },
-			),
-		);
-
-		const relatedNodes: Node[] = [];
-		for (const id of relatedIds) {
-			const full = relatedById.get(id);
-			if (full) {
-				relatedNodes.push(full);
-				continue;
-			}
-			const summary = summaryById.get(id);
-			if (summary) relatedNodes.push(nodeFromSummary(summary));
-		}
-
-		return {
-			detail: {
-				node,
-				edges,
-				relatedNodes,
-			},
-			ancestors: entry.ancestors,
-		};
+		return entry
+			? {
+					detail: entry.detail,
+					ancestors: entry.ancestors,
+				}
+			: null;
 	}
 
 	async function loadNodeView(
@@ -1361,44 +1037,50 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	): Promise<NodeViewBase | null> {
 		const context = await loadHostedContext(name, version);
 		if (!context) return null;
-		const nodeViewBucketCount = context.meta.artifacts?.nodeViewBucketCount ?? NODE_VIEW_BUCKETS;
-		if (nodeViewBucketCount <= 0) {
-			return assembleNodeViewFromShards(context.ref, nodeId);
-		}
 		return loadMaterializedNodeView(context.ref, context.meta, nodeId);
 	}
 
 	async function loadHostedSearchManifestFromRef(
 		ref: ArtifactRef,
 	): Promise<HostedSearchManifest | null> {
-		return readArtifactJson<HostedSearchManifest>(ref, 'site/search-manifest.json');
+		const manifest = await readArtifactJson<HostedSearchManifest>(ref, 'site/search-manifest.json');
+		return isCurrentHostedArtifact(manifest, ref) ? manifest : null;
 	}
 
 	async function loadHostedSearchShardFromRef(
 		ref: ArtifactRef,
 		prefix: string,
 	): Promise<HostedSearchShard | null> {
-		return readArtifactJson<HostedSearchShard>(ref, `site/search/${prefix}.json`);
+		const shard = await readArtifactJson<HostedSearchShard>(ref, `site/search/${prefix}.json`);
+		return isCurrentHostedArtifact(shard, ref) && shard?.prefix === prefix ? shard : null;
 	}
 
 	async function loadHostedTreeChildrenFromContext(
 		context: { ref: ArtifactRef; meta: HostedMetaArtifact },
 		parentId: string,
 	): Promise<TreeNodeDTO[] | null> {
-		const bucket = treeChildrenBucket(
-			parentId,
-			context.meta.artifacts?.treeChildrenBucketCount ?? DEFAULT_SITE_TREE_BUCKETS,
-		);
+		const bucket = treeChildrenBucket(parentId, context.meta.artifacts.treeChildrenBucketCount);
 		const shard = await readArtifactJson<HostedTreeChildrenShard>(
 			context.ref,
 			`site/tree-children/${bucket}.json`,
 		);
-		return shard?.parents[parentId]?.children ?? null;
+		if (
+			!isCurrentHostedArtifact(shard, context.ref) ||
+			shard?.bucketCount !== context.meta.artifacts.treeChildrenBucketCount
+		) {
+			return null;
+		}
+		return shard.parents[parentId]?.children ?? null;
 	}
 
 	async function loadCatalogArtifact(): Promise<StaticCrateCatalog | null> {
 		const catalog = await readJson<StaticCrateCatalog>('rust/catalog.json');
-		if (catalog?.schema_version !== 1 || !Array.isArray(catalog.crates)) return null;
+		if (
+			catalog?.schema_version !== STATIC_ARTIFACT_SCHEMA_VERSION ||
+			!Array.isArray(catalog.crates)
+		) {
+			return null;
+		}
 		return catalog;
 	}
 
@@ -1670,7 +1352,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		const ref = await resolveRefForArtifact(name, version);
 		if (!ref) return false;
 		const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
-		return meta?.schema_version === 1 && !!meta.index;
+		return isCurrentHostedMeta(meta, ref);
 	}
 
 	async function removeStaleFailedQueueEntries(
@@ -1792,9 +1474,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	}
 
 	function planReasonParserTarget(reason: string | undefined): string | null {
-		const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(
-			reason ?? '',
-		);
+		const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(reason ?? '');
 		return match?.[1] ?? null;
 	}
 
@@ -1836,13 +1516,17 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 
 		const parserTarget = planReasonParserTarget(item.reason);
 		if (parserTarget)
-			return revisionMatches(freshness.parserRevision, parserTarget) ||
-				freshnessParsedAfterPlan(freshness, planGeneratedAt);
+			return (
+				revisionMatches(freshness.parserRevision, parserTarget) ||
+				freshnessParsedAfterPlan(freshness, planGeneratedAt)
+			);
 
 		const schemaTarget = planReasonSchemaTarget(item.reason);
 		if (schemaTarget !== null)
-			return freshness.schemaVersion === schemaTarget ||
-				freshnessParsedAfterPlan(freshness, planGeneratedAt);
+			return (
+				freshness.schemaVersion === schemaTarget ||
+				freshnessParsedAfterPlan(freshness, planGeneratedAt)
+			);
 
 		if (
 			item.priorityTier === 'never-parsed-backfill' ||
@@ -2192,10 +1876,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			const kindSet = new Set<NodeKind>(kinds);
 			const needle = queryText.trim().toLowerCase();
 			if (!needle) {
-				return (
-					(await filterNodesFromKindIndex(context.ref, context.meta, kindSet, limit)) ??
-					filterNodesFromShards(context.ref, kindSet, limit)
-				);
+				return filterNodesFromKindIndex(context.ref, kindSet, limit);
 			}
 			const manifest = await loadHostedSearchManifestFromRef(context.ref);
 			if (!manifest) return [];
@@ -2216,7 +1897,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			const ref = await resolveRefForArtifact(name, version);
 			if (ref) {
 				const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
-				if (meta?.schema_version === 1 && meta.index) return { status: 'ready' as const };
+				if (isCurrentHostedMeta(meta, ref)) {
+					return { status: 'ready' as const };
+				}
 			}
 			const hostedStatus = await readHostedParseStatus(name, version);
 			if (hostedStatus) return storedStatusToCrateStatus(hostedStatus);
@@ -2250,7 +1933,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				const ref = await resolveRefForArtifact(name, requestedVersion);
 				if (ref) {
 					const meta = await readArtifactJson<HostedMetaArtifact>(ref, 'site/meta.json');
-					if (meta?.schema_version === 1 && meta.index) return Result.ok(undefined);
+					if (isCurrentHostedMeta(meta, ref)) {
+						return Result.ok(undefined);
+					}
 				}
 			}
 			if (requestKind === 'sysroot' && requestedVersion !== HOSTED_SYSROOT_PARSE_CHANNEL) {

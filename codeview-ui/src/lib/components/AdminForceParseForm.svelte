@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { Icon, KindBadge } from '$lib/components/design';
+	import Icon from '$lib/components/design/Icon.svelte';
+	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import * as Command from '$lib/shadcn/ui/command';
 	import { getCrateVersions, searchRegistry } from '$lib/rpc/crate.remote';
 	import type { CrateSearchResult } from '$lib/schema';

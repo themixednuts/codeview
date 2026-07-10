@@ -16,14 +16,10 @@
 	import { onDestroy, onMount } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { resolveAppPath } from '$lib/app-paths';
-	import {
-		crateVersionsCtx,
-		docLayoutCtx,
-		expandPathCtx,
-		resolvedThemeCtx,
-	} from '$lib/context';
+	import { crateVersionsCtx, docLayoutCtx, expandPathCtx, resolvedThemeCtx } from '$lib/context';
 	import { visibilityLabel } from '$lib/display-names';
 	import { toDesignNode } from '$lib/design/live-node';
+	import { buildNodeRelationshipGroups } from '$lib/design/relationship-groups';
 	import { materializeDetailDocModel } from '$lib/detail-model';
 	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
 	import { isHosted } from '$lib/platform';
@@ -36,12 +32,7 @@
 		type ExplorerViewState,
 		type ExplorerViewMode,
 	} from '$lib/url-state';
-	import DetailView from '$lib/components/DetailView.svelte';
 	import SkeletonTree from '$lib/components/SkeletonTree.svelte';
-	import DocClassic from '$lib/components/design/docs/DocClassic.svelte';
-	import DocReading from '$lib/components/design/docs/DocReading.svelte';
-	import DocSplit from '$lib/components/design/docs/DocSplit.svelte';
-	import FocusGraphFlow from '$lib/components/design/graph/FocusGraphFlow.svelte';
 	import * as Resizable from '$lib/shadcn/ui/resizable/index.js';
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
@@ -142,7 +133,6 @@
 	let treeNavigationTimer: ReturnType<typeof setTimeout> | null = null;
 	let filterInputTimer: ReturnType<typeof setTimeout> | null = null;
 	let filterDraft = $state('');
-	let pendingFilter = $state<string | null>(null);
 	let filterOverride = $state<string | null>(null);
 	let searchResults = $state.raw<NodeSummary[]>([]);
 	let searchLoading = $state(false);
@@ -206,7 +196,7 @@
 	const detail = $derived(nodeView?.detail ?? null);
 	const selected = $derived(detail?.node ?? null);
 	const ancestors = $derived(nodeView?.ancestors ?? []);
-	const detailModel = $derived(materializeDetailDocModel(nodeView?.docModel, detail));
+	const detailModel = $derived(materializeDetailDocModel(detail));
 	const selectedDesign = $derived(
 		selected ? toDesignNode(selected, { ancestors, getNodeUrl }) : null,
 	);
@@ -219,12 +209,7 @@
 	);
 	const selectedEdges = $derived(detailModel.selectedEdges);
 	const relationshipTotal = $derived(selectedEdges.incoming.length + selectedEdges.outgoing.length);
-	const relationshipGroups = $derived(
-		nodeView?.relationshipGroups ?? {
-			incoming: [] as RelationshipGroup[],
-			outgoing: [] as RelationshipGroup[],
-		},
-	);
+	const relationshipGroups = $derived(buildNodeRelationshipGroups(detail, selectedEdges));
 	const docSummary = $derived(docsSummary(selected?.docs));
 	const activeFilter = $derived(filterOverride ?? filter);
 	const hasActiveTreeFilter = $derived(Boolean(activeFilter) || kindFilter.size > 0);
@@ -234,7 +219,6 @@
 	$effect(() => {
 		if (filterOverride !== null && filter !== filterOverride) return;
 		filterOverride = null;
-		pendingFilter = null;
 		filterDraft = filter;
 	});
 
@@ -288,7 +272,6 @@
 		localViewOverride = null;
 		localDocLayoutOverride = null;
 		filterOverride = null;
-		pendingFilter = null;
 		filterDraft = filter;
 	});
 
@@ -306,7 +289,9 @@
 	function isTreeNodeDto(value: unknown): value is TreeNodeDTO {
 		if (!value || typeof value !== 'object') return false;
 		const node = (value as { node?: unknown }).node;
-		return Boolean(node && typeof node === 'object' && typeof (node as { id?: unknown }).id === 'string');
+		return Boolean(
+			node && typeof node === 'object' && typeof (node as { id?: unknown }).id === 'string',
+		);
 	}
 
 	function treeNodeDtos(value: unknown): TreeNodeDTO[] {
@@ -433,7 +418,7 @@
 	const baseTree = $derived(
 		treeRoots?.length ? visibleTreeDtos(treeRoots).map(dtoToTreeNode).sort(compareTreeNodes) : [],
 	);
-	const normalizedFilter = $derived(filter.trim().toLowerCase());
+	const normalizedFilter = $derived(activeFilter.trim().toLowerCase());
 	const tree = $derived.by(() => {
 		if (!baseTree.length) return [] as TreeNode[];
 		if (!normalizedFilter && kindFilter.size === 0) return baseTree;
@@ -530,7 +515,8 @@
 
 	$effect(() => {
 		if (!selectedNodeId || !canonicalCrateName || !version) return;
-		const pathIds = expandPath?.ancestors.map((ancestor) => ancestor.id) ?? ancestors.map((a) => a.id);
+		const pathIds =
+			expandPath?.ancestors.map((ancestor) => ancestor.id) ?? ancestors.map((a) => a.id);
 		const key = `${selectedNodeId}:${pathIds.join('/')}`;
 		if (key === lastExpandKey) return;
 		lastExpandKey = key;
@@ -541,7 +527,11 @@
 		}
 	});
 
-	function filterTree(trees: TreeNode[], currentFilter: string, currentKinds: Set<NodeKind>): TreeNode[] {
+	function filterTree(
+		trees: TreeNode[],
+		currentFilter: string,
+		currentKinds: Set<NodeKind>,
+	): TreeNode[] {
 		const result: TreeNode[] = [];
 		for (const item of trees) {
 			const filtered = filterTreeNode(item, currentFilter, currentKinds);
@@ -556,7 +546,9 @@
 		currentKinds: Set<NodeKind>,
 	): TreeNode | null {
 		const children =
-			treeNode.children === CHILDREN_PLACEHOLDER ? getChildren(treeNode.node.id) : treeNode.children;
+			treeNode.children === CHILDREN_PLACEHOLDER
+				? getChildren(treeNode.node.id)
+				: treeNode.children;
 		const filteredChildren: TreeNode[] = [];
 		for (const child of children) {
 			const filtered = filterTreeNode(child, currentFilter, currentKinds);
@@ -584,7 +576,9 @@
 				result.push({ treeNode, depth, isExpanded, hasChildren, parentId });
 				if (!hasChildren || !isExpanded) continue;
 				const children =
-					treeNode.children === CHILDREN_PLACEHOLDER ? getChildren(treeNode.node.id) : treeNode.children;
+					treeNode.children === CHILDREN_PLACEHOLDER
+						? getChildren(treeNode.node.id)
+						: treeNode.children;
 				visit(children, depth + 1, treeNode.node.id);
 			}
 		}
@@ -678,7 +672,7 @@
 				noScroll: true,
 				keepFocus: true,
 			});
-		}, 180);
+		}, 120);
 	}
 
 	function collapseAll() {
@@ -701,7 +695,7 @@
 
 	function updateExplorerState(patch: Partial<ExplorerViewState>): Promise<void> | void {
 		const nextUrl = serializeExplorerState(page.url, patch);
-		if (browser && (patch.view !== undefined || patch.layout !== undefined)) {
+		if (browser) {
 			if (patch.view !== undefined) localViewOverride = patch.view;
 			if (patch.layout !== undefined) localDocLayoutOverride = patch.layout;
 			replaceState(nextUrl, page.state);
@@ -742,10 +736,8 @@
 	function commitFilter(nextFilter: string) {
 		clearFilterInputTimer();
 		if (nextFilter === filter) {
-			pendingFilter = null;
 			return;
 		}
-		pendingFilter = nextFilter;
 		filterOverride = nextFilter;
 		const navigation = updateExplorerState({ q: nextFilter });
 		if (navigation) {
@@ -768,7 +760,6 @@
 		const input = event.currentTarget;
 		if (!(input instanceof HTMLInputElement)) return;
 		filterDraft = input.value;
-		pendingFilter = input.value;
 		scheduleFilterUpdate(input.value);
 	}
 
@@ -779,7 +770,6 @@
 		const raw = new FormData(form).get('q');
 		const nextFilter = typeof raw === 'string' ? raw : '';
 		filterDraft = nextFilter;
-		pendingFilter = nextFilter;
 		commitFilter(nextFilter);
 	}
 
@@ -883,7 +873,7 @@
 		href={resolveAppPath(modeHref)}
 		data-sveltekit-noscroll
 		data-sveltekit-keepfocus
-		class="flex items-center gap-1 rounded px-2.5 py-0.5 text-[11.5px] transition-colors no-underline {mode ===
+		class="flex items-center gap-1 rounded px-2.5 py-0.5 text-[11.5px] no-underline transition-colors {mode ===
 		nextMode
 			? 'bg-(--panel-solid) text-(--ink) shadow-(--shadow-soft)'
 			: 'text-(--muted)'}"
@@ -972,7 +962,7 @@
 			<span class="size-5 shrink-0"></span>
 		{/if}
 		<a
-			href={href}
+			{href}
 			data-sveltekit-noscroll
 			data-sveltekit-keepfocus
 			class="flex min-w-0 flex-1 items-center gap-2 self-stretch text-left no-underline"
@@ -984,11 +974,7 @@
 				class="mono min-w-0 flex-1 truncate text-[12px]"
 				class:line-through={node.is_deprecated}
 				style={`color: ${
-					isSelected
-						? 'var(--accent-strong)'
-						: isAncestor
-							? 'var(--ink)'
-							: 'var(--ink-soft)'
+					isSelected ? 'var(--accent-strong)' : isAncestor ? 'var(--ink)' : 'var(--ink-soft)'
 				}; font-weight: ${isSelected ? 700 : isAncestor ? 600 : 500}`}
 			>
 				{node.name}
@@ -1013,7 +999,10 @@
 				{#each groups as group (group.rel)}
 					<div>
 						<div class="mb-1 flex items-center gap-2 px-1.5">
-							<span class="mono text-[10px] font-semibold tracking-[0.16em] uppercase" style={`color: ${group.color}`}>
+							<span
+								class="mono text-[10px] font-semibold tracking-[0.16em] uppercase"
+								style={`color: ${group.color}`}
+							>
 								{group.label}
 							</span>
 							<span class="h-px flex-1 bg-(--panel-border-soft)"></span>
@@ -1026,7 +1015,9 @@
 									class="flex items-center gap-2 rounded-md px-1.5 py-1.5 transition-colors hover:bg-(--panel-muted)"
 								>
 									<KindBadge kind={item.node.kind} size={13} />
-									<span class="mono min-w-0 flex-1 truncate text-[11.5px] font-semibold text-(--ink-soft)">
+									<span
+										class="mono min-w-0 flex-1 truncate text-[11.5px] font-semibold text-(--ink-soft)"
+									>
 										{item.node.name}
 									</span>
 									{#if item.count > 1}
@@ -1060,7 +1051,9 @@
 			</div>
 			<div class="flex min-w-0 items-center gap-2">
 				<a
-					href={canonicalCrateName && version ? resolveAppPath(`/${canonicalCrateName}/${version}`) : '#'}
+					href={canonicalCrateName && version
+						? resolveAppPath(`/${canonicalCrateName}/${version}`)
+						: '#'}
 					class="font-display min-w-0 truncate text-[15px] font-semibold text-(--ink)"
 				>
 					{canonicalCrateName ?? crateName ?? 'crate'}
@@ -1148,7 +1141,9 @@
 				</div>
 			{/if}
 			{#if debugInfo}
-				<div class="mono mt-2 rounded-sm border border-(--panel-border) bg-(--panel-solid) px-2 py-1 text-[10px] text-(--muted)">
+				<div
+					class="mono mt-2 rounded-sm border border-(--panel-border) bg-(--panel-solid) px-2 py-1 text-[10px] text-(--muted)"
+				>
 					<div>{debugInfo.statusDebugKey}</div>
 					<div>{debugInfo.progressDebugKey}</div>
 				</div>
@@ -1162,7 +1157,11 @@
 				{:else if searchError}
 					<div class="p-4 text-sm text-(--danger)">
 						<p class="font-medium">Search failed</p>
-						<button type="button" class="mt-2 text-(--accent) hover:underline" onclick={retrySearch}>
+						<button
+							type="button"
+							class="mt-2 text-(--accent) hover:underline"
+							onclick={retrySearch}
+						>
 							Try again
 						</button>
 					</div>
@@ -1198,7 +1197,11 @@
 						Expand
 					</button>
 				</div>
-				<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3" role="tree" aria-label="Crate modules">
+				<div
+					class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3"
+					role="tree"
+					aria-label="Crate modules"
+				>
 					{#each flatTree as row (`${row.parentId ?? 'root'}::${row.treeNode.node.id}`)}
 						{@render treeRow(row)}
 					{:else}
@@ -1214,7 +1217,11 @@
 					<div class="text-sm font-medium text-(--ink)">No data available</div>
 					<div class="mt-1 text-xs text-(--muted)">This crate's tree has not loaded yet.</div>
 					{#if onRetryTree}
-						<button type="button" class="mt-3 text-sm text-(--accent) hover:underline" onclick={() => onRetryTree?.(() => {})}>
+						<button
+							type="button"
+							class="mt-3 text-sm text-(--accent) hover:underline"
+							onclick={() => onRetryTree?.(() => {})}
+						>
 							Try again
 						</button>
 					{/if}
@@ -1255,6 +1262,8 @@
 		aria-label="Node content"
 	>
 		{#if mode === 'graph' && detail}
+			{@const FocusGraphFlow = (await import('$lib/components/design/graph/FocusGraphFlow.svelte'))
+				.default}
 			<FocusGraphFlow
 				{detail}
 				{ancestors}
@@ -1265,6 +1274,8 @@
 			/>
 		{:else if detail && selected && selected.kind !== 'Crate'}
 			{#if docLayout === 'reading'}
+				{@const DocReading = (await import('$lib/components/design/docs/DocReading.svelte'))
+					.default}
 				<DocReading
 					{detail}
 					{ancestors}
@@ -1276,6 +1287,7 @@
 					{crateVersions}
 				/>
 			{:else if docLayout === 'split'}
+				{@const DocSplit = (await import('$lib/components/design/docs/DocSplit.svelte')).default}
 				<DocSplit
 					{detail}
 					{ancestors}
@@ -1289,6 +1301,8 @@
 					{crateVersions}
 				/>
 			{:else}
+				{@const DocClassic = (await import('$lib/components/design/docs/DocClassic.svelte'))
+					.default}
 				<DocClassic
 					{detail}
 					{ancestors}
@@ -1303,6 +1317,7 @@
 				/>
 			{/if}
 		{:else}
+			{@const DetailView = (await import('$lib/components/DetailView.svelte')).default}
 			<DetailView {nodeId} embedded />
 		{/if}
 	</section>
@@ -1366,9 +1381,17 @@
 				</div>
 			</div>
 			<div class="min-h-0 flex-1 overflow-y-auto px-3.5 py-4">
-				{@render relationshipList('Outgoing', selectedEdges.outgoing.length, relationshipGroups.outgoing)}
+				{@render relationshipList(
+					'Outgoing',
+					selectedEdges.outgoing.length,
+					relationshipGroups.outgoing,
+				)}
 				<div class="mt-5">
-					{@render relationshipList('Incoming', selectedEdges.incoming.length, relationshipGroups.incoming)}
+					{@render relationshipList(
+						'Incoming',
+						selectedEdges.incoming.length,
+						relationshipGroups.incoming,
+					)}
 				</div>
 			</div>
 			<div class="flex items-center gap-2 border-t border-(--panel-border-soft) px-5 py-3">
@@ -1404,7 +1427,10 @@
 			{#if selected}
 				<KindBadge kind={selected.kind} size={16} />
 			{/if}
-			<nav aria-label="Node path" class="mono flex min-w-0 flex-wrap items-baseline gap-1 text-[13px]">
+			<nav
+				aria-label="Node path"
+				class="mono flex min-w-0 flex-wrap items-baseline gap-1 text-[13px]"
+			>
 				{#each ancestors as ancestor, index (ancestor.id)}
 					<a
 						href={resolveAppPath(getNodeUrl(ancestor.id))}
@@ -1477,7 +1503,9 @@
 			<!-- Mobile: docs first, tree as a slide-over drawer. -->
 			<div class="relative grid h-full min-h-0 grid-cols-1 overflow-hidden">
 				<div class="mobile-doc-shell flex min-h-0 flex-col overflow-hidden">
-					<div class="flex shrink-0 items-center gap-2 border-b border-(--panel-border-soft) bg-(--panel) px-3 py-2">
+					<div
+						class="flex shrink-0 items-center gap-2 border-b border-(--panel-border-soft) bg-(--panel) px-3 py-2"
+					>
 						<button
 							type="button"
 							class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1.5 text-[12px] font-medium text-(--ink)"
@@ -1514,13 +1542,15 @@
 						aria-modal="true"
 						aria-label="Module tree"
 					>
-						<div class="flex items-center justify-between border-b border-(--panel-border-soft) px-3 py-2">
-							<span class="text-[11px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
+						<div
+							class="flex items-center justify-between border-b border-(--panel-border-soft) px-3 py-2"
+						>
+							<span
+								class="text-[11px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase"
+							>
 								Module tree
 							</span>
-							<button type="button" class="badge badge-sm" onclick={closeMobileTree}>
-								Close
-							</button>
+							<button type="button" class="badge badge-sm" onclick={closeMobileTree}>Close</button>
 						</div>
 						<div class="min-h-0 flex-1 overflow-hidden">
 							{@render treePane('h-full')}

@@ -13,12 +13,8 @@
 	import { isHosted } from '$lib/platform';
 	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
 	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
-	import { LoaderCircleIcon } from '@lucide/svelte';
-	import CrateOverviewFlow from '$lib/components/design/graph/CrateOverviewFlow.svelte';
+	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import VizSwitcher from '$lib/components/VizSwitcher.svelte';
-	import CrateTreemap from '$lib/components/CrateTreemap.svelte';
-	import CrateSunburst from '$lib/components/CrateSunburst.svelte';
-	import CrateGrid from '$lib/components/CrateGrid.svelte';
 	import NodeDetails from '$lib/components/NodeDetails.svelte';
 	import DocToc from '$lib/components/DocToc.svelte';
 	import Skeleton from '$lib/components/Skeleton.svelte';
@@ -159,8 +155,8 @@
 	function isLargeCrateMap(map: CrateMapData | null | undefined): boolean {
 		return Boolean(
 			map &&
-				(map.moduleNodes.length > LARGE_CRATE_GRAPH_DEFAULT_MODULES ||
-					map.totalNodeCount > LARGE_CRATE_GRAPH_DEFAULT_NODES),
+			(map.moduleNodes.length > LARGE_CRATE_GRAPH_DEFAULT_MODULES ||
+				map.totalNodeCount > LARGE_CRATE_GRAPH_DEFAULT_NODES),
 		);
 	}
 
@@ -189,7 +185,7 @@
 
 	const selected = $derived(detail?.node ?? null);
 	const isOnCrateRoot = $derived(selected?.kind === 'Crate');
-	const detailModel = $derived(materializeDetailDocModel(nodeView?.docModel, detail));
+	const detailModel = $derived(materializeDetailDocModel(detail));
 
 	// Pre-built lookup maps — O(1) instead of O(n) per call
 	const relatedNodeMap = $derived(detailModel.relatedNodeMap);
@@ -228,104 +224,109 @@
 		url.hash = '';
 		return `${url.pathname}${url.search}`;
 	});
-
 </script>
 
 {#if selected && detail}
-		<div class={`space-y-6 ${embedded ? 'px-4 py-4 sm:px-6 md:px-8' : ''}`}>
-			<!-- ── Crate sub-nav ──────────────────────────────────────
+	<div class={`space-y-6 ${embedded ? 'px-4 py-4 sm:px-6 md:px-8' : ''}`}>
+		<!-- ── Crate sub-nav ──────────────────────────────────────
 				 doc-classic design: text breadcrumb + kind chip + pub
 				 chip + crate-scoped search + version + View source. -->
-			{#if !embedded}
-				<div
-					class="sub-nav -mx-4 -mt-4 mb-2 flex flex-wrap items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-6 py-2 md:-mx-6 md:-mt-6"
-				>
-					<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
+		{#if !embedded}
+			<div
+				class="sub-nav -mx-4 -mt-4 mb-2 flex flex-wrap items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-6 py-2 md:-mx-6 md:-mt-6"
+			>
+				<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
 
-					{#if selected.kind && !isOnCrateRoot}
+				{#if selected.kind && !isOnCrateRoot}
+					<span
+						class="badge badge-sm inline-flex items-center gap-1.5 bg-(--panel-solid) text-(--ink)"
+					>
 						<span
-							class="badge badge-sm inline-flex items-center gap-1.5 bg-(--panel-solid) text-(--ink)"
+							class="size-1.5 shrink-0 rounded-full"
+							style="background-color: var(--kind-{selected.kind.toLowerCase()})"
+						></span>
+						{kindLabels[selected.kind] ?? selected.kind}
+					</span>
+				{/if}
+				{#if isPublic(selected.visibility)}
+					<span
+						class="badge badge-sm font-mono font-semibold tracking-wider uppercase"
+						style="background: var(--accent-soft); color: var(--accent-strong); border-color: transparent;"
+					>
+						pub
+					</span>
+				{/if}
+
+				<div class="ml-auto flex flex-wrap items-center gap-2">
+					{#if crateVersion}
+						<span
+							class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1 font-mono text-[11.5px] text-(--ink-soft)"
+							title="Crate version"
 						>
-							<span
-								class="size-1.5 shrink-0 rounded-full"
-								style="background-color: var(--kind-{selected.kind.toLowerCase()})"
-							></span>
-							{kindLabels[selected.kind] ?? selected.kind}
+							v{crateVersion}
 						</span>
 					{/if}
-					{#if isPublic(selected.visibility)}
-						<span
-							class="badge badge-sm font-mono font-semibold tracking-wider uppercase"
-							style="background: var(--accent-soft); color: var(--accent-strong); border-color: transparent;"
+					{#if selected?.span?.file}
+						<a
+							href={resolveAppPath(getNodeUrl(selected.id))}
+							class="corner-squircle rounded-(--radius-control) px-2.5 py-1 text-[12px] font-medium hover:underline"
+							style="background: var(--accent-soft); color: var(--accent-strong);"
 						>
-							pub
-						</span>
+							View source
+						</a>
 					{/if}
+				</div>
+			</div>
+		{/if}
 
-					<div class="ml-auto flex flex-wrap items-center gap-2">
-						{#if crateVersion}
-							<span
-								class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1 font-mono text-[11.5px] text-(--ink-soft)"
-								title="Crate version"
-							>
-								v{crateVersion}
-							</span>
-						{/if}
-						{#if selected?.span?.file}
-							<a
-								href={resolveAppPath(getNodeUrl(selected.id))}
-								class="corner-squircle rounded-(--radius-control) px-2.5 py-1 text-[12px] font-medium hover:underline"
-								style="background: var(--accent-soft); color: var(--accent-strong);"
-							>
-								View source
-							</a>
-						{/if}
+		<!-- Crate Overview: unified viz switcher (crate root only) -->
+		{#if isOnCrateRoot}
+			{#if crateMap}
+				<div class="space-y-3">
+					<div class="flex items-center justify-between">
+						<VizSwitcher mode={vizMode} onModeChange={setVizMode} />
 					</div>
+					{#if vizMode === 'graph'}
+						{@const CrateOverviewFlow = (
+							await import('$lib/components/design/graph/CrateOverviewFlow.svelte')
+						).default}
+						<CrateOverviewFlow data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
+					{:else if vizMode === 'treemap'}
+						{@const CrateTreemap = (await import('$lib/components/CrateTreemap.svelte')).default}
+						<CrateTreemap
+							data={crateMap}
+							selectedNodeId={nodeId}
+							{getNodeUrl}
+							drillId={treemapDrillId}
+							onDrillChange={setTreemapDrill}
+						/>
+					{:else if vizMode === 'sunburst'}
+						{@const CrateSunburst = (await import('$lib/components/CrateSunburst.svelte')).default}
+						<CrateSunburst
+							data={crateMap}
+							selectedNodeId={nodeId}
+							{getNodeUrl}
+							drillId={sunburstDrillId}
+							onDrillChange={setSunburstDrill}
+						/>
+					{:else if vizMode === 'grid'}
+						{@const CrateGrid = (await import('$lib/components/CrateGrid.svelte')).default}
+						<CrateGrid data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
+					{/if}
+				</div>
+			{:else if crateMapLoading}
+				<div
+					class="corner-squircle flex min-h-[200px] items-center justify-center rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-4"
+				>
+					<p class="text-sm text-(--muted)">Building crate module map…</p>
 				</div>
 			{/if}
+		{/if}
 
-			<!-- Crate Overview: unified viz switcher (crate root only) -->
-			{#if isOnCrateRoot}
-				{#if crateMap}
-					<div class="space-y-3">
-						<div class="flex items-center justify-between">
-							<VizSwitcher mode={vizMode} onModeChange={setVizMode} />
-						</div>
-						{#if vizMode === 'graph'}
-							<CrateOverviewFlow data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
-						{:else if vizMode === 'treemap'}
-							<CrateTreemap
-								data={crateMap}
-								selectedNodeId={nodeId}
-								{getNodeUrl}
-								drillId={treemapDrillId}
-								onDrillChange={setTreemapDrill}
-							/>
-						{:else if vizMode === 'sunburst'}
-							<CrateSunburst
-								data={crateMap}
-								selectedNodeId={nodeId}
-								{getNodeUrl}
-								drillId={sunburstDrillId}
-								onDrillChange={setSunburstDrill}
-							/>
-						{:else if vizMode === 'grid'}
-							<CrateGrid data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
-						{/if}
-					</div>
-				{:else if crateMapLoading}
-					<div
-						class="corner-squircle flex min-h-[200px] items-center justify-center rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-4"
-					>
-						<p class="text-sm text-(--muted)">Building crate module map…</p>
-					</div>
-				{/if}
-			{/if}
-
-			<!-- doc-classic three-pane: body | TOC.
+		<!-- doc-classic three-pane: body | TOC.
 				 The left tree lives in [crate]/[version]/+layout.svelte.
 				 Crate-root pages show the viz switcher above with no TOC. -->
-			{#if isOnCrateRoot}
+		{#if isOnCrateRoot}
 			<NodeDetails
 				{selected}
 				{sourceImpls}
@@ -363,45 +364,41 @@
 						{displayNode}
 						{implementers}
 						{theme}
-							{getNodeUrl}
-							{nodeExists}
-							{nodeMeta}
-							{crateName}
-							{crateVersion}
-							{crateVersions}
-						/>
-					</div>
-
-					<!-- TOC sidebar -->
-					<div class="hidden xl:block">
-						<DocToc
-							entries={tocEntries}
-							openGraphHref={graphHref}
-							{nodeId}
-						/>
-					</div>
+						{getNodeUrl}
+						{nodeExists}
+						{nodeMeta}
+						{crateName}
+						{crateVersion}
+						{crateVersions}
+					/>
 				</div>
+
+				<!-- TOC sidebar -->
+				<div class="hidden xl:block">
+					<DocToc entries={tocEntries} openGraphHref={graphHref} {nodeId} />
+				</div>
+			</div>
+		{/if}
+	</div>
+{:else if crateStatus === 'processing' || crateStatus === 'unknown' || (crateStatus === 'ready' && !detail && nodeViewLoading)}
+	<div class="flex h-full items-center justify-center">
+		<div class="flex flex-col items-center gap-3 text-center text-(--muted)">
+			<LoaderCircleIcon class="animate-spin" size={24} />
+			<p class="text-sm">
+				{crateStatus === 'ready' ? 'Loading node details…' : 'Parsing crate data…'}
+			</p>
+			{#if progressConn && progressConn.nodeCount > 0}
+				<p class="font-mono text-xs tabular-nums">
+					{progressConn.nodeCount.toLocaleString()} nodes discovered
+				</p>
 			{/if}
 		</div>
-	{:else if crateStatus === 'processing' || crateStatus === 'unknown' || (crateStatus === 'ready' && !detail && nodeViewLoading)}
-		<div class="flex h-full items-center justify-center">
-			<div class="flex flex-col items-center gap-3 text-center text-(--muted)">
-				<LoaderCircleIcon class="animate-spin" size={24} />
-				<p class="text-sm">
-					{crateStatus === 'ready' ? 'Loading node details…' : 'Parsing crate data…'}
-				</p>
-				{#if progressConn && progressConn.nodeCount > 0}
-					<p class="font-mono text-xs tabular-nums">
-						{progressConn.nodeCount.toLocaleString()} nodes discovered
-					</p>
-				{/if}
-			</div>
+	</div>
+{:else}
+	<div class="flex h-full items-center justify-center">
+		<div class="text-center text-(--muted)">
+			<p class="text-lg">Node not found</p>
+			<p class="mt-1 text-sm">The requested item could not be found in the graph.</p>
 		</div>
-	{:else}
-		<div class="flex h-full items-center justify-center">
-			<div class="text-center text-(--muted)">
-				<p class="text-lg">Node not found</p>
-				<p class="mt-1 text-sm">The requested item could not be found in the graph.</p>
-			</div>
-		</div>
-	{/if}
+	</div>
+{/if}

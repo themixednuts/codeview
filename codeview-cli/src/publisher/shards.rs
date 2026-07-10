@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use codeview_core::{CrateGraph, Edge, Node, NodeKind, Visibility};
 use serde::{Deserialize, Serialize};
 
-pub const STATIC_SCHEMA_VERSION: u32 = 1;
+pub const STATIC_SCHEMA_VERSION: u32 = 2;
 pub const NODE_VIEW_BUCKETS: u32 = 128;
 pub const TREE_CHILDREN_BUCKETS: u32 = 128;
 
@@ -283,24 +283,16 @@ impl<'a> EdgeLookup<'a> {
         Self { incoming, outgoing }
     }
 
-    pub(crate) fn incoming_count(&self, node_id: &str) -> usize {
-        self.incoming.get(node_id).map_or(0, Vec::len)
-    }
-
-    pub(crate) fn outgoing_count(&self, node_id: &str) -> usize {
-        self.outgoing.get(node_id).map_or(0, Vec::len)
-    }
-
-    pub(crate) fn cloned_edges(&self, node_id: &str) -> Vec<Edge> {
+    fn edge_refs(&self, node_id: &str) -> Vec<&'a Edge> {
         let outgoing = self.outgoing.get(node_id);
         let incoming = self.incoming.get(node_id);
         let capacity = outgoing.map_or(0, Vec::len) + incoming.map_or(0, Vec::len);
         let mut edges = Vec::with_capacity(capacity);
         if let Some(outgoing) = outgoing {
-            edges.extend(outgoing.iter().map(|edge| (*edge).clone()));
+            edges.extend(outgoing.iter().copied());
         }
         if let Some(incoming) = incoming {
-            edges.extend(incoming.iter().map(|edge| (*edge).clone()));
+            edges.extend(incoming.iter().copied());
         }
         edges
     }
@@ -310,13 +302,15 @@ impl<'a> EdgeLookup<'a> {
     /// trait-impl methods/assoc items (signatures + docs) on the type page —
     /// matching the local provider's expansion behaviour.
     pub(crate) fn page_edges_with_impl_members(&self, node_id: &str) -> Vec<Edge> {
-        let mut edges = self.cloned_edges(node_id);
-        let mut seen: HashSet<String> = edges
-            .iter()
-            .map(|edge| format!("{}|{}|{:?}", edge.from, edge.to, edge.kind))
-            .collect();
+        let mut edges = Vec::new();
+        let mut seen = HashSet::new();
+        for edge in self.edge_refs(node_id) {
+            if seen.insert((edge.from.as_str(), edge.to.as_str(), edge.kind)) {
+                edges.push(edge);
+            }
+        }
 
-        let impl_ids: Vec<String> = edges
+        let impl_ids: Vec<&str> = edges
             .iter()
             .filter(|edge| {
                 edge.from == node_id
@@ -325,11 +319,11 @@ impl<'a> EdgeLookup<'a> {
                         codeview_core::EdgeKind::Defines | codeview_core::EdgeKind::Contains
                     )
             })
-            .map(|edge| edge.to.clone())
+            .map(|edge| edge.to.as_str())
             .collect();
 
         for impl_id in impl_ids {
-            if let Some(outgoing) = self.outgoing.get(impl_id.as_str()) {
+            if let Some(outgoing) = self.outgoing.get(impl_id) {
                 for edge in outgoing {
                     if !matches!(
                         edge.kind,
@@ -337,14 +331,13 @@ impl<'a> EdgeLookup<'a> {
                     ) {
                         continue;
                     }
-                    let key = format!("{}|{}|{:?}", edge.from, edge.to, edge.kind);
-                    if seen.insert(key) {
-                        edges.push((*edge).clone());
+                    if seen.insert((edge.from.as_str(), edge.to.as_str(), edge.kind)) {
+                        edges.push(edge);
                     }
                 }
             }
         }
-        edges
+        edges.into_iter().cloned().collect()
     }
 }
 
@@ -1021,9 +1014,10 @@ mod tests {
             "impl methods must be related so the UI can render signatures + docs"
         );
         assert!(
-            entry.edges.iter().any(|edge| {
-                edge.from == "demo::impl-1" && edge.to == "demo::impl-1::clone"
-            }),
+            entry
+                .edges
+                .iter()
+                .any(|edge| { edge.from == "demo::impl-1" && edge.to == "demo::impl-1::clone" }),
             "type pages must include second-hop impl→member edges"
         );
     }
@@ -1061,7 +1055,7 @@ mod tests {
                 tree_children: Vec::new(),
             },
         );
-        assert_eq!(manifest.node_count, 6);
+        assert_eq!(manifest.node_count, 7);
         assert!(manifest.roots.iter().all(|root| !root.node.is_external));
         assert!(
             manifest

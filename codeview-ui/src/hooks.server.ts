@@ -1,5 +1,5 @@
 import type { Cookies, Handle } from '@sveltejs/kit';
-import { setupLogging } from '$lib/log';
+import { setupLogging } from '$lib/log.server';
 import { handleWsUpgrade } from '$provider';
 import { getAuthState, handleAuthRequest } from '$lib/server/auth';
 import {
@@ -81,7 +81,10 @@ function withSecurityHeaders(response: Response): Response {
 	headers.set('X-Frame-Options', 'DENY');
 	headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
 	headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
-	headers.set('Content-Security-Policy', "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
+	headers.set(
+		'Content-Security-Policy',
+		"frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+	);
 	return new Response(response.body, {
 		status: response.status,
 		statusText: response.statusText,
@@ -106,11 +109,7 @@ function getHtmlDataAttributes(cookies: Cookies): HtmlDataAttributes {
 	return {
 		'data-theme': theme,
 		'data-accent': readAllowedPreference(cookies.get(ACCENT_KEY), ACCENT_VALUES, 'orange'),
-		'data-density': readAllowedPreference(
-			cookies.get(DENSITY_KEY),
-			DENSITY_VALUES,
-			'comfortable',
-		),
+		'data-density': readAllowedPreference(cookies.get(DENSITY_KEY), DENSITY_VALUES, 'comfortable'),
 		'data-voice': readAllowedPreference(cookies.get(VOICE_KEY), VOICE_VALUES, 'editorial'),
 		'data-doc-layout': readAllowedPreference(
 			cookies.get(DOC_LAYOUT_KEY),

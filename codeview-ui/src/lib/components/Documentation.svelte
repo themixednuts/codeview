@@ -1,5 +1,7 @@
 <script lang="ts">
-	import { parseDocumentation, type SupportedLanguage, type DocLinks } from '$lib/highlight';
+	import { parseDocumentation } from '$lib/highlight/documentation';
+	import type { SupportedLanguage } from '$lib/highlight/languages';
+	import type { DocLinks } from '$lib/highlight/markdown';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { externalDocsUrl } from '$lib/docs';

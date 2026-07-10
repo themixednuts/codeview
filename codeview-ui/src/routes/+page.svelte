@@ -2,7 +2,8 @@
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { Icon, KindBadge } from '$lib/components/design';
+	import Icon from '$lib/components/design/Icon.svelte';
+	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import type { CrateSearchResult, CrateSummary } from '$lib/schema';
 	import {
 		parseHomeState,
@@ -76,15 +77,11 @@
 				<div class="flex flex-wrap items-center gap-2 text-[12px] text-(--muted)">
 					<span>Showing</span>
 					<span class="badge badge-sm bg-(--panel) text-(--ink)">
-						{visibleSection === 'workspace'
-								? 'workspace'
-								: 'popular crates'}
+						{visibleSection === 'workspace' ? 'workspace' : 'popular crates'}
 					</span>
 					<span class="text-(--muted-soft)" aria-hidden="true">·</span>
 					<span class="font-mono">
-						{visibleSection === 'workspace'
-							? `${localCrates.length} local`
-							: 'from crates.io'}
+						{visibleSection === 'workspace' ? `${localCrates.length} local` : 'from crates.io'}
 					</span>
 				</div>
 			</div>
@@ -95,9 +92,7 @@
 		>
 			<aside class="min-w-0">
 				<div class="mb-3 flex items-center justify-between">
-					<h1
-						class="text-[10.5px] font-semibold tracking-[0.22em] text-(--ink-soft) uppercase"
-					>
+					<h1 class="text-[10.5px] font-semibold tracking-[0.22em] text-(--ink-soft) uppercase">
 						Browse
 					</h1>
 				</div>
@@ -132,7 +127,6 @@
 						</li>
 					{/each}
 				</ul>
-
 			</aside>
 
 			<section class="min-w-0">
@@ -140,9 +134,7 @@
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="layers" size={13} class="text-(--accent)" />
-							<h2 class="font-display text-[18px] font-semibold text-(--ink)">
-								Your workspace
-							</h2>
+							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Your workspace</h2>
 							<span class="font-mono text-[11px] text-(--muted-soft)">
 								{localCrates.length} crate{localCrates.length === 1 ? '' : 's'}
 							</span>
@@ -157,7 +149,9 @@
 									class="group corner-squircle flex min-w-0 items-center gap-2.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2.5 transition-all hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
 									<KindBadge kind="crate" size={14} />
-									<span class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-(--ink)">
+									<span
+										class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-(--ink)"
+									>
 										{crate.name}
 									</span>
 									<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
@@ -178,9 +172,7 @@
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="trending" size={13} class="text-(--accent)" />
-							<h2 class="font-display text-[18px] font-semibold text-(--ink)">
-								Popular crates
-							</h2>
+							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Popular crates</h2>
 						</div>
 						<span class="font-mono text-[11px] text-(--muted-soft)">crates.io</span>
 					</div>
@@ -212,7 +204,7 @@
 										<Icon
 											name="arrow-right"
 											size={13}
-											class="-translate-x-1 shrink-0 text-(--muted) opacity-0 transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-70"
+											class="shrink-0 -translate-x-1 text-(--muted) opacity-0 transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-70"
 										/>
 									</div>
 								</a>

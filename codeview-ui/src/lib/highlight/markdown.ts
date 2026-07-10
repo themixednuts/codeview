@@ -4,15 +4,16 @@ import type StateInline from 'markdown-it/lib/rules_inline/state_inline.mjs';
 
 // Type for resolved intra-doc links: link text -> node ID
 export type DocLinks = Record<string, string>;
+export type MarkdownCodeBlock = { info: string; content: string };
+type RenderEnvironment = { docLinks?: DocLinks; codeBlocks?: MarkdownCodeBlock[] };
 
-// Configure markdown-it: disable code blocks (we use Shiki), enable linkify
+// Configure markdown-it with raw HTML disabled. Fenced/indented code is
+// captured through renderer rules below when documentation is segmented.
 const md = new MarkdownIt({
-	html: true, // Allow HTML tags in source (common in Rust docs)
+	html: false, // Rustdoc content is untrusted; render raw HTML as text.
 	linkify: true, // Auto-convert URLs to links
 	typographer: true, // Smart quotes, dashes, etc.
-})
-	.disable(['code', 'fence']) // We handle code blocks separately with Shiki
-	.use(markdownItGithubAlerts); // GitHub-style alert blocks (> [!NOTE], etc.)
+}).use(markdownItGithubAlerts); // GitHub-style alert blocks (> [!NOTE], etc.)
 
 /**
  * Markdown-it plugin for Rust intra-doc links.
@@ -70,7 +71,7 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 	const displayContent = hasBackticks ? content.slice(1, -1) : content;
 
 	// Check if this is a known intra-doc link
-	const docLinks = (state.md.options as { docLinks?: DocLinks }).docLinks;
+	const docLinks = (state.env as RenderEnvironment | undefined)?.docLinks;
 
 	if (!docLinks) {
 		return false;
@@ -117,6 +118,48 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
 // Apply the intra-doc links plugin
 md.use(intraDocLinksPlugin);
 
+const defaultFence = md.renderer.rules.fence;
+const defaultCodeBlock = md.renderer.rules.code_block;
+
+function captureCodeBlock(
+	tokens: any[],
+	idx: number,
+	options: any,
+	env: RenderEnvironment,
+	self: any,
+	fallback: NonNullable<typeof defaultFence>,
+): string {
+	if (!env.codeBlocks) return fallback(tokens, idx, options, env, self);
+
+	const token = tokens[idx];
+	const index =
+		env.codeBlocks.push({
+			info: token.info ?? '',
+			content: token.content ?? '',
+		}) - 1;
+	return `<div data-codeview-code-block="${index}"></div>\n`;
+}
+
+md.renderer.rules.fence = (tokens, idx, options, env, self) =>
+	captureCodeBlock(
+		tokens,
+		idx,
+		options,
+		env as RenderEnvironment,
+		self,
+		defaultFence ?? self.renderToken.bind(self),
+	);
+
+md.renderer.rules.code_block = (tokens, idx, options, env, self) =>
+	captureCodeBlock(
+		tokens,
+		idx,
+		options,
+		env as RenderEnvironment,
+		self,
+		defaultCodeBlock ?? self.renderToken.bind(self),
+	);
+
 // Open external links in a new tab
 const defaultLinkOpen =
 	md.renderer.rules.link_open ||
@@ -129,7 +172,7 @@ md.renderer.rules.link_open = (tokens: any, idx: any, options: any, env: any, se
 
 	if (!classAttr.includes('intra-doc-link')) {
 		const href = token.attrGet('href') ?? '';
-		const docLinks = (md.options as { docLinks?: DocLinks }).docLinks;
+		const docLinks = (env as RenderEnvironment | undefined)?.docLinks;
 
 		// Resolve rustdoc-style path links
 		if (docLinks && href && href in docLinks) {
@@ -153,7 +196,14 @@ md.renderer.rules.link_open = (tokens: any, idx: any, options: any, env: any, se
  * @param docLinks Optional map of intra-doc link text to node IDs
  */
 export function renderMarkdown(text: string, docLinks?: DocLinks): string {
-	// Store doc_links in options for the intra-doc-link plugin to access
-	(md.options as { docLinks?: DocLinks }).docLinks = docLinks;
-	return md.render(text);
+	return md.render(text, { docLinks } satisfies RenderEnvironment);
+}
+
+export function renderMarkdownDocument(
+	text: string,
+	docLinks?: DocLinks,
+): { html: string; codeBlocks: MarkdownCodeBlock[] } {
+	const codeBlocks: MarkdownCodeBlock[] = [];
+	const html = md.render(text, { docLinks, codeBlocks } satisfies RenderEnvironment);
+	return { html, codeBlocks };
 }

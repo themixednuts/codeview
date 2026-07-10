@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
-	import { Icon } from '$lib/components/design';
+	import Icon from '$lib/components/design/Icon.svelte';
 	import AdminForceParseForm from '$lib/components/AdminForceParseForm.svelte';
 	import { stepLabels } from '$lib/realtime/constants';
 	import { onMount } from 'svelte';
@@ -475,7 +475,7 @@
 											<span class="badge badge-sm">{priorityLabel(item.priorityTier)}</span>
 										</div>
 										<div
-											class="mt-1 min-h-[18px] line-clamp-1 text-[12px] text-(--muted)"
+											class="mt-1 line-clamp-1 min-h-[18px] text-[12px] text-(--muted)"
 											aria-hidden={!item.reason}
 										>
 											{item.reason ?? ''}

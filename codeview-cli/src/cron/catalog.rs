@@ -85,7 +85,7 @@ pub async fn run(args: Catalog) -> Result<()> {
 pub(crate) fn build_catalog(mut crates: Vec<CatalogEntry>, generated_at: String) -> CatalogFile {
     crates.sort_by(|a, b| a.name.cmp(&b.name));
     CatalogFile {
-        schema_version: 1,
+        schema_version: crate::publisher::shards::STATIC_SCHEMA_VERSION,
         generated_at,
         crates,
     }

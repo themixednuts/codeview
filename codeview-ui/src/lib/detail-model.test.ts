@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { DetailDocModel, Node, NodeDetail, NodeKind } from '$lib/schema';
+import type { Node, NodeDetail, NodeKind } from '$lib/schema';
 import { buildDetailDocModel, materializeDetailDocModel } from './detail-model';
 
 const visibility = { kind: 'Public' } as const;
@@ -71,6 +71,7 @@ describe('detail doc model', () => {
 		};
 
 		const model = buildDetailDocModel(detail);
+		const materialized = materializeDetailDocModel(detail);
 
 		expect(model.methodGroups).toEqual([
 			{ implId: inherentImpl.id, methodIds: [inherentMethod.id] },
@@ -83,6 +84,10 @@ describe('detail doc model', () => {
 		expect(model.tocEntries.find((entry) => entry.anchor === 'trait-impls')?.count).toBe(2);
 		expect(model.tocEntries.some((entry) => entry.anchor === 'relationships')).toBe(false);
 		expect(model.whereUsed).toEqual([{ id: caller.id, name: caller.name }]);
+		expect(materialized.traitImplGroups[0].methods.map((method) => method.id)).toEqual([
+			assocType.id,
+			traitMethod.id,
+		]);
 	});
 
 	it('lists required/provided methods and assoc items on trait definition pages', () => {
@@ -117,7 +122,7 @@ describe('detail doc model', () => {
 		};
 
 		const model = buildDetailDocModel(detail);
-		const materialized = materializeDetailDocModel(model, detail);
+		const materialized = materializeDetailDocModel(detail);
 
 		expect(model.requiredTraitMethodIds).toEqual([required.id]);
 		expect(model.providedTraitMethodIds).toEqual([provided.id]);
@@ -130,35 +135,5 @@ describe('detail doc model', () => {
 		expect(materialized.requiredTraitMethods.map((m) => m.name)).toEqual(['fmt']);
 		expect(materialized.providedTraitMethods.map((m) => m.name)).toEqual(['to_string']);
 		expect(materialized.traitAssocItems.map((m) => m.name)).toEqual(['Output']);
-	});
-
-	it('rebuilds optional trait impl groups when materializing older doc models', () => {
-		const selected = node('demo::Widget', 'Widget', 'Struct');
-		const traitImpl = node('demo::Widget::impl-Display', 'impl Display for Widget', 'Impl', {
-			impl_type: 'Trait',
-			impl_category: 'Trait',
-			impl_trait: 'core::fmt::Display',
-		});
-		const traitMethod = node('demo::Widget::impl-Display::fmt', 'fmt', 'Function', {
-			parent_impl: traitImpl.id,
-		});
-		const detail: NodeDetail = {
-			node: selected,
-			relatedNodes: [traitImpl, traitMethod],
-			edges: [
-				{ from: selected.id, to: traitImpl.id, kind: 'Defines', confidence: 'Static' },
-				{ from: traitImpl.id, to: traitMethod.id, kind: 'Defines', confidence: 'Static' },
-			],
-		};
-		const model = buildDetailDocModel(detail);
-		const olderModel = { ...model, traitImplGroups: undefined } satisfies DetailDocModel;
-
-		const materialized = materializeDetailDocModel(olderModel, detail);
-
-		expect(materialized.traitImplGroups).toHaveLength(1);
-		expect(materialized.traitImplGroups[0].impl.id).toBe(traitImpl.id);
-		expect(materialized.traitImplGroups[0].methods.map((method) => method.id)).toEqual([
-			traitMethod.id,
-		]);
 	});
 });

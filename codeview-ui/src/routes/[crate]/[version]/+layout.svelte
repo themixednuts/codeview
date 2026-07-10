@@ -12,7 +12,7 @@
 		type ExpandPath,
 	} from '$lib/context';
 	import { page } from '$app/state';
-	import { afterNavigate, beforeNavigate, goto, invalidate } from '$app/navigation';
+	import { afterNavigate, beforeNavigate, goto, invalidate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/environment';
 	import type { Snippet } from 'svelte';
@@ -386,11 +386,12 @@
 			: null,
 	);
 	function updateExplorerState(patch: Parameters<typeof serializeExplorerState>[1]) {
-		void goto(serializeExplorerState(page.url, patch), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
-		});
+		const next = serializeExplorerState(page.url, patch);
+		if (browser) {
+			replaceState(next, page.state);
+			return;
+		}
+		void goto(next, { replaceState: true, noScroll: true, keepFocus: true });
 	}
 
 	function toggleKindFilter(kind: NodeKind) {

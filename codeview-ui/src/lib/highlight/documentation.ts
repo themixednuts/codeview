@@ -1,6 +1,6 @@
-import type { SupportedLanguage } from './shiki';
-import { normalizeLanguage, highlightCode } from './shiki';
-import { renderMarkdown, type DocLinks } from './markdown';
+import type { SupportedLanguage } from './languages';
+import { normalizeLanguage } from './languages';
+import { renderMarkdownDocument, type DocLinks } from './markdown';
 
 /**
  * Rustdoc code-fence attributes that imply Rust code.
@@ -170,46 +170,31 @@ export type DocSegment =
 	| { type: 'text'; content: string; html: string }
 	| { type: 'code'; content: string; lang: SupportedLanguage };
 
-const CODE_PLACEHOLDER_PREFIX = '\n<div data-code-placeholder="';
-const CODE_PLACEHOLDER_SUFFIX = '"></div>\n';
-
 /**
  * Parse documentation into segments.
  *
  * Renders the full markdown document as one piece so that reference-style
  * link definitions (e.g. `[1]: url`) resolve correctly across the whole doc.
- * Code blocks are replaced with placeholders during markdown rendering, then
- * extracted as separate segments so Shiki can highlight them.
+ * MarkdownIt's code-block renderer emits trusted structural markers while raw
+ * rustdoc HTML remains escaped. The markers become separate Shiki segments.
  */
 export function parseDocumentation(
 	docs: string,
 	defaultLang: SupportedLanguage = 'rust',
 	docLinks?: DocLinks,
 ): DocSegment[] {
-	// Capture the full info string after ``` (handles commas: `rust,no_run,edition2021`)
-	const codeBlockRegex = /```([^\n]*)\n([\s\S]*?)```/g;
-	const codeBlocks: { lang: SupportedLanguage; code: string }[] = [];
-
-	// Replace code blocks with placeholders, keeping the rest of the markdown
-	// intact so reference link definitions resolve globally.
-	const withPlaceholders = docs.replace(
-		codeBlockRegex,
-		(_match, infoStr: string, rawCode: string) => {
-			const { lang, isRust } = parseRustdocFenceInfo(infoStr, defaultLang);
-			let code = rawCode.trim();
-			if (isRust) code = processRustDocCode(code);
-			const idx = codeBlocks.length;
-			codeBlocks.push({ lang, code });
-			return `${CODE_PLACEHOLDER_PREFIX}${idx}${CODE_PLACEHOLDER_SUFFIX}`;
-		},
-	);
-
-	// Render the full document with markdown-it (references resolve globally)
-	const fullHtml = renderMarkdown(withPlaceholders, docLinks);
+	const rendered = renderMarkdownDocument(docs, docLinks);
+	const fullHtml = rendered.html;
+	const codeBlocks = rendered.codeBlocks.map(({ info, content }) => {
+		const { lang, isRust } = parseRustdocFenceInfo(info, defaultLang);
+		let code = content.trim();
+		if (isRust) code = processRustDocCode(code);
+		return { lang, code };
+	});
 
 	// Split the rendered HTML at placeholder boundaries
 	const segments: DocSegment[] = [];
-	const placeholderRegex = /<div data-code-placeholder="(\d+)"><\/div>/g;
+	const placeholderRegex = /<div data-codeview-code-block="(\d+)"><\/div>\n?/g;
 	let lastIndex = 0;
 	let match;
 
@@ -252,6 +237,7 @@ export async function highlightDocumentation(
 	segments: DocSegment[],
 	theme: 'dark' | 'light' = 'dark',
 ): Promise<Array<{ type: 'text' | 'code'; content: string; html: string }>> {
+	const { highlightCode } = await import('./shiki');
 	return Promise.all(
 		segments.map(async (segment) => {
 			if (segment.type === 'code') {

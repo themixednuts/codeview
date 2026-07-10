@@ -13,12 +13,7 @@ export type SelectedEdges = {
 	outgoing: Edge[];
 };
 
-export type {
-	DetailDocModel,
-	DetailMethodGroup,
-	TocEntry,
-	WhereUsedRef,
-} from '$lib/schema';
+export type { DetailDocModel, DetailMethodGroup, TocEntry, WhereUsedRef } from '$lib/schema';
 
 export type MaterializedMethodGroup = {
 	impl: Node;
@@ -65,7 +60,9 @@ function isTraitImpl(node: Node): boolean {
 
 function isInherentImpl(node: Node): boolean {
 	if (node.kind !== 'Impl') return false;
-	return node.impl_type === 'Inherent' || (!node.name.includes(' for ') && node.impl_type !== 'Trait');
+	return (
+		node.impl_type === 'Inherent' || (!node.name.includes(' for ') && node.impl_type !== 'Trait')
+	);
 }
 
 function isTypeNode(node: Node): boolean {
@@ -244,7 +241,8 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 	);
 	const totalImpls = sourceImpls.length + blanketImpls.length;
 	const tocEntries: TocEntry[] = [];
-	if (selected.docs) tocEntries.push({ anchor: 'documentation', title: 'Documentation', count: null });
+	if (selected.docs)
+		tocEntries.push({ anchor: 'documentation', title: 'Documentation', count: null });
 	if (traitItems.assoc.length > 0) {
 		tocEntries.push({
 			anchor: 'associated-items',
@@ -283,7 +281,8 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
 			implCount++;
 			if (implCount >= 8) break;
 		}
-		if (implCount > 0) tocEntries.push({ anchor: 'implementers', title: 'Implementers', count: implCount });
+		if (implCount > 0)
+			tocEntries.push({ anchor: 'implementers', title: 'Implementers', count: implCount });
 	}
 
 	const seen = new Set<string>();
@@ -339,18 +338,10 @@ function nodeList(ids: string[], relatedNodeMap: Map<string, Node>): Node[] {
 }
 
 export function materializeDetailDocModel(
-	model: DetailDocModel | null | undefined,
 	detail: NodeDetail | null | undefined,
 ): MaterializedDetailDocModel {
-	const resolvedModel = model ?? buildDetailDocModel(null);
+	const resolvedModel = buildDetailDocModel(detail);
 	const relatedNodeMap = buildRelatedNodeMap(detail);
-	const fallback = detail ? buildDetailDocModel(detail) : buildDetailDocModel(null);
-	const traitImplGroups = resolvedModel.traitImplGroups ?? fallback.traitImplGroups ?? [];
-	const requiredTraitMethodIds =
-		resolvedModel.requiredTraitMethodIds ?? fallback.requiredTraitMethodIds ?? [];
-	const providedTraitMethodIds =
-		resolvedModel.providedTraitMethodIds ?? fallback.providedTraitMethodIds ?? [];
-	const traitAssocItemIds = resolvedModel.traitAssocItemIds ?? fallback.traitAssocItemIds ?? [];
 	return {
 		...resolvedModel,
 		relatedNodeMap,
@@ -367,7 +358,7 @@ export function materializeDetailDocModel(
 				};
 			})
 			.filter((group): group is MaterializedMethodGroup => Boolean(group)),
-		traitImplGroups: traitImplGroups
+		traitImplGroups: resolvedModel.traitImplGroups
 			.map((group) => {
 				const impl = relatedNodeMap.get(group.implId);
 				if (!impl) return null;
@@ -377,8 +368,8 @@ export function materializeDetailDocModel(
 				};
 			})
 			.filter((group): group is MaterializedMethodGroup => Boolean(group)),
-		requiredTraitMethods: nodeList(requiredTraitMethodIds, relatedNodeMap),
-		providedTraitMethods: nodeList(providedTraitMethodIds, relatedNodeMap),
-		traitAssocItems: nodeList(traitAssocItemIds, relatedNodeMap),
+		requiredTraitMethods: nodeList(resolvedModel.requiredTraitMethodIds, relatedNodeMap),
+		providedTraitMethods: nodeList(resolvedModel.providedTraitMethodIds, relatedNodeMap),
+		traitAssocItems: nodeList(resolvedModel.traitAssocItemIds, relatedNodeMap),
 	};
 }

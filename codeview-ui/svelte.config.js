@@ -5,7 +5,7 @@ const appVersion =
 	process.env.CODEVIEW_VERSION ??
 	process.env.GITHUB_SHA ??
 	process.env.CF_VERSION_METADATA_ID ??
-	String(Date.now());
+	'dev';
 
 const adapter = isCloudflare
 	? (await import('@sveltejs/adapter-cloudflare')).default({

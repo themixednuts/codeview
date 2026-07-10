@@ -100,7 +100,7 @@ function hostedMeta(
 	name = 'demo',
 ) {
 	return {
-		schema_version: 1,
+		schema_version: 2,
 		name,
 		version,
 		index: {
@@ -117,6 +117,9 @@ function hostedMeta(
 			nodeViewBucketCount,
 			treeChildrenBucketCount: 128,
 			aliasBucketCount: 128,
+			targetRawShardBytes: 262_144,
+			searchPrefixLength: 2,
+			kindIndex: true,
 			...artifacts,
 		},
 	};
@@ -141,64 +144,37 @@ function crateRefs(version = '1.0.0', storageName = 'demo') {
 	};
 }
 
-function baseNodeArtifacts(
+function hostedNodeViewArtifact(
 	prefix: string,
 	nodeId: string,
 	version = '1.0.0',
-): Array<[string, unknown]> {
+): [string, unknown] {
 	const bucket = nodeViewBucket(nodeId);
 	return [
-		[
-			`${prefix}/manifest.json`,
-			{
-				schema_version: 1,
-				name: 'demo',
-				version,
-				index: {
-					name: 'demo',
-					version,
-					crates: [],
-				},
-				nodeCount: 1,
-				edgeCount: 0,
-				kindCounts: {
-					Crate: 1,
-				},
-				roots: [],
-				rootChildren: {},
-				populatedShards: {
-					nodes: [bucket],
-					nodeDetails: [bucket],
-					treeChildren: [],
-				},
-			},
-		],
-		[
-			`${prefix}/nodes/${bucket}.json`,
-			{
-				nodes: {
-					[nodeId]: {
-						id: nodeId,
-						name: 'demo',
-						kind: 'Crate',
-						visibility: { kind: 'Public' },
-						attrs: [],
-					},
-				},
-			},
-		],
-		[
-			`${prefix}/node-details/${bucket}.json`,
-			{
-				details: {
-					[nodeId]: {
+		`${prefix}/site/node-views/${bucket}.json`,
+		{
+			schema_version: 2,
+			name: 'demo',
+			version,
+			bucket,
+			bucketCount: 128,
+			entries: {
+				[nodeId]: {
+					detail: {
+						node: {
+							id: nodeId,
+							name: 'demo',
+							kind: 'Crate',
+							visibility: { kind: 'Public' },
+							attrs: [],
+						},
 						edges: [],
-						relatedIds: [],
-						ancestors: [],
+						relatedNodes: [],
 					},
+					ancestors: [],
 				},
 			},
-		],
+		},
 	];
 }
 
@@ -232,21 +208,7 @@ describe('createCloudflareProvider', () => {
 			],
 			[
 				'rust/proc_macro/1.98.0-nightly/site/meta.json',
-				{
-					schema_version: 1,
-					name: 'proc_macro',
-					version: '1.98.0-nightly',
-					index: {
-						name: 'proc_macro',
-						version: '1.98.0-nightly',
-						crates: [],
-					},
-					nodeCount: 0,
-					edgeCount: 0,
-					kindCounts: {},
-					roots: [],
-					rootChildren: {},
-				},
+				hostedMeta(128, '1.98.0-nightly', {}, 'proc_macro'),
 			],
 		]);
 		const provider = createCloudflareProvider({
@@ -258,13 +220,12 @@ describe('createCloudflareProvider', () => {
 		});
 	});
 
-	test('does not assemble node views when materialized node views are required', async () => {
+	test('does not assemble node views from base shards', async () => {
 		const prefix = 'rust/demo/1.0.0';
 		const nodeId = 'demo';
 		const objects = new Map<string, unknown>([
 			['rust/_refs/demo.json', crateRefs()],
 			[`${prefix}/site/meta.json`, hostedMeta(128)],
-			...baseNodeArtifacts(prefix, nodeId),
 		]);
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
@@ -276,14 +237,14 @@ describe('createCloudflareProvider', () => {
 		await expect(loadNodeViewDirect('demo', '1.0.0', nodeId)).resolves.toBeNull();
 	});
 
-	test('assembles node views only when materialized node views are deferred', async () => {
+	test('loads the complete materialized node view', async () => {
 		const version = '1.0.1';
 		const prefix = `rust/demo/${version}`;
 		const nodeId = 'demo';
 		const objects = new Map<string, unknown>([
 			['rust/_refs/demo.json', crateRefs(version)],
-			[`${prefix}/site/meta.json`, hostedMeta(0, version)],
-			...baseNodeArtifacts(prefix, nodeId, version),
+			[`${prefix}/site/meta.json`, hostedMeta(128, version)],
+			hostedNodeViewArtifact(prefix, nodeId, version),
 		]);
 		const provider = createCloudflareProvider({
 			CRATE_GRAPHS: fakeBucket(objects),
@@ -315,7 +276,7 @@ describe('createCloudflareProvider', () => {
 			[
 				`${prefix}/site/kinds/Struct.json`,
 				{
-					schema_version: 1,
+					schema_version: 2,
 					name: crateName,
 					version,
 					kind: 'Struct',
@@ -342,83 +303,6 @@ describe('createCloudflareProvider', () => {
 				name: 'Widget',
 				kind: 'Struct',
 				visibility: { kind: 'Public' },
-			},
-		]);
-	});
-
-	test('falls back to filtering hosted nodes by kind from node shards', async () => {
-		const crateName = 'fallbackdemo';
-		const version = '1.0.0';
-		const prefix = `rust/${crateName}/${version}`;
-		const crateNodeId = crateName;
-		const nestedNodeId = `${crateName}::hidden::Widget`;
-		const crateBucket = nodeViewBucket(crateNodeId);
-		const nestedBucket = nodeViewBucket(nestedNodeId);
-		const objects = new Map<string, unknown>([
-			[`rust/_refs/${crateName}.json`, crateRefs(version, crateName)],
-			[`${prefix}/site/meta.json`, hostedMeta(128, version, {}, crateName)],
-			[
-				`${prefix}/manifest.json`,
-				{
-					schema_version: 1,
-					name: crateName,
-					version,
-					index: { name: crateName, version, crates: [] },
-					nodeCount: 2,
-					edgeCount: 0,
-					kindCounts: { Crate: 1, Struct: 1 },
-					roots: [],
-					rootChildren: {},
-					populatedShards: {
-						nodes: [...new Set([crateBucket, nestedBucket])],
-						nodeDetails: [],
-						treeChildren: [],
-					},
-				},
-			],
-			[
-				`${prefix}/nodes/${crateBucket}.json`,
-				{
-					nodes: {
-						[crateNodeId]: {
-							id: crateNodeId,
-							name: crateName,
-							kind: 'Crate',
-							visibility: { kind: 'Public' },
-							attrs: [],
-						},
-					},
-				},
-			],
-			[
-				`${prefix}/nodes/${nestedBucket}.json`,
-				{
-					nodes: {
-						[nestedNodeId]: {
-							id: nestedNodeId,
-							name: 'Widget',
-							kind: 'Struct',
-							visibility: { kind: 'Public' },
-							attrs: [],
-						},
-					},
-				},
-			],
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
-
-		await expect(
-			provider.searchNodesDirect?.(crateName, version, '', 10, ['Struct']),
-		).resolves.toEqual([
-			{
-				id: nestedNodeId,
-				name: 'Widget',
-				kind: 'Struct',
-				visibility: { kind: 'Public' },
-				is_external: undefined,
-				is_deprecated: undefined,
 			},
 		]);
 	});
