@@ -127,11 +127,27 @@ jobs:
           if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
             FORCE_FLAG="--force"
           fi
-          target/release/codeview cron parse-one \
-            --name "$NAME" \
-            --version "$VERSION" \
-            $FORCE_FLAG \
-            --bucket "$R2_BUCKET"
+          for ATTEMPT in 1 2 3; do
+            set +e
+            target/release/codeview cron parse-one \
+              --name "$NAME" \
+              --version "$VERSION" \
+              $FORCE_FLAG \
+              --bucket "$R2_BUCKET"
+            EXIT_CODE=$?
+            set -e
+
+            if [[ "$EXIT_CODE" -eq 0 ]]; then
+              break
+            fi
+            if [[ "$EXIT_CODE" -ne 64 || "$ATTEMPT" -eq 3 ]]; then
+              exit "$EXIT_CODE"
+            fi
+
+            DELAY=$((15 * 2 ** (ATTEMPT - 1)))
+            echo "Transient parse failure (attempt $ATTEMPT); retrying in ${DELAY}s"
+            sleep "$DELAY"
+          done
 
       - name: Refresh hosted refs and catalog
         run: |

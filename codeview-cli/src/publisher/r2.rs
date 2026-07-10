@@ -124,13 +124,22 @@ impl S3Backend {
     }
 }
 
-/// Retry policy for R2 calls.  R2 occasionally returns 5xx or times
-/// out under cron load; a tight retry loop with linear backoff
-/// (1s / 2s / 4s) absorbs the vast majority without giving up too
-/// quickly. Four attempts total — the final failure surfaces as a
-/// transient error and the GHA wrapper marks the job for retry on the
-/// next sweep.
-const R2_RETRIES: u32 = 4;
+/// Retry policy for R2 calls. R2 occasionally returns 5xx or
+/// `InternalError` under cron load. Five attempts with bounded
+/// exponential backoff and per-key jitter absorb short service faults
+/// without synchronizing concurrent uploads into another burst.
+const R2_RETRIES: u32 = 5;
+
+fn retry_delay(op: &str, attempt: u32) -> std::time::Duration {
+    let base_ms = 1_000u64 << attempt;
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in op.bytes().chain(attempt.to_le_bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    let jitter_ms = hash % (base_ms / 4 + 1);
+    std::time::Duration::from_millis(base_ms + jitter_ms)
+}
 
 async fn with_retries<T, F, Fut, ClassErr>(op: &str, classify: ClassErr, mut f: F) -> Result<T>
 where
@@ -147,7 +156,7 @@ where
                 if !classify(&err) || attempt + 1 == R2_RETRIES {
                     return Err(err.context(format!("{op} (after {} attempts)", attempt + 1)));
                 }
-                let delay = std::time::Duration::from_secs(1u64 << attempt);
+                let delay = retry_delay(op, attempt);
                 eprintln!(
                     "[r2] {op} failed (attempt {}): {err:#}; retrying in {:?}",
                     attempt + 1,
@@ -166,13 +175,20 @@ where
 /// request never got a reply (DNS/TLS/timeout). 4xx is permanent —
 /// retrying won't help.
 fn s3_is_transient(err: &anyhow::Error) -> bool {
-    let s = format!("{err:#}");
+    let s = format!("{err:#}").to_ascii_lowercase();
     // Cheap string-shape match avoids deep SDK error wrangling.  False
     // positives just mean we retry briefly on an already-permanent
     // failure, which is fine.
     s.contains("dispatch failure")
         || s.contains("timeout")
         || s.contains("connection")
+        || s.contains("internalerror")
+        || s.contains("internal error")
+        || s.contains("slowdown")
+        || s.contains("throttl")
+        || s.contains("service unavailable")
+        || s.contains("temporarily unavailable")
+        || s.contains("429")
         || s.contains("500")
         || s.contains("502")
         || s.contains("503")
@@ -818,4 +834,35 @@ pub fn run_delta_prefix(run_id: &str) -> String {
 /// Path of the small mutable read-side ref object for one storage name.
 pub fn refs_key(storage_name: &str) -> String {
     format!("rust/_refs/{storage_name}.json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{retry_delay, s3_is_transient};
+
+    #[test]
+    fn cloudflare_internal_errors_are_retryable() {
+        let err = anyhow::anyhow!(
+            "service error: unhandled error (InternalError): We encountered an internal error"
+        );
+        assert!(s3_is_transient(&err));
+        assert!(s3_is_transient(&anyhow::anyhow!("SlowDown: status 429")));
+        assert!(!s3_is_transient(&anyhow::anyhow!(
+            "AccessDenied: status 403"
+        )));
+    }
+
+    #[test]
+    fn retry_delay_is_exponential_bounded_and_jittered_by_operation() {
+        for attempt in 0..4 {
+            let base_ms = 1_000u128 << attempt;
+            let delay_ms = retry_delay("R2 put rust/demo/a.json", attempt).as_millis();
+            assert!(delay_ms >= base_ms);
+            assert!(delay_ms <= base_ms + base_ms / 4);
+        }
+        assert_ne!(
+            retry_delay("R2 put rust/demo/a.json", 1),
+            retry_delay("R2 put rust/demo/b.json", 1)
+        );
+    }
 }
