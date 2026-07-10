@@ -305,6 +305,86 @@ pub(crate) fn build_tree_relations(
     (children, parents)
 }
 
+pub(crate) fn add_alias_tree_nodes(
+    graph: &CrateGraph,
+    children: &mut HashMap<String, Vec<String>>,
+    parents: &mut HashMap<String, String>,
+) -> Vec<Node> {
+    let nodes_by_id: HashMap<&str, &Node> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let known_aliases: HashSet<&str> = graph.aliases.keys().map(String::as_str).collect();
+    let mut aliases: Vec<_> = graph.aliases.iter().collect();
+    aliases.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut alias_nodes = Vec::new();
+    for (alias, canonical) in aliases {
+        if nodes_by_id.contains_key(alias.as_str()) {
+            continue;
+        }
+        let Some((parent, _)) = alias.rsplit_once("::") else {
+            continue;
+        };
+        if !nodes_by_id.contains_key(parent) && !known_aliases.contains(parent) {
+            continue;
+        }
+        let Some(canonical_node) = nodes_by_id.get(canonical.as_str()) else {
+            continue;
+        };
+        if !is_local_page_node(canonical_node) {
+            continue;
+        }
+
+        let mut alias_node = (*canonical_node).clone();
+        alias_node.id = alias.clone();
+        children
+            .entry(parent.to_string())
+            .or_default()
+            .push(alias.clone());
+        parents.insert(alias.clone(), parent.to_string());
+        alias_nodes.push(alias_node);
+    }
+    alias_nodes
+}
+
+pub(crate) fn project_reexport_aliases(
+    parent_id: &str,
+    edges: &mut Vec<Edge>,
+    aliases: &HashMap<String, String>,
+) {
+    let mut by_canonical: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (alias, canonical) in aliases {
+        if alias.rsplit_once("::").map(|(parent, _)| parent) == Some(parent_id) {
+            by_canonical
+                .entry(canonical.as_str())
+                .or_default()
+                .push(alias.as_str());
+        }
+    }
+    for projected_aliases in by_canonical.values_mut() {
+        projected_aliases.sort_unstable();
+    }
+
+    let mut projected = Vec::with_capacity(edges.len());
+    for edge in edges.drain(..) {
+        if edge.from == parent_id
+            && edge.kind == EdgeKind::ReExports
+            && let Some(projected_aliases) = by_canonical.get(edge.to.as_str())
+        {
+            for alias in projected_aliases {
+                let mut alias_edge = edge.clone();
+                alias_edge.to = (*alias).to_string();
+                projected.push(alias_edge);
+            }
+        } else {
+            projected.push(edge);
+        }
+    }
+    *edges = projected;
+}
+
 pub(crate) fn summarise_node(n: &Node) -> NodeSummary {
     NodeSummary {
         id: n.id.clone(),
@@ -563,7 +643,8 @@ pub fn build_node_detail_shards(
         let bucket = node_view_bucket(&node.id, NODE_VIEW_BUCKETS);
         // Include second-hop edges from impl blocks → methods/assoc items so
         // the hosted detail page can list trait-impl members the way docs.rs does.
-        let edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
+        let mut edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
+        project_reexport_aliases(node.id.as_str(), &mut edges, &graph.aliases);
         let related_ids = collect_related(node.id.as_str(), &edges, |endpoint| {
             Some(endpoint.to_string())
         });
@@ -623,9 +704,14 @@ pub fn build_manifest(
     storage_name: &str,
     populated: PopulatedShards,
 ) -> StaticCrateManifest {
-    let (children_map, parents) = build_tree_relations(graph);
-    let nodes_by_id: HashMap<&str, &Node> =
-        graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let (mut children_map, mut parents) = build_tree_relations(graph);
+    let alias_nodes = add_alias_tree_nodes(graph, &mut children_map, &mut parents);
+    let nodes_by_id: HashMap<&str, &Node> = graph
+        .nodes
+        .iter()
+        .chain(alias_nodes.iter())
+        .map(|n| (n.id.as_str(), n))
+        .collect();
 
     let local_nodes: Vec<&Node> = graph
         .nodes
@@ -722,12 +808,20 @@ pub fn build_all(
     let prefix = format!("rust/{storage_name}/{}", graph.version);
     let nodes_by_id: HashMap<&str, &Node> =
         graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let (children_map, parents) = build_tree_relations(graph);
+    let (mut children_map, mut parents) = build_tree_relations(graph);
+    let alias_nodes = add_alias_tree_nodes(graph, &mut children_map, &mut parents);
+    let tree_nodes_by_id: HashMap<&str, &Node> = graph
+        .nodes
+        .iter()
+        .chain(alias_nodes.iter())
+        .map(|n| (n.id.as_str(), n))
+        .collect();
 
     // Build shards first so the manifest can record populated lists.
     let node_shards = build_node_shards(graph, storage_name);
     let detail_shards = build_node_detail_shards(graph, storage_name, &parents, &nodes_by_id);
-    let tree_shards = build_tree_children_shards(graph, storage_name, &children_map, &nodes_by_id);
+    let tree_shards =
+        build_tree_children_shards(graph, storage_name, &children_map, &tree_nodes_by_id);
 
     let populated = PopulatedShards {
         nodes: node_shards.keys().cloned().collect(),

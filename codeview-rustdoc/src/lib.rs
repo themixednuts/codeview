@@ -4010,13 +4010,7 @@ fn build_aliases(
         let rdt::ItemEnum::Use(use_item) = &item.inner else {
             continue;
         };
-        if use_item.is_glob {
-            continue;
-        }
         let Some(target_id) = use_item.id else {
-            continue;
-        };
-        let Some(canonical) = resolve_id(krate, default_crate_name, path_index, target_id) else {
             continue;
         };
         let Some(parent_id) = item_to_parent.get(use_item_id) else {
@@ -4024,6 +4018,25 @@ fn build_aliases(
         };
         let Some(parent_canonical) = resolve_id(krate, default_crate_name, path_index, *parent_id)
         else {
+            continue;
+        };
+
+        if use_item.is_glob {
+            for (name, exported_id) in glob_export_targets(krate, target_id) {
+                let Some(canonical) =
+                    resolve_id(krate, default_crate_name, path_index, exported_id)
+                else {
+                    continue;
+                };
+                let public_path = format!("{parent_canonical}::{name}");
+                if public_path != canonical {
+                    aliases.entry(public_path).or_insert(canonical);
+                }
+            }
+            continue;
+        }
+
+        let Some(canonical) = resolve_id(krate, default_crate_name, path_index, target_id) else {
             continue;
         };
 
@@ -4041,6 +4054,52 @@ fn build_aliases(
         aliases.entry(public_path).or_insert(canonical);
     }
     aliases
+}
+
+fn glob_export_targets(krate: &rdt::Crate, module_id: rdt::Id) -> Vec<(String, rdt::Id)> {
+    fn collect(
+        krate: &rdt::Crate,
+        module_id: rdt::Id,
+        visited: &mut HashSet<rdt::Id>,
+        exports: &mut Vec<(String, rdt::Id)>,
+    ) {
+        if !visited.insert(module_id) {
+            return;
+        }
+        let Some(module_item) = krate.index.get(&module_id) else {
+            return;
+        };
+        let rdt::ItemEnum::Module(module) = &module_item.inner else {
+            return;
+        };
+
+        for child_id in &module.items {
+            let Some(child) = krate.index.get(child_id) else {
+                continue;
+            };
+            if !matches!(child.visibility, rdt::Visibility::Public) {
+                continue;
+            }
+            if let rdt::ItemEnum::Use(use_item) = &child.inner {
+                let Some(target_id) = use_item.id else {
+                    continue;
+                };
+                if use_item.is_glob {
+                    collect(krate, target_id, visited, exports);
+                } else {
+                    exports.push((use_item.name.clone(), target_id));
+                }
+                continue;
+            }
+            if let Some(name) = child.name.clone() {
+                exports.push((name, *child_id));
+            }
+        }
+    }
+
+    let mut exports = Vec::new();
+    collect(krate, module_id, &mut HashSet::new(), &mut exports);
+    exports
 }
 
 /// Inverse alias map: canonical_id → shortest_public_alias.
@@ -4398,23 +4457,39 @@ fn add_use_import_edges_with_parent_map(
             continue;
         };
 
-        // Resolve the target to a node ID
-        let Some(target_node_id) = resolve_id(krate, default_crate_name, path_index, target_id)
-        else {
-            continue;
-        };
-
-        // Create edge from parent module to re-exported item
-        push_edge_with_glob_and_occurrence(
-            graph,
-            edge_cache,
-            parent_node_id,
-            target_node_id,
-            EdgeKind::ReExports,
-            Confidence::Static,
-            use_item.is_glob,
-            item.span.as_ref().map(map_span),
-        );
+        let occurrence = item.span.as_ref().map(map_span);
+        if use_item.is_glob {
+            for (_, exported_id) in glob_export_targets(krate, target_id) {
+                let Some(target_node_id) =
+                    resolve_id(krate, default_crate_name, path_index, exported_id)
+                else {
+                    continue;
+                };
+                push_edge_with_glob_and_occurrence(
+                    graph,
+                    edge_cache,
+                    parent_node_id.clone(),
+                    target_node_id,
+                    EdgeKind::ReExports,
+                    Confidence::Static,
+                    true,
+                    occurrence.clone(),
+                );
+            }
+        } else if let Some(target_node_id) =
+            resolve_id(krate, default_crate_name, path_index, target_id)
+        {
+            push_edge_with_glob_and_occurrence(
+                graph,
+                edge_cache,
+                parent_node_id,
+                target_node_id,
+                EdgeKind::ReExports,
+                Confidence::Static,
+                false,
+                occurrence,
+            );
+        }
     }
 }
 
@@ -6013,6 +6088,78 @@ mod tests {
                 }
             }),
         )
+    }
+
+    fn rustdoc_glob_use_item(id: u32, source: &str, target_id: u32) -> serde_json::Value {
+        let mut item = rustdoc_use_item(id, "", source, target_id);
+        item["inner"]["use"]["is_glob"] = serde_json::json!(true);
+        item
+    }
+
+    #[test]
+    fn glob_reexports_project_public_module_children() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1, 3]);
+        value["index"]["1"] = rustdoc_item(
+            1,
+            0,
+            "facade",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [2],
+                    "is_stripped": false
+                }
+            }),
+        );
+        value["index"]["2"] = rustdoc_glob_use_item(2, "crate::hidden", 3);
+        value["index"]["3"] = rustdoc_item(
+            3,
+            0,
+            "hidden",
+            serde_json::json!({
+                "module": {
+                    "is_crate": false,
+                    "items": [4],
+                    "is_stripped": true
+                }
+            }),
+        );
+        value["index"]["3"]["visibility"] = serde_json::json!("crate");
+        value["index"]["4"] = rustdoc_struct_item(4, "Thing", Vec::new());
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "facade"],
+            "kind": "module"
+        });
+        value["paths"]["3"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "hidden"],
+            "kind": "module"
+        });
+        value["paths"]["4"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "hidden", "Thing"],
+            "kind": "struct"
+        });
+
+        let (graph, _) = extract_graph_validated(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("glob re-export fixture parses");
+
+        assert_eq!(
+            graph.aliases.get("fixture::facade::Thing"),
+            Some(&"fixture::hidden::Thing".to_string())
+        );
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "fixture::facade"
+                && edge.to == "fixture::hidden::Thing"
+                && edge.kind == EdgeKind::ReExports
+                && edge.is_glob
+        }));
     }
 
     #[test]

@@ -66,6 +66,7 @@ import {
 } from '../provider-utils';
 import type { PackageMetadata } from '../registry/types';
 import { orderCatalogSummaries } from './catalog';
+import { mergeTraitMemberDocumentation } from '$lib/trait-member-hydration';
 
 const log = getLogger('cloudflare');
 
@@ -1031,7 +1032,46 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	): Promise<NodeViewBase | null> {
 		const context = await loadHostedContext(name, version);
 		if (!context) return null;
-		return loadMaterializedNodeView(context.ref, context.meta, nodeId);
+		const view = await loadMaterializedNodeView(context.ref, context.meta, nodeId);
+		if (!view) return null;
+
+		const traitIds = Array.from(
+			new Set(
+				view.detail.relatedNodes
+					.filter(
+						(node) =>
+							node.kind === 'Impl' &&
+							node.impl_category === 'Trait' &&
+							Boolean(node.impl_trait),
+					)
+					.map((node) => node.impl_trait as string),
+			),
+		);
+		if (traitIds.length === 0) return view;
+
+		const traitEntries = await Promise.all(
+			traitIds.map(async (traitId): Promise<[string, NodeViewBase] | null> => {
+				const traitCrate = traitId.split('::')[0];
+				if (!traitCrate) return null;
+				let traitContext = context;
+				if (normalizeCrateName(traitCrate) !== normalizeCrateName(name)) {
+					if (!isStdCrate(traitCrate)) return null;
+					const externalContext = await loadHostedContext(traitCrate, 'latest');
+					if (!externalContext) return null;
+					traitContext = externalContext;
+				}
+				const traitView = await loadMaterializedNodeView(
+					traitContext.ref,
+					traitContext.meta,
+					traitId,
+				);
+				return traitView ? [traitId, traitView] : null;
+			}),
+		);
+		return mergeTraitMemberDocumentation(
+			view,
+			new Map(traitEntries.filter((entry): entry is [string, NodeViewBase] => entry !== null)),
+		);
 	}
 
 	async function loadHostedSearchManifestFromRef(

@@ -211,7 +211,14 @@ pub fn build_with_config(
         .iter()
         .map(|node| (node.id.as_str(), node))
         .collect();
-    let (children_map, parents) = super::shards::build_tree_relations(graph);
+    let (mut children_map, mut parents) = super::shards::build_tree_relations(graph);
+    let alias_nodes = super::shards::add_alias_tree_nodes(graph, &mut children_map, &mut parents);
+    let tree_nodes_by_id: HashMap<&str, &Node> = graph
+        .nodes
+        .iter()
+        .chain(alias_nodes.iter())
+        .map(|node| (node.id.as_str(), node))
+        .collect();
 
     let node_entries = build_node_view_entries(graph, &nodes_by_id, &parents)?;
     let node_view_total_raw_bytes: usize = node_entries.iter().map(|entry| entry.raw_bytes).sum();
@@ -247,7 +254,7 @@ pub fn build_with_config(
         storage_name,
         config.tree_children_buckets,
         &children_map,
-        &nodes_by_id,
+        &tree_nodes_by_id,
     );
     let meta = build_meta(
         graph,
@@ -256,7 +263,7 @@ pub fn build_with_config(
         node_view_bucket_count,
         &children_map,
         &parents,
-        &nodes_by_id,
+        &tree_nodes_by_id,
     );
     let (search_manifest, search_shards) = build_search_shards(graph, storage_name);
     let kind_shards = build_kind_shards(graph, storage_name);
@@ -366,9 +373,19 @@ fn build_node_view_entries(
     for node in graph.nodes.iter().filter(|node| is_local_page_node(node)) {
         // Second-hop edges from impl blocks → methods/assoc items so the type
         // page can list trait-impl members (signatures + docs) like docs.rs.
-        let edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
+        let mut edges = edge_lookup.page_edges_with_impl_members(node.id.as_str());
+        super::shards::project_reexport_aliases(node.id.as_str(), &mut edges, &graph.aliases);
         let related_nodes = collect_related(node.id.as_str(), &edges, |endpoint| {
-            nodes_by_id.get(endpoint).map(|node| (*node).clone())
+            let canonical = graph
+                .aliases
+                .get(endpoint)
+                .map(String::as_str)
+                .unwrap_or(endpoint);
+            nodes_by_id.get(canonical).map(|node| {
+                let mut projected = (*node).clone();
+                projected.id = endpoint.to_string();
+                projected
+            })
         });
         let ancestors = ancestor_summaries(node.id.as_str(), parents, nodes_by_id);
         let value = HostedNodeViewEntry {
@@ -778,6 +795,94 @@ mod tests {
         assert_eq!(
             shard.aliases["demo::Alias"].canonical_id,
             "demo::Thing".to_string()
+        );
+    }
+
+    #[test]
+    fn hosted_reexports_use_public_aliases_in_details_and_tree() {
+        let mut graph = graph();
+        graph
+            .nodes
+            .push(node("demo::facade", "facade", NodeKind::Module));
+        graph
+            .nodes
+            .push(node("demo::hidden", "hidden", NodeKind::Module));
+        graph
+            .nodes
+            .push(node("demo::hidden::Exported", "Exported", NodeKind::Struct));
+        graph
+            .edges
+            .push(edge("demo", "demo::facade", EdgeKind::Contains));
+        graph
+            .edges
+            .push(edge("demo", "demo::hidden", EdgeKind::Contains));
+        graph.edges.push(edge(
+            "demo::hidden",
+            "demo::hidden::Exported",
+            EdgeKind::Contains,
+        ));
+        graph.edges.push(edge(
+            "demo::facade",
+            "demo::hidden::Exported",
+            EdgeKind::ReExports,
+        ));
+        graph.aliases.insert(
+            "demo::facade::Exported".to_string(),
+            "demo::hidden::Exported".to_string(),
+        );
+        graph.aliases.insert(
+            "demo::facade::AlsoExported".to_string(),
+            "demo::hidden::Exported".to_string(),
+        );
+
+        let set = build_all(&graph, "demo").expect("build hosted artifacts");
+        let node_bucket = node_view_bucket("demo::facade", set.report.node_view_bucket_count);
+        let node_key = format!("rust/demo/1.0.0/site/node-views/{node_bucket}.json");
+        let node_artifact = set
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.key == node_key)
+            .expect("facade node view shard");
+        let node_shard: HostedNodeViewShard =
+            serde_json::from_slice(&node_artifact.body).expect("deserialize node view shard");
+        let entry = node_shard
+            .entries
+            .get("demo::facade")
+            .expect("facade entry");
+        assert!(entry.detail.edges.iter().any(|edge| {
+            edge.kind == EdgeKind::ReExports && edge.to == "demo::facade::Exported"
+        }));
+        assert!(entry.detail.edges.iter().any(|edge| {
+            edge.kind == EdgeKind::ReExports && edge.to == "demo::facade::AlsoExported"
+        }));
+        assert!(
+            entry
+                .detail
+                .related_nodes
+                .iter()
+                .any(|node| node.id == "demo::facade::Exported")
+        );
+
+        let tree_bucket = tree_children_bucket("demo::facade", TREE_CHILDREN_BUCKETS);
+        let tree_key = format!("rust/demo/1.0.0/site/tree-children/{tree_bucket}.json");
+        let tree_artifact = set
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.key == tree_key)
+            .expect("facade tree shard");
+        let tree_shard: HostedTreeChildrenShard =
+            serde_json::from_slice(&tree_artifact.body).expect("deserialize tree shard");
+        assert!(
+            tree_shard.parents["demo::facade"]
+                .children
+                .iter()
+                .any(|child| child.node.id == "demo::facade::Exported")
+        );
+        assert!(
+            tree_shard.parents["demo::facade"]
+                .children
+                .iter()
+                .any(|child| child.node.id == "demo::facade::AlsoExported")
         );
     }
 

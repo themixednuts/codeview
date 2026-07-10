@@ -237,39 +237,8 @@
 		);
 	}
 
-	function implCategoryLabel(category: Node['impl_category']): string | null {
-		switch (category) {
-			case 'Blanket':
-				return 'blanket';
-			case 'Negative':
-				return 'negative';
-			case 'Synthetic':
-				return 'synthetic';
-			case 'Trait':
-				return 'trait';
-			case 'Inherent':
-				return 'inherent';
-			default:
-				return null;
-		}
-	}
-
 	function isTupleVariant(fields: { name: string }[]): boolean {
 		return fields.length > 0 && fields.every((f) => /^\d+$/.test(f.name));
-	}
-
-	function memberKindLabel(kind: NodeKind): string {
-		switch (kind) {
-			case 'Function':
-				return 'fn';
-			case 'AssocType':
-				return 'type';
-			case 'AssocConst':
-			case 'Constant':
-				return 'const';
-			default:
-				return kindLabels[kind] ?? kind;
-		}
 	}
 
 	function crateItemGroupLabel(kind: NodeKind): string {
@@ -565,8 +534,7 @@
 	{/if}
 {/snippet}
 
-{#snippet paramBadge(p: GenericParam, strong: boolean)}
-	<code class="badge {strong ? 'badge-strong' : ''} badge-code">
+{#snippet genericParamContent(p: GenericParam)}
 		{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const</span>{/if}
 		<span class="token-name">{p.name}</span>
 		{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}
@@ -590,11 +558,9 @@
 			<span class="text-(--muted)">=</span>
 			{@render typeContent(p.kind.default)}
 		{/if}
-	</code>
 {/snippet}
 
-{#snippet wherePredBadge(pred: WherePredicate)}
-	<code class="badge badge-code">
+{#snippet wherePredContent(pred: WherePredicate)}
 		{#if pred.kind === 'Bound'}
 			{@render typeContent(pred.type)}
 			<span class="text-(--muted)">:</span>
@@ -615,7 +581,6 @@
 					{pred.rhs.expr}
 				</span>{/if}
 		{/if}
-	</code>
 {/snippet}
 
 <!-- Badge wrapping a TypeRef — used by argument types, return types,
@@ -625,7 +590,6 @@
 {/snippet}
 
 {#snippet traitLink(traitId: string)}
-	<code class="badge badge-strong badge-code">
 		{#if hasInternalNode(traitId)}
 			<a
 				href={nodeHref(traitId)}
@@ -647,101 +611,61 @@
 		{:else}
 			{displayNode(traitId)}
 		{/if}
-	</code>
 {/snippet}
 
 {#snippet implRow(implBlock: Node)}
-	{@const implCategory = implCategoryLabel(implBlock.impl_category)}
-	{@const traitNode = implBlock.impl_trait ? nodeMeta?.(implBlock.impl_trait) : undefined}
-	{@const requiredCount = traitNode?.required_trait_methods?.length ?? 0}
-	{@const defaultCount = traitNode?.default_trait_methods?.length ?? 0}
-	{@const providedDefaultCount = implBlock.provided_trait_methods?.length ?? 0}
 	{@const implGenerics = implBlock.generics?.params ?? []}
 	{@const implWhere = implBlock.generics?.where_predicates ?? []}
-	<div
-		class="flex flex-wrap items-center gap-2 text-sm [contain-intrinsic-size:auto_28px] [content-visibility:auto]"
-	>
-		<span class="badge">impl</span>
-		{#if implCategory}
-			<span
-				class="badge {implBlock.impl_category === 'Negative'
-					? 'border-(--danger-border) bg-(--danger-bg) text-(--danger)'
-					: implBlock.impl_category === 'Blanket' || implBlock.impl_category === 'Synthetic'
-						? 'opacity-80'
-						: ''}"
-			>
-				{implCategory}
-			</span>
-		{/if}
-		{#if implGenerics.length > 0}
-			{#each implGenerics as p, i (i)}
-				{@render paramBadge(p, true)}
-			{/each}
-		{/if}
-		{#if implBlock.impl_trait}
-			{@render traitLink(implBlock.impl_trait)}
-			<span class="text-(--muted)">for</span>
-			<span class="token-name">{selected?.name}</span>
-		{/if}
+	<div class="min-w-0 [contain-intrinsic-size:auto_28px] [content-visibility:auto]">
+		<code class="font-(--font-code) text-[13px] leading-6 text-(--ink)">
+			<span class="token-keyword">impl</span>{#if implBlock.impl_category === 'Negative'}<span
+					class="text-(--danger)"
+				>!</span
+			>{/if}{#if implGenerics.length > 0}<span class="text-(--muted)">&lt;</span>{#each implGenerics as p, i (i)}{#if i > 0}<span
+						class="text-(--muted)"
+						>, </span
+					>{/if}{@render genericParamContent(p)}{/each}<span class="text-(--muted)"
+					>&gt;</span
+				>{/if}{#if implBlock.impl_trait}
+				{@render traitLink(implBlock.impl_trait)}
+				<span class="token-keyword"> for </span>
+				<span class="token-name">{selected?.name}</span>
+			{/if}
+		</code>
 		{#if implWhere.length > 0}
-			<span class="text-xs font-semibold tracking-wider text-(--muted) uppercase">where</span>
-			{#each implWhere as pred, i (i)}
-				{@render wherePredBadge(pred)}
-			{/each}
-		{/if}
-		{#if implBlock.impl_trait && (requiredCount > 0 || defaultCount > 0)}
-			<span class="text-xs text-(--muted)">
-				{requiredCount} required, {defaultCount} default
-				{#if providedDefaultCount > 0}
-					· using {providedDefaultCount} default
-				{/if}
-			</span>
+			<div class="pl-4 font-(--font-code) text-[12px] leading-5 text-(--ink-soft)">
+				<span class="token-keyword">where</span>
+				{#each implWhere as pred, i (i)}
+					<span class="ml-2">{@render wherePredContent(pred)}{i + 1 < implWhere.length ? ',' : ''}</span>
+				{/each}
+			</div>
 		{/if}
 	</div>
-{/snippet}
-
-{#snippet attributesPanel(attrs: string[])}
-	<details class="mt-3 rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-		<summary
-			class="cursor-pointer text-xs font-semibold tracking-wider text-(--muted) uppercase select-none"
-		>
-			Attributes <span class="font-mono text-(--muted-soft)">({attrs.length})</span>
-		</summary>
-		<div class="mt-2 space-y-1 border-t border-(--panel-border-soft) pt-2">
-			{#each attrs as attr (attr)}
-				<code class="token-meta block text-sm">{attr}</code>
-			{/each}
-		</div>
-	</details>
 {/snippet}
 
 {#snippet implMemberRow(member: Node, index: number)}
 	<div
 		class={`bg-(--panel-solid) px-3 py-3 [contain-intrinsic-size:auto_92px] [content-visibility:auto] ${index ? 'border-t border-(--panel-border)' : ''}`}
 	>
-		<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
-			<div class="flex min-w-0 items-center gap-2">
-				<span
-					class="badge badge-sm font-mono uppercase"
-					style={`color: ${kindColors[member.kind]}`}
-				>
-					{memberKindLabel(member.kind)}
-				</span>
+		{#if !member.signature || member.span}
+			<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+				<div class="flex min-w-0 items-center gap-2">
 				{#if !member.signature}
 					<code class="font-(--font-code) font-medium text-(--ink)">{member.name}</code>
 				{/if}
-			</div>
-			{#if member.span}
-				<div class="text-xs">
-					<SourceViewer
-						span={member.span}
-						{theme}
-						crateName={crateFromId(member.id) ?? crateName}
-						crateVersion={resolveVersionForCrate(member.id)}
-					/>
 				</div>
-			{/if}
-		</div>
+				{#if member.span}
+					<div class="text-xs">
+						<SourceViewer
+							span={member.span}
+							{theme}
+							crateName={crateFromId(member.id) ?? crateName}
+							crateVersion={resolveVersionForCrate(member.id)}
+						/>
+					</div>
+				{/if}
+			</div>
+		{/if}
 		{#if member.signature}
 			<SignatureBlock node={member} {theme} variant="flat" />
 		{:else if member.type}
@@ -763,10 +687,16 @@
 				{/if}
 			</div>
 		{/if}
+		{#if member.deprecation}
+			<p class="mt-2 text-sm text-(--danger)">
+				Deprecated{member.deprecation.since ? ` since ${member.deprecation.since}` : ''}{member
+					.deprecation.note
+					? `: ${member.deprecation.note}`
+					: ''}
+			</p>
+		{/if}
 		{#if member.docs}
-			<div
-				class={`mt-3 text-sm text-(--muted) ${member.signature || member.type ? 'border-t border-(--panel-border-soft) pt-3' : ''}`}
-			>
+			<div class="mt-2 text-sm text-(--muted)">
 				<Documentation
 					docs={member.docs}
 					defaultLang="rust"
@@ -896,6 +826,16 @@
 			</div>
 		{/if}
 
+		<!-- Attributes are source syntax and belong immediately before the
+		     declaration they annotate. -->
+		{#if selected.attrs && selected.attrs.length > 0}
+			<div class="mb-1 font-(--font-code) text-[13px] leading-5">
+				{#each selected.attrs as attr (attr)}
+					<code class="token-meta block">{attr}</code>
+				{/each}
+			</div>
+		{/if}
+
 		<!-- Declaration block — single canonical Rust signature. Replaces the
 		     old "Signature" collapsible + separate generics/where badge rows,
 		     which duplicated the same information. Rendered for every kind
@@ -908,13 +848,6 @@
 					<CodeBlock code={itemDeclaration.multiline} lang="rust" {theme} variant="flat" />
 				{/if}
 			</div>
-		{/if}
-
-		<!-- Attributes — collapsed, right under the declaration (not buried
-		     at the bottom of the header). Source attributes belong with the
-		     source declaration they annotate. -->
-		{#if selected.attrs && selected.attrs.length > 0}
-			{@render attributesPanel(selected.attrs)}
 		{/if}
 
 		<!-- Fields (collapse if many) — rendered as a clean Rust source block
