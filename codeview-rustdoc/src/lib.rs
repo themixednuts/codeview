@@ -2351,6 +2351,19 @@ fn build_path_index(krate: &rdt::Crate, default_crate_name: &str) -> PathIndex {
     }
 
     for (path_id, mut entries) in entries_by_path {
+        // rustdoc can emit more than one module summary for the crate-root
+        // path. They all describe the crate module; materializing any of them
+        // as a separate module creates a dead `crate~module-*` page.
+        if path_id == default_crate_name {
+            for (item_id, _) in entries {
+                index
+                    .node_ids_by_rustdoc_id
+                    .insert(item_id, path_id.clone());
+            }
+            index.node_kinds.insert(path_id, NodeKind::Crate);
+            continue;
+        }
+
         entries.sort_by_key(|(item_id, kind)| {
             let priority = if *kind == NodeKind::Module { 0 } else { 1 };
             (priority, item_id.0)
@@ -6739,6 +6752,44 @@ pub struct Small;
             root.doc_links.get("fixture").map(String::as_str),
             Some("fixture")
         );
+    }
+
+    #[test]
+    fn duplicate_root_module_summaries_resolve_to_the_crate_node() {
+        let mut krate = minimal_crate([
+            (rdt::Id(1), vec!["fixture"], rdt::ItemKind::Module),
+            (rdt::Id(10), vec!["fixture"], rdt::ItemKind::Module),
+            (rdt::Id(11), vec!["fixture", "Child"], rdt::ItemKind::Struct),
+        ]);
+        krate.root = rdt::Id(10);
+
+        let graph = build_graph(
+            &krate,
+            "fixture",
+            BuildGraphOptions {
+                workspace_members: Some(HashSet::from(["fixture".to_string()])),
+                source: None,
+                call_mode: CallMode::Strict,
+                skip_external_nodes: false,
+                rustdoc_name: None,
+            },
+        )
+        .expect("fixture graph builds");
+
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .filter(|node| node.id == "fixture")
+                .count(),
+            1
+        );
+        assert!(!graph.nodes.iter().any(|node| {
+            node.kind == NodeKind::Module && node.id.starts_with("fixture~module-")
+        }));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "fixture" && edge.to == "fixture::Child" && edge.kind == EdgeKind::Contains
+        }));
     }
 
     #[test]
