@@ -628,11 +628,28 @@
 			</a>
 		</div>
 
+		<button
+			type="button"
+			class="js-only corner-squircle inline-flex h-8 w-full max-w-[440px] min-w-8 items-center justify-between gap-2 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center sm:px-3"
+			aria-label="Search crates and Rust items"
+			title="Global search"
+			onclick={() => (commandOpen = true)}
+		>
+			<span class="inline-flex min-w-0 items-center gap-2">
+				<Icon name="search" size={12} />
+				<span class="hidden truncate min-[520px]:inline">Search crates...</span>
+			</span>
+			<span class="hidden shrink-0 items-center gap-1 lg:inline-flex" aria-hidden="true">
+				<span class="kbd">{shortcutModLabel}</span>
+				<span class="kbd">K</span>
+			</span>
+		</button>
+
 		<form
 			method="GET"
 			action={resolve('/')}
 			role="search"
-			class="relative block w-full max-w-[440px] min-w-0 justify-self-start min-[1120px]:justify-self-center"
+			class="no-js-only relative block w-full max-w-[440px] min-w-0 justify-self-start min-[1120px]:justify-self-center"
 		>
 			<label for="global-crate-search" class="sr-only">Search crates</label>
 			<Icon
@@ -653,14 +670,7 @@
 				class="absolute inset-y-0 right-2 inline-flex items-center gap-1 text-(--muted-soft)"
 				aria-label="Submit crate search"
 			>
-				<span class="js-only hidden items-center gap-1 lg:inline-flex" aria-hidden="true">
-					<span class="kbd">{shortcutModLabel}</span>
-					<span class="kbd">K</span>
-				</span>
-				<span class="js-only lg:hidden" aria-hidden="true">
-					<Icon name="arrow-right" size={12} />
-				</span>
-				<span class="no-js-only text-[10px] font-medium">Go</span>
+				<span class="text-[10px] font-medium">Go</span>
 			</button>
 		</form>
 

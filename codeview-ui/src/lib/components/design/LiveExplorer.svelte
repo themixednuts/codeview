@@ -1069,7 +1069,7 @@
 			</div>
 			<form
 				method="get"
-				class="relative mt-3"
+				class="js-only relative mt-3"
 				data-sveltekit-replacestate
 				data-sveltekit-keepfocus
 				data-sveltekit-noscroll
@@ -1080,19 +1080,37 @@
 					type="search"
 					name="q"
 					placeholder="Filter items..."
+					aria-label="Filter crate items"
 					value={filterDraft}
-					class="mono w-full rounded-md border border-(--panel-border) bg-(--panel-solid) py-1.5 pr-12 pl-7 text-[11.5px] text-(--ink) outline-none focus:border-(--accent) focus:ring-1 focus:ring-(--accent)"
+					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-12 pl-7 text-[11.5px] text-(--ink) shadow-(--shadow-soft) transition-colors outline-none hover:border-(--panel-border-strong) focus:border-(--accent) focus:ring-2 focus:ring-(--accent-ring)"
 					oninput={handleFilterInput}
 				/>
 				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
 					<Icon name="search" size={12} />
 				</span>
-				<span class="kbd js-only absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">
-					S
+				<span class="kbd absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">S</span>
+				{#each effectiveKindParams as kind (kind)}
+					<input type="hidden" name="k" value={kind} />
+				{/each}
+				{#if showGraphBlanketImpls}
+					<input type="hidden" name="gbi" value="1" />
+				{/if}
+			</form>
+			<form method="get" class="no-js-only relative mt-3">
+				<input
+					type="search"
+					name="q"
+					placeholder="Filter items..."
+					aria-label="Filter crate items"
+					value={filter}
+					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-14 pl-7 text-[11.5px] text-(--ink) shadow-(--shadow-soft) outline-none"
+				/>
+				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
+					<Icon name="search" size={12} />
 				</span>
 				<button
 					type="submit"
-					class="no-js-only absolute inset-y-1 right-1 rounded px-2 text-[10px] font-semibold text-(--accent)"
+					class="absolute inset-y-1 right-1 rounded-sm px-2 text-[10px] font-semibold text-(--accent)"
 				>
 					Filter
 				</button>
@@ -1107,27 +1125,20 @@
 				<div class="mt-2 flex flex-wrap gap-1">
 					{#each populatedKinds as facet (facet.kind)}
 						{@const isActive = kindFilter.has(facet.kind)}
+						<button
+							type="button"
+							class="badge badge-sm js-only transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+							class:badge-accent={isActive}
+							aria-pressed={isActive}
+							onclick={() => toggleKind(facet.kind)}
+						>
+							{facet.label}
+						</button>
 						<a
 							href={resolveAppPath(kindHref(facet.kind))}
-							data-sveltekit-preload-data="off"
-							data-sveltekit-noscroll
-							data-sveltekit-keepfocus
-							class="badge badge-sm no-underline transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+							class="badge badge-sm no-js-only no-underline transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 							class:badge-accent={isActive}
 							aria-current={isActive ? 'true' : undefined}
-							onclick={(event) => {
-								if (
-									event.metaKey ||
-									event.ctrlKey ||
-									event.shiftKey ||
-									event.altKey ||
-									event.button !== 0
-								) {
-									return;
-								}
-								event.preventDefault();
-								toggleKind(facet.kind);
-							}}
 						>
 							{facet.label}
 						</a>
