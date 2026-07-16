@@ -83,7 +83,7 @@ function withSecurityHeaders(response: Response): Response {
 	headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
 	headers.set(
 		'Content-Security-Policy',
-		"frame-ancestors 'none'; base-uri 'self'; object-src 'none'",
+		"frame-ancestors 'none'; base-uri 'self'; object-src 'none'; worker-src 'self'",
 	);
 	return new Response(response.body, {
 		status: response.status,

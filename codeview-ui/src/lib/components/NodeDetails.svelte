@@ -13,7 +13,6 @@
 	import { kindColors } from '$lib/tree';
 	import { externalDocsUrl } from '$lib/docs';
 	import { formatItemDeclaration } from '$lib/signature-format';
-	import { renderMarkdown } from '$lib/highlight/markdown';
 	import { renderTypeText } from '$lib/type-render';
 	import Documentation from './Documentation.svelte';
 	import CodeBlock from './CodeBlock.svelte';
@@ -277,7 +276,7 @@
 	function docsSummary(docs: string | null | undefined): string | null {
 		if (!docs) return null;
 		const paragraph = docs.split(/\n\s*\n/, 1)[0]?.trim();
-		return paragraph ? renderMarkdown(paragraph) : null;
+		return paragraph || null;
 	}
 
 	/** Visibility keyword prefix for a field (`pub ` / `pub(crate) ` / ``). */
@@ -702,7 +701,6 @@
 					{theme}
 					docLinks={member.doc_links ?? {}}
 					{getNodeUrl}
-					{nodeExists}
 				/>
 			</div>
 		{/if}
@@ -885,7 +883,6 @@
 										{theme}
 										docLinks={fieldNode.doc_links ?? {}}
 										{getNodeUrl}
-										{nodeExists}
 									/>
 								</div>
 							{/if}
@@ -935,7 +932,6 @@
 										{theme}
 										docLinks={variantNode.doc_links ?? {}}
 										{getNodeUrl}
-										{nodeExists}
 									/>
 								</div>
 							{/if}
@@ -1002,7 +998,6 @@
 					{theme}
 					docLinks={selected.doc_links ?? {}}
 					{getNodeUrl}
-					{nodeExists}
 				/>
 			</section>
 		{/if}
@@ -1054,8 +1049,14 @@
 											<div
 												class="crate-item-summary min-w-0 text-[13px] leading-relaxed text-(--muted)"
 											>
-												<!-- eslint-disable-next-line svelte/no-at-html-tags -- markdown renderer escapes raw HTML -->
-												{@html summary}
+												<Documentation
+													docs={summary}
+													defaultLang="rust"
+													{theme}
+													docLinks={item.doc_links ?? {}}
+													{getNodeUrl}
+													compact
+												/>
 											</div>
 										{:else}
 											<span class="text-[12px] text-(--muted-soft)">
@@ -1253,7 +1254,6 @@
 													{theme}
 													docLinks={method.doc_links ?? {}}
 													{getNodeUrl}
-													{nodeExists}
 												/>
 											</div>
 										{/if}

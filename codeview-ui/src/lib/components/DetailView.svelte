@@ -7,7 +7,6 @@
 	import { goto } from '$app/navigation';
 	import { resolveAppPath } from '$lib/app-paths';
 	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
-	import { getCrateMap, getStaticCrateMap } from '$lib/rpc/crateMap.remote';
 	import { kindLabels, isPublic } from '$lib/display-names';
 	import { materializeDetailDocModel } from '$lib/detail-model';
 	import { isHosted } from '$lib/platform';
@@ -17,7 +16,6 @@
 	import VizSwitcher from '$lib/components/VizSwitcher.svelte';
 	import NodeDetails from '$lib/components/NodeDetails.svelte';
 	import DocToc from '$lib/components/DocToc.svelte';
-	import Skeleton from '$lib/components/Skeleton.svelte';
 	import { getLogger } from '$lib/log';
 
 	import {
@@ -81,34 +79,20 @@
 	}
 
 	const loadCrateMap = $derived((page.data?.crateMap as CrateMapData | null | undefined) ?? null);
-
-	// ── Crate map: fetched only when the server did not provide a static artifact ──
-	const crateMapQuery = $derived(
-		crateName && crateVersion && !loadCrateMap
-			? (isHosted ? getStaticCrateMap : getCrateMap)({
-					name: crateName,
-					version: crateVersion,
-				})
-			: null,
-	);
-	const crateMapLoading = $derived(crateMapQuery?.loading ?? false);
-	const crateMap = $derived(loadCrateMap ?? crateMapQuery?.current ?? null);
+	const crateMap = $derived(loadCrateMap);
 	const defaultVizMode: VizMode = $derived(isLargeCrateMap(crateMap) ? 'grid' : 'graph');
 	const viewState = $derived(parseExplorerState(page.url));
 
-	// Refresh both queries when parsing completes (first parse only).
+	// Refresh node details when parsing completes (first parse only).
 	// On revisit, SSR already returned data → query proxy's initial fetch is sufficient.
 	$effect(() => {
 		if (crateStatus !== 'ready') return;
 		if (!crateName || !crateVersion) return;
 		if (!nodeViewQuery) return;
 		if (page.data?.nodeView != null) return;
-		log.debug`status ready: refreshing nodeView+crateMap ${crateName}@${crateVersion} nodeId="${nodeId}"`;
+		log.debug`status ready: refreshing nodeView ${crateName}@${crateVersion} nodeId="${nodeId}"`;
 		void refreshRemote(nodeViewQuery).catch((error: unknown) => {
 			log.warn`nodeView refresh failed for ${crateName}@${crateVersion} nodeId="${nodeId}": ${String(error)}`;
-		});
-		void refreshRemote(crateMapQuery).catch((error: unknown) => {
-			log.warn`crateMap refresh failed for ${crateName}@${crateVersion}: ${String(error)}`;
 		});
 	});
 
@@ -313,12 +297,6 @@
 						{@const CrateGrid = (await import('$lib/components/CrateGrid.svelte')).default}
 						<CrateGrid data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
 					{/if}
-				</div>
-			{:else if crateMapLoading}
-				<div
-					class="corner-squircle flex min-h-[200px] items-center justify-center rounded-(--radius-card) border border-(--panel-border) bg-(--panel-solid) p-4"
-				>
-					<p class="text-sm text-(--muted)">Building crate module map…</p>
 				</div>
 			{/if}
 		{/if}

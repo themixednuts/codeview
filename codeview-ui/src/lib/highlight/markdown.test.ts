@@ -29,15 +29,45 @@ describe('rustdoc markdown links', () => {
 		expect(html).toContain('<code>From&lt;Range&gt;</code>');
 	});
 
-	it('escapes raw HTML from crate documentation', () => {
+	it('renders safe rustdoc HTML while removing executable and style content', () => {
 		const html = renderMarkdown(
-			'<img src=x onerror="globalThis.pwned=true"><script>globalThis.pwned=true</script>',
+			[
+				'<style> .badges { display: none; } </style>',
+				'<div class=“badges”>',
+				'[![crate](https://img.shields.io/crates/v/demo.svg)](https://crates.io/crates/demo)',
+				'</div>',
+				'<img src="https://example.com/demo.png" onerror="globalThis.pwned=true">',
+				'<script>globalThis.pwned=true</script>',
+			].join('\n'),
 		);
 
-		expect(html).not.toContain('<img');
-		expect(html).not.toContain('<script>');
-		expect(html).toContain('&lt;img');
-		expect(html).toContain('&lt;script&gt;');
+		expect(html).toContain('<div>');
+		expect(html).toContain('<img src="https://img.shields.io/crates/v/demo.svg"');
+		expect(html).toContain('loading="lazy"');
+		expect(html).not.toContain('&lt;div');
+		expect(html).not.toContain('<style');
+		expect(html).not.toContain('.badges');
+		expect(html).not.toContain('<script');
+		expect(html).not.toContain('globalThis.pwned');
+		expect(html).not.toContain('onerror');
+	});
+
+	it('removes unsafe URL schemes from raw rustdoc HTML', () => {
+		const html = renderMarkdown('<a href="javascript:globalThis.pwned=true">unsafe</a>');
+
+		expect(html).toContain('<a>unsafe</a>');
+		expect(html).not.toContain('javascript:');
+	});
+
+	it('writes resolved app routes into intra-doc anchors', () => {
+		const html = renderMarkdown(
+			'Use [`Item`].',
+			{ Item: 'demo::module::Item' },
+			(nodeId) => `/demo/1.0.0/${nodeId.split('::').slice(1).join('/')}`,
+		);
+
+		expect(html).toContain('href="/demo/1.0.0/module/Item"');
+		expect(html).toContain('data-node-id="demo::module::Item"');
 	});
 
 	it('keeps per-render link maps isolated', () => {

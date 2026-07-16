@@ -1,6 +1,12 @@
 import type { SupportedLanguage } from './languages';
 import { normalizeLanguage } from './languages';
-import { renderMarkdownDocument, type DocLinks } from './markdown';
+import {
+	CODE_BLOCK_SENTINEL_END,
+	CODE_BLOCK_SENTINEL_START,
+	renderMarkdownDocument,
+	type DocLinkResolver,
+	type DocLinks,
+} from './markdown';
 
 /**
  * Rustdoc code-fence attributes that imply Rust code.
@@ -182,8 +188,9 @@ export function parseDocumentation(
 	docs: string,
 	defaultLang: SupportedLanguage = 'rust',
 	docLinks?: DocLinks,
+	resolveDocLink?: DocLinkResolver,
 ): DocSegment[] {
-	const rendered = renderMarkdownDocument(docs, docLinks);
+	const rendered = renderMarkdownDocument(docs, docLinks, resolveDocLink);
 	const fullHtml = rendered.html;
 	const codeBlocks = rendered.codeBlocks.map(({ info, content }) => {
 		const { lang, isRust } = parseRustdocFenceInfo(info, defaultLang);
@@ -192,9 +199,13 @@ export function parseDocumentation(
 		return { lang, code };
 	});
 
-	// Split the rendered HTML at placeholder boundaries
+	// Split rendered HTML at private fenced-code boundaries. The sentinel cannot
+	// collide with author HTML or survive as an allowed element/attribute.
 	const segments: DocSegment[] = [];
-	const placeholderRegex = /<div data-codeview-code-block="(\d+)"><\/div>\n?/g;
+	const placeholderRegex = new RegExp(
+		`${CODE_BLOCK_SENTINEL_START}(\\d+)${CODE_BLOCK_SENTINEL_END}\\n?`,
+		'g',
+	);
 	let lastIndex = 0;
 	let match;
 

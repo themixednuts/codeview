@@ -1,13 +1,25 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import { untrack } from 'svelte';
+	import { onMount } from 'svelte';
 	import { Button } from '$lib/shadcn/ui/button';
 	import * as Field from '$lib/shadcn/ui/field';
 	import { Input } from '$lib/shadcn/ui/input';
 	import * as NativeSelect from '$lib/shadcn/ui/native-select';
+	import * as RadioGroup from '$lib/shadcn/ui/radio-group';
 	import { Separator } from '$lib/shadcn/ui/separator';
 	import * as Sheet from '$lib/shadcn/ui/sheet';
 	import { Switch } from '$lib/shadcn/ui/switch';
+	import SettingsRadioOption from './SettingsRadioOption.svelte';
+	import BookOpenIcon from '@lucide/svelte/icons/book-open';
+	import Columns2Icon from '@lucide/svelte/icons/columns-2';
+	import ExternalLinkIcon from '@lucide/svelte/icons/external-link';
+	import GitBranchIcon from '@lucide/svelte/icons/git-branch';
+	import GitForkIcon from '@lucide/svelte/icons/git-fork';
+	import LinkIcon from '@lucide/svelte/icons/link';
+	import MonitorIcon from '@lucide/svelte/icons/monitor';
+	import MoonIcon from '@lucide/svelte/icons/moon';
+	import PanelRightIcon from '@lucide/svelte/icons/panel-right';
+	import SunIcon from '@lucide/svelte/icons/sun';
 	import {
 		CUSTOM_EDITOR_KEY,
 		EDITOR_KEY,
@@ -93,17 +105,12 @@
 		{ id: 'neovim', label: 'Neovim', scheme: 'nvim://open?file={path}&line={line}' },
 		{ id: 'custom', label: 'Custom', scheme: '' },
 	];
-	const themes: Array<{ value: Theme; label: string }> = [
-		{ value: 'system', label: 'System' },
-		{ value: 'light', label: 'Light' },
-		{ value: 'dark', label: 'Dark' },
-	];
-	const accents: Array<{ value: AccentMode; label: string }> = [
-		{ value: 'orange', label: 'Orange' },
-		{ value: 'cobalt', label: 'Cobalt' },
-		{ value: 'forest', label: 'Forest' },
-		{ value: 'plum', label: 'Plum' },
-		{ value: 'char', label: 'Charcoal' },
+	const accents: Array<{ value: AccentMode; label: string; color: string }> = [
+		{ value: 'orange', label: 'Orange', color: '#cb4b16' },
+		{ value: 'cobalt', label: 'Cobalt', color: '#1f6fa5' },
+		{ value: 'forest', label: 'Forest', color: '#4f7d2f' },
+		{ value: 'plum', label: 'Plum', color: '#8c3a76' },
+		{ value: 'char', label: 'Charcoal', color: '#2b323a' },
 	];
 	const densities: Array<{ value: DensityMode; label: string }> = [
 		{ value: 'compact', label: 'Compact' },
@@ -114,11 +121,6 @@
 		{ value: 'editorial', label: 'Editorial' },
 		{ value: 'technical', label: 'Technical' },
 		{ value: 'geometric', label: 'Geometric' },
-	];
-	const docLayouts: Array<{ value: DocLayoutMode; label: string }> = [
-		{ value: 'classic', label: 'Classic' },
-		{ value: 'reading', label: 'Reading' },
-		{ value: 'split', label: 'Split' },
 	];
 	const lightCodeThemes: Array<{ value: CodeTheme; label: string }> = [
 		{ value: 'solarized-light', label: 'Solarized Light' },
@@ -136,16 +138,19 @@
 	let editor = $state<EditorId>('vscode');
 	let customScheme = $state('');
 	let ligatures = $state(false);
-	let loadedForOpen = false;
-
-	const activeEditorScheme = $derived(
-		editor === 'custom'
-			? customScheme || 'scheme://file/{path}:{line}'
-			: (editors.find((item) => item.id === editor)?.scheme ?? ''),
-	);
 
 	function selectedValue<T extends string>(event: Event, update: (value: T) => void) {
 		update((event.currentTarget as HTMLSelectElement).value as T);
+	}
+
+	function selectedRadio<T extends string>(value: string, update: (value: T) => void) {
+		update(value as T);
+	}
+
+	function editorScheme(value = editor): string {
+		return value === 'custom'
+			? customScheme || 'scheme://file/{path}:{line}'
+			: (editors.find((item) => item.id === value)?.scheme ?? '');
 	}
 
 	function loadSettings() {
@@ -154,16 +159,19 @@
 		customScheme = readClientPref(CUSTOM_EDITOR_KEY, '');
 		ligatures = localStorage.getItem(LIGATURES_KEY) === 'true';
 		applyLigatures(ligatures);
+		onEditorSchemeChange?.(editorScheme());
 	}
 
 	function setEditor(value: EditorId) {
 		editor = value;
 		if (browser) writePref(EDITOR_KEY, value);
+		onEditorSchemeChange?.(editorScheme(value));
 	}
 
 	function setCustomScheme(value: string) {
 		customScheme = value;
 		if (browser) writePref(CUSTOM_EDITOR_KEY, value);
+		if (editor === 'custom') onEditorSchemeChange?.(editorScheme());
 	}
 
 	function setLigatures(value: boolean) {
@@ -177,80 +185,115 @@
 			document.documentElement.style.setProperty('--font-ligatures', value ? 'normal' : 'none');
 	}
 
-	$effect(() => onEditorSchemeChange?.(activeEditorScheme));
-	$effect(() => {
-		if (!open) {
-			loadedForOpen = false;
-			return;
-		}
-		if (loadedForOpen) return;
-		loadedForOpen = true;
-		untrack(loadSettings);
-	});
+	onMount(loadSettings);
 </script>
 
 <Sheet.Root bind:open onOpenChange={(value) => onOpenChange?.(value)}>
-	<Sheet.Content side="right" class="w-full overflow-y-auto sm:max-w-md">
-		<Sheet.Header>
+	<Sheet.Content
+		side="right"
+		class="w-full gap-0 overflow-hidden data-[side=right]:w-full data-[side=right]:sm:max-w-md"
+	>
+		<Sheet.Header class="border-b border-(--panel-border) px-5 py-4">
 			<Sheet.Title>Settings</Sheet.Title>
-			<Sheet.Description>Appearance, documentation, and local source tools.</Sheet.Description>
+			<Sheet.Description>Appearance, documentation, and source tools.</Sheet.Description>
 		</Sheet.Header>
 
-		<div class="space-y-6 px-4 pb-6">
+		<div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-5">
 			<section aria-labelledby="appearance-settings">
-				<h2 id="appearance-settings" class="mb-3 text-sm font-semibold text-(--ink)">Appearance</h2>
-				<Field.Group class="grid gap-4 sm:grid-cols-2">
+				<h2
+					id="appearance-settings"
+					class="mb-4 text-[10px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase"
+				>
+					Appearance
+				</h2>
+				<Field.Group class="gap-5">
 					<Field.Field>
-						<Field.Label for="settings-theme">Theme</Field.Label>
-						<NativeSelect.Root
-							id="settings-theme"
+						<Field.Label>Theme</Field.Label>
+						<RadioGroup.Root
 							value={theme}
-							class="w-full"
-							onchange={(event) => selectedValue<Theme>(event, onThemeChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-3"
+							onValueChange={(value) => selectedRadio<Theme>(value, onThemeChange)}
 						>
-							{#each themes as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
-							{/each}
-						</NativeSelect.Root>
+							<SettingsRadioOption
+								id="settings-theme-system"
+								value="system"
+								label="Use system theme"
+							>
+								<MonitorIcon /> System
+							</SettingsRadioOption>
+							<SettingsRadioOption id="settings-theme-light" value="light" label="Use light theme">
+								<SunIcon /> Light
+							</SettingsRadioOption>
+							<SettingsRadioOption id="settings-theme-dark" value="dark" label="Use dark theme">
+								<MoonIcon /> Dark
+							</SettingsRadioOption>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
-						<Field.Label for="settings-accent">Accent</Field.Label>
-						<NativeSelect.Root
-							id="settings-accent"
+						<Field.Label>Accent</Field.Label>
+						<RadioGroup.Root
 							value={accentMode}
-							class="w-full"
-							onchange={(event) => selectedValue<AccentMode>(event, onAccentChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-5"
+							onValueChange={(value) => selectedRadio<AccentMode>(value, onAccentChange)}
 						>
 							{#each accents as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
+								<SettingsRadioOption
+									id={`settings-accent-${option.value}`}
+									value={option.value}
+									label={`${option.label} accent`}
+									class="h-9"
+								>
+									<span
+										class="size-2.5 shrink-0 rounded-full border border-black/10"
+										style={`background-color: ${option.color}`}
+									></span>
+									<span class="hidden truncate text-[10px] min-[390px]:inline">{option.label}</span>
+								</SettingsRadioOption>
 							{/each}
-						</NativeSelect.Root>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
-						<Field.Label for="settings-density">Density</Field.Label>
-						<NativeSelect.Root
-							id="settings-density"
+						<Field.Label>Density</Field.Label>
+						<RadioGroup.Root
 							value={densityMode}
-							class="w-full"
-							onchange={(event) => selectedValue<DensityMode>(event, onDensityChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-3"
+							onValueChange={(value) => selectedRadio<DensityMode>(value, onDensityChange)}
 						>
 							{#each densities as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
+								<SettingsRadioOption
+									id={`settings-density-${option.value}`}
+									value={option.value}
+									label={option.label}
+								>
+									{option.label}
+								</SettingsRadioOption>
 							{/each}
-						</NativeSelect.Root>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
-						<Field.Label for="settings-type">Typography</Field.Label>
-						<NativeSelect.Root
-							id="settings-type"
+						<Field.Label>Typography</Field.Label>
+						<RadioGroup.Root
 							value={voiceMode}
-							class="w-full"
-							onchange={(event) => selectedValue<VoiceMode>(event, onVoiceChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-3"
+							onValueChange={(value) => selectedRadio<VoiceMode>(value, onVoiceChange)}
 						>
 							{#each voices as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
+								<SettingsRadioOption
+									id={`settings-voice-${option.value}`}
+									value={option.value}
+									label={option.label}
+								>
+									{option.label}
+								</SettingsRadioOption>
 							{/each}
-						</NativeSelect.Root>
+						</RadioGroup.Root>
 					</Field.Field>
 				</Field.Group>
 			</section>
@@ -258,119 +301,186 @@
 			<Separator />
 
 			<section aria-labelledby="docs-settings">
-				<h2 id="docs-settings" class="mb-3 text-sm font-semibold text-(--ink)">Documentation</h2>
-				<Field.Group class="grid gap-4 sm:grid-cols-2">
+				<h2
+					id="docs-settings"
+					class="mb-4 text-[10px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase"
+				>
+					Documentation
+				</h2>
+				<Field.Group class="gap-5">
 					<Field.Field>
-						<Field.Label for="settings-layout">Layout</Field.Label>
-						<NativeSelect.Root
-							id="settings-layout"
+						<Field.Label>Layout</Field.Label>
+						<RadioGroup.Root
 							value={docLayout}
-							class="w-full"
-							onchange={(event) => selectedValue<DocLayoutMode>(event, onDocLayoutChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-3"
+							onValueChange={(value) => selectedRadio<DocLayoutMode>(value, onDocLayoutChange)}
 						>
-							{#each docLayouts as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
-							{/each}
-						</NativeSelect.Root>
+							<SettingsRadioOption
+								id="settings-layout-classic"
+								value="classic"
+								label="Classic layout"
+							>
+								<PanelRightIcon /> Classic
+							</SettingsRadioOption>
+							<SettingsRadioOption
+								id="settings-layout-reading"
+								value="reading"
+								label="Reading layout"
+							>
+								<BookOpenIcon /> Reading
+							</SettingsRadioOption>
+							<SettingsRadioOption id="settings-layout-split" value="split" label="Split layout">
+								<Columns2Icon /> Split
+							</SettingsRadioOption>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
-						<Field.Label for="settings-links">External documentation</Field.Label>
-						<NativeSelect.Root
-							id="settings-links"
+						<Field.Label>Documentation links</Field.Label>
+						<RadioGroup.Root
 							value={extLinkMode}
-							class="w-full"
-							onchange={(event) => selectedValue<ExternalLinkMode>(event, onExtLinkModeChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-2"
+							onValueChange={(value) => selectedRadio<ExternalLinkMode>(value, onExtLinkModeChange)}
 						>
-							<NativeSelect.Option value="codeview">Codeview</NativeSelect.Option>
-							<NativeSelect.Option value="docs">docs.rs</NativeSelect.Option>
-						</NativeSelect.Root>
+							<SettingsRadioOption
+								id="settings-links-codeview"
+								value="codeview"
+								label="Use Codeview links"
+							>
+								<LinkIcon /> Codeview
+							</SettingsRadioOption>
+							<SettingsRadioOption id="settings-links-docs" value="docs" label="Use docs.rs links">
+								<ExternalLinkIcon /> docs.rs
+							</SettingsRadioOption>
+						</RadioGroup.Root>
 					</Field.Field>
-					<Field.Field>
-						<Field.Label for="settings-code-light">Light code theme</Field.Label>
-						<NativeSelect.Root
-							id="settings-code-light"
-							value={codeThemeLight}
-							class="w-full"
-							onchange={(event) => selectedValue<CodeTheme>(event, onCodeThemeLightChange)}
-						>
-							{#each lightCodeThemes as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
-							{/each}
-						</NativeSelect.Root>
-					</Field.Field>
-					<Field.Field>
-						<Field.Label for="settings-code-dark">Dark code theme</Field.Label>
-						<NativeSelect.Root
-							id="settings-code-dark"
-							value={codeThemeDark}
-							class="w-full"
-							onchange={(event) => selectedValue<CodeTheme>(event, onCodeThemeDarkChange)}
-						>
-							{#each darkCodeThemes as option (option.value)}
-								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
-							{/each}
-						</NativeSelect.Root>
+
+					<div class="grid gap-4 sm:grid-cols-2">
+						<Field.Field>
+							<Field.Label for="settings-code-light">Light code theme</Field.Label>
+							<NativeSelect.Root
+								id="settings-code-light"
+								value={codeThemeLight}
+								class="w-full"
+								onchange={(event) => selectedValue<CodeTheme>(event, onCodeThemeLightChange)}
+							>
+								{#each lightCodeThemes as option (option.value)}
+									<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
+								{/each}
+							</NativeSelect.Root>
+						</Field.Field>
+						<Field.Field>
+							<Field.Label for="settings-code-dark">Dark code theme</Field.Label>
+							<NativeSelect.Root
+								id="settings-code-dark"
+								value={codeThemeDark}
+								class="w-full"
+								onchange={(event) => selectedValue<CodeTheme>(event, onCodeThemeDarkChange)}
+							>
+								{#each darkCodeThemes as option (option.value)}
+									<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
+								{/each}
+							</NativeSelect.Root>
+						</Field.Field>
+					</div>
+
+					<Field.Field orientation="horizontal" class="border-t border-(--panel-border-soft) pt-4">
+						<div class="min-w-0 flex-1">
+							<Field.Label for="settings-ligatures">Code ligatures</Field.Label>
+							<Field.Description>Combine supported operator glyphs.</Field.Description>
+						</div>
+						<Switch
+							id="settings-ligatures"
+							checked={ligatures}
+							onCheckedChange={setLigatures}
+							aria-label="Toggle code ligatures"
+						/>
 					</Field.Field>
 				</Field.Group>
-				<div
-					class="mt-4 flex items-center justify-between gap-4 rounded-lg border border-(--panel-border) p-3"
-				>
-					<div>
-						<p class="text-sm font-medium text-(--ink)">Code ligatures</p>
-						<p class="text-xs text-(--muted)">Combine supported operator glyphs.</p>
-					</div>
-					<Switch
-						checked={ligatures}
-						onCheckedChange={setLigatures}
-						aria-label="Toggle code ligatures"
-					/>
-				</div>
 			</section>
 
 			<Separator />
 
 			<section aria-labelledby="source-settings">
-				<h2 id="source-settings" class="mb-3 text-sm font-semibold text-(--ink)">Source tools</h2>
-				<Field.Group class="grid gap-4 sm:grid-cols-2">
+				<h2
+					id="source-settings"
+					class="mb-4 text-[10px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase"
+				>
+					Source tools
+				</h2>
+				<Field.Group class="gap-5">
 					<Field.Field>
-						<Field.Label for="settings-host">Source host</Field.Label>
-						<NativeSelect.Root
-							id="settings-host"
+						<Field.Label>Source host</Field.Label>
+						<RadioGroup.Root
 							value={sourceProviderMode}
-							class="w-full"
-							onchange={(event) =>
-								selectedValue<SourceProviderMode>(event, onSourceProviderModeChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-3"
+							onValueChange={(value) =>
+								selectedRadio<SourceProviderMode>(value, onSourceProviderModeChange)}
 						>
-							<NativeSelect.Option value="auto">Automatic</NativeSelect.Option>
-							<NativeSelect.Option value="crates-io">crates.io</NativeSelect.Option>
-							<NativeSelect.Option value="github">GitHub</NativeSelect.Option>
-						</NativeSelect.Root>
+							<SettingsRadioOption
+								id="settings-source-auto"
+								value="auto"
+								label="Automatic source host"
+							>
+								Automatic
+							</SettingsRadioOption>
+							<SettingsRadioOption
+								id="settings-source-crates"
+								value="crates-io"
+								label="crates.io source host"
+							>
+								crates.io
+							</SettingsRadioOption>
+							<SettingsRadioOption
+								id="settings-source-github"
+								value="github"
+								label="GitHub source host"
+							>
+								GitHub
+							</SettingsRadioOption>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
-						<Field.Label for="settings-vcs">Version control</Field.Label>
-						<NativeSelect.Root
-							id="settings-vcs"
+						<Field.Label>Version control</Field.Label>
+						<RadioGroup.Root
 							value={vcsMode}
-							class="w-full"
-							onchange={(event) => selectedValue<VcsMode>(event, onVcsModeChange)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-2"
+							onValueChange={(value) => selectedRadio<VcsMode>(value, onVcsModeChange)}
 						>
-							<NativeSelect.Option value="git">Git</NativeSelect.Option>
-							<NativeSelect.Option value="jj">Jujutsu</NativeSelect.Option>
-						</NativeSelect.Root>
+							<SettingsRadioOption id="settings-vcs-git" value="git" label="Use Git">
+								<GitBranchIcon /> Git
+							</SettingsRadioOption>
+							<SettingsRadioOption id="settings-vcs-jj" value="jj" label="Use Jujutsu">
+								<GitForkIcon /> Jujutsu
+							</SettingsRadioOption>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
-						<Field.Label for="settings-editor">Editor</Field.Label>
-						<NativeSelect.Root
-							id="settings-editor"
+						<Field.Label>Editor</Field.Label>
+						<RadioGroup.Root
 							value={editor}
-							class="w-full"
-							onchange={(event) => selectedValue<EditorId>(event, setEditor)}
+							orientation="horizontal"
+							class="grid w-full grid-cols-3"
+							onValueChange={(value) => selectedRadio<EditorId>(value, setEditor)}
 						>
 							{#each editors as option (option.id)}
-								<NativeSelect.Option value={option.id}>{option.label}</NativeSelect.Option>
+								<SettingsRadioOption
+									id={`settings-editor-${option.id}`}
+									value={option.id}
+									label={option.label}
+								>
+									{option.label}
+								</SettingsRadioOption>
 							{/each}
-						</NativeSelect.Root>
+						</RadioGroup.Root>
 					</Field.Field>
+
 					<Field.Field>
 						<Field.Label for="settings-source-root">Local source root</Field.Label>
 						<Input
@@ -379,25 +489,27 @@
 							placeholder="C:\\src\\project"
 							oninput={(event) => onSourceRootChange?.(event.currentTarget.value)}
 						/>
+						<Field.Description>Absolute path used by editor deep links.</Field.Description>
 					</Field.Field>
+
+					{#if editor === 'custom'}
+						<Field.Field>
+							<Field.Label for="settings-custom-editor">Editor URL template</Field.Label>
+							<Input
+								id="settings-custom-editor"
+								value={customScheme}
+								placeholder={'scheme://file/{path}:{line}'}
+								oninput={(event) => setCustomScheme(event.currentTarget.value)}
+							/>
+							<Field.Description>Use {'{path}'} and {'{line}'} placeholders.</Field.Description>
+						</Field.Field>
+					{/if}
 				</Field.Group>
-				{#if editor === 'custom'}
-					<Field.Field class="mt-4">
-						<Field.Label for="settings-custom-editor">Editor URL template</Field.Label>
-						<Input
-							id="settings-custom-editor"
-							value={customScheme}
-							placeholder={'scheme://file/{path}:{line}'}
-							oninput={(event) => setCustomScheme(event.currentTarget.value)}
-						/>
-						<Field.Description>Use {'{path}'} and {'{line}'} placeholders.</Field.Description>
-					</Field.Field>
-				{/if}
 			</section>
 		</div>
 
-		<Sheet.Footer class="border-t border-(--panel-border) px-4 py-3">
-			<Button type="button" variant="outline" onclick={() => (open = false)}>Done</Button>
+		<Sheet.Footer class="border-t border-(--panel-border) px-5 py-3">
+			<Button type="button" onclick={() => (open = false)}>Done</Button>
 		</Sheet.Footer>
 	</Sheet.Content>
 </Sheet.Root>

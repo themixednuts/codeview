@@ -2,8 +2,7 @@
 	import { parseDocumentation } from '$lib/highlight/documentation';
 	import type { SupportedLanguage } from '$lib/highlight/languages';
 	import type { DocLinks } from '$lib/highlight/markdown';
-	import { goto } from '$app/navigation';
-	import { resolve } from '$app/paths';
+	import { resolveAppPath } from '$lib/app-paths';
 	import { externalDocsUrl } from '$lib/docs';
 	import CodeBlock from './CodeBlock.svelte';
 	import { extLinkModeCtx } from '$lib/context';
@@ -16,7 +15,7 @@
 		theme = 'light',
 		docLinks = {},
 		getNodeUrl,
-		nodeExists,
+		compact = false,
 	} = $props<{
 		docs: string;
 		defaultLang?: SupportedLanguage;
@@ -24,12 +23,17 @@
 		docLinks?: DocLinks;
 		/** Returns URL for navigating to a node */
 		getNodeUrl?: (id: string) => string;
-		/** Check if a node exists in the graph (for determining internal vs external links) */
-		nodeExists?: (nodeId: string) => boolean;
+		compact?: boolean;
 	}>();
 
-	// Parse documentation into segments (with intra-doc link resolution)
-	const segments = $derived(parseDocumentation(docs, defaultLang, docLinks));
+	const resolveDocLink = $derived.by(() => {
+		if (!getNodeUrl) return undefined;
+		return (nodeId: string) => resolveAppPath(getNodeUrl(nodeId));
+	});
+
+	// Resolve route hrefs while rendering so links work before hydration and
+	// remain ordinary progressively-enhanced SvelteKit navigation afterward.
+	const segments = $derived(parseDocumentation(docs, defaultLang, docLinks, resolveDocLink));
 
 	/**
 	 * Handle clicks on the documentation container.
@@ -44,27 +48,25 @@
 
 		if (!link) return;
 
-		event.preventDefault();
-
 		const nodeId = link.dataset.nodeId;
 		if (!nodeId) return;
 
 		if (extLinkMode === 'docs') {
+			event.preventDefault();
 			// Documentation links don't carry kind info, so externalDocsUrl uses fallback path
 			window.open(externalDocsUrl(nodeId), '_blank', 'noopener,noreferrer');
-			return;
-		}
-
-		// Navigate within codeview
-		if (getNodeUrl) {
-			goto(resolve(getNodeUrl(nodeId)), { noScroll: true });
 		}
 	}
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="documentation space-y-3" onclick={handleClick}>
+<div
+	class="documentation"
+	class:space-y-3={!compact}
+	class:documentation-compact={compact}
+	onclick={handleClick}
+>
 	{#each segments as segment, i (i)}
 		{#if segment.type === 'text'}
 			<div class="documentation-text prose prose-sm text-(--ink)">
@@ -93,6 +95,10 @@
 
 	.documentation-text :global(p:last-child) {
 		margin-bottom: 0;
+	}
+
+	.documentation-compact .documentation-text :global(p) {
+		margin: 0;
 	}
 
 	/* doc-classic styling for in-prose headings (Examples / Safety / etc.).

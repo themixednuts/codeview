@@ -30,6 +30,7 @@ describe('rustdoc documentation segments', () => {
 		const segment = segments[0];
 		expect(segment).toMatchObject({ type: 'text' });
 		if (segment?.type !== 'text') throw new Error('expected a text segment');
-		expect(segment.html).toContain('&lt;div data-codeview-code-block=');
+		expect(segment.html).toBe('<div></div>');
+		expect(segment.html).not.toContain('data-codeview-code-block');
 	});
 });
