@@ -11,25 +11,9 @@
 	<head>
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<link rel="preconnect" href="https://fonts.googleapis.com" />
-		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-		<link
-			rel="preload"
-			as="style"
-			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-			onload="
-				this.onload = null;
-				this.rel = 'stylesheet';
-			"
-		/>
-		<noscript>
-			<link
-				rel="stylesheet"
-				href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
-			/>
-		</noscript>
 		<script>
 			(function () {
+				document.documentElement.dataset.js = 'enabled';
 				try {
 					var readCookie = function (k) {
 						var prefix = k + '=';
@@ -63,8 +47,7 @@
 
 					// UI mode
 					var modePref = stored('codeview-theme', 'system', ['light', 'dark', 'system']);
-					var mode =
-						modePref === 'system' ? (prefersDark ? 'dark' : 'light') : modePref;
+					var mode = modePref === 'system' ? (prefersDark ? 'dark' : 'light') : modePref;
 					document.documentElement.dataset.theme = mode === 'dark' ? 'dark' : 'light';
 
 					// Tweakable axes (accent / density / voice / doc layout / code themes)
@@ -85,11 +68,7 @@
 						'technical',
 						'geometric',
 					]);
-					var docLayout = stored('codeview-doc-layout', 'classic', [
-						'classic',
-						'reading',
-						'split',
-					]);
+					var docLayout = stored('codeview-doc-layout', 'classic', ['classic', 'reading', 'split']);
 					var codeLight = stored('codeview-code-light', 'solarized-light', [
 						'solarized-light',
 						'solarized-dark',
@@ -115,8 +94,7 @@
 					document.documentElement.dataset.density = density;
 					document.documentElement.dataset.voice = voice;
 					document.documentElement.dataset.docLayout = docLayout;
-					document.documentElement.dataset.codeTheme =
-						mode === 'dark' ? codeDark : codeLight;
+					document.documentElement.dataset.codeTheme = mode === 'dark' ? codeDark : codeLight;
 				} catch (e) {
 					document.documentElement.dataset.theme = 'light';
 					document.documentElement.dataset.accent = 'orange';
@@ -127,6 +105,12 @@
 				}
 			})();
 		</script>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			rel="stylesheet"
+			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=optional"
+		/>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

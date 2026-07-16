@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { cn } from '$lib/shadcn/utils.js';
+
 	type IconName =
 		| 'arrow-right'
 		| 'chevron-left'
@@ -23,6 +25,9 @@
 
 	let {
 		name,
+		size = 16,
+		strokeWidth = 2,
+		class: className,
 	} = $props<{
 		name: IconName;
 		size?: number;
@@ -38,15 +43,15 @@
 </script>
 
 <svg
-	width="1em"
-	height="1em"
+	width={size}
+	height={size}
 	viewBox="0 0 24 24"
 	fill="none"
 	stroke="currentColor"
-	stroke-width="2"
+	stroke-width={strokeWidth}
 	stroke-linecap="round"
 	stroke-linejoin="round"
-	class="inline-icon"
+	class={cn('inline-icon', className)}
 	aria-hidden="true"
 >
 	{#if iconName() === 'arrow-right'}

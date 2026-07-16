@@ -31,9 +31,13 @@ async function getTopCratesCached(
 
 export const load: PageServerLoad = async (event) => {
 	const provider = await initProvider(event);
+	const searchQuery = event.url.searchParams.get('q')?.trim().slice(0, 100) ?? '';
 	const canLoadLocalWorkspace = !isHosted && hasLocalWorkspace(provider);
 	const workspace = canLoadLocalWorkspace ? await provider.loadWorkspace() : null;
-	const top = await getTopCratesCached(provider).catch(() => [] as TopCrate[]);
+	const [top, searchResults] = await Promise.all([
+		getTopCratesCached(provider).catch(() => [] as TopCrate[]),
+		searchQuery ? provider.searchRegistry(searchQuery).catch(() => []) : Promise.resolve([]),
+	]);
 
 	return {
 		hasLocalWorkspace: canLoadLocalWorkspace,
@@ -43,6 +47,13 @@ export const load: PageServerLoad = async (event) => {
 			version: crate.version,
 		})),
 		topCrates: top.map((crate) => ({
+			id: crate.id ?? crate.name,
+			name: crate.name,
+			version: crate.version,
+			description: crate.description,
+		})),
+		searchQuery,
+		searchResults: searchResults.map((crate) => ({
 			id: crate.id ?? crate.name,
 			name: crate.name,
 			version: crate.version,

@@ -4,7 +4,6 @@
 	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
-	import { authClient } from '$lib/auth-client';
 	import { getProcessingCrates } from '$lib/rpc/crate.remote';
 	import { ProcessingStatusConnection } from '$lib/realtime';
 	import { onDestroy, onMount, untrack } from 'svelte';
@@ -66,6 +65,8 @@
 	import type { LayoutProps } from './$types';
 	import Icon from '$lib/components/design/Icon.svelte';
 	import { Toaster } from '$lib/shadcn/ui/sonner';
+	import { Button } from '$lib/shadcn/ui/button';
+	import { Input } from '$lib/shadcn/ui/input';
 	import { toast } from 'svelte-sonner';
 	import { forceRefreshClient } from '$lib/client/invalidation';
 
@@ -113,8 +114,6 @@
 	const visibleProcessingCount = $derived(Math.max(processingCount, processingCrates.length));
 	let appUpdateToastVisible = false;
 	let appRefreshStarted = false;
-	let authPending = $state(false);
-	let authError = $state<string | null>(null);
 	const auth = $derived(data.auth);
 
 	function openProcessingPopover() {
@@ -188,32 +187,6 @@
 	function userLabel(): string {
 		if (!auth.user) return '';
 		return auth.user.githubLogin ? `@${auth.user.githubLogin}` : auth.user.email;
-	}
-
-	async function signInGithub() {
-		authPending = true;
-		authError = null;
-		try {
-			await authClient.signIn.social({
-				provider: 'github',
-				callbackURL: currentAuthRedirect(),
-			});
-		} catch (err) {
-			authError = err instanceof Error ? err.message : String(err);
-			authPending = false;
-		}
-	}
-
-	async function signOut() {
-		authPending = true;
-		authError = null;
-		try {
-			await authClient.signOut();
-			location.href = currentAuthRedirect();
-		} catch (err) {
-			authError = err instanceof Error ? err.message : String(err);
-			authPending = false;
-		}
 	}
 
 	function showAppUpdateToast(description = 'Reload to use the current build.') {
@@ -618,7 +591,7 @@
 	<title>Codeview</title>
 </svelte:head>
 
-<div class="flex h-screen flex-col bg-(--bg)">
+<div class="flex h-dvh min-h-0 flex-col bg-(--bg)">
 	<a href="#main-content" class="skip-link">Skip to content</a>
 	<header
 		class="relative z-40 grid h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 border-b border-(--panel-border) bg-(--panel-solid) px-3 text-sm text-(--muted) min-[1120px]:grid-cols-[minmax(0,1fr)_minmax(0,440px)_minmax(0,1fr)] sm:px-4 md:gap-3 lg:px-6"
@@ -647,53 +620,80 @@
 						fill="none"
 					/>
 				</svg>
-				<span class="font-display truncate text-[15.5px] font-semibold tracking-tight">
+				<span
+					class="font-display hidden truncate text-[15.5px] font-semibold tracking-tight min-[420px]:inline"
+				>
 					codeview
 				</span>
 			</a>
 		</div>
 
-		<button
-			type="button"
-			class="corner-squircle hidden max-w-[440px] min-w-0 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-1.5 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center md:inline-flex md:w-full md:items-center md:justify-between md:gap-3"
-			aria-label="Search crates and Rust items"
-			title="Global search"
-			onclick={() => (commandOpen = true)}
+		<form
+			method="GET"
+			action={resolve('/')}
+			role="search"
+			class="relative block w-full max-w-[440px] min-w-0 justify-self-start min-[1120px]:justify-self-center"
 		>
-			<span class="inline-flex min-w-0 items-center gap-2">
-				<Icon name="search" size={12} />
-				<span class="truncate">Search crates...</span>
-			</span>
-			<span class="hidden shrink-0 items-center gap-1 lg:inline-flex" aria-hidden="true">
-				<span class="kbd">{shortcutModLabel}</span>
-				<span class="kbd">K</span>
-			</span>
-		</button>
+			<label for="global-crate-search" class="sr-only">Search crates</label>
+			<Icon
+				name="search"
+				size={12}
+				class="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-(--muted)"
+			/>
+			<Input
+				id="global-crate-search"
+				name="q"
+				type="search"
+				value={page.url.pathname === '/' ? (page.url.searchParams.get('q') ?? '') : ''}
+				placeholder="Search crates..."
+				class="h-8 w-full border-(--panel-border) bg-(--panel) pr-15 pl-8 font-mono text-[11.5px] shadow-(--shadow-soft)"
+			/>
+			<button
+				type="submit"
+				class="absolute inset-y-0 right-2 inline-flex items-center gap-1 text-(--muted-soft)"
+				aria-label="Submit crate search"
+			>
+				<span class="js-only hidden items-center gap-1 lg:inline-flex" aria-hidden="true">
+					<span class="kbd">{shortcutModLabel}</span>
+					<span class="kbd">K</span>
+				</span>
+				<span class="js-only lg:hidden" aria-hidden="true">
+					<Icon name="arrow-right" size={12} />
+				</span>
+				<span class="no-js-only text-[10px] font-medium">Go</span>
+			</button>
+		</form>
 
 		<div class="flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
 			{#if auth.authConfigured}
 				{#if auth.user}
-					<button
-						type="button"
-						class="corner-squircle inline-flex max-w-40 items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) disabled:opacity-60"
-						title={`Sign out ${userLabel()}`}
-						disabled={authPending}
-						onclick={signOut}
-					>
-						<Icon name="github" size={13} />
-						<span class="hidden truncate sm:inline">{userLabel()}</span>
-					</button>
+					<form method="POST" action="/auth/sign-out">
+						<input type="hidden" name="returnTo" value={currentAuthRedirect()} />
+						<Button
+							type="submit"
+							variant="outline"
+							size="sm"
+							class="max-w-40 border-(--panel-border) bg-(--panel) text-(--ink)"
+							title={`Sign out ${userLabel()}`}
+						>
+							<Icon name="github" size={13} />
+							<span class="hidden truncate sm:inline">{userLabel()}</span>
+						</Button>
+					</form>
 				{:else}
-					<button
-						type="button"
-						class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1.5 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) disabled:opacity-60"
-						title={authError ?? 'Sign in with GitHub'}
-						disabled={authPending}
-						onclick={signInGithub}
-					>
-						<Icon name="github" size={13} />
-						<span class="hidden sm:inline">{authPending ? 'Opening...' : 'Sign in'}</span>
-					</button>
+					<form method="POST" action="/auth/github">
+						<input type="hidden" name="returnTo" value={currentAuthRedirect()} />
+						<Button
+							type="submit"
+							variant="outline"
+							size="sm"
+							class="border-(--panel-border) bg-(--panel) text-(--ink)"
+							title="Sign in with GitHub"
+						>
+							<Icon name="github" size={13} />
+							<span class="hidden sm:inline">Sign in</span>
+						</Button>
+					</form>
 				{/if}
 			{/if}
 			{#if auth.isAdmin}
@@ -781,15 +781,20 @@
 			>
 				<Icon name="github" size={14} />
 			</a>
-			<button
-				type="button"
-				class="grid size-7 place-items-center rounded-md text-(--muted) transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+			<Button
+				href={resolve('/settings')}
+				variant="ghost"
+				size="icon-sm"
+				class="text-(--muted)"
 				title="Settings"
 				aria-label="Open settings"
-				onclick={() => (settingsOpen = true)}
+				onclick={(event) => {
+					event.preventDefault();
+					settingsOpen = true;
+				}}
 			>
 				<SettingsIcon size={14} />
-			</button>
+			</Button>
 		</div>
 	</header>
 
@@ -833,7 +838,9 @@
 	{/await}
 {/if}
 
-<Toaster position="bottom-right" expand={false} />
+<div class="js-only">
+	<Toaster position="bottom-right" expand={false} />
+</div>
 
 <style>
 	.skip-link {

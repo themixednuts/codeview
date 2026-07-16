@@ -7,17 +7,14 @@
 		class: className,
 		children,
 		...restProps
-	}: WithElementRef<HTMLAttributes<HTMLDivElement>> = $props();
-
-	const attachRef = refAttachment<HTMLDivElement>((node) => {
-		ref = node;
-	});
+	}: WithElementRef<HTMLAttributes<HTMLDivElement>, HTMLDivElement> = $props();
+	const attachRef = refAttachment<HTMLDivElement>((node) => (ref = node));
 </script>
 
 <div
 	{@attach attachRef}
 	data-slot="dialog-header"
-	class={cn('flex flex-col gap-2 text-center sm:text-start', className)}
+	class={cn('flex flex-col gap-2', className)}
 	{...restProps}
 >
 	{@render children?.()}

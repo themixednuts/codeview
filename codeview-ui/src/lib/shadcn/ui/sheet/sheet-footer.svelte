@@ -7,8 +7,7 @@
 		class: className,
 		children,
 		...restProps
-	}: WithElementRef<HTMLAttributes<HTMLDivElement>> = $props();
-
+	}: WithElementRef<HTMLAttributes<HTMLDivElement>, HTMLDivElement> = $props();
 	const attachRef = refAttachment<HTMLDivElement>((node) => (ref = node));
 </script>
 

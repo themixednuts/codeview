@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { HTMLAttributes } from 'svelte/elements';
 	import { cn, refAttachment, type WithElementRef } from '$lib/shadcn/utils.js';
+	import type { HTMLAttributes } from 'svelte/elements';
 
 	let {
 		ref = $bindable(null),
@@ -8,14 +8,16 @@
 		children,
 		...restProps
 	}: WithElementRef<HTMLAttributes<HTMLSpanElement>, HTMLSpanElement> = $props();
-
 	const attachRef = refAttachment<HTMLSpanElement>((node) => (ref = node));
 </script>
 
 <span
 	{@attach attachRef}
 	data-slot="command-shortcut"
-	class={cn('text-muted-foreground ms-auto text-xs tracking-widest', className)}
+	class={cn(
+		'text-muted-foreground group-data-selected/command-item:text-foreground ml-auto text-xs tracking-widest',
+		className,
+	)}
 	{...restProps}
 >
 	{@render children?.()}

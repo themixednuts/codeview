@@ -1,19 +1,17 @@
 <script lang="ts">
-	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
-	import InfoIcon from '@lucide/svelte/icons/info';
+	import { Toaster as Sonner, type ToasterProps as SonnerProps } from 'svelte-sonner';
+	import { mode } from 'mode-watcher';
 	import Loader2Icon from '@lucide/svelte/icons/loader-2';
+	import CircleCheckIcon from '@lucide/svelte/icons/circle-check';
 	import OctagonXIcon from '@lucide/svelte/icons/octagon-x';
+	import InfoIcon from '@lucide/svelte/icons/info';
 	import TriangleAlertIcon from '@lucide/svelte/icons/triangle-alert';
 
-	import { Toaster as Sonner, type ToasterProps as SonnerProps } from 'svelte-sonner';
-	import { resolvedThemeCtx } from '$lib/context';
-
 	let { ...restProps }: SonnerProps = $props();
-	const resolvedTheme = $derived(resolvedThemeCtx.get());
 </script>
 
 <Sonner
-	theme={resolvedTheme}
+	theme={mode.current}
 	class="toaster group"
 	style="--normal-bg: var(--color-popover); --normal-text: var(--color-popover-foreground); --normal-border: var(--color-border);"
 	{...restProps}

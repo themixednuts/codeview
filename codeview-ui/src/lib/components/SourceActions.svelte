@@ -1,5 +1,4 @@
 <script lang="ts">
-	import type { Attachment } from 'svelte/attachments';
 	import SquareArrowOutUpRight from '@lucide/svelte/icons/square-arrow-out-up-right';
 	import ExternalLink from '@lucide/svelte/icons/external-link';
 	import TerminalSquare from '@lucide/svelte/icons/terminal-square';
@@ -27,25 +26,12 @@
 	const vcsMode = $derived(vcsModeCtx.getOr('git'));
 	const editorPath = $derived(resolveEditorPath(absolutePath, sourceRoot, sourceFile));
 	const canOpenEditor = $derived(Boolean(editorPath && sourceFile));
+	const editorHref = $derived(
+		canOpenEditor && editorPath ? editorUri(editorScheme, editorPath, line) : null,
+	);
 	const currentCloneCommand = $derived(repoUrl ? cloneCommand(repoUrl, vcsMode) : '');
 
-	let clonePopoverOpen = $state(false);
 	let cloneCopied = $state(false);
-
-	function openInEditor() {
-		if (!editorPath) return;
-		window.open(editorUri(editorScheme, editorPath, line));
-	}
-
-	function openOnWeb() {
-		if (!repoUrl) return;
-		window.open(repoUrl, '_blank');
-	}
-
-	function toggleClonePopover() {
-		clonePopoverOpen = !clonePopoverOpen;
-		cloneCopied = false;
-	}
 
 	async function copyCloneCommand() {
 		if (!currentCloneCommand) return;
@@ -53,76 +39,53 @@
 		cloneCopied = true;
 		setTimeout(() => (cloneCopied = false), 2000);
 	}
-
-	function handleCloneKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape') clonePopoverOpen = false;
-	}
-
-	const cloneClickOutside: Attachment<HTMLDivElement> = (wrapper) => {
-		$effect(() => {
-			if (!clonePopoverOpen) return;
-			function onClick(event: MouseEvent) {
-				if (!wrapper.contains(event.target as HTMLElement)) clonePopoverOpen = false;
-			}
-			document.addEventListener('click', onClick, true);
-			return () => document.removeEventListener('click', onClick, true);
-		});
-	};
 </script>
 
 <div class="source-actions {className}">
 	{#if sourceFile}
-		<button
-			type="button"
+		<a
+			href={editorHref ?? undefined}
 			class="source-action"
-			onclick={openInEditor}
-			disabled={!canOpenEditor}
+			aria-disabled={!canOpenEditor}
+			tabindex={canOpenEditor ? undefined : -1}
 			title={canOpenEditor ? 'Open in editor' : 'Set local source root in settings'}
 			aria-label="Open in editor"
 		>
 			<SquareArrowOutUpRight size={16} />
-		</button>
+		</a>
 	{/if}
 	{#if repoUrl}
-		<button
-			type="button"
+		<a
+			href={repoUrl}
+			target="_blank"
+			rel="noopener noreferrer"
 			class="source-action"
-			onclick={openOnWeb}
 			title="Open source on web"
 			aria-label="Open source on web"
 		>
 			<ExternalLink size={16} />
-		</button>
-		<div class="clone-wrapper" {@attach cloneClickOutside}>
-			<button
-				type="button"
-				class="source-action"
-				onclick={toggleClonePopover}
-				title="Clone repository"
-				aria-label="Clone repository"
-			>
+		</a>
+		<details class="clone-wrapper">
+			<summary class="source-action" title="Clone repository" aria-label="Clone repository">
 				<TerminalSquare size={16} />
-			</button>
-			{#if clonePopoverOpen}
-				<!-- svelte-ignore a11y_no_static_element_interactions -->
-				<div class="clone-popover" onkeydown={handleCloneKeydown}>
-					<code class="clone-command">{currentCloneCommand}</code>
-					<button
-						type="button"
-						class="clone-copy"
-						onclick={copyCloneCommand}
-						title="Copy to clipboard"
-						aria-label="Copy clone command"
-					>
-						{#if cloneCopied}
-							<Check size={14} />
-						{:else}
-							<ClipboardCopy size={14} />
-						{/if}
-					</button>
-				</div>
-			{/if}
-		</div>
+			</summary>
+			<div class="clone-popover">
+				<code class="clone-command">{currentCloneCommand}</code>
+				<button
+					type="button"
+					class="clone-copy js-only"
+					onclick={copyCloneCommand}
+					title="Copy to clipboard"
+					aria-label="Copy clone command"
+				>
+					{#if cloneCopied}
+						<Check size={14} />
+					{:else}
+						<ClipboardCopy size={14} />
+					{/if}
+				</button>
+			</div>
+		</details>
 	{/if}
 </div>
 
@@ -154,9 +117,17 @@
 		color: var(--ink);
 	}
 
-	.source-action:disabled {
+	.source-action[aria-disabled='true'] {
 		cursor: not-allowed;
 		opacity: 0.42;
+	}
+
+	.clone-wrapper > summary {
+		list-style: none;
+	}
+
+	.clone-wrapper > summary::-webkit-details-marker {
+		display: none;
 	}
 
 	.clone-wrapper {

@@ -23,8 +23,8 @@
 	--card-foreground: var(--ink);
 	--popover: var(--panel-solid);
 	--popover-foreground: var(--ink);
-	--primary: var(--ink);
-	--primary-foreground: var(--panel-solid);
+	--primary: var(--accent);
+	--primary-foreground: var(--on-accent);
 	--secondary: var(--panel-strong);
 	--secondary-foreground: var(--ink);
 	--destructive: var(--danger);

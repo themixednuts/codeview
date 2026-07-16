@@ -1,13 +1,21 @@
 <script lang="ts">
 	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { page } from '$app/state';
 	import Icon from '$lib/components/design/Icon.svelte';
+	import StablePagination from '$lib/components/StablePagination.svelte';
+	import { readPageParam } from '$lib/pagination';
 	import { stepLabels } from '$lib/realtime/constants';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
 	const PAGE_SIZE = 10;
 	const REFRESH_INTERVAL_MS = 15_000;
+	const DATE_TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
+		dateStyle: 'medium',
+		timeStyle: 'short',
+		timeZone: 'UTC',
+	});
 
 	let { data }: PageProps = $props();
 
@@ -20,12 +28,12 @@
 	const plannedCount = $derived(planned?.total ?? 0);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
 	let refreshPending = $state(false);
-	let activePage = $state(1);
-	let plannedPage = $state(1);
-	let recentPage = $state(1);
 	const activePageCount = $derived(Math.max(1, Math.ceil(active.length / PAGE_SIZE)));
 	const plannedPageCount = $derived(Math.max(1, Math.ceil(plannedItems.length / PAGE_SIZE)));
 	const recentPageCount = $derived(Math.max(1, Math.ceil(recent.length / PAGE_SIZE)));
+	const activePage = $derived(readPageParam(page.url, 'activePage', activePageCount));
+	const plannedPage = $derived(readPageParam(page.url, 'plannedPage', plannedPageCount));
+	const recentPage = $derived(readPageParam(page.url, 'recentPage', recentPageCount));
 	const visibleActiveEntries = $derived(
 		active.slice((activePage - 1) * PAGE_SIZE, activePage * PAGE_SIZE),
 	);
@@ -35,15 +43,6 @@
 	const visibleRecentEntries = $derived(
 		recent.slice((recentPage - 1) * PAGE_SIZE, recentPage * PAGE_SIZE),
 	);
-
-	$effect(() => {
-		if (activePage > activePageCount) activePage = activePageCount;
-		if (activePage < 1) activePage = 1;
-		if (plannedPage > plannedPageCount) plannedPage = plannedPageCount;
-		if (plannedPage < 1) plannedPage = 1;
-		if (recentPage > recentPageCount) recentPage = recentPageCount;
-		if (recentPage < 1) recentPage = 1;
-	});
 
 	function itemHref(name: string, version: string): string {
 		return resolve(`/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
@@ -82,19 +81,11 @@
 	function absoluteTime(value: string): string {
 		const date = new Date(value);
 		if (Number.isNaN(date.getTime())) return value;
-		return date.toLocaleString();
+		return `${DATE_TIME_FORMAT.format(date)} UTC`;
 	}
 
 	function shortId(value: string | undefined): string {
 		return value ? value.slice(0, 8) : '';
-	}
-
-	function pageStart(page: number, total: number): number {
-		return total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-	}
-
-	function pageEnd(page: number, total: number): number {
-		return Math.min(page * PAGE_SIZE, total);
 	}
 
 	function actorLabel(actor: { login: string } | undefined): string {
@@ -180,33 +171,13 @@
 					<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 						<span class="font-mono text-[11px] text-(--muted-soft)">{activeCount} running</span>
 						{#if active.length > PAGE_SIZE}
-							<div class="flex items-center gap-2">
-								<span class="font-mono text-[11px] text-(--muted-soft)">
-									{pageStart(activePage, active.length)}-{pageEnd(activePage, active.length)}
-									of {active.length}
-								</span>
-								<button
-									type="button"
-									disabled={activePage <= 1}
-									onclick={() => (activePage -= 1)}
-									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-								>
-									<Icon name="chevron-left" size={12} />
-									Prev
-								</button>
-								<span class="font-mono text-[11px] text-(--muted-soft)">
-									{activePage}/{activePageCount}
-								</span>
-								<button
-									type="button"
-									disabled={activePage >= activePageCount}
-									onclick={() => (activePage += 1)}
-									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-								>
-									Next
-									<Icon name="chevron-right" size={12} />
-								</button>
-							</div>
+							<StablePagination
+								currentPage={activePage}
+								pageCount={activePageCount}
+								total={active.length}
+								param="activePage"
+								label="Active queue"
+							/>
 						{/if}
 					</div>
 				</div>
@@ -277,38 +248,13 @@
 							</span>
 						{/if}
 						{#if plannedItems.length > PAGE_SIZE}
-							<div class="flex items-center gap-2">
-								<span class="font-mono text-[11px] text-(--muted-soft)">
-									{pageStart(plannedPage, plannedItems.length)}-{pageEnd(
-										plannedPage,
-										plannedItems.length,
-									)}
-									of {plannedItems.length}{planned && planned.total > plannedItems.length
-										? ` loaded (${planned.total} planned)`
-										: ''}
-								</span>
-								<button
-									type="button"
-									disabled={plannedPage <= 1}
-									onclick={() => (plannedPage -= 1)}
-									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-								>
-									<Icon name="chevron-left" size={12} />
-									Prev
-								</button>
-								<span class="font-mono text-[11px] text-(--muted-soft)">
-									{plannedPage}/{plannedPageCount}
-								</span>
-								<button
-									type="button"
-									disabled={plannedPage >= plannedPageCount}
-									onclick={() => (plannedPage += 1)}
-									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-								>
-									Next
-									<Icon name="chevron-right" size={12} />
-								</button>
-							</div>
+							<StablePagination
+								currentPage={plannedPage}
+								pageCount={plannedPageCount}
+								total={plannedItems.length}
+								param="plannedPage"
+								label="Planned batch"
+							/>
 						{/if}
 					</div>
 				</div>
@@ -370,33 +316,13 @@
 					<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 						<span class="font-mono text-[11px] text-(--muted-soft)">{recent.length} entries</span>
 						{#if recent.length > PAGE_SIZE}
-							<div class="flex items-center gap-2">
-								<span class="font-mono text-[11px] text-(--muted-soft)">
-									{pageStart(recentPage, recent.length)}-{pageEnd(recentPage, recent.length)}
-									of {recent.length}
-								</span>
-								<button
-									type="button"
-									disabled={recentPage <= 1}
-									onclick={() => (recentPage -= 1)}
-									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-								>
-									<Icon name="chevron-left" size={12} />
-									Prev
-								</button>
-								<span class="font-mono text-[11px] text-(--muted-soft)">
-									{recentPage}/{recentPageCount}
-								</span>
-								<button
-									type="button"
-									disabled={recentPage >= recentPageCount}
-									onclick={() => (recentPage += 1)}
-									class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 py-1 text-xs text-(--ink) transition-colors hover:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
-								>
-									Next
-									<Icon name="chevron-right" size={12} />
-								</button>
-							</div>
+							<StablePagination
+								currentPage={recentPage}
+								pageCount={recentPageCount}
+								total={recent.length}
+								param="recentPage"
+								label="Recent outcomes"
+							/>
 						{/if}
 					</div>
 				</div>

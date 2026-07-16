@@ -2,6 +2,14 @@
 @import '@xyflow/svelte/dist/base.css';
 @import '$lib/shadcn/theme.css';
 
+html:not([data-js='enabled']) .js-only {
+	display: none !important;
+}
+
+[data-js='enabled'] .no-js-only {
+	display: none !important;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Codeview design tokens — SOLARIZED-based palette
    ─────────────────────────────────────────────────
@@ -63,12 +71,9 @@
 		--link: #268bd2; /* solarized blue */
 		--link-strong: #1f6fa5;
 
-		--shadow-soft:
-			0 1px 0 rgba(88, 110, 117, 0.06), 0 1px 3px rgba(88, 110, 117, 0.06);
-		--shadow-strong:
-			0 1px 0 rgba(88, 110, 117, 0.08), 0 6px 16px rgba(88, 110, 117, 0.1);
-		--shadow-glow:
-			0 1px 0 rgba(88, 110, 117, 0.1), 0 12px 28px rgba(88, 110, 117, 0.12);
+		--shadow-soft: 0 1px 0 rgba(88, 110, 117, 0.06), 0 1px 3px rgba(88, 110, 117, 0.06);
+		--shadow-strong: 0 1px 0 rgba(88, 110, 117, 0.08), 0 6px 16px rgba(88, 110, 117, 0.1);
+		--shadow-glow: 0 1px 0 rgba(88, 110, 117, 0.1), 0 12px 28px rgba(88, 110, 117, 0.12);
 		--shadow-accent: 0 6px 18px rgba(203, 75, 22, 0.25);
 		--shadow-modal: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
 		--shadow-toggle: 0 1px 3px rgba(0, 0, 0, 0.12);
@@ -211,7 +216,6 @@
 		--danger-bg: rgba(220, 50, 47, 0.2);
 		--danger-border: rgba(255, 180, 173, 0.25);
 		--success: #7ce7ac;
-
 	}
 
 	/* ═══════════════════════════════════════════════════════════════
@@ -914,47 +918,42 @@
 		background-color: var(--panel-muted);
 	}
 
-	.doc-section {
-		content-visibility: auto;
-		contain-intrinsic-size: auto 640px;
-	}
-
 	.codeview-resizable-group {
 		min-height: 0;
 		height: 100%;
 		background: var(--bg);
 	}
+}
 
-	.codeview-resize-handle {
-		z-index: 5;
-		width: 10px;
-		flex: 0 0 10px;
-		background-color: var(--bg) !important;
-		transition:
-			background-color 0.12s ease,
-			color 0.12s ease;
+@media (max-width: 1023.98px) {
+	.codeview-resizable-group {
+		display: block !important;
+		height: auto !important;
+		overflow: visible !important;
 	}
 
-	.codeview-resize-handle::after {
-		width: 1px;
-		background: var(--panel-border-soft);
+	.codeview-resizable-group > [data-pane] {
+		width: 100% !important;
+		min-width: 0 !important;
+		max-width: none !important;
+		min-height: 18rem;
+		flex: none !important;
+		overflow: visible !important;
 	}
 
-	.codeview-resize-handle:hover,
-	.codeview-resize-handle:focus-visible {
-		background-color: var(--accent-soft) !important;
+	.codeview-resizable-group > [data-pane]:first-child {
+		max-height: 46dvh;
+		min-height: 14rem;
+		border-right: 0;
+		border-bottom: 1px solid var(--panel-border-strong);
 	}
 
-	.codeview-resize-handle:hover::after,
-	.codeview-resize-handle:focus-visible::after {
-		background: var(--accent);
+	.codeview-resizable-group > [data-pane]:not(:first-child) {
+		min-height: 60dvh;
 	}
 
-	.codeview-resize-handle > div {
-		width: 2px;
-		height: 26px;
-		border-radius: 999px;
-		background: var(--panel-border-strong);
+	.codeview-resizable-group > [data-pane-resizer] {
+		display: none !important;
 	}
 }
 

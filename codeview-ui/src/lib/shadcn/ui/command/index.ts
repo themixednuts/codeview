@@ -1,5 +1,6 @@
 import Root from './command.svelte';
 import Loading from './command-loading.svelte';
+import Dialog from './command-dialog.svelte';
 import Empty from './command-empty.svelte';
 import Group from './command-group.svelte';
 import Item from './command-item.svelte';
@@ -11,6 +12,7 @@ import LinkItem from './command-link-item.svelte';
 
 export {
 	Root,
+	Dialog,
 	Empty,
 	Group,
 	Item,
@@ -20,7 +22,9 @@ export {
 	Separator,
 	Shortcut,
 	Loading,
+	//
 	Root as Command,
+	Dialog as CommandDialog,
 	Empty as CommandEmpty,
 	Group as CommandGroup,
 	Item as CommandItem,

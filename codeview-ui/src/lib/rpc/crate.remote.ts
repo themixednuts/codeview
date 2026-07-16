@@ -19,7 +19,6 @@ import {
 	RegistrySearchInputSchema,
 	TriggerParseInputSchema,
 	InstallStdDocsInputSchema,
-	ProbeDocsInputSchema,
 } from './schemas';
 
 /** Get local CLI workspace crates. Hosted mode has no workspace. */
@@ -75,16 +74,18 @@ export const getCrateStatus = query(
 	},
 );
 
-/** Trigger parsing of a crate (cloud mode). */
-export const triggerCrateParse = command(
-	TriggerParseInputSchema,
-	async ({ name, version }): Promise<void> => {
-		assertCrateRef(name, version);
-		const provider = await loader.provider();
-		const result = await provider.triggerParse(name, version, false);
-		throwIfProviderErr(result, { RateLimitError: 429 });
-	},
-);
+async function requestParse({ name, version }: { name: string; version: string }): Promise<void> {
+	assertCrateRef(name, version);
+	const provider = await loader.provider();
+	const result = await provider.triggerParse(name, version, false);
+	throwIfProviderErr(result, { RateLimitError: 429 });
+}
+
+/** Trigger parsing from an imperative client flow. */
+export const triggerCrateParse = command(TriggerParseInputSchema, requestParse);
+
+/** Progressively enhanced parse request form for user-facing controls. */
+export const requestCrateParse = form(TriggerParseInputSchema, requestParse);
 
 /** Trigger std crate install + parse (local mode, requires user consent). */
 export const installStdDocs = form(
@@ -105,89 +106,6 @@ export const searchRegistry = query(
 		if (!queryText) return [];
 		const provider = await loader.provider();
 		return provider.searchRegistry(queryText);
-	},
-);
-
-/**
- * Probe docs.rs to find the newest version with rustdoc JSON available.
- * Fires concurrent HEAD requests, preferring stable versions over pre-releases,
- * and aborts remaining requests once the best match is confirmed.
- */
-export const probeAvailableDocsVersion = query(
-	ProbeDocsInputSchema,
-	async ({ name, currentVersion, candidates }): Promise<string | null> => {
-		const MAX_PROBES = 10;
-		const TIMEOUT_MS = 10_000;
-
-		// Filter out current version, then order: stable first, pre-release after
-		const filtered = candidates.filter((v) => v !== currentVersion);
-		const stable = filtered.filter((v) => !v.includes('-'));
-		const preRelease = filtered.filter((v) => v.includes('-'));
-		const ordered = [...stable, ...preRelease].slice(0, MAX_PROBES);
-
-		if (ordered.length === 0) return null;
-
-		const controllers = ordered.map(() => new AbortController());
-		const settled = new Array<boolean>(ordered.length).fill(false);
-		const succeeded = new Array<boolean>(ordered.length).fill(false);
-
-		return new Promise<string | null>((resolve) => {
-			let resolved = false;
-			let settledCount = 0;
-
-			const timeoutId = setTimeout(() => {
-				if (!resolved) {
-					resolved = true;
-					for (const c of controllers) c.abort();
-					resolve(null);
-				}
-			}, TIMEOUT_MS);
-
-			function checkResolve() {
-				if (resolved) return;
-
-				// Walk in order: return earliest version that succeeded,
-				// but only once all higher-priority versions have settled.
-				for (let i = 0; i < ordered.length; i++) {
-					if (!settled[i]) return; // still waiting on a higher-priority version
-					if (succeeded[i]) {
-						resolved = true;
-						clearTimeout(timeoutId);
-						for (let j = i + 1; j < ordered.length; j++) {
-							if (!settled[j]) controllers[j].abort();
-						}
-						resolve(ordered[i]);
-						return;
-					}
-				}
-
-				// All settled, none succeeded
-				if (settledCount === ordered.length) {
-					resolved = true;
-					clearTimeout(timeoutId);
-					resolve(null);
-				}
-			}
-
-			ordered.forEach((version, i) => {
-				fetch(`https://docs.rs/crate/${name}/${version}/json.gz`, {
-					method: 'HEAD',
-					signal: controllers[i].signal,
-					headers: { 'User-Agent': 'codeview' },
-				})
-					.then((res) => {
-						succeeded[i] = res.ok;
-					})
-					.catch(() => {
-						succeeded[i] = false;
-					})
-					.finally(() => {
-						settled[i] = true;
-						settledCount++;
-						checkResolve();
-					});
-			});
-		});
 	},
 );
 

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { installStdDocs } from '$lib/rpc/crate.remote';
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
+	import { Button } from '$lib/shadcn/ui/button';
 
 	let {
 		crateName,
@@ -18,20 +18,7 @@
 	} = $props();
 
 	const installForm = installStdDocs;
-	let lastFormKey = '';
-	$effect(() => {
-		if (!crateName || !version) return;
-		const key = `${crateName}@${version}`;
-		if (key === lastFormKey) return;
-		lastFormKey = key;
-		installForm.fields.set({ name: crateName, version });
-	});
-
 	const canInstall = $derived(!!crateName && !!version);
-
-	function goBack() {
-		void goto(resolve('/'));
-	}
 </script>
 
 <div class="flex flex-1 items-center justify-center">
@@ -71,20 +58,10 @@
 			})}
 			class="flex items-center justify-center gap-3"
 		>
-			<button
-				type="submit"
-				disabled={!canInstall}
-				class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-			>
-				Install
-			</button>
-			<button
-				type="button"
-				class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"
-				onclick={goBack}
-			>
-				Go back
-			</button>
+			<input type="hidden" name="name" value={crateName ?? ''} />
+			<input type="hidden" name="version" value={version ?? ''} />
+			<Button type="submit" disabled={!canInstall}>Install</Button>
+			<Button href={resolve('/')} variant="outline">Go back</Button>
 		</form>
 	</div>
 </div>

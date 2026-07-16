@@ -535,52 +535,52 @@
 {/snippet}
 
 {#snippet genericParamContent(p: GenericParam)}
-		{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const</span>{/if}
-		<span class="token-name">{p.name}</span>
-		{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}
-			<span class="text-(--muted)">:</span>
-			{#each p.kind.bounds as b, i (i)}
-				{#if i > 0}<span class="text-(--muted)">+</span>{/if}
-				{@render boundContent(b)}
-			{/each}
-		{/if}
-		{#if p.kind.kind === 'Lifetime' && p.kind.outlives && p.kind.outlives.length > 0}
-			<span class="text-(--muted)">:</span>
-			{#each p.kind.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
-				<span class="token-name">{lt}</span>{/each}
-		{/if}
-		{#if p.kind.kind === 'Const'}
-			<span class="text-(--muted)">:</span>
-			{@render typeContent(p.kind.type)}
-			{#if p.kind.default}<span class="text-(--muted)">= {p.kind.default}</span>{/if}
-		{/if}
-		{#if p.kind.kind === 'Type' && p.kind.default}
-			<span class="text-(--muted)">=</span>
-			{@render typeContent(p.kind.default)}
-		{/if}
+	{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const</span>{/if}
+	<span class="token-name">{p.name}</span>
+	{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}
+		<span class="text-(--muted)">:</span>
+		{#each p.kind.bounds as b, i (i)}
+			{#if i > 0}<span class="text-(--muted)">+</span>{/if}
+			{@render boundContent(b)}
+		{/each}
+	{/if}
+	{#if p.kind.kind === 'Lifetime' && p.kind.outlives && p.kind.outlives.length > 0}
+		<span class="text-(--muted)">:</span>
+		{#each p.kind.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
+			<span class="token-name">{lt}</span>{/each}
+	{/if}
+	{#if p.kind.kind === 'Const'}
+		<span class="text-(--muted)">:</span>
+		{@render typeContent(p.kind.type)}
+		{#if p.kind.default}<span class="text-(--muted)">= {p.kind.default}</span>{/if}
+	{/if}
+	{#if p.kind.kind === 'Type' && p.kind.default}
+		<span class="text-(--muted)">=</span>
+		{@render typeContent(p.kind.default)}
+	{/if}
 {/snippet}
 
 {#snippet wherePredContent(pred: WherePredicate)}
-		{#if pred.kind === 'Bound'}
-			{@render typeContent(pred.type)}
-			<span class="text-(--muted)">:</span>
-			{#each pred.bounds as b, i (i)}{#if i > 0}<span class="text-(--muted)">
-						+
-					</span>{/if}{@render boundContent(b)}{/each}
-		{:else if pred.kind === 'Lifetime'}
-			<span class="token-name">{pred.lifetime}</span>
-			<span class="text-(--muted)">:</span>
-			{#each pred.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
-				<span class="token-name">{lt}</span>{/each}
-		{:else if pred.kind === 'Eq'}
-			{@render typeContent(pred.lhs)}
-			<span class="text-(--muted)">=</span>
-			{#if pred.rhs.kind === 'Type'}{@render typeContent(pred.rhs.value)}{:else}<span
-					class="token-name"
-				>
-					{pred.rhs.expr}
-				</span>{/if}
-		{/if}
+	{#if pred.kind === 'Bound'}
+		{@render typeContent(pred.type)}
+		<span class="text-(--muted)">:</span>
+		{#each pred.bounds as b, i (i)}{#if i > 0}<span class="text-(--muted)">
+					+
+				</span>{/if}{@render boundContent(b)}{/each}
+	{:else if pred.kind === 'Lifetime'}
+		<span class="token-name">{pred.lifetime}</span>
+		<span class="text-(--muted)">:</span>
+		{#each pred.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
+			<span class="token-name">{lt}</span>{/each}
+	{:else if pred.kind === 'Eq'}
+		{@render typeContent(pred.lhs)}
+		<span class="text-(--muted)">=</span>
+		{#if pred.rhs.kind === 'Type'}{@render typeContent(pred.rhs.value)}{:else}<span
+				class="token-name"
+			>
+				{pred.rhs.expr}
+			</span>{/if}
+	{/if}
 {/snippet}
 
 <!-- Badge wrapping a TypeRef — used by argument types, return types,
@@ -590,53 +590,54 @@
 {/snippet}
 
 {#snippet traitLink(traitId: string)}
-		{#if hasInternalNode(traitId)}
-			<a
-				href={nodeHref(traitId)}
-				data-sveltekit-noscroll
-				class="text-(--accent) underline-offset-2 hover:underline"
-			>
-				{displayNode(traitId)}
-			</a>
-		{:else if hasExternalNode(traitId)}
-			<a
-				href={nodeHref(traitId)}
-				data-sveltekit-noscroll
-				onclick={externalLinkHandler(traitId)}
-				class="text-(--accent) underline-offset-2 hover:underline"
-				title="Shift+click for external docs"
-			>
-				{displayNode(traitId)}
-			</a>
-		{:else}
+	{#if hasInternalNode(traitId)}
+		<a
+			href={nodeHref(traitId)}
+			data-sveltekit-noscroll
+			class="text-(--accent) underline-offset-2 hover:underline"
+		>
 			{displayNode(traitId)}
-		{/if}
+		</a>
+	{:else if hasExternalNode(traitId)}
+		<a
+			href={nodeHref(traitId)}
+			data-sveltekit-noscroll
+			onclick={externalLinkHandler(traitId)}
+			class="text-(--accent) underline-offset-2 hover:underline"
+			title="Shift+click for external docs"
+		>
+			{displayNode(traitId)}
+		</a>
+	{:else}
+		{displayNode(traitId)}
+	{/if}
 {/snippet}
 
 {#snippet implRow(implBlock: Node)}
 	{@const implGenerics = implBlock.generics?.params ?? []}
 	{@const implWhere = implBlock.generics?.where_predicates ?? []}
-	<div class="min-w-0 [contain-intrinsic-size:auto_28px] [content-visibility:auto]">
-		<code class="font-(--font-code) text-[13px] leading-6 text-(--ink)">
-			<span class="token-keyword">impl</span>{#if implBlock.impl_category === 'Negative'}<span
-					class="text-(--danger)"
-				>!</span
-			>{/if}{#if implGenerics.length > 0}<span class="text-(--muted)">&lt;</span>{#each implGenerics as p, i (i)}{#if i > 0}<span
-						class="text-(--muted)"
-						>, </span
-					>{/if}{@render genericParamContent(p)}{/each}<span class="text-(--muted)"
-					>&gt;</span
-				>{/if}{#if implBlock.impl_trait}
+	<div class="min-w-0">
+		<code class="text-[13px] leading-6 font-(--font-code) text-(--ink)">
+			<span class="token-keyword">impl</span>
+			{#if implBlock.impl_category === 'Negative'}<span class="text-(--danger)">
+					!
+				</span>{/if}{#if implGenerics.length > 0}<span class="text-(--muted)">&lt;</span>
+				{#each implGenerics as p, i (i)}{#if i > 0}<span class="text-(--muted)">
+							,
+						</span>{/if}{@render genericParamContent(p)}{/each}
+				<span class="text-(--muted)">&gt;</span>{/if}{#if implBlock.impl_trait}
 				{@render traitLink(implBlock.impl_trait)}
-				<span class="token-keyword"> for </span>
+				<span class="token-keyword">for</span>
 				<span class="token-name">{selected?.name}</span>
 			{/if}
 		</code>
 		{#if implWhere.length > 0}
-			<div class="pl-4 font-(--font-code) text-[12px] leading-5 text-(--ink-soft)">
+			<div class="pl-4 text-[12px] leading-5 font-(--font-code) text-(--ink-soft)">
 				<span class="token-keyword">where</span>
 				{#each implWhere as pred, i (i)}
-					<span class="ml-2">{@render wherePredContent(pred)}{i + 1 < implWhere.length ? ',' : ''}</span>
+					<span class="ml-2">
+						{@render wherePredContent(pred)}{i + 1 < implWhere.length ? ',' : ''}
+					</span>
 				{/each}
 			</div>
 		{/if}
@@ -644,15 +645,13 @@
 {/snippet}
 
 {#snippet implMemberRow(member: Node, index: number)}
-	<div
-		class={`bg-(--panel-solid) px-3 py-3 [contain-intrinsic-size:auto_92px] [content-visibility:auto] ${index ? 'border-t border-(--panel-border)' : ''}`}
-	>
+	<div class={`bg-(--panel-solid) px-3 py-3 ${index ? 'border-t border-(--panel-border)' : ''}`}>
 		{#if !member.signature || member.span}
 			<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
 				<div class="flex min-w-0 items-center gap-2">
-				{#if !member.signature}
-					<code class="font-(--font-code) font-medium text-(--ink)">{member.name}</code>
-				{/if}
+					{#if !member.signature}
+						<code class="font-(--font-code) font-medium text-(--ink)">{member.name}</code>
+					{/if}
 				</div>
 				{#if member.span}
 					<div class="text-xs">
@@ -782,7 +781,7 @@
 					{/if}
 					<button
 						type="button"
-						class="badge badge-sm inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+						class="badge badge-sm js-only inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 						onclick={expandAll}
 					>
 						<Icon name="chevrons-up-down" size={11} strokeWidth={2} />
@@ -790,7 +789,7 @@
 					</button>
 					<button
 						type="button"
-						class="badge badge-sm inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
+						class="badge badge-sm js-only inline-flex items-center gap-1 transition-colors hover:bg-(--panel-strong) hover:text-(--ink)"
 						onclick={collapseAll}
 					>
 						<Icon name="chevrons-down-up" size={11} strokeWidth={2} />
@@ -829,7 +828,7 @@
 		<!-- Attributes are source syntax and belong immediately before the
 		     declaration they annotate. -->
 		{#if selected.attrs && selected.attrs.length > 0}
-			<div class="mb-1 font-(--font-code) text-[13px] leading-5">
+			<div class="mb-1 text-[13px] leading-5 font-(--font-code)">
 				{#each selected.attrs as attr (attr)}
 					<code class="token-meta block">{attr}</code>
 				{/each}
@@ -872,7 +871,7 @@
 				>
 					{#each selected.fields as field (field.name)}
 						{@const fieldNode = childNode(field.name)}
-						<article class="px-3 py-3 [contain-intrinsic-size:auto_72px] [content-visibility:auto]">
+						<article class="px-3 py-3">
 							<div
 								class="overflow-hidden rounded-(--radius-control) border border-(--panel-border-soft)"
 							>
@@ -917,7 +916,7 @@
 				>
 					{#each selected.variants as variant (variant.name)}
 						{@const variantNode = childNode(variant.name)}
-						<article class="px-3 py-3 [contain-intrinsic-size:auto_88px] [content-visibility:auto]">
+						<article class="px-3 py-3">
 							<div
 								class="overflow-hidden rounded-(--radius-control) border border-(--panel-border-soft)"
 							>
@@ -1169,7 +1168,7 @@
 				<div class="space-y-6">
 					{#each methodGroups as group (group.impl.id)}
 						<div
-							class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel) [contain-intrinsic-size:auto_120px] [content-visibility:auto]"
+							class="corner-squircle overflow-hidden rounded-(--radius-card) border border-(--panel-border) bg-(--panel)"
 						>
 							<div class="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
 								<div class="flex items-center gap-2">
@@ -1207,7 +1206,7 @@
 										method.signature?.is_unsafe ||
 										method.signature?.is_const}
 									<div
-										class={`bg-(--panel-solid) px-3 py-3 [contain-intrinsic-size:auto_80px] [content-visibility:auto] ${index ? 'border-t border-(--panel-border)' : ''}`}
+										class={`bg-(--panel-solid) px-3 py-3 ${index ? 'border-t border-(--panel-border)' : ''}`}
 									>
 										<!-- Header strip: chips left, source link right. Keeps both
 											 out of the signature's flow so the signature can claim

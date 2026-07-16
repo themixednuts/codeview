@@ -1,11 +1,12 @@
 <script lang="ts">
-	import { probeAvailableDocsVersion, triggerCrateParse } from '$lib/rpc/crate.remote';
-	import { goto } from '$app/navigation';
+	import { requestCrateParse } from '$lib/rpc/crate.remote';
 	import { resolve } from '$app/paths';
-	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
+	import { page } from '$app/state';
 	import { isHosted } from '$lib/platform';
 	import { isStdCrate } from '$lib/std';
 	import { normalizeCrateName } from '$lib/crate-names';
+	import { Button } from '$lib/shadcn/ui/button';
+	import * as NativeSelect from '$lib/shadcn/ui/native-select';
 
 	let {
 		crateName,
@@ -35,41 +36,13 @@
 			: `https://docs.rs/crate/${crateName}/${version}`;
 	});
 	const externalDocsLabel = $derived(isStd ? 'View on doc.rust-lang.org' : 'View on docs.rs');
-
-	function goBack() {
-		void goto(resolve('/'));
-	}
-
-	async function requestParse() {
-		if (!crateName || !version || queueing) return;
-		queueing = true;
-		queueError = null;
-		try {
-			await triggerCrateParse({ name: crateName, version });
-			onRetryStart?.();
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			queueError = message;
-			onRetryError?.(message);
-		} finally {
-			queueing = false;
-		}
-	}
-
-	let suggestedVersion = $derived(
-		crateName && version && crateVersionOptions.length > 1
-			? await probeAvailableDocsVersion({
-					name: crateName,
-					currentVersion: version,
-					candidates: crateVersionOptions,
-				})
-			: null,
-	);
+	const versionChoices = $derived(crateVersionOptions.filter((candidate) => candidate !== version));
+	const parseForm = requestCrateParse;
 </script>
 
 <div class="flex flex-1 items-center justify-center">
 	<div
-		class="corner-squircle max-w-md animate-[float-in_0.5s_ease-out] rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-8 text-center shadow-(--shadow-soft)"
+		class="corner-squircle mx-3 w-full max-w-md animate-[float-in_0.5s_ease-out] rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-5 text-center shadow-(--shadow-soft) sm:p-8"
 	>
 		<div class="mb-2 text-lg font-semibold text-(--ink)">Documentation not available yet</div>
 		<div class="mb-4 text-sm text-(--muted)">
@@ -97,31 +70,24 @@
 			{/if}
 		</div>
 
-		<svelte:boundary>
-			{#snippet pending()}
-				<div class="mb-4 flex items-center justify-center gap-2 text-sm text-(--muted)">
-					<LoaderCircleIcon class="size-3.5 animate-spin" />
-					<span>Checking other versions...</span>
-				</div>
-			{/snippet}
-			{#snippet failed(error, reset)}
-				<div class="mb-4 text-sm text-(--danger)">
-					Failed to check alternate versions.
-					<button type="button" class="ml-2 text-(--accent) hover:underline" onclick={reset}>
-						Try again
-					</button>
-				</div>
-			{/snippet}
-
-			{#if suggestedVersion && crateName}
-				<a
-					href={resolve(`/${crateName}/${suggestedVersion}`)}
-					class="corner-squircle mb-4 inline-block rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--accent) transition-colors hover:bg-(--panel-strong)"
-				>
-					Try version {suggestedVersion} instead
-				</a>
-			{/if}
-		</svelte:boundary>
+		{#if crateName && versionChoices.length > 0}
+			<form
+				method="GET"
+				action="/go/crate-version"
+				class="mb-4 flex items-center justify-center gap-2"
+			>
+				<input type="hidden" name="crate" value={crateName} />
+				<input type="hidden" name="path" value={page.params.path ?? ''} />
+				<input type="hidden" name="query" value={page.url.search} />
+				<label for="unavailable-version" class="sr-only">Try another version</label>
+				<NativeSelect.Root id="unavailable-version" name="version" class="w-36 font-mono">
+					{#each versionChoices as candidate (candidate)}
+						<NativeSelect.Option value={candidate}>v{candidate}</NativeSelect.Option>
+					{/each}
+				</NativeSelect.Root>
+				<Button type="submit" variant="outline">Open version</Button>
+			</form>
+		{/if}
 
 		{#if queueError}
 			<div
@@ -131,34 +97,38 @@
 			</div>
 		{/if}
 
-		<div class="mt-2 flex items-center justify-center gap-3">
+		<div class="mt-2 flex flex-wrap items-center justify-center gap-3">
 			{#if externalDocsHref}
-				<a
-					href={externalDocsHref}
-					target="_blank"
-					rel="noopener noreferrer"
-					class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"
-				>
+				<Button href={externalDocsHref} target="_blank" rel="noopener noreferrer" variant="outline">
 					{externalDocsLabel}
-				</a>
+				</Button>
 			{/if}
 			{#if canQueueParse}
-				<button
-					type="button"
-					disabled={!canRetry || queueing}
-					class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-					onclick={requestParse}
+				<form
+					{...parseForm.enhance(async ({ submit }) => {
+						if (!canRetry || queueing) return;
+						queueing = true;
+						queueError = null;
+						try {
+							await submit();
+							onRetryStart?.();
+						} catch (err) {
+							const message = err instanceof Error ? err.message : String(err);
+							queueError = message;
+							onRetryError?.(message);
+						} finally {
+							queueing = false;
+						}
+					})}
 				>
-					{queueing ? 'Queueing...' : retryLabel}
-				</button>
+					<input type="hidden" name="name" value={crateName ?? ''} />
+					<input type="hidden" name="version" value={version ?? ''} />
+					<Button type="submit" disabled={!canRetry || queueing}>
+						{queueing ? 'Queueing...' : retryLabel}
+					</Button>
+				</form>
 			{/if}
-			<button
-				type="button"
-				class="corner-squircle rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-4 py-2 text-sm text-(--muted) transition-colors hover:text-(--ink)"
-				onclick={goBack}
-			>
-				Go back
-			</button>
+			<Button href={resolve('/')} variant="outline">Go back</Button>
 		</div>
 	</div>
 </div>

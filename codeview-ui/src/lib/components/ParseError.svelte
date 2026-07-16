@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { triggerCrateParse } from '$lib/rpc/crate.remote';
+	import { requestCrateParse } from '$lib/rpc/crate.remote';
+	import { Button } from '$lib/shadcn/ui/button';
 
 	let {
 		crateName,
@@ -18,22 +19,7 @@
 	let retrying = $state(false);
 	let retryError = $state<string | null>(null);
 	const canRetry = $derived(!!crateName && !!version);
-
-	async function retryParse() {
-		if (!crateName || !version || retrying) return;
-		retrying = true;
-		retryError = null;
-		try {
-			await triggerCrateParse({ name: crateName, version });
-			onRetryStart?.();
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			retryError = message;
-			onRetryError?.(message);
-		} finally {
-			retrying = false;
-		}
-	}
+	const retryForm = requestCrateParse;
 </script>
 
 <div class="flex flex-1 items-center justify-center">
@@ -55,13 +41,28 @@
 				{retryError}
 			</div>
 		{/if}
-		<button
-			type="button"
-			disabled={!canRetry || retrying}
-			class="corner-squircle rounded-(--radius-control) bg-(--accent) px-4 py-2 text-sm font-medium text-(--on-accent) transition-opacity enabled:hover:opacity-90 disabled:opacity-60"
-			onclick={retryParse}
+		<form
+			{...retryForm.enhance(async ({ submit }) => {
+				if (!canRetry || retrying) return;
+				retrying = true;
+				retryError = null;
+				try {
+					await submit();
+					onRetryStart?.();
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					retryError = message;
+					onRetryError?.(message);
+				} finally {
+					retrying = false;
+				}
+			})}
 		>
-			{retrying ? 'Retrying...' : 'Retry'}
-		</button>
+			<input type="hidden" name="name" value={crateName ?? ''} />
+			<input type="hidden" name="version" value={version ?? ''} />
+			<Button type="submit" disabled={!canRetry || retrying}>
+				{retrying ? 'Retrying...' : 'Retry'}
+			</Button>
+		</form>
 	</div>
 </div>

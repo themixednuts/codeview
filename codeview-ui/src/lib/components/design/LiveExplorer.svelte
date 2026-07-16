@@ -12,7 +12,7 @@
 		TreeNodeDTO,
 	} from '$lib/schema';
 	import type { CrateStatusValue } from '$lib/context';
-	import { MediaQuery, SvelteSet } from 'svelte/reactivity';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { onDestroy, onMount } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
 	import { resolveAppPath } from '$lib/app-paths';
@@ -112,19 +112,13 @@
 	let lastReadyExpandKey = '';
 	let lastReadyKey = '';
 	let observedNonReady = false;
-	/** Mobile: tree drawer open. Docs-first by default so the page is readable. */
-	let mobileTreeOpen = $state(false);
-	const widePanesQuery = new MediaQuery('min-width: 1024px', false);
-	const useWidePanes = $derived(widePanesQuery.current);
-	/** Only show the drawer on narrow viewports; wide layout uses the side pane. */
-	const showMobileTree = $derived(mobileTreeOpen && !useWidePanes);
 	let treeFilterInput = $state<HTMLInputElement | null>(null);
 	let localViewOverride = $state<ExplorerViewMode | null>(null);
 	let localDocLayoutOverride = $state<ExplorerDocLayout | null>(null);
 	let localOverrideRouteKey = $state<string | null>(null);
 	let treeNavigationTimer: ReturnType<typeof setTimeout> | null = null;
 	let filterInputTimer: ReturnType<typeof setTimeout> | null = null;
-	let filterDraft = $state('');
+	let filterDraftOverride = $state<string | null>(null);
 	let filterOverride = $state<string | null>(null);
 	let kindOverride = $state.raw<NodeKind[] | null>(null);
 
@@ -142,21 +136,12 @@
 		localDocLayoutOverride = nextLayout;
 	}
 
-	function closeMobileTree() {
-		mobileTreeOpen = false;
-	}
-
-	function toggleMobileTree() {
-		mobileTreeOpen = !mobileTreeOpen;
-	}
-
 	// A real navigation has authoritative URL state. replaceState updates stay
 	// immediate through the local overrides below and do not trigger this hook.
 	afterNavigate(() => {
-		closeMobileTree();
 		filterOverride = null;
 		kindOverride = null;
-		filterDraft = filter;
+		filterDraftOverride = null;
 	});
 
 	onMount(() => {
@@ -181,6 +166,11 @@
 		url.hash = '';
 		return `${url.pathname}${url.search}`;
 	});
+	const docsHref = $derived.by(() => {
+		const url = serializeExplorerState(page.url, { view: 'docs' });
+		url.hash = '';
+		return `${url.pathname}${url.search}`;
+	});
 	const expandPath = $derived(expandPathCtx.getOr(null));
 	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
 	const docLayout = $derived(localDocLayoutOverride ?? viewState.layout ?? preferredDocLayout);
@@ -195,6 +185,7 @@
 		selected ? toDesignNode(selected, { ancestors, getNodeUrl }) : null,
 	);
 	const selectedPath = $derived(selectedDesign?.path ?? selected?.id ?? selectedNodeId);
+	const filterDraft = $derived(filterDraftOverride ?? filter);
 	const activeFilter = $derived(filterOverride ?? filter);
 	const effectiveKindParams = $derived(
 		(kindOverride ?? kindParams).filter((kind) => kind !== 'Impl'),
@@ -239,12 +230,6 @@
 		activeFilter ? `No results for "${activeFilter}"` : 'No items match these filters',
 	);
 	$effect(() => {
-		if (filterOverride !== null && filter !== filterOverride) return;
-		filterOverride = null;
-		filterDraft = filter;
-	});
-
-	$effect(() => {
 		const key = `${canonicalCrateName ?? crateName ?? ''}:${version ?? ''}:${selectedNodeId}`;
 		if (localOverrideRouteKey === null) {
 			localOverrideRouteKey = key;
@@ -256,7 +241,7 @@
 		localDocLayoutOverride = null;
 		filterOverride = null;
 		kindOverride = null;
-		filterDraft = filter;
+		filterDraftOverride = null;
 	});
 
 	function loadTreeChildren(input: { name: string; version?: string; nodeId: string }) {
@@ -644,8 +629,6 @@
 	}
 
 	function handleTreeRowLinkClick(row: FlatTreeNode, href: string, event: MouseEvent) {
-		// Always dismiss the mobile drawer when the user picks a node.
-		closeMobileTree();
 		if (!row.hasChildren) return;
 		if (event.defaultPrevented || event.button !== 0) return;
 		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -739,7 +722,7 @@
 	function handleFilterInput(event: Event) {
 		const input = event.currentTarget;
 		if (!(input instanceof HTMLInputElement)) return;
-		filterDraft = input.value;
+		filterDraftOverride = input.value;
 		scheduleFilterUpdate(input.value);
 	}
 
@@ -749,7 +732,7 @@
 		if (!(form instanceof HTMLFormElement)) return;
 		const raw = new FormData(form).get('q');
 		const nextFilter = typeof raw === 'string' ? raw : '';
-		filterDraft = nextFilter;
+		filterDraftOverride = nextFilter;
 		commitFilter(nextFilter);
 	}
 
@@ -891,7 +874,6 @@
 		data-sveltekit-noscroll
 		data-sveltekit-keepfocus
 		aria-current={isSelected ? 'page' : undefined}
-		onclick={closeMobileTree}
 		class="group flex items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
@@ -923,7 +905,7 @@
 		aria-expanded={row.hasChildren ? row.isExpanded : undefined}
 		data-tree-node-id={node.id}
 		tabindex="-1"
-		class="group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors [contain-intrinsic-size:auto_32px] [content-visibility:auto] hover:bg-(--panel-muted) {isSelected
+		class="group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
 		style={`padding-left: ${8 + row.depth * 14}px`}
@@ -938,7 +920,7 @@
 		{#if row.hasChildren}
 			<button
 				type="button"
-				class="grid size-5 shrink-0 place-items-center rounded text-(--muted-soft) hover:bg-(--panel-solid) hover:text-(--ink)"
+				class="js-only grid size-5 shrink-0 place-items-center rounded text-(--muted-soft) hover:bg-(--panel-solid) hover:text-(--ink)"
 				aria-label={row.isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
 				aria-expanded={row.isExpanded}
 				onclick={(event) => {
@@ -951,6 +933,9 @@
 			</button>
 		{:else}
 			<span class="size-5 shrink-0"></span>
+		{/if}
+		{#if row.hasChildren}
+			<span class="no-js-only size-5 shrink-0" aria-hidden="true"></span>
 		{/if}
 		<a
 			{href}
@@ -1050,16 +1035,25 @@
 					{canonicalCrateName ?? crateName ?? 'crate'}
 				</a>
 				{#if crateVersionOptions.length > 0}
-					<select
-						class="mono corner-squircle max-w-28 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-1.5 py-0.5 text-[10.5px] text-(--muted)"
-						aria-label="Crate version"
-						value={version}
-						onchange={onVersionChange}
-					>
-						{#each crateVersionOptions as option (option)}
-							<option value={option}>v{option}</option>
-						{/each}
-					</select>
+					<form method="GET" action="/go/crate-version" class="flex min-w-0 items-center gap-1">
+						<input type="hidden" name="crate" value={canonicalCrateName ?? crateName ?? ''} />
+						<input type="hidden" name="path" value={page.params.path ?? ''} />
+						<input type="hidden" name="query" value={page.url.search} />
+						<select
+							name="version"
+							class="mono corner-squircle max-w-28 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-1.5 py-0.5 text-[10.5px] text-(--muted)"
+							aria-label="Crate version"
+							value={version}
+							onchange={onVersionChange}
+						>
+							{#each crateVersionOptions as option (option)}
+								<option value={option}>v{option}</option>
+							{/each}
+						</select>
+						<button type="submit" class="no-js-only text-[10px] font-semibold text-(--accent)">
+							Go
+						</button>
+					</form>
 				{/if}
 			</div>
 			<div class="mono mt-0.5 text-[10.5px] text-(--muted-soft)">
@@ -1093,7 +1087,15 @@
 				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
 					<Icon name="search" size={12} />
 				</span>
-				<span class="kbd absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">S</span>
+				<span class="kbd js-only absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">
+					S
+				</span>
+				<button
+					type="submit"
+					class="no-js-only absolute inset-y-1 right-1 rounded px-2 text-[10px] font-semibold text-(--accent)"
+				>
+					Filter
+				</button>
 				{#each effectiveKindParams as kind (kind)}
 					<input type="hidden" name="k" value={kind} />
 				{/each}
@@ -1149,13 +1151,16 @@
 				{:else if searchError}
 					<div class="p-4 text-sm text-(--danger)">
 						<p class="font-medium">Search failed</p>
-						<button
-							type="button"
+						<a
+							href={resolveAppPath(`${page.url.pathname}${page.url.search}`)}
 							class="mt-2 text-(--accent) hover:underline"
-							onclick={retrySearch}
+							onclick={(event) => {
+								event.preventDefault();
+								retrySearch();
+							}}
 						>
 							Try again
-						</button>
+						</a>
 					</div>
 				{:else}
 					<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
@@ -1171,7 +1176,7 @@
 				{/if}
 			{:else if treeRoots && treeRoots.length > 0}
 				<div
-					class="flex items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"
+					class="js-only flex items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"
 					aria-label="Tree actions"
 				>
 					<button
@@ -1209,13 +1214,16 @@
 					<div class="text-sm font-medium text-(--ink)">No data available</div>
 					<div class="mt-1 text-xs text-(--muted)">This crate's tree has not loaded yet.</div>
 					{#if onRetryTree}
-						<button
-							type="button"
+						<a
+							href={resolveAppPath(`${page.url.pathname}${page.url.search}`)}
 							class="mt-3 text-sm text-(--accent) hover:underline"
-							onclick={() => onRetryTree?.(() => {})}
+							onclick={(event) => {
+								event.preventDefault();
+								onRetryTree?.(() => {});
+							}}
 						>
 							Try again
-						</button>
+						</a>
 					{/if}
 				</div>
 			{/if}
@@ -1256,14 +1264,24 @@
 		{#if mode === 'graph' && detail}
 			{@const FocusGraphFlow = (await import('$lib/components/design/graph/FocusGraphFlow.svelte'))
 				.default}
-			<FocusGraphFlow
-				{detail}
-				{ancestors}
-				crateName={canonicalCrateName ?? crateName ?? ''}
-				crateVersion={version ?? ''}
-				{getNodeUrl}
-				height={620}
-			/>
+			<div class="js-only h-full">
+				<FocusGraphFlow
+					{detail}
+					{ancestors}
+					crateName={canonicalCrateName ?? crateName ?? ''}
+					crateVersion={version ?? ''}
+					{getNodeUrl}
+					height={620}
+				/>
+			</div>
+			<div class="no-js-only flex min-h-80 items-center justify-center p-6 text-center">
+				<div>
+					<p class="font-medium text-(--ink)">The interactive graph requires JavaScript.</p>
+					<a href={docsHref} class="mt-2 inline-block text-sm text-(--link) underline">
+						Open documentation
+					</a>
+				</div>
+			</div>
 		{:else if detail && selected && selected.kind !== 'Crate'}
 			{#if docLayout === 'reading'}
 				{@const DocReading = (await import('$lib/components/design/docs/DocReading.svelte'))
@@ -1387,14 +1405,26 @@
 				</div>
 			</div>
 			<div class="flex items-center gap-2 border-t border-(--panel-border-soft) px-5 py-3">
-				<button
-					type="button"
+				<a
+					href={docsHref}
 					class="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-(--accent) py-1.5 text-[12px] font-medium text-(--on-accent)"
-					onclick={() => updateExplorerState({ view: 'docs' })}
+					onclick={(event) => {
+						if (
+							event.metaKey ||
+							event.ctrlKey ||
+							event.shiftKey ||
+							event.altKey ||
+							event.button !== 0
+						) {
+							return;
+						}
+						event.preventDefault();
+						updateExplorerState({ view: 'docs' });
+					}}
 				>
 					Open docs
 					<Icon name="arrow-right" size={11} />
-				</button>
+				</a>
 				<a
 					href={resolveAppPath(getNodeUrl(selected.id))}
 					data-sveltekit-noscroll
@@ -1454,131 +1484,55 @@
 		</div>
 	</div>
 
-	<div class="min-h-0 flex-1 overflow-hidden">
-		{#if useWidePanes}
-			{#if mode === 'graph'}
-				<Resizable.PaneGroup
-					direction="horizontal"
-					autoSaveId="codeview-explorer-graph"
-					class="codeview-resizable-group"
-				>
-					<Resizable.Pane defaultSize={20} minSize={15} maxSize={34} order={1}>
-						{@render treePane('border-r border-(--panel-border-soft)')}
-					</Resizable.Pane>
-					<Resizable.Handle withHandle class="codeview-resize-handle" />
-					<Resizable.Pane defaultSize={55} minSize={34} order={2}>
-						{@render nodeContentPane('')}
-					</Resizable.Pane>
-					<Resizable.Handle withHandle class="codeview-resize-handle" />
-					<Resizable.Pane defaultSize={25} minSize={18} maxSize={38} order={3}>
-						{@render detailPane('border-l border-(--panel-border-soft)')}
-					</Resizable.Pane>
-				</Resizable.PaneGroup>
-			{:else if docLayout === 'classic'}
-				<Resizable.PaneGroup
-					direction="horizontal"
-					autoSaveId="codeview-doc-classic"
-					class="codeview-resizable-group"
-				>
-					<Resizable.Pane defaultSize={21} minSize={15} maxSize={32} order={1}>
-						{@render treePane('border-r border-(--panel-border-soft)')}
-					</Resizable.Pane>
-					<Resizable.Handle withHandle class="codeview-resize-handle" />
-					<Resizable.Pane defaultSize={79} minSize={58} order={2}>
-						{@render nodeContentPane('')}
-					</Resizable.Pane>
-				</Resizable.PaneGroup>
-			{:else}
-				{@render nodeContentPane('')}
-			{/if}
+	<div class="min-h-0 flex-1 overflow-auto lg:overflow-hidden">
+		{#if mode === 'graph'}
+			<Resizable.PaneGroup
+				direction="horizontal"
+				autoSaveId="codeview-explorer-graph"
+				class="codeview-resizable-group"
+			>
+				<Resizable.Pane defaultSize={20} minSize={15} maxSize={34} order={1}>
+					{@render treePane('border-r border-(--panel-border-soft)')}
+				</Resizable.Pane>
+				<Resizable.Handle
+					withHandle
+					class="z-5 w-2 shrink-0 bg-(--bg) hover:bg-(--accent-soft) focus-visible:bg-(--accent-soft)"
+				/>
+				<Resizable.Pane defaultSize={55} minSize={34} order={2}>
+					{@render nodeContentPane('')}
+				</Resizable.Pane>
+				<Resizable.Handle
+					withHandle
+					class="z-5 w-2 shrink-0 bg-(--bg) hover:bg-(--accent-soft) focus-visible:bg-(--accent-soft)"
+				/>
+				<Resizable.Pane defaultSize={25} minSize={18} maxSize={38} order={3}>
+					{@render detailPane('border-l border-(--panel-border-soft)')}
+				</Resizable.Pane>
+			</Resizable.PaneGroup>
+		{:else if docLayout === 'classic'}
+			<Resizable.PaneGroup
+				direction="horizontal"
+				autoSaveId="codeview-doc-classic"
+				class="codeview-resizable-group"
+			>
+				<Resizable.Pane defaultSize={21} minSize={15} maxSize={32} order={1}>
+					{@render treePane('border-r border-(--panel-border-soft)')}
+				</Resizable.Pane>
+				<Resizable.Handle
+					withHandle
+					class="z-5 w-2 shrink-0 bg-(--bg) hover:bg-(--accent-soft) focus-visible:bg-(--accent-soft)"
+				/>
+				<Resizable.Pane defaultSize={79} minSize={58} order={2}>
+					{@render nodeContentPane('')}
+				</Resizable.Pane>
+			</Resizable.PaneGroup>
 		{:else}
-			<!-- Mobile: docs first, tree as a slide-over drawer. -->
-			<div class="relative grid h-full min-h-0 grid-cols-1 overflow-hidden">
-				<div class="mobile-doc-shell flex min-h-0 flex-col overflow-hidden">
-					<div
-						class="flex shrink-0 items-center gap-2 border-b border-(--panel-border-soft) bg-(--panel) px-3 py-2"
-					>
-						<button
-							type="button"
-							class="corner-squircle inline-flex items-center gap-1.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1.5 text-[12px] font-medium text-(--ink)"
-							aria-expanded={showMobileTree}
-							aria-controls="mobile-tree-drawer"
-							onclick={toggleMobileTree}
-						>
-							<Icon name="layers" size={14} strokeWidth={2} />
-							{showMobileTree ? 'Hide tree' : 'Tree'}
-						</button>
-						<span class="mono min-w-0 flex-1 truncate text-[11px] text-(--muted-soft)">
-							{selected?.name ?? crateName ?? 'crate'}
-						</span>
-					</div>
-					<div class="min-h-0 flex-1 overflow-auto">
-						{@render nodeContentPane('mobile-doc-pane')}
-						{#if mode === 'graph'}
-							{@render detailPane('border-t border-(--panel-border-soft)')}
-						{/if}
-					</div>
-				</div>
-
-				{#if showMobileTree}
-					<button
-						type="button"
-						class="mobile-tree-backdrop"
-						aria-label="Close module tree"
-						onclick={closeMobileTree}
-					></button>
-					<div
-						id="mobile-tree-drawer"
-						class="mobile-tree-drawer"
-						role="dialog"
-						aria-modal="true"
-						aria-label="Module tree"
-					>
-						<div
-							class="flex items-center justify-between border-b border-(--panel-border-soft) px-3 py-2"
-						>
-							<span
-								class="text-[11px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase"
-							>
-								Module tree
-							</span>
-							<button type="button" class="badge badge-sm" onclick={closeMobileTree}>Close</button>
-						</div>
-						<div class="min-h-0 flex-1 overflow-hidden">
-							{@render treePane('h-full')}
-						</div>
-					</div>
-				{/if}
-			</div>
+			{@render nodeContentPane('')}
 		{/if}
 	</div>
 </div>
 
 <style>
-	.mobile-tree-backdrop {
-		position: absolute;
-		inset: 0;
-		z-index: 20;
-		border: 0;
-		background: color-mix(in srgb, var(--bg) 35%, rgb(0 0 0 / 0.45));
-	}
-
-	.mobile-tree-drawer {
-		position: absolute;
-		inset: 0 auto 0 0;
-		z-index: 30;
-		display: flex;
-		width: min(92vw, 22rem);
-		flex-direction: column;
-		background: var(--panel-solid);
-		border-right: 1px solid var(--panel-border);
-		box-shadow: 12px 0 32px rgb(0 0 0 / 0.28);
-	}
-
-	.live-explorer :global(.mobile-doc-pane) {
-		min-height: 100%;
-	}
-
 	@media (max-width: 379.98px) {
 		.live-explorer :global(.mode-label) {
 			display: none;

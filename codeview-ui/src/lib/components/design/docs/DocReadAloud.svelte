@@ -191,7 +191,7 @@
 	}
 </script>
 
-<div class="doc-read-aloud flex flex-wrap items-center gap-1.5" data-reader-ignore>
+<div class="doc-read-aloud js-only flex flex-wrap items-center gap-1.5" data-reader-ignore>
 	<button
 		type="button"
 		class="reader-button reader-button-primary"

@@ -1,16 +1,10 @@
 <script lang="ts">
-	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/design/Icon.svelte';
 	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import type { CrateSearchResult, CrateSummary } from '$lib/schema';
-	import {
-		parseHomeState,
-		serializeHomeState,
-		type HomeTab,
-		type HomeViewState,
-	} from '$lib/url-state';
+	import { parseHomeState, serializeHomeState } from '$lib/url-state';
 	import type { PageProps } from './$types';
 
 	type CrateListItem = CrateSearchResult | CrateSummary;
@@ -20,6 +14,8 @@
 	const hasLocalWorkspace = $derived(data.hasLocalWorkspace);
 	const localCrates = $derived(data.localCrates);
 	const topCrates = $derived(data.topCrates);
+	const searchQuery = $derived(data.searchQuery);
+	const searchResults = $derived(data.searchResults);
 	const defaultHomeTab = $derived(
 		hasLocalWorkspace && localCrates.length > 0 ? ('workspace' as const) : ('popular' as const),
 	);
@@ -28,7 +24,7 @@
 	const selectedSection = $derived(
 		!hasLocalWorkspace && homeState.tab === 'workspace' ? 'popular' : homeState.tab,
 	);
-	const visibleSection = $derived(selectedSection);
+	const visibleSection = $derived(searchQuery ? 'search' : selectedSection);
 
 	const sidebarSections = $derived([
 		...(hasLocalWorkspace
@@ -57,16 +53,9 @@
 		return `${crate.id ?? crate.name}:${crate.version || 'latest'}`;
 	}
 
-	function updateHomeState(patch: Partial<HomeViewState>) {
-		void goto(serializeHomeState(page.url, patch, { defaultTab: defaultHomeTab }), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
-		});
-	}
-
-	function setSelectedSection(tab: HomeTab) {
-		updateHomeState({ tab });
+	function sectionHref(tab: 'workspace' | 'popular') {
+		const url = serializeHomeState(page.url, { tab, q: '' }, { defaultTab: defaultHomeTab });
+		return `${url.pathname}${url.search}`;
 	}
 </script>
 
@@ -77,11 +66,19 @@
 				<div class="flex flex-wrap items-center gap-2 text-[12px] text-(--muted)">
 					<span>Showing</span>
 					<span class="badge badge-sm bg-(--panel) text-(--ink)">
-						{visibleSection === 'workspace' ? 'workspace' : 'popular crates'}
+						{visibleSection === 'workspace'
+							? 'workspace'
+							: visibleSection === 'search'
+								? `search: ${searchQuery}`
+								: 'popular crates'}
 					</span>
 					<span class="text-(--muted-soft)" aria-hidden="true">·</span>
 					<span class="font-mono">
-						{visibleSection === 'workspace' ? `${localCrates.length} local` : 'from crates.io'}
+						{visibleSection === 'workspace'
+							? `${localCrates.length} local`
+							: visibleSection === 'search'
+								? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'}`
+								: 'from crates.io'}
 					</span>
 				</div>
 			</div>
@@ -99,15 +96,14 @@
 				<ul class="space-y-0.5">
 					{#each sidebarSections as section (section.id)}
 						<li>
-							<button
-								type="button"
+							<a
+								href={sectionHref(section.id)}
 								class={`group flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left transition hover:bg-(--panel-muted) hover:text-(--ink) ${
 									visibleSection === section.id
 										? 'bg-(--accent-soft) text-(--accent-strong)'
 										: 'text-(--ink)'
 								}`}
 								aria-current={visibleSection === section.id ? 'true' : undefined}
-								onclick={() => setSelectedSection(section.id)}
 							>
 								<span
 									class={`grid w-5 place-items-center ${
@@ -123,14 +119,56 @@
 								<span class="font-mono text-[11px] text-(--muted-soft)">
 									{section.meta}
 								</span>
-							</button>
+							</a>
 						</li>
 					{/each}
 				</ul>
 			</aside>
 
 			<section class="min-w-0">
-				{#if visibleSection === 'workspace' && hasLocalWorkspace}
+				{#if visibleSection === 'search'}
+					<div class="mb-3 flex items-center justify-between gap-3">
+						<div class="flex min-w-0 items-center gap-2">
+							<Icon name="search" size={13} class="text-(--accent)" />
+							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Search results</h2>
+						</div>
+						<span class="font-mono text-[11px] text-(--muted-soft)">
+							{searchResults.length} found
+						</span>
+					</div>
+					{#if searchResults.length > 0}
+						<div class="grid gap-3 sm:grid-cols-2">
+							{#each searchResults as crate (crateKey(crate))}
+								<a
+									href={crateHref(crate)}
+									data-sveltekit-preload-data="off"
+									class="corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-[border-color,background-color,box-shadow] hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
+								>
+									<div class="flex min-w-0 items-baseline gap-2">
+										<KindBadge kind="crate" size={14} />
+										<span class="truncate font-mono text-[14px] font-semibold text-(--ink)">
+											{crate.name}
+										</span>
+										<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+											{crate.version}
+										</span>
+									</div>
+									{#if crate.description}
+										<p class="mt-2 line-clamp-2 text-[12.5px] leading-snug text-(--muted)">
+											{crate.description}
+										</p>
+									{/if}
+								</a>
+							{/each}
+						</div>
+					{:else}
+						<p
+							class="rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-10 text-center text-sm text-(--muted)"
+						>
+							No crates matched “{searchQuery}”.
+						</p>
+					{/if}
+				{:else if visibleSection === 'workspace' && hasLocalWorkspace}
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="layers" size={13} class="text-(--accent)" />
@@ -146,7 +184,7 @@
 								<a
 									href={crateHref(crate)}
 									data-sveltekit-preload-data="off"
-									class="group corner-squircle flex min-w-0 items-center gap-2.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2.5 transition-all hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
+									class="group corner-squircle flex min-w-0 items-center gap-2.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2.5 transition-[border-color,background-color,box-shadow] hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
 									<KindBadge kind="crate" size={14} />
 									<span
@@ -182,7 +220,7 @@
 								<a
 									href={crateHref(crate)}
 									data-sveltekit-preload-data="off"
-									class="group corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-all hover:-translate-y-0.5 hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
+									class="group corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-[border-color,background-color,box-shadow] hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
 									<div class="flex items-start justify-between gap-3">
 										<div class="min-w-0">
@@ -204,7 +242,7 @@
 										<Icon
 											name="arrow-right"
 											size={13}
-											class="shrink-0 -translate-x-1 text-(--muted) opacity-0 transition-all duration-150 group-hover:translate-x-0 group-hover:opacity-70"
+											class="shrink-0 text-(--muted) opacity-0 transition-opacity duration-150 group-hover:opacity-70"
 										/>
 									</div>
 								</a>

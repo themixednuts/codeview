@@ -41,12 +41,6 @@ export const RegistrySearchInputSchema = v.object({
 	q: v.string(),
 });
 
-export const ProbeDocsInputSchema = v.object({
-	name: v.string(),
-	currentVersion: v.string(),
-	candidates: v.array(v.string()),
-});
-
 export const NodeIdSchema = v.string();
 export const NodeIdsSchema = v.array(v.string());
 

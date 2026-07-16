@@ -2,6 +2,9 @@
 	import Icon from '$lib/components/design/Icon.svelte';
 	import KindBadge from '$lib/components/design/KindBadge.svelte';
 	import * as Command from '$lib/shadcn/ui/command';
+	import { Button } from '$lib/shadcn/ui/button';
+	import * as Field from '$lib/shadcn/ui/field';
+	import * as NativeSelect from '$lib/shadcn/ui/native-select';
 	import { getCrateVersions, searchRegistry } from '$lib/rpc/crate.remote';
 	import type { CrateSearchResult } from '$lib/schema';
 	import { normalizeCrateName } from '$lib/crate-names';
@@ -41,7 +44,6 @@
 
 	const trimmedQuery = $derived(crateQuery.trim());
 	const toolchainResults = $derived(filterToolchainCrates(trimmedQuery));
-	const canSubmit = $derived(Boolean(selectedCrate?.name && selectedVersion));
 
 	function isCrateResult(value: unknown): value is CrateSearchResult {
 		if (!value || typeof value !== 'object') return false;
@@ -143,13 +145,11 @@
 </script>
 
 <form method="POST" action="?/forceParse" class="grid gap-3">
-	<input type="hidden" name="name" value={selectedCrate?.name ?? ''} />
-	<input type="hidden" name="version" value={selectedVersion} />
-
 	<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid)">
 		<Command.Root shouldFilter={false} class="bg-transparent">
 			<Command.Input
 				bind:value={crateQuery}
+				name="name"
 				placeholder="Search crate..."
 				class="font-mono text-[13px]"
 				aria-label="Search crate to force parse"
@@ -251,41 +251,46 @@
 		</Command.Root>
 	</div>
 
-	<div class="grid gap-2">
-		<label
-			class="text-[10px] font-semibold tracking-wider text-(--muted) uppercase"
-			for="force-version"
-		>
-			Version
-		</label>
-		<select
+	<Field.Field class="js-only">
+		<Field.Label for="force-version">Version</Field.Label>
+		<NativeSelect.Root
 			id="force-version"
+			name="version"
 			bind:value={selectedVersion}
 			disabled={!selectedCrate || loadingVersions || versions.length === 0}
-			class="corner-squircle h-9 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 font-mono text-sm text-(--ink) transition-colors outline-none focus:border-(--accent-ring) disabled:cursor-not-allowed disabled:text-(--muted-soft)"
+			class="w-full font-mono"
 		>
 			{#if loadingVersions}
-				<option value={selectedVersion}>Loading versions...</option>
+				<NativeSelect.Option value={selectedVersion}>Loading versions...</NativeSelect.Option>
 			{:else if isToolchainCrate(selectedCrate)}
 				{#each versions as version (version)}
-					<option value={version}>{version}</option>
+					<NativeSelect.Option value={version}>{version}</NativeSelect.Option>
 				{/each}
 			{:else if versions.length > 0}
 				{#each versions as version (version)}
-					<option value={version}>{version}</option>
+					<NativeSelect.Option value={version}>{version}</NativeSelect.Option>
 				{/each}
 			{:else}
-				<option value="">Select a crate first</option>
+				<NativeSelect.Option value="">Select a crate first</NativeSelect.Option>
 			{/if}
-		</select>
-	</div>
+		</NativeSelect.Root>
+	</Field.Field>
 
-	<button
-		type="submit"
-		disabled={!canSubmit}
-		class="corner-squircle inline-flex items-center justify-center gap-2 rounded-(--radius-control) border border-(--accent-ring) bg-(--accent) px-3 py-2 text-sm font-semibold text-(--on-accent) transition-colors hover:bg-(--accent-strong) disabled:cursor-not-allowed disabled:border-(--panel-border) disabled:bg-(--panel-strong) disabled:text-(--muted-soft)"
-	>
+	<noscript>
+		<div class="grid gap-2">
+			<label for="force-version-fallback" class="text-sm font-medium">Version</label>
+			<input
+				id="force-version-fallback"
+				name="version"
+				value="latest"
+				class="h-8 w-full rounded-lg border border-(--panel-border) bg-transparent px-2.5 font-mono text-sm"
+			/>
+			<p class="text-xs text-(--muted)">Enter an exact version or use latest.</p>
+		</div>
+	</noscript>
+
+	<Button type="submit">
 		<Icon name="sparkle" size={13} />
 		Force parse
-	</button>
+	</Button>
 </form>
