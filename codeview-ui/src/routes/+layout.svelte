@@ -798,17 +798,23 @@
 				<Icon name="github" size={14} />
 			</a>
 			<Button
-				href={resolve('/settings')}
-				data-sveltekit-preload-data="off"
+				type="button"
 				variant="ghost"
 				size="icon-sm"
-				class="text-(--muted)"
+				class="js-only text-(--muted)"
 				title="Settings"
 				aria-label="Open settings"
-				onclick={(event) => {
-					event.preventDefault();
-					openSettings();
-				}}
+				onclick={openSettings}
+			>
+				<SettingsIcon size={14} />
+			</Button>
+			<Button
+				href={resolve('/settings')}
+				variant="ghost"
+				size="icon-sm"
+				class="no-js-only text-(--muted)"
+				title="Settings"
+				aria-label="Open settings"
 			>
 				<SettingsIcon size={14} />
 			</Button>
