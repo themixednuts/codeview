@@ -548,6 +548,12 @@
 
 	// ── Settings drawer ──
 	let settingsOpen = $state(false);
+	let settingsMounted = $state(false);
+
+	function openSettings() {
+		settingsMounted = true;
+		settingsOpen = true;
+	}
 	let commandOpen = $state(false);
 	let shortcutModLabel = $state('Ctrl');
 	const globalShortcutOptions = { capture: true };
@@ -576,7 +582,7 @@
 		}
 		if (event.key === ',') {
 			event.preventDefault();
-			settingsOpen = true;
+			openSettings();
 		}
 	}
 
@@ -793,6 +799,7 @@
 			</a>
 			<Button
 				href={resolve('/settings')}
+				data-sveltekit-preload-data="off"
 				variant="ghost"
 				size="icon-sm"
 				class="text-(--muted)"
@@ -800,7 +807,7 @@
 				aria-label="Open settings"
 				onclick={(event) => {
 					event.preventDefault();
-					settingsOpen = true;
+					openSettings();
 				}}
 			>
 				<SettingsIcon size={14} />
@@ -817,7 +824,7 @@
 	{/await}
 {/if}
 
-{#if settingsOpen}
+{#if settingsMounted}
 	{#await import('$lib/components/SettingsDrawer.svelte') then { default: SettingsDrawer }}
 		<SettingsDrawer
 			bind:open={settingsOpen}
