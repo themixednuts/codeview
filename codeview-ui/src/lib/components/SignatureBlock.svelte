@@ -113,8 +113,8 @@
 		visibility: hidden;
 		white-space: pre;
 		font-family: var(--font-code);
-		font-size: 0.8125rem;
-		line-height: 1.6;
+		font-size: var(--code-fs, 0.9375rem);
+		line-height: 1.65;
 		margin: 0;
 		padding: 0;
 		pointer-events: none;

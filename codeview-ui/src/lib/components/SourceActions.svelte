@@ -93,15 +93,15 @@
 	.source-actions {
 		display: flex;
 		align-items: center;
-		gap: 2px;
+		gap: 0.125rem;
 	}
 
 	.source-action {
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 28px;
-		height: 28px;
+		width: 1.75rem;
+		height: 1.75rem;
 		border-radius: 6px;
 		border: none;
 		background: none;
@@ -136,7 +136,7 @@
 
 	.clone-popover {
 		position: absolute;
-		top: calc(100% + 6px);
+		top: calc(100% + 0.375rem);
 		right: 0;
 		z-index: 20;
 		display: flex;
@@ -152,7 +152,7 @@
 
 	.clone-command {
 		font-family: var(--font-code);
-		font-size: 0.75rem;
+		font-size: var(--text-sm);
 		color: var(--ink);
 		user-select: all;
 	}
@@ -161,8 +161,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 24px;
-		height: 24px;
+		width: 1.5rem;
+		height: 1.5rem;
 		flex-shrink: 0;
 		border: none;
 		border-radius: 4px;

@@ -9,6 +9,7 @@
 		DENSITY_KEY,
 		DOC_LAYOUT_KEY,
 		THEME_KEY,
+		TEXT_SIZE_KEY,
 		VOICE_KEY,
 	} from '$lib/preferences';
 	import type { PageProps } from './$types';
@@ -19,6 +20,7 @@
 		{ key: THEME_KEY, label: 'Theme', options: ['system', 'light', 'dark'] },
 		{ key: ACCENT_KEY, label: 'Accent', options: ['orange', 'cobalt', 'forest', 'plum', 'char'] },
 		{ key: DENSITY_KEY, label: 'Density', options: ['compact', 'comfortable', 'spacious'] },
+		{ key: TEXT_SIZE_KEY, label: 'Text size', options: ['standard', 'large', 'extra-large'] },
 		{ key: VOICE_KEY, label: 'Typography', options: ['editorial', 'technical', 'geometric'] },
 		{
 			key: DOC_LAYOUT_KEY,
@@ -49,10 +51,10 @@
 <main id="main-content" class="min-h-0 flex-1 overflow-auto px-4 py-8 sm:px-6">
 	<div class="mx-auto max-w-2xl">
 		<div class="mb-6">
-			<p class="text-[10px] font-semibold tracking-[0.2em] text-(--muted-soft) uppercase">
+			<p class="text-2xs font-semibold tracking-[0.2em] text-(--muted-soft) uppercase">
 				Codeview
 			</p>
-			<h1 class="font-display mt-1 text-3xl font-semibold text-(--ink)">Settings</h1>
+			<h1 class="font-display mt-1 text-2xl font-semibold text-(--ink)">Settings</h1>
 		</div>
 
 		<form method="POST" class="space-y-6">

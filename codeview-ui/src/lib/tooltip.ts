@@ -18,7 +18,7 @@ function injectStyles() {
       margin: 6px 8px;
       inset: auto;
       padding: 6px 10px;
-      font-size: 12px;
+      font-size: var(--text-sm);
       line-height: 1.4;
       color: var(--ink);
       background: var(--panel-solid);

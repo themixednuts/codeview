@@ -8,7 +8,7 @@
 	import { getCrateVersions, searchRegistry } from '$lib/rpc/crate.remote';
 	import type { CrateSearchResult } from '$lib/schema';
 	import { normalizeCrateName } from '$lib/crate-names';
-	import { isStdCrate, STD_JSON_CRATES } from '$lib/std';
+	import { DEFAULT_RUST_CHANNEL, isRustChannel, isStdCrate, RUST_CHANNEL_ORDER } from '$lib/std';
 
 	type RemoteResource<T> =
 		| Promise<T>
@@ -16,21 +16,6 @@
 				run?: () => Promise<T>;
 				current?: T;
 		  };
-
-	const TOOLCHAIN_VERSIONS = ['nightly'];
-	const TOOLCHAIN_DESCRIPTIONS: Record<string, string> = {
-		std: 'Rust standard library',
-		core: 'Rust core library',
-		alloc: 'Rust allocation library',
-		proc_macro: 'Rust procedural macro API',
-		test: 'Rust test harness library',
-	};
-	const TOOLCHAIN_CRATES: CrateSearchResult[] = STD_JSON_CRATES.map((name) => ({
-		id: name,
-		name,
-		version: 'nightly',
-		description: TOOLCHAIN_DESCRIPTIONS[name] ?? 'Rust library crate',
-	}));
 
 	let crateQuery = $state('');
 	let crateResults = $state.raw<CrateSearchResult[]>([]);
@@ -43,7 +28,8 @@
 	let versionSeq = 0;
 
 	const trimmedQuery = $derived(crateQuery.trim());
-	const toolchainResults = $derived(filterToolchainCrates(trimmedQuery));
+	const toolchainResults = $derived(crateResults.filter((crate) => isToolchainCrate(crate)));
+	const registryResults = $derived(crateResults.filter((crate) => !isToolchainCrate(crate)));
 
 	function isCrateResult(value: unknown): value is CrateSearchResult {
 		if (!value || typeof value !== 'object') return false;
@@ -57,20 +43,6 @@
 
 	function isToolchainCrate(crate: CrateSearchResult | null): boolean {
 		return !!crate && isStdCrate(normalizeCrateName(crate.name));
-	}
-
-	function filterToolchainCrates(term: string): CrateSearchResult[] {
-		if (term.length < 2) return [];
-		const needle = normalizeCrateName(term).toLowerCase();
-		return TOOLCHAIN_CRATES.filter((crate) => {
-			const normalized = normalizeCrateName(crate.name).toLowerCase();
-			const hyphenated = normalized.replace(/_/g, '-');
-			return (
-				normalized.includes(needle) ||
-				hyphenated.includes(term.toLowerCase()) ||
-				(crate.description ?? '').toLowerCase().includes(term.toLowerCase())
-			);
-		});
 	}
 
 	async function resolveResource<T>(resource: RemoteResource<T>): Promise<T> {
@@ -87,8 +59,8 @@
 		versions = crate.version ? [crate.version] : [];
 		crateQuery = crate.name;
 		if (isToolchainCrate(crate)) {
-			versions = TOOLCHAIN_VERSIONS;
-			selectedVersion = 'nightly';
+			versions = [...RUST_CHANNEL_ORDER];
+			selectedVersion = isRustChannel(crate.version) ? crate.version : DEFAULT_RUST_CHANNEL;
 			loadingVersions = false;
 			return;
 		}
@@ -151,7 +123,7 @@
 				bind:value={crateQuery}
 				name="name"
 				placeholder="Search crate..."
-				class="font-mono text-[13px]"
+				class="font-mono text-sm"
 				aria-label="Search crate to force parse"
 			/>
 			<Command.List class="max-h-64">
@@ -167,23 +139,23 @@
 						<div class="flex items-start gap-2 rounded-md bg-(--accent-soft) px-2.5 py-2">
 							<KindBadge kind="crate" size={14} />
 							<div class="min-w-0 flex-1">
-								<div class="truncate font-mono text-[13px] font-semibold text-(--ink)">
+								<div class="truncate font-mono text-sm font-semibold text-(--ink)">
 									{selectedCrate.name}
 								</div>
 								{#if selectedCrate.description}
-									<div class="mt-0.5 line-clamp-1 text-[11.5px] text-(--muted)">
+									<div class="mt-0.5 line-clamp-1 text-xs text-(--muted)">
 										{selectedCrate.description}
 									</div>
 								{/if}
 								{#if isToolchainCrate(selectedCrate)}
-									<div class="mt-1 font-mono text-[10.5px] text-(--muted-soft)">
-										nightly rustdoc JSON
+									<div class="mt-1 font-mono text-xs text-(--muted-soft)">
+										{selectedVersion} toolchain
 									</div>
 								{/if}
 							</div>
 						</div>
 					</div>
-				{:else if trimmedQuery.length >= 2 && (toolchainResults.length > 0 || crateResults.length > 0)}
+				{:else if trimmedQuery.length >= 2 && (toolchainResults.length > 0 || registryResults.length > 0)}
 					{#if toolchainResults.length > 0}
 						<Command.Group heading="Rust">
 							{#each toolchainResults as crate (crateKey(crate))}
@@ -195,15 +167,15 @@
 									<KindBadge kind="crate" size={14} />
 									<div class="min-w-0 flex-1">
 										<div class="flex min-w-0 items-baseline gap-2">
-											<span class="truncate font-mono text-[13px] font-semibold text-(--ink)">
+											<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 												{crate.name}
 											</span>
-											<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
-												nightly
+											<span class="shrink-0 font-mono text-xs text-(--muted-soft)">
+												{crate.version}
 											</span>
 										</div>
 										{#if crate.description}
-											<p class="mt-0.5 line-clamp-1 text-[11.5px] text-(--muted)">
+											<p class="mt-0.5 line-clamp-1 text-xs text-(--muted)">
 												{crate.description}
 											</p>
 										{/if}
@@ -212,9 +184,9 @@
 							{/each}
 						</Command.Group>
 					{/if}
-					{#if crateResults.length > 0}
+					{#if registryResults.length > 0}
 						<Command.Group heading="Crates">
-							{#each crateResults as crate (crateKey(crate))}
+							{#each registryResults as crate (crateKey(crate))}
 								<Command.Item
 									value={`${crate.name} ${crate.version} ${crate.description ?? ''}`}
 									onSelect={() => selectCrate(crate)}
@@ -223,15 +195,15 @@
 									<KindBadge kind="crate" size={14} />
 									<div class="min-w-0 flex-1">
 										<div class="flex min-w-0 items-baseline gap-2">
-											<span class="truncate font-mono text-[13px] font-semibold text-(--ink)">
+											<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 												{crate.name}
 											</span>
-											<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+											<span class="shrink-0 font-mono text-xs text-(--muted-soft)">
 												{crate.version}
 											</span>
 										</div>
 										{#if crate.description}
-											<p class="mt-0.5 line-clamp-1 text-[11.5px] text-(--muted)">
+											<p class="mt-0.5 line-clamp-1 text-xs text-(--muted)">
 												{crate.description}
 											</p>
 										{/if}

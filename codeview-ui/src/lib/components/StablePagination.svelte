@@ -27,7 +27,7 @@
 </script>
 
 <div class="flex min-h-8 flex-wrap items-center justify-end gap-2">
-	<span class="font-mono text-[11px] text-(--muted-soft)">{start}-{end} of {total}</span>
+	<span class="font-mono text-xs text-(--muted-soft)">{start}-{end} of {total}</span>
 	<Pagination.Root
 		count={total}
 		perPage={pageSize}
@@ -50,7 +50,7 @@
 			</Pagination.Item>
 			<Pagination.Item>
 				<span
-					class="inline-grid h-7 min-w-12 place-items-center font-mono text-[11px] text-(--muted-soft)"
+					class="inline-grid h-7 min-w-12 place-items-center font-mono text-xs text-(--muted-soft)"
 				>
 					{currentPage}/{pageCount}
 				</span>

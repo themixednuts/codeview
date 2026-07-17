@@ -6,14 +6,17 @@ import {
 	ACCENT_KEY,
 	ACCENT_VALUES,
 	CODE_DARK_KEY,
+	CODE_DARK_VALUES,
 	CODE_LIGHT_KEY,
-	CODE_VALUES,
+	CODE_LIGHT_VALUES,
 	DENSITY_KEY,
 	DENSITY_VALUES,
 	DOC_LAYOUT_KEY,
 	DOC_LAYOUT_VALUES,
 	THEME_KEY,
 	THEME_VALUES,
+	TEXT_SIZE_KEY,
+	TEXT_SIZE_VALUES,
 	VOICE_KEY,
 	VOICE_VALUES,
 	readAllowedPreference,
@@ -93,16 +96,15 @@ function withSecurityHeaders(response: Response): Response {
 }
 
 function getHtmlDataAttributes(cookies: Cookies): HtmlDataAttributes {
-	const themePref = readAllowedPreference(cookies.get(THEME_KEY), THEME_VALUES, 'light');
-	const theme = themePref === 'dark' ? 'dark' : 'light';
+	const theme = readAllowedPreference(cookies.get(THEME_KEY), THEME_VALUES, 'system');
 	const codeThemeLight = readAllowedPreference(
 		cookies.get(CODE_LIGHT_KEY),
-		CODE_VALUES,
+		CODE_LIGHT_VALUES,
 		'solarized-light',
 	);
 	const codeThemeDark = readAllowedPreference(
 		cookies.get(CODE_DARK_KEY),
-		CODE_VALUES,
+		CODE_DARK_VALUES,
 		'solarized-dark',
 	);
 
@@ -110,6 +112,11 @@ function getHtmlDataAttributes(cookies: Cookies): HtmlDataAttributes {
 		'data-theme': theme,
 		'data-accent': readAllowedPreference(cookies.get(ACCENT_KEY), ACCENT_VALUES, 'orange'),
 		'data-density': readAllowedPreference(cookies.get(DENSITY_KEY), DENSITY_VALUES, 'comfortable'),
+		'data-text-size': readAllowedPreference(
+			cookies.get(TEXT_SIZE_KEY),
+			TEXT_SIZE_VALUES,
+			'standard',
+		),
 		'data-voice': readAllowedPreference(cookies.get(VOICE_KEY), VOICE_VALUES, 'editorial'),
 		'data-doc-layout': readAllowedPreference(
 			cookies.get(DOC_LAYOUT_KEY),
@@ -117,6 +124,8 @@ function getHtmlDataAttributes(cookies: Cookies): HtmlDataAttributes {
 			'classic',
 		),
 		'data-code-theme': theme === 'dark' ? codeThemeDark : codeThemeLight,
+		'data-code-theme-light': codeThemeLight,
+		'data-code-theme-dark': codeThemeDark,
 	};
 }
 

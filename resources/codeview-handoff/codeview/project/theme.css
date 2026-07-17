@@ -1,0 +1,503 @@
+/* Codeview design tokens — SOLARIZED-based palette
+   ─────────────────────────────────────────────────
+   Why Solarized:
+   - Ethan Schoonover, 2011. Designed in CIELAB color space.
+   - Light/dark mode accents are IDENTICAL hex values — only the
+     base scale flips. So a single accent reads "correctly" in both.
+   - Foreground & accent colors equal-luminance → no color jumps out.
+   - The most-cited "reading-optimized" code theme in the wild.
+
+   We use Solarized's BASE scale for UI surfaces, and its ACCENT
+   palette for kind colors (so the UI and the syntax highlighting
+   are visually consistent). Code blocks default to Solarized for
+   both light and dark.
+
+   Architecture:
+     UI mode    — controlled by `.theme-dark` on each .plate
+     Code theme — controlled by `[data-code-theme="..."]` on each .plate
+
+   Code themes shipped: solarized-light, solarized-dark,
+   catppuccin-latte, catppuccin-mocha, one-light, one-dark,
+   github-light, github-dark.
+*/
+
+:root {
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+  --font-code: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --radius-panel: 10px;
+  --radius-card: 6px;
+  --radius-control: 5px;
+  --radius-chip: 4px;
+
+  /* ── Solarized base, LIGHT ── */
+  --bg:           #fdf6e3;  /* base3 */
+  --bg-strong:    #eee8d5;  /* base2 */
+  --bg-glow:      #eee8d5;
+
+  --panel:        #fdf6e3;
+  --panel-strong: #eee8d5;
+  --panel-solid:  #fffbf0;  /* slightly lifted */
+  --panel-muted:  #e8e2c8;
+  --panel-border:        rgba(88, 110, 117, 0.20);  /* base01 alpha */
+  --panel-border-soft:   rgba(88, 110, 117, 0.10);
+  --panel-border-strong: rgba(88, 110, 117, 0.32);
+
+  --ink:       #073642;   /* base02 — strong headings */
+  --ink-soft:  #586e75;   /* base01 — emphasis */
+  --muted:     #657b83;   /* base00 — body */
+  --muted-soft:#93a1a1;   /* base1  — meta */
+
+  /* Solarized orange — works identically in both modes */
+  --accent:        #cb4b16;
+  --accent-strong: #b8400e;
+  --accent-soft:   rgba(203, 75, 22, 0.10);
+  --accent-ring:   rgba(203, 75, 22, 0.25);
+
+  --link:         #268bd2;   /* solarized blue */
+  --link-strong:  #1f6fa5;
+
+  --shadow-soft:   0 1px 0 rgba(88,110,117,0.06), 0 1px 3px rgba(88,110,117,0.06);
+  --shadow-strong: 0 1px 0 rgba(88,110,117,0.08), 0 6px 16px rgba(88,110,117,0.10);
+  --shadow-glow:   0 1px 0 rgba(88,110,117,0.10), 0 12px 28px rgba(88,110,117,0.12);
+
+  --grid-line: rgba(88, 110, 117, 0.06);
+
+  /* Kind colors — Solarized accent palette mapped to kinds */
+  --kind-crate:     #cb4b16;  /* orange   */
+  --kind-module:    #859900;  /* green    */
+  --kind-struct:    #6c71c4;  /* violet   */
+  --kind-enum:      #268bd2;  /* blue     */
+  --kind-trait:     #2aa198;  /* cyan     */
+  --kind-impl:      #93a1a1;  /* base1    */
+  --kind-function:  #d33682;  /* magenta  */
+  --kind-method:    #d33682;
+  --kind-typealias: #b58900;  /* yellow   */
+  --kind-macro:     #dc322f;  /* red      */
+  --kind-const:     #586e75;  /* base01   */
+  --kind-constant:  #586e75;
+
+  /* Edge colors — muted relationship palette (light).
+     Deliberately lower-chroma than kind badges: edges recede, badges pop.
+     Relationship type ≠ node kind, so this palette is intentionally its own.
+     Keys match the actual relationship set in graph-data.jsx. */
+  --edge-contains:   #b06a4f;
+  --edge-reexports:  #4f7396;
+  --edge-implements: #3f8a83;
+  --edge-defines:    #8a6d9c;
+  --edge-uses:       #7a8a56;
+  --edge-default:    #93a1a1;
+
+  /* Status + link surfaces (light) */
+  --danger:      #c4362f;
+  --danger-soft: rgba(196, 54, 47, 0.10);
+  --warn:        #a86616;
+  --warn-soft:   rgba(168, 102, 22, 0.12);
+  --link-soft:   rgba(38, 139, 210, 0.10);
+
+  --on-accent: #fdf6e3;
+}
+
+/* ── Solarized base, DARK ── */
+.theme-dark {
+  --bg:           #002b36;  /* base03 */
+  --bg-strong:    #073642;  /* base02 */
+  --bg-glow:      #073642;
+
+  --panel:        #073642;
+  --panel-strong: #0e4250;
+  --panel-solid:  #003545;
+  --panel-muted:  #052f3a;
+  --panel-border:        rgba(147, 161, 161, 0.18);  /* base1 alpha */
+  --panel-border-soft:   rgba(147, 161, 161, 0.09);
+  --panel-border-strong: rgba(147, 161, 161, 0.30);
+
+  --ink:       #eee8d5;   /* base2 — strong */
+  --ink-soft:  #93a1a1;   /* base1 — emphasis */
+  --muted:     #839496;   /* base0 — body */
+  --muted-soft:#586e75;   /* base01 — meta */
+
+  --accent:        #cb4b16;  /* same orange — equal luminance */
+  --accent-strong: #e85d28;
+  --accent-soft:   rgba(203, 75, 22, 0.14);
+  --accent-ring:   rgba(203, 75, 22, 0.30);
+
+  --link:         #268bd2;
+  --link-strong:  #5fb3eb;
+
+  --shadow-soft:   0 1px 0 rgba(0,0,0,0.3),  0 1px 3px rgba(0,0,0,0.30);
+  --shadow-strong: 0 1px 0 rgba(0,0,0,0.4),  0 6px 16px rgba(0,0,0,0.40);
+  --shadow-glow:   0 1px 0 rgba(0,0,0,0.5),  0 12px 28px rgba(0,0,0,0.50);
+
+  --grid-line: rgba(147, 161, 161, 0.05);
+
+  /* Dark kind colors — same hex values (Solarized property) */
+  --kind-crate:     #cb4b16;
+  --kind-module:    #859900;
+  --kind-struct:    #6c71c4;
+  --kind-enum:      #268bd2;
+  --kind-trait:     #2aa198;
+  --kind-impl:      #93a1a1;
+  --kind-function:  #d33682;
+  --kind-method:    #d33682;
+  --kind-typealias: #b58900;
+  --kind-macro:     #dc322f;
+  --kind-const:     #93a1a1;
+  --kind-constant:  #93a1a1;
+
+  /* Edge colors — lighter tints so the muted hues read on dark panels */
+  --edge-contains:   #d08a6f;
+  --edge-reexports:  #7f9bbd;
+  --edge-implements: #5fb0a8;
+  --edge-defines:    #b195c4;
+  --edge-uses:       #a3b37f;
+  --edge-default:    #93a1a1;
+
+  /* Status + link surfaces (dark) */
+  --danger:      #e57373;
+  --danger-soft: rgba(229, 115, 115, 0.14);
+  --warn:        #d6a34a;
+  --warn-soft:   rgba(214, 163, 74, 0.14);
+  --link-soft:   rgba(38, 139, 210, 0.16);
+
+  --on-accent: #fdf6e3;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CODE THEMES — vars: --code-bg, --code-bg-soft, --code-ink,
+   --code-border, --code-ln, --syntax-*
+
+   Default (no data-code-theme) inherits solarized-light values
+   defined here in :root so EVERYTHING gets a sane code palette
+   even before the tweaks panel mounts.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* DEFAULT light code theme = Solarized Light */
+  --code-bg:        #fdf6e3;
+  --code-bg-soft:   #eee8d5;
+  --code-ink:       #586e75;
+  --code-border:    rgba(88, 110, 117, 0.18);
+  --code-ln:        rgba(88, 110, 117, 0.45);
+
+  --syntax-key:     #859900;  /* green   — keywords */
+  --syntax-fn:      #268bd2;  /* blue    — function names */
+  --syntax-ty:      #b58900;  /* yellow  — types */
+  --syntax-str:     #2aa198;  /* cyan    — strings */
+  --syntax-num:     #d33682;  /* magenta — numbers */
+  --syntax-comment: #93a1a1;
+  --syntax-attr:    #b58900;
+  --syntax-mut:     #cb4b16;
+  --syntax-punct:   #657b83;
+}
+
+.theme-dark {
+  /* DEFAULT dark code theme = Solarized Dark */
+  --code-bg:        #002b36;
+  --code-bg-soft:   #073642;
+  --code-ink:       #93a1a1;
+  --code-border:    rgba(147, 161, 161, 0.10);
+  --code-ln:        rgba(147, 161, 161, 0.45);
+
+  --syntax-key:     #859900;
+  --syntax-fn:      #268bd2;
+  --syntax-ty:      #b58900;
+  --syntax-str:     #2aa198;
+  --syntax-num:     #d33682;
+  --syntax-comment: #586e75;
+  --syntax-attr:    #b58900;
+  --syntax-mut:     #cb4b16;
+  --syntax-punct:   #839496;
+}
+
+/* Explicit theme selectors — let a plate override either default */
+[data-code-theme="solarized-light"] {
+  --code-bg:        #fdf6e3;
+  --code-bg-soft:   #eee8d5;
+  --code-ink:       #586e75;
+  --code-border:    rgba(88, 110, 117, 0.18);
+  --code-ln:        rgba(88, 110, 117, 0.45);
+  --syntax-key:     #859900;
+  --syntax-fn:      #268bd2;
+  --syntax-ty:      #b58900;
+  --syntax-str:     #2aa198;
+  --syntax-num:     #d33682;
+  --syntax-comment: #93a1a1;
+  --syntax-attr:    #b58900;
+  --syntax-mut:     #cb4b16;
+  --syntax-punct:   #657b83;
+}
+
+[data-code-theme="solarized-dark"] {
+  --code-bg:        #002b36;
+  --code-bg-soft:   #073642;
+  --code-ink:       #93a1a1;
+  --code-border:    rgba(147, 161, 161, 0.10);
+  --code-ln:        rgba(147, 161, 161, 0.45);
+  --syntax-key:     #859900;
+  --syntax-fn:      #268bd2;
+  --syntax-ty:      #b58900;
+  --syntax-str:     #2aa198;
+  --syntax-num:     #d33682;
+  --syntax-comment: #586e75;
+  --syntax-attr:    #b58900;
+  --syntax-mut:     #cb4b16;
+  --syntax-punct:   #839496;
+}
+
+[data-code-theme="catppuccin-latte"] {
+  --code-bg:        #eff1f5;
+  --code-bg-soft:   #e6e9ef;
+  --code-ink:       #4c4f69;  /* text */
+  --code-border:    rgba(76, 79, 105, 0.16);
+  --code-ln:        rgba(76, 79, 105, 0.45);
+  --syntax-key:     #8839ef;  /* mauve     — keywords */
+  --syntax-fn:      #1e66f5;  /* blue      — fn names */
+  --syntax-ty:      #df8e1d;  /* yellow    — types */
+  --syntax-str:     #40a02b;  /* green     — strings */
+  --syntax-num:     #fe640b;  /* peach     — numbers */
+  --syntax-comment: #9ca0b0;
+  --syntax-attr:    #df8e1d;
+  --syntax-mut:     #d20f39;  /* red       */
+  --syntax-punct:   #6c6f85;
+}
+
+[data-code-theme="catppuccin-mocha"] {
+  --code-bg:        #1e1e2e;
+  --code-bg-soft:   #181825;
+  --code-ink:       #cdd6f4;
+  --code-border:    rgba(205, 214, 244, 0.08);
+  --code-ln:        rgba(205, 214, 244, 0.30);
+  --syntax-key:     #cba6f7;  /* mauve   */
+  --syntax-fn:      #89b4fa;  /* blue    */
+  --syntax-ty:      #f9e2af;  /* yellow  */
+  --syntax-str:     #a6e3a1;  /* green   */
+  --syntax-num:     #fab387;  /* peach   */
+  --syntax-comment: #6c7086;
+  --syntax-attr:    #f9e2af;
+  --syntax-mut:     #f38ba8;
+  --syntax-punct:   #9399b2;
+}
+
+[data-code-theme="one-light"] {
+  --code-bg:        #fafafa;
+  --code-bg-soft:   #f0f0f0;
+  --code-ink:       #383a42;
+  --code-border:    rgba(56, 58, 66, 0.10);
+  --code-ln:        rgba(56, 58, 66, 0.35);
+  --syntax-key:     #a626a4;
+  --syntax-fn:      #4078f2;
+  --syntax-ty:      #c18401;
+  --syntax-str:     #50a14f;
+  --syntax-num:     #986801;
+  --syntax-comment: #a0a1a7;
+  --syntax-attr:    #c18401;
+  --syntax-mut:     #e45649;
+  --syntax-punct:   #696c77;
+}
+
+[data-code-theme="one-dark"] {
+  --code-bg:        #282c34;
+  --code-bg-soft:   #21252b;
+  --code-ink:       #abb2bf;
+  --code-border:    rgba(255, 255, 255, 0.06);
+  --code-ln:        rgba(255, 255, 255, 0.22);
+  --syntax-key:     #c678dd;
+  --syntax-fn:      #61afef;
+  --syntax-ty:      #e5c07b;
+  --syntax-str:     #98c379;
+  --syntax-num:     #d19a66;
+  --syntax-comment: #5c6370;
+  --syntax-attr:    #e5c07b;
+  --syntax-mut:     #e06c75;
+  --syntax-punct:   #abb2bf;
+}
+
+[data-code-theme="github-light"] {
+  --code-bg:        #ffffff;
+  --code-bg-soft:   #f6f8fa;
+  --code-ink:       #1f2328;
+  --code-border:    rgba(31, 35, 40, 0.15);
+  --code-ln:        rgba(31, 35, 40, 0.40);
+  --syntax-key:     #cf222e;
+  --syntax-fn:      #8250df;
+  --syntax-ty:      #953800;
+  --syntax-str:     #0a3069;
+  --syntax-num:     #0550ae;
+  --syntax-comment: #6e7781;
+  --syntax-attr:    #116329;
+  --syntax-mut:     #82071e;
+  --syntax-punct:   #57606a;
+}
+
+[data-code-theme="github-dark"] {
+  --code-bg:        #0d1117;
+  --code-bg-soft:   #161b22;
+  --code-ink:       #e6edf3;
+  --code-border:    rgba(255, 255, 255, 0.10);
+  --code-ln:        rgba(255, 255, 255, 0.25);
+  --syntax-key:     #ff7b72;
+  --syntax-fn:      #d2a8ff;
+  --syntax-ty:      #ffa657;
+  --syntax-str:     #a5d6ff;
+  --syntax-num:     #79c0ff;
+  --syntax-comment: #8b949e;
+  --syntax-attr:    #7ee787;
+  --syntax-mut:     #ffa657;
+  --syntax-punct:   #c9d1d9;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ACCENT VARIANTS — swap the whole accent family.
+   Applied at root level by Tweaks (data-accent="...").
+   ═══════════════════════════════════════════════════════════════ */
+
+[data-accent="orange"] { --accent: #cb4b16; --accent-strong: #b8400e; --accent-soft: rgba(203, 75, 22, 0.10); --accent-ring: rgba(203, 75, 22, 0.25); }
+[data-accent="cobalt"] { --accent: #1f6fa5; --accent-strong: #14507a; --accent-soft: rgba(31, 111, 165, 0.10); --accent-ring: rgba(31, 111, 165, 0.25); }
+[data-accent="forest"] { --accent: #4f7d2f; --accent-strong: #3a5e22; --accent-soft: rgba(79, 125, 47, 0.10); --accent-ring: rgba(79, 125, 47, 0.25); }
+[data-accent="plum"]   { --accent: #8c3a76; --accent-strong: #6a2858; --accent-soft: rgba(140, 58, 118, 0.10); --accent-ring: rgba(140, 58, 118, 0.25); }
+[data-accent="char"]   { --accent: #2b323a; --accent-strong: #14181d; --accent-soft: rgba(43, 50, 58,  0.10); --accent-ring: rgba(43, 50, 58,  0.25); }
+/* Dark accents flip to light pastels, so cream text no longer reads on them.
+   --on-accent flips to dark ink for every accent except orange (still dark).
+   NOTE: data-accent lives on <html>; theme-dark on each .plate — so this must
+   be a DESCENDANT selector (ancestor attr + descendant class), not compound. */
+[data-accent="orange"] .theme-dark { --accent: #cb4b16; --accent-strong: #e85d28; --on-accent: #fdf6e3; }
+[data-accent="cobalt"] .theme-dark { --accent: #5fb3eb; --accent-strong: #82c5f0; --on-accent: #002b36; }
+[data-accent="forest"] .theme-dark { --accent: #8aba5f; --accent-strong: #a3c97e; --on-accent: #002b36; }
+[data-accent="plum"]   .theme-dark { --accent: #c485b1; --accent-strong: #d9a0c8; --on-accent: #002b36; }
+[data-accent="char"]   .theme-dark { --accent: #c0c5cc; --accent-strong: #dde1e6; --on-accent: #073642; }
+
+/* ═══════════════════════════════════════════════════════════════
+   DENSITY — Compact / Comfortable / Spacious.
+   Scales font size and a unit of spacing across the page.
+   ═══════════════════════════════════════════════════════════════ */
+[data-density="compact"]     { --density: 0.9;  --base-fs: 13px; }
+[data-density="comfortable"] { --density: 1.0;  --base-fs: 14px; }
+[data-density="spacious"]    { --density: 1.15; --base-fs: 15px; }
+
+/* ═══════════════════════════════════════════════════════════════
+   VOICE — typographic register.
+   Editorial: serif display + sans body (current).
+   Technical: sans display + mono body emphasis. Tight.
+   Geometric: geometric sans everywhere, no serif.
+   ═══════════════════════════════════════════════════════════════ */
+[data-voice="editorial"] {
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+}
+[data-voice="technical"] {
+  --font-display: 'IBM Plex Sans', 'Inter', system-ui, sans-serif;
+  --font-body:    'Inter', system-ui, sans-serif;
+}
+[data-voice="geometric"] {
+  --font-display: 'Space Grotesk', 'Inter', system-ui, sans-serif;
+  --font-body:    'Space Grotesk', 'Inter', system-ui, sans-serif;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   BASE
+   ═══════════════════════════════════════════════════════════════ */
+
+@supports (corner-shape: squircle) {
+  .corner-squircle { corner-shape: squircle; }
+  .badge { corner-shape: squircle; }
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: var(--base-fs, 14px);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, .font-display {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+[data-voice="technical"] h1, [data-voice="technical"] h2, [data-voice="technical"] h3,
+[data-voice="technical"] .font-display { font-weight: 700; letter-spacing: -0.02em; }
+
+.font-mono, .mono { font-family: var(--font-code); }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  border-radius: var(--radius-chip);
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  padding: 0.1rem 0.4rem;
+  font-size: 10.5px; font-weight: 600;
+  color: var(--muted);
+}
+.badge-sm { padding: 0.02rem 0.32rem; font-size: 10px; }
+.badge-solid { background: var(--panel-solid); color: var(--ink); }
+.badge-accent { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.badge-code { font-family: var(--font-code); font-weight: 500; }
+
+.kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 1.15rem; padding: 0 0.3rem; height: 1.15rem;
+  border-radius: 4px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel-solid);
+  font-family: var(--font-code); font-size: 10px;
+  color: var(--muted);
+}
+
+.plate {
+  background: var(--bg);
+  background-image: linear-gradient(180deg, var(--bg-strong) 0%, transparent 240px);
+}
+.theme-dark.plate {
+  background: var(--bg);
+  background-image:
+    radial-gradient(circle at 100% -20%, var(--accent-soft), transparent 40%),
+    linear-gradient(180deg, var(--bg-strong) 0%, transparent 280px);
+}
+
+/* CODE BLOCK — all colors via CSS vars */
+.code {
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  line-height: 1.75;
+}
+.codeblock {
+  background: var(--code-bg);
+  color: var(--code-ink);
+  border: 1px solid var(--code-border);
+  border-radius: var(--radius-card);
+}
+
+.tok-kw, .tk-kw   { color: var(--syntax-key); }
+.tok-fn, .tk-fn   { color: var(--syntax-fn); }
+.tok-ty, .tk-ty   { color: var(--syntax-ty); }
+.tok-str, .tk-str { color: var(--syntax-str); }
+.tok-num, .tk-num { color: var(--syntax-num); }
+.tok-cm, .tk-cm   { color: var(--syntax-comment); font-style: italic; }
+.tok-mut          { color: var(--syntax-mut); }
+.tok-attr         { color: var(--syntax-attr); }
+.tok-mu, .tok-punct, .tk-mu { color: var(--syntax-punct); }
+.tok-ln           { color: var(--code-ln); user-select: none; }
+.tok-id, .tk-id   { color: var(--code-ink); }
+.tok-link, .tk-link {
+  color: var(--link); text-decoration: underline;
+  text-decoration-color: rgba(38, 139, 210, 0.30); text-underline-offset: 2px;
+}
+
+.dotsep::before { content: '·'; margin: 0 0.5em; color: var(--muted-soft); }
+.tabnum { font-variant-numeric: tabular-nums; }
+.row-hover { transition: background-color .12s; }
+.row-hover:hover { background-color: var(--panel-muted); }
+
+.ulink { color: var(--link); text-decoration: underline;
+         text-decoration-color: rgba(38, 139, 210, 0.30);
+         text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.ulink:hover { text-decoration-color: var(--link); }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

@@ -114,7 +114,7 @@
 			{label}
 		</span>
 		{#if isFocus}
-			<span class="mono ml-auto shrink-0 text-[9.5px] tracking-wider uppercase opacity-70">
+			<span class="mono ml-auto shrink-0 text-2xs tracking-wider uppercase opacity-70">
 				{node.kindLabel ?? node.kind}
 			</span>
 		{/if}
@@ -136,7 +136,7 @@
 			{label}
 		</span>
 		{#if isFocus}
-			<span class="mono ml-auto shrink-0 text-[9.5px] tracking-wider uppercase opacity-70">
+			<span class="mono ml-auto shrink-0 text-2xs tracking-wider uppercase opacity-70">
 				{node.kindLabel ?? node.kind}
 			</span>
 		{/if}
@@ -171,14 +171,14 @@
 
 	.graph-node-pill__label {
 		font-family: var(--font-code);
-		font-size: 12px;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--pill-ink);
 	}
 
 	.graph-node-pill[data-focus='true'] .graph-node-pill__label {
 		font-family: var(--font-display);
-		font-size: 15.5px;
+		font-size: var(--text-md);
 		font-weight: 700;
 	}
 </style>

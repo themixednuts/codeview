@@ -16,8 +16,8 @@
 //! - `parse-shard` — process one deterministic shard from a work plan.
 //! - `freshness-merge` — single-writer finalizer for run deltas.
 //! - `publish-run` — local in-process plan → all shards → finalizer driver.
-//! - `seed-std` — populate R2 with std/core/alloc/proc_macro/test from
-//!   a rustup-installed `rust-docs-json` component (nightly-only).
+//! - `seed-std` — populate R2 with exact-channel rustdoc JSON for
+//!   std/core/alloc/proc_macro/test.
 //! - `mimic` — dev-time loop: sweep + parse-one over a small set,
 //!   against local R2.
 
@@ -59,7 +59,7 @@ pub enum CronCommand {
     FreshnessMerge(freshness_merge::FreshnessMerge),
     /// Local in-process driver: plan, drain every shard, then finalize
     PublishRun(publish_run::PublishRun),
-    /// Seed std/core/alloc/proc_macro/test from a rust-docs-json toolchain
+    /// Seed exact std/core/alloc/proc_macro/test rustdoc JSON
     SeedStd(seed_std::SeedStd),
     /// Local dev: sweep + parse a small set against local R2
     Mimic(mimic::Mimic),

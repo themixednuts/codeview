@@ -1,10 +1,11 @@
-//! Locate the `rust-docs-json` component on disk.
+//! Locate a Rust toolchain and its rustdoc JSON on disk.
 //!
 //! `rust-docs-json` is a rustup component that drops the rustdoc JSON for
 //! `std`, `core`, `alloc`, `proc_macro`, and `test`
 //! into `{sysroot}/share/doc/rust/json/{crate}.json`.  `cron seed-std`
 //! reads those files directly instead of fetching from docs.rs (which
-//! doesn't host std).
+//! doesn't host std). Callers may replace that directory with JSON generated
+//! from the exact stable or beta source revision.
 //!
 //! Ports the relevant subset of `codeview-ui/src/lib/server/local/sysroot.ts`
 //! — same probe order (`rustc +{toolchain} --print sysroot`), same
@@ -17,7 +18,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 /// Subset of toolchain crates that ship rustdoc JSON via the
-/// `rust-docs-json` component.  Matches `STD_JSON_CRATES` in
+/// rustdoc toolchain corpus. Matches `STD_JSON_CRATES` in
 /// `codeview-ui/src/lib/std.ts`.
 pub const STD_JSON_CRATES: &[&str] = &["std", "core", "alloc", "proc_macro", "test"];
 
@@ -36,14 +37,26 @@ pub struct SysrootInfo {
 }
 
 impl SysrootInfo {
-    /// Path to the rustdoc JSON for a given crate, if `rust-docs-json` is
-    /// installed for this toolchain and that crate is shipped.
+    /// Path to the rustdoc JSON for a given crate, if that crate is available.
     pub fn json_path_for(&self, crate_name: &str) -> Option<PathBuf> {
         if self.available_crates.iter().any(|c| c == crate_name) {
             Some(self.json_dir.join(format!("{crate_name}.json")))
         } else {
             None
         }
+    }
+
+    /// Use rustdoc JSON generated outside the rustup component, while retaining
+    /// the requested toolchain's exact version and alias semantics.
+    pub fn with_json_dir(mut self, json_dir: PathBuf) -> Result<Self> {
+        let available_crates = list_json_crates(&json_dir)
+            .with_context(|| format!("read rustdoc JSON directory {}", json_dir.display()))?;
+        if available_crates.is_empty() {
+            bail!("no rustdoc JSON files found in {}", json_dir.display());
+        }
+        self.json_dir = json_dir;
+        self.available_crates = available_crates;
+        Ok(self)
     }
 }
 

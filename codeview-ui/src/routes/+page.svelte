@@ -63,7 +63,7 @@
 	<main class="w-full">
 		<div class="border-b border-(--panel-border-soft)">
 			<div class="mx-auto flex max-w-[1180px] flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
-				<div class="flex flex-wrap items-center gap-2 text-[12px] text-(--muted)">
+				<div class="flex flex-wrap items-center gap-2 text-sm text-(--muted)">
 					<span>Showing</span>
 					<span class="badge badge-sm bg-(--panel) text-(--ink)">
 						{visibleSection === 'workspace'
@@ -89,7 +89,7 @@
 		>
 			<aside class="min-w-0">
 				<div class="mb-3 flex items-center justify-between">
-					<h1 class="text-[10.5px] font-semibold tracking-[0.22em] text-(--ink-soft) uppercase">
+					<h1 class="text-xs font-semibold tracking-[0.22em] text-(--ink-soft) uppercase">
 						Browse
 					</h1>
 				</div>
@@ -113,10 +113,10 @@
 								>
 									<Icon name={section.icon} size={13} />
 								</span>
-								<span class="min-w-0 flex-1 truncate text-[13px] font-medium">
+								<span class="min-w-0 flex-1 truncate text-sm font-medium">
 									{section.label}
 								</span>
-								<span class="font-mono text-[11px] text-(--muted-soft)">
+								<span class="font-mono text-xs text-(--muted-soft)">
 									{section.meta}
 								</span>
 							</a>
@@ -130,9 +130,9 @@
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="search" size={13} class="text-(--accent)" />
-							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Search results</h2>
+							<h2 class="font-display text-lg font-semibold text-(--ink)">Search results</h2>
 						</div>
-						<span class="font-mono text-[11px] text-(--muted-soft)">
+						<span class="font-mono text-xs text-(--muted-soft)">
 							{searchResults.length} found
 						</span>
 					</div>
@@ -146,15 +146,15 @@
 								>
 									<div class="flex min-w-0 items-baseline gap-2">
 										<KindBadge kind="crate" size={14} />
-										<span class="truncate font-mono text-[14px] font-semibold text-(--ink)">
+										<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 											{crate.name}
 										</span>
-										<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+										<span class="shrink-0 font-mono text-xs text-(--muted-soft)">
 											{crate.version}
 										</span>
 									</div>
 									{#if crate.description}
-										<p class="mt-2 line-clamp-2 text-[12.5px] leading-snug text-(--muted)">
+										<p class="mt-2 line-clamp-2 text-sm leading-snug text-(--muted)">
 											{crate.description}
 										</p>
 									{/if}
@@ -172,8 +172,8 @@
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="layers" size={13} class="text-(--accent)" />
-							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Your workspace</h2>
-							<span class="font-mono text-[11px] text-(--muted-soft)">
+							<h2 class="font-display text-lg font-semibold text-(--ink)">Your workspace</h2>
+							<span class="font-mono text-xs text-(--muted-soft)">
 								{localCrates.length} crate{localCrates.length === 1 ? '' : 's'}
 							</span>
 						</div>
@@ -188,11 +188,11 @@
 								>
 									<KindBadge kind="crate" size={14} />
 									<span
-										class="min-w-0 flex-1 truncate font-mono text-[13px] font-medium text-(--ink)"
+										class="min-w-0 flex-1 truncate font-mono text-sm font-medium text-(--ink)"
 									>
 										{crate.name}
 									</span>
-									<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+									<span class="shrink-0 font-mono text-xs text-(--muted-soft)">
 										{crate.version}
 									</span>
 								</a>
@@ -210,9 +210,9 @@
 					<div class="mb-3 flex items-center justify-between gap-3">
 						<div class="flex min-w-0 items-center gap-2">
 							<Icon name="trending" size={13} class="text-(--accent)" />
-							<h2 class="font-display text-[18px] font-semibold text-(--ink)">Popular crates</h2>
+							<h2 class="font-display text-lg font-semibold text-(--ink)">Popular crates</h2>
 						</div>
-						<span class="font-mono text-[11px] text-(--muted-soft)">crates.io</span>
+						<span class="font-mono text-xs text-(--muted-soft)">crates.io</span>
 					</div>
 					{#if topCrates.length > 0}
 						<div class="grid gap-3 sm:grid-cols-2">
@@ -226,15 +226,15 @@
 										<div class="min-w-0">
 											<div class="flex min-w-0 items-baseline gap-2">
 												<KindBadge kind="crate" size={14} />
-												<span class="truncate font-mono text-[14px] font-semibold text-(--ink)">
+												<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 													{crate.name}
 												</span>
-												<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+												<span class="shrink-0 font-mono text-xs text-(--muted-soft)">
 													{crate.version}
 												</span>
 											</div>
 											{#if crate.description}
-												<p class="mt-2 line-clamp-2 text-[12.5px] leading-snug text-(--muted)">
+												<p class="mt-2 line-clamp-2 text-sm leading-snug text-(--muted)">
 													{crate.description}
 												</p>
 											{/if}

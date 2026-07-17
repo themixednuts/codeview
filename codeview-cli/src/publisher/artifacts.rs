@@ -91,7 +91,7 @@ pub struct PublishOptions<'a> {
 /// `DocsRs` — the production path: gzipped fetch from docs.rs, identified
 /// by `(name, version)`.  `LocalFile` — the std-seed path: read straight
 /// from `share/doc/rust/json/{crate}.json` in a rustup-installed
-/// `rust-docs-json` toolchain (docs.rs doesn't host std).
+/// an exact Rust toolchain snapshot (docs.rs doesn't host std).
 pub enum CrateSource<'a> {
     DocsRs {
         /// Optional target triple override.

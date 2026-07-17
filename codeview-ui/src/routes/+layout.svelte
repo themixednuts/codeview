@@ -13,8 +13,9 @@
 		ACCENT_KEY,
 		ACCENT_VALUES,
 		CODE_DARK_KEY,
+		CODE_DARK_VALUES,
 		CODE_LIGHT_KEY,
-		CODE_VALUES,
+		CODE_LIGHT_VALUES,
 		DENSITY_KEY,
 		DENSITY_VALUES,
 		DOC_LAYOUT_KEY,
@@ -26,6 +27,8 @@
 		SOURCE_ROOT_KEY,
 		THEME_KEY,
 		THEME_VALUES,
+		TEXT_SIZE_KEY,
+		TEXT_SIZE_VALUES,
 		VCS_KEY,
 		VCS_VALUES,
 		VOICE_KEY,
@@ -40,6 +43,7 @@
 		resolvedThemeCtx,
 		accentModeCtx,
 		densityModeCtx,
+		textSizeModeCtx,
 		voiceModeCtx,
 		docLayoutCtx,
 		codeThemeLightCtx,
@@ -53,6 +57,7 @@
 		type ResolvedTheme,
 		type AccentMode,
 		type DensityMode,
+		type TextSizeMode,
 		type VoiceMode,
 		type DocLayoutMode,
 		type CodeTheme,
@@ -429,6 +434,7 @@
 	// Expressive tweak axes — see app.css for the data-* contracts.
 	let accentMode = $state<AccentMode>('orange');
 	let densityMode = $state<DensityMode>('comfortable');
+	let textSizeMode = $state<TextSizeMode>('standard');
 	let voiceMode = $state<VoiceMode>('editorial');
 	let docLayout = $state<DocLayoutMode>('classic');
 	let codeThemeLight = $state<CodeTheme>('solarized-light');
@@ -441,6 +447,7 @@
 	resolvedThemeCtx.set(() => resolved);
 	accentModeCtx.set(() => accentMode);
 	densityModeCtx.set(() => densityMode);
+	textSizeModeCtx.set(() => textSizeMode);
 	voiceModeCtx.set(() => voiceMode);
 	docLayoutCtx.set(() => activeDocLayout);
 	codeThemeLightCtx.set(() => codeThemeLight);
@@ -448,6 +455,8 @@
 
 	function applyCodeTheme() {
 		if (!browser) return;
+		document.documentElement.dataset.codeThemeLight = codeThemeLight;
+		document.documentElement.dataset.codeThemeDark = codeThemeDark;
 		document.documentElement.dataset.codeTheme =
 			resolved === 'dark' ? codeThemeDark : codeThemeLight;
 	}
@@ -473,6 +482,13 @@
 		if (!browser) return;
 		document.documentElement.dataset.density = next;
 		writePref(DENSITY_KEY, next);
+	}
+
+	function setTextSize(next: TextSizeMode) {
+		textSizeMode = next;
+		if (!browser) return;
+		document.documentElement.dataset.textSize = next;
+		writePref(TEXT_SIZE_KEY, next);
 	}
 
 	function setVoice(next: VoiceMode) {
@@ -508,6 +524,7 @@
 	}
 
 	onMount(() => {
+		document.documentElement.dataset.hydrated = 'true';
 		applyTheme(getInitialTheme());
 		extLinkMode = getInitialExtLinkMode();
 		sourceProviderMode = getInitialSourceProviderMode();
@@ -518,12 +535,14 @@
 		// set the initial dataset values; we sync our reactive state here).
 		accentMode = readStoredPref(ACCENT_KEY, ACCENT_VALUES, 'orange');
 		densityMode = readStoredPref(DENSITY_KEY, DENSITY_VALUES, 'comfortable');
+		textSizeMode = readStoredPref(TEXT_SIZE_KEY, TEXT_SIZE_VALUES, 'standard');
 		voiceMode = readStoredPref(VOICE_KEY, VOICE_VALUES, 'editorial');
 		docLayout = readStoredPref(DOC_LAYOUT_KEY, DOC_LAYOUT_VALUES, 'classic');
-		codeThemeLight = readStoredPref(CODE_LIGHT_KEY, CODE_VALUES, 'solarized-light');
-		codeThemeDark = readStoredPref(CODE_DARK_KEY, CODE_VALUES, 'solarized-dark');
+		codeThemeLight = readStoredPref(CODE_LIGHT_KEY, CODE_LIGHT_VALUES, 'solarized-light');
+		codeThemeDark = readStoredPref(CODE_DARK_KEY, CODE_DARK_VALUES, 'solarized-dark');
 		document.documentElement.dataset.accent = accentMode;
 		document.documentElement.dataset.density = densityMode;
+		document.documentElement.dataset.textSize = textSizeMode;
 		document.documentElement.dataset.voice = voiceMode;
 		document.documentElement.dataset.docLayout = activeDocLayout;
 		applyCodeTheme();
@@ -626,17 +645,13 @@
 						fill="none"
 					/>
 				</svg>
-				<span
-					class="font-display hidden truncate text-[15.5px] font-semibold tracking-tight min-[420px]:inline"
-				>
-					codeview
-				</span>
+				<span class="font-brand hidden truncate text-base min-[420px]:inline">codeview</span>
 			</a>
 		</div>
 
 		<button
 			type="button"
-			class="js-only corner-squircle inline-flex h-8 w-full max-w-[440px] min-w-8 items-center justify-between gap-2 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 font-mono text-[11.5px] text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center sm:px-3"
+			class="js-only corner-squircle inline-flex h-8 w-full max-w-[440px] min-w-8 items-center justify-between gap-2 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 font-mono text-xs text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center sm:px-3"
 			aria-label="Search crates and Rust items"
 			title="Global search"
 			onclick={() => (commandOpen = true)}
@@ -669,14 +684,14 @@
 				type="search"
 				value={page.url.pathname === '/' ? (page.url.searchParams.get('q') ?? '') : ''}
 				placeholder="Search crates..."
-				class="h-8 w-full border-(--panel-border) bg-(--panel) pr-15 pl-8 font-mono text-[11.5px] shadow-(--shadow-soft)"
+				class="h-8 w-full border-(--panel-border) bg-(--panel) pr-15 pl-8 font-mono text-xs shadow-(--shadow-soft)"
 			/>
 			<button
 				type="submit"
 				class="absolute inset-y-0 right-2 inline-flex items-center gap-1 text-(--muted-soft)"
 				aria-label="Submit crate search"
 			>
-				<span class="text-[10px] font-medium">Go</span>
+				<span class="text-2xs font-medium">Go</span>
 			</button>
 		</form>
 
@@ -762,7 +777,7 @@
 						role="tooltip"
 						aria-label="Background parses"
 					>
-						<div class="px-2 pb-1 text-[10px] tracking-wider text-(--muted) uppercase">
+						<div class="px-2 pb-1 text-2xs tracking-wider text-(--muted) uppercase">
 							Active parses
 						</div>
 						{#if processingCrates.length > 0}
@@ -801,7 +816,7 @@
 				type="button"
 				variant="ghost"
 				size="icon-sm"
-				class="js-only text-(--muted)"
+				class="hydrated-only text-(--muted)"
 				title="Settings"
 				aria-label="Open settings"
 				onclick={openSettings}
@@ -812,7 +827,7 @@
 				href={resolve('/settings')}
 				variant="ghost"
 				size="icon-sm"
-				class="no-js-only text-(--muted)"
+				class="pre-hydration-only text-(--muted)"
 				title="Settings"
 				aria-label="Open settings"
 			>
@@ -837,6 +852,7 @@
 			{theme}
 			{accentMode}
 			{densityMode}
+			{textSizeMode}
 			{voiceMode}
 			{docLayout}
 			{codeThemeLight}
@@ -848,6 +864,7 @@
 			onThemeChange={applyTheme}
 			onAccentChange={setAccent}
 			onDensityChange={setDensity}
+			onTextSizeChange={setTextSize}
 			onVoiceChange={setVoice}
 			onDocLayoutChange={setDocLayout}
 			onCodeThemeLightChange={setCodeThemeLight}
@@ -875,7 +892,7 @@
 		border-radius: 0 0 8px 0;
 		background: var(--accent);
 		color: white;
-		font-size: 0.8125rem;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		text-decoration: none;
 	}

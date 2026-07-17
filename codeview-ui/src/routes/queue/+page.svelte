@@ -122,7 +122,7 @@
 				<div class="flex flex-wrap items-end justify-between gap-4">
 					<div class="min-w-0">
 						<div
-							class="mb-2 flex items-center gap-2 text-[10.5px] font-semibold tracking-[0.22em] text-(--ink-soft) uppercase"
+							class="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.22em] text-(--ink-soft) uppercase"
 						>
 							<Icon name="clock" size={12} />
 							<span>Parse Queue</span>
@@ -146,15 +146,15 @@
 				</div>
 				<div class="grid gap-2 sm:grid-cols-3">
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Active</div>
+						<div class="text-2xs tracking-wider text-(--muted) uppercase">Active</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{activeCount}</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Planned</div>
+						<div class="text-2xs tracking-wider text-(--muted) uppercase">Planned</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{plannedCount}</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-						<div class="text-[10px] tracking-wider text-(--muted) uppercase">Recent failures</div>
+						<div class="text-2xs tracking-wider text-(--muted) uppercase">Recent failures</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{failedCount}</div>
 					</div>
 				</div>
@@ -166,10 +166,10 @@
 				<div class="mb-3 flex items-center justify-between gap-3">
 					<div class="flex min-w-0 items-center gap-2">
 						<Icon name="clock" size={13} class="text-(--accent)" />
-						<h2 class="font-display text-[18px] font-semibold text-(--ink)">Active queue</h2>
+						<h2 class="font-display text-lg font-semibold text-(--ink)">Active queue</h2>
 					</div>
 					<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-						<span class="font-mono text-[11px] text-(--muted-soft)">{activeCount} running</span>
+						<span class="font-mono text-xs text-(--muted-soft)">{activeCount} running</span>
 						{#if active.length > PAGE_SIZE}
 							<StablePagination
 								currentPage={activePage}
@@ -190,20 +190,20 @@
 								data-sveltekit-preload-data="off"
 								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
 							>
-								<div class="font-mono text-[11px] text-(--muted-soft)">
+								<div class="font-mono text-xs text-(--muted-soft)">
 									#{entry.position ?? '-'}
 								</div>
 								<div class="min-w-0">
 									<div class="flex min-w-0 flex-wrap items-center gap-2">
 										<span class="badge badge-sm">{kindLabel(entry.kind)}</span>
-										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+										<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 											{entry.name}
 										</span>
-										<span class="font-mono text-[10.5px] text-(--muted-soft)">
+										<span class="font-mono text-xs text-(--muted-soft)">
 											{entry.version}
 										</span>
 										{#if entry.requestId}
-											<span class="font-mono text-[10px] text-(--muted-soft)">
+											<span class="font-mono text-2xs text-(--muted-soft)">
 												{shortId(entry.requestId)}
 											</span>
 										{/if}
@@ -211,12 +211,12 @@
 											<span class="badge badge-sm">{actorLabel(entry.requestedBy)}</span>
 										{/if}
 									</div>
-									<div class="mt-1 text-[12px] text-(--muted)">
+									<div class="mt-1 text-sm text-(--muted)">
 										{statusLabel(entry.status, entry.step)}
 									</div>
 								</div>
 								<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
-									<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
+									<span class="truncate font-mono text-xs text-(--muted-soft)">
 										{absoluteTime(entry.updatedAt)}
 									</span>
 									{#if entry.githubRunUrl}
@@ -239,11 +239,11 @@
 				<div class="mb-3 flex items-center justify-between gap-3">
 					<div class="flex min-w-0 items-center gap-2">
 						<Icon name="layers" size={13} class="text-(--accent)" />
-						<h2 class="font-display text-[18px] font-semibold text-(--ink)">Planned batch</h2>
+						<h2 class="font-display text-lg font-semibold text-(--ink)">Planned batch</h2>
 					</div>
 					<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 						{#if planned}
-							<span class="truncate font-mono text-[11px] text-(--muted-soft)">
+							<span class="truncate font-mono text-xs text-(--muted-soft)">
 								{planned.total} planned
 							</span>
 						{/if}
@@ -270,16 +270,16 @@
 								<div class="min-w-0">
 									<div class="flex min-w-0 flex-wrap items-center gap-2">
 										<span class="badge badge-sm">{kindLabel(item.kind)}</span>
-										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+										<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 											{item.name}
 										</span>
-										<span class="font-mono text-[10.5px] text-(--muted-soft)">
+										<span class="font-mono text-xs text-(--muted-soft)">
 											{item.version}
 										</span>
 										<span class="badge badge-sm">{priorityLabel(item.priorityTier)}</span>
 									</div>
 									<div
-										class="mt-1 line-clamp-1 min-h-[18px] text-[12px] text-(--muted)"
+										class="mt-1 line-clamp-1 min-h-[18px] text-sm text-(--muted)"
 										aria-hidden={!item.reason}
 									>
 										{item.reason ?? ''}
@@ -287,11 +287,11 @@
 								</div>
 								<div class="flex items-center justify-between gap-3 md:justify-end">
 									{#if item.downloadRank}
-										<span class="font-mono text-[10.5px] text-(--muted-soft)">
+										<span class="font-mono text-xs text-(--muted-soft)">
 											rank {item.downloadRank}
 										</span>
 									{/if}
-									<span class="font-mono text-[10.5px] text-(--muted-soft)">
+									<span class="font-mono text-xs text-(--muted-soft)">
 										{item.channel}
 									</span>
 								</div>
@@ -311,10 +311,10 @@
 				<div class="mb-3 flex items-center justify-between gap-3">
 					<div class="flex min-w-0 items-center gap-2">
 						<Icon name="filter" size={13} class="text-(--accent)" />
-						<h2 class="font-display text-[18px] font-semibold text-(--ink)">Recent outcomes</h2>
+						<h2 class="font-display text-lg font-semibold text-(--ink)">Recent outcomes</h2>
 					</div>
 					<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
-						<span class="font-mono text-[11px] text-(--muted-soft)">{recent.length} entries</span>
+						<span class="font-mono text-xs text-(--muted-soft)">{recent.length} entries</span>
 						{#if recent.length > PAGE_SIZE}
 							<StablePagination
 								currentPage={recentPage}
@@ -338,10 +338,10 @@
 								<div class="min-w-0">
 									<div class="flex min-w-0 flex-wrap items-center gap-2">
 										<span class="badge badge-sm">{kindLabel(item.kind)}</span>
-										<span class="truncate font-mono text-[13.5px] font-semibold text-(--ink)">
+										<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 											{item.name}
 										</span>
-										<span class="font-mono text-[10.5px] text-(--muted-soft)">
+										<span class="font-mono text-xs text-(--muted-soft)">
 											{item.version}
 										</span>
 										<span
@@ -356,14 +356,14 @@
 										{/if}
 									</div>
 									<div
-										class="mt-1 line-clamp-1 min-h-[18px] text-[12px] text-(--muted)"
+										class="mt-1 line-clamp-1 min-h-[18px] text-sm text-(--muted)"
 										aria-hidden={!item.error}
 									>
 										{item.error ?? ''}
 									</div>
 								</div>
 								<div class="flex min-w-0 items-center justify-between gap-3 md:justify-end">
-									<span class="truncate font-mono text-[10.5px] text-(--muted-soft)">
+									<span class="truncate font-mono text-xs text-(--muted-soft)">
 										{absoluteTime(item.updatedAt)}
 									</span>
 									{#if item.githubRunUrl}

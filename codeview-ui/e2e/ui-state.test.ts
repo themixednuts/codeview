@@ -15,8 +15,7 @@ test.describe('Theme & UI State', () => {
 		await safeGoto('/');
 		const drawer = await openSettings(page);
 
-		// Click the Dark button
-		await drawer.locator('button:has-text("Dark")').first().click();
+		await drawer.getByRole('radio', { name: 'Use dark theme' }).click();
 		await page.waitForTimeout(300);
 
 		const htmlTheme = await page.locator('html').getAttribute('data-theme');
@@ -27,7 +26,7 @@ test.describe('Theme & UI State', () => {
 		await safeGoto('/');
 		const drawer = await openSettings(page);
 
-		await drawer.locator('button:has-text("Light")').first().click();
+		await drawer.getByRole('radio', { name: 'Use light theme' }).click();
 		await page.waitForTimeout(300);
 
 		const htmlTheme = await page.locator('html').getAttribute('data-theme');
@@ -90,12 +89,12 @@ test.describe('Theme & UI State', () => {
 		const drawer = await openSettings(page);
 
 		// Set to dark
-		await drawer.locator('button:has-text("Dark")').first().click();
+		await drawer.getByRole('radio', { name: 'Use dark theme' }).click();
 		await page.waitForTimeout(300);
 		expect(await page.locator('html').getAttribute('data-theme')).toBe('dark');
 
 		// Set to light
-		await drawer.locator('button:has-text("Light")').first().click();
+		await drawer.getByRole('radio', { name: 'Use light theme' }).click();
 		await page.waitForTimeout(300);
 		expect(await page.locator('html').getAttribute('data-theme')).toBe('light');
 	});
@@ -104,8 +103,7 @@ test.describe('Theme & UI State', () => {
 		await safeGoto('/');
 		const drawer = await openSettings(page);
 
-		// Click System theme button
-		await drawer.locator('button:has-text("System")').first().click();
+		await drawer.getByRole('radio', { name: 'Use system theme' }).click();
 		await page.waitForTimeout(300);
 
 		// Theme should resolve to either light or dark based on OS setting
@@ -135,9 +133,9 @@ test.describe('Theme & UI State', () => {
 
 		// Toggle rapidly between themes
 		for (let i = 0; i < 3; i++) {
-			await drawer.locator('button:has-text("Dark")').first().click();
+			await drawer.getByRole('radio', { name: 'Use dark theme' }).click();
 			await page.waitForTimeout(100);
-			await drawer.locator('button:has-text("Light")').first().click();
+			await drawer.getByRole('radio', { name: 'Use light theme' }).click();
 			await page.waitForTimeout(100);
 		}
 

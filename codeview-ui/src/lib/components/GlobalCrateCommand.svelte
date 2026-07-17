@@ -86,7 +86,7 @@
 <Command.Dialog
 	bind:open
 	title="Search crates"
-	description="Search crates.io and open a crate version."
+	description="Search crates.io and Rust toolchain crates."
 	shouldFilter={false}
 	class="max-w-2xl"
 >
@@ -94,7 +94,7 @@
 		bind:value={query}
 		autofocus
 		placeholder="Search crates..."
-		class="font-mono text-[13px]"
+		class="font-mono text-sm"
 		aria-label="Search crates"
 	/>
 	<Command.List class="max-h-[420px]">
@@ -117,15 +117,15 @@
 						<KindBadge kind="crate" size={14} />
 						<div class="min-w-0 flex-1">
 							<div class="flex min-w-0 items-baseline gap-2">
-								<span class="truncate font-mono text-[13px] font-semibold text-(--ink)">
+								<span class="truncate font-mono text-sm font-semibold text-(--ink)">
 									{crate.name}
 								</span>
-								<span class="shrink-0 font-mono text-[10.5px] text-(--muted-soft)">
+								<span class="shrink-0 font-mono text-xs text-(--muted-soft)">
 									{crate.version}
 								</span>
 							</div>
 							{#if crate.description}
-								<p class="mt-0.5 line-clamp-1 text-[11.5px] text-(--muted)">
+								<p class="mt-0.5 line-clamp-1 text-xs text-(--muted)">
 									{crate.description}
 								</p>
 							{/if}
@@ -144,7 +144,7 @@
 		{/if}
 	</Command.List>
 	<div
-		class="flex items-center justify-between border-t border-(--panel-border-soft) px-3 py-2 text-[11px] text-(--muted-soft)"
+		class="flex items-center justify-between border-t border-(--panel-border-soft) px-3 py-2 text-xs text-(--muted-soft)"
 	>
 		<span class="font-mono">Enter opens result</span>
 		<span class="kbd">Esc</span>

@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test';
 
-const PORT = 8787;
+const PORT = Number(process.env.CODEVIEW_E2E_PORT ?? 8787);
 
 export default defineConfig({
 	testDir: './e2e',
@@ -13,18 +13,18 @@ export default defineConfig({
 	use: {
 		baseURL: `http://127.0.0.1:${PORT}`,
 		trace: 'on-first-retry',
-		screenshot: 'only-on-failure'
+		screenshot: 'only-on-failure',
 	},
 	projects: [
 		{
 			name: 'chromium',
-			use: { browserName: 'chromium' }
-		}
+			use: { browserName: 'chromium' },
+		},
 	],
 	webServer: {
 		command: 'bun run e2e/run-cf-dev-supervisor.mjs',
 		port: PORT,
 		timeout: 120_000,
-		reuseExistingServer: !process.env.CI
-	}
+		reuseExistingServer: !process.env.CI,
+	},
 });

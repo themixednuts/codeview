@@ -25,7 +25,7 @@
 	const glyph = $derived(displayLabel.slice(0, 1).toUpperCase());
 	const labelText = $derived(typeof label === 'string' ? label : displayLabel);
 	const style = $derived(
-		`width: ${size}px; height: ${size}px; background: ${color}; font-size: ${glyphSize}px`,
+		`width: ${size / 16}rem; height: ${size / 16}rem; background: ${color}; font-size: ${glyphSize / 16}rem`,
 	);
 
 	function primitiveText(value: unknown): string {
@@ -47,7 +47,7 @@
 		{glyph}
 	</span>
 	{#if label}
-		<span class="mono truncate text-[10.5px] font-semibold text-[color:var(--muted)]">
+		<span class="mono truncate text-xs font-semibold text-[color:var(--muted)]">
 			{labelText}
 		</span>
 	{/if}

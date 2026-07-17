@@ -57,14 +57,17 @@ export type VcsMode = 'git' | 'jj';
 /** Solarized-based accent family — swaps `--accent`, `--accent-strong`, etc. */
 export type AccentMode = 'orange' | 'cobalt' | 'forest' | 'plum' | 'char';
 
-/** Spacing/density scale — drives `--density` + `--base-fs`. */
+/** Spacing density. Text sizing is an independent preference. */
 export type DensityMode = 'compact' | 'comfortable' | 'spacious';
+
+/** Readable text scale shared by UI, documentation, and code tokens. */
+export type TextSizeMode = 'standard' | 'large' | 'extra-large';
 
 /**
  * Typographic register.
- * - editorial: Fraunces display + Inter body (default)
- * - technical: IBM Plex Sans (tight weights), no serif display
- * - geometric: Space Grotesk everywhere
+ * - editorial: Literata documentation + IBM Plex Sans interface (default)
+ * - technical: IBM Plex Sans throughout
+ * - geometric: Space Grotesk documentation + IBM Plex Sans interface
  */
 export type VoiceMode = 'editorial' | 'technical' | 'geometric';
 
@@ -87,6 +90,7 @@ export const themeCtx = new ReactiveContext<Theme>('theme');
 export const resolvedThemeCtx = new ReactiveContext<ResolvedTheme>('resolvedTheme');
 export const accentModeCtx = new ReactiveContext<AccentMode>('accentMode');
 export const densityModeCtx = new ReactiveContext<DensityMode>('densityMode');
+export const textSizeModeCtx = new ReactiveContext<TextSizeMode>('textSizeMode');
 export const voiceModeCtx = new ReactiveContext<VoiceMode>('voiceMode');
 export const docLayoutCtx = new ReactiveContext<DocLayoutMode>('docLayout');
 export const codeThemeLightCtx = new ReactiveContext<CodeTheme>('codeThemeLight');

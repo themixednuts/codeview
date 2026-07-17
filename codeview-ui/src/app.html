@@ -1,12 +1,15 @@
 <!doctype html>
 <html
 	lang="en"
-	data-theme="light"
+	data-theme="system"
 	data-accent="orange"
 	data-density="comfortable"
+	data-text-size="standard"
 	data-voice="editorial"
 	data-doc-layout="classic"
 	data-code-theme="solarized-light"
+	data-code-theme-light="solarized-light"
+	data-code-theme-dark="solarized-dark"
 >
 	<head>
 		<meta charset="utf-8" />
@@ -68,37 +71,38 @@
 						'technical',
 						'geometric',
 					]);
+					var textSize = stored('codeview-text-size', 'standard', [
+						'standard',
+						'large',
+						'extra-large',
+					]);
 					var docLayout = stored('codeview-doc-layout', 'classic', ['classic', 'reading', 'split']);
 					var codeLight = stored('codeview-code-light', 'solarized-light', [
 						'solarized-light',
-						'solarized-dark',
 						'catppuccin-latte',
-						'catppuccin-mocha',
 						'one-light',
-						'one-dark',
 						'github-light',
-						'github-dark',
 					]);
 					var codeDark = stored('codeview-code-dark', 'solarized-dark', [
-						'solarized-light',
 						'solarized-dark',
-						'catppuccin-latte',
 						'catppuccin-mocha',
-						'one-light',
 						'one-dark',
-						'github-light',
 						'github-dark',
 					]);
 
 					document.documentElement.dataset.accent = accent;
 					document.documentElement.dataset.density = density;
+					document.documentElement.dataset.textSize = textSize;
 					document.documentElement.dataset.voice = voice;
 					document.documentElement.dataset.docLayout = docLayout;
+					document.documentElement.dataset.codeThemeLight = codeLight;
+					document.documentElement.dataset.codeThemeDark = codeDark;
 					document.documentElement.dataset.codeTheme = mode === 'dark' ? codeDark : codeLight;
 				} catch (e) {
 					document.documentElement.dataset.theme = 'light';
 					document.documentElement.dataset.accent = 'orange';
 					document.documentElement.dataset.density = 'comfortable';
+					document.documentElement.dataset.textSize = 'standard';
 					document.documentElement.dataset.voice = 'editorial';
 					document.documentElement.dataset.docLayout = 'classic';
 					document.documentElement.dataset.codeTheme = 'solarized-light';
@@ -109,7 +113,7 @@
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link
 			rel="stylesheet"
-			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=optional"
+			href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600;7..72,700&family=Space+Grotesk:wght@400;500;600&display=optional"
 		/>
 		%sveltekit.head%
 	</head>

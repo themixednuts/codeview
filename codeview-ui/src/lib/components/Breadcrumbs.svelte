@@ -28,7 +28,7 @@
 
 {#if path.length > 0}
 	<nav
-		class="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 font-mono text-[13px]"
+		class="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 font-mono text-sm"
 		aria-label="Breadcrumb"
 	>
 		{#each displayPath.items as node, index (node.id)}
@@ -61,7 +61,7 @@
 		{/each}
 	</nav>
 {:else if selected}
-	<nav class="flex flex-wrap items-baseline gap-x-1 font-mono text-[13px]" aria-label="Breadcrumb">
+	<nav class="flex flex-wrap items-baseline gap-x-1 font-mono text-sm" aria-label="Breadcrumb">
 		<span
 			class="font-semibold text-(--ink) {selected.is_deprecated ? 'line-through opacity-75' : ''}"
 		>

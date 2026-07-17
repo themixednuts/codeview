@@ -131,10 +131,8 @@ test.describe('Landing Page', () => {
 		const drawer = await openSettings(page);
 
 		const initialTheme = await page.locator('html').getAttribute('data-theme');
-		// Click the opposite theme button inside the drawer
-		const targetTheme = initialTheme === 'dark' ? 'Light' : 'Dark';
-		const themeBtn = drawer.locator(`button:has-text("${targetTheme}")`).first();
-		await themeBtn.click();
+		const targetTheme = initialTheme === 'dark' ? 'light' : 'dark';
+		await drawer.getByRole('radio', { name: `Use ${targetTheme} theme` }).click();
 		await page.waitForTimeout(300);
 
 		const newTheme = await page.locator('html').getAttribute('data-theme');
@@ -145,8 +143,8 @@ test.describe('Landing Page', () => {
 		const drawer = await openSettings(page);
 
 		const initialTheme = await page.locator('html').getAttribute('data-theme');
-		const targetTheme = initialTheme === 'dark' ? 'Light' : 'Dark';
-		await drawer.locator(`button:has-text("${targetTheme}")`).first().click();
+		const targetTheme = initialTheme === 'dark' ? 'light' : 'dark';
+		await drawer.getByRole('radio', { name: `Use ${targetTheme} theme` }).click();
 		await page.waitForTimeout(300);
 
 		const toggledTheme = await page.locator('html').getAttribute('data-theme');

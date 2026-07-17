@@ -511,6 +511,48 @@ describe('createCloudflareProvider', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
+	test('lists toolchain channels before concrete published versions', async () => {
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(
+				new Map([
+					[
+						'rust/_refs/std.json',
+						{
+							schemaVersion: 1,
+							storageName: 'std',
+							displayName: 'std',
+							aliases: {
+								nightly: { version: '1.98.0-nightly', graphHash: 'hash-nightly' },
+							},
+							versions: [{ version: '1.98.0-nightly', graphHash: 'hash-nightly' }],
+						},
+					],
+				]),
+			),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.getCrateVersions('std')).resolves.toEqual([
+			'stable',
+			'beta',
+			'nightly',
+			'1.98.0-nightly',
+		]);
+	});
+
+	test('searches exact toolchain crate channels independently of crates.io', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async () => new Response(JSON.stringify({ crates: [] }), { status: 200 })),
+		);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		await expect(provider.searchRegistry('std@nightly')).resolves.toMatchObject([
+			{ id: 'std', name: 'std', version: 'nightly' },
+		]);
+	});
+
 	test('includes active GitHub parse workflow runs in queue snapshots', async () => {
 		vi.stubGlobal(
 			'fetch',
@@ -824,7 +866,7 @@ describe('createCloudflareProvider', () => {
 		});
 	});
 
-	test('queues std latest as nightly hosted parse request', async () => {
+	test('queues std latest as stable hosted parse request', async () => {
 		const objects = new Map<string, unknown>();
 		const sent: unknown[] = [];
 		const provider = createCloudflareProvider({
@@ -841,13 +883,13 @@ describe('createCloudflareProvider', () => {
 			ecosystem: 'rust',
 			kind: 'sysroot',
 			name: 'std',
-			version: 'nightly',
+			version: 'stable',
 			force: false,
 			source: 'ui',
 		});
 	});
 
-	test('rejects unsupported hosted sysroot parse channels without queueing', async () => {
+	test.each(['stable', 'beta'])('queues the %s hosted sysroot channel', async (channel) => {
 		const objects = new Map<string, unknown>();
 		const sent: unknown[] = [];
 		const provider = createCloudflareProvider({
@@ -856,11 +898,25 @@ describe('createCloudflareProvider', () => {
 			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
 		} as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('std', 'stable');
+		const result = await provider.triggerParse('std', channel);
+		if (result.isErr()) throw result.error;
+		expect(sent).toHaveLength(1);
+		expect(sent[0]).toMatchObject({ kind: 'sysroot', name: 'std', version: channel });
+	});
+
+	test('rejects concrete versions for hosted sysroot parse requests', async () => {
+		const sent: unknown[] = [];
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+			PARSE_REQUESTS: fakeQueue(sent),
+			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const result = await provider.triggerParse('std', '1.96.0');
 		expect(result.isErr()).toBe(true);
-		if (!result.isErr()) throw new Error('expected unsupported sysroot parse request to fail');
+		if (!result.isErr()) throw new Error('expected concrete sysroot request to fail');
 		expect(result.error._tag).toBe('NotAvailableError');
-		expect(result.error.message).toContain('nightly rustdoc JSON');
+		expect(result.error.message).toContain('stable, beta, or nightly');
 		expect(sent).toHaveLength(0);
 	});
 

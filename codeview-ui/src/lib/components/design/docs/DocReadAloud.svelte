@@ -294,7 +294,7 @@
 		gap: 0.35rem;
 		min-height: 1.75rem;
 		border-radius: var(--radius-control);
-		font-size: 11.5px;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		line-height: 1;
 		transition:
@@ -334,7 +334,7 @@
 	.reader-progress {
 		min-width: 2.25rem;
 		font-family: var(--font-code);
-		font-size: 10.5px;
+		font-size: var(--text-xs);
 		color: var(--muted-soft);
 		text-align: center;
 	}
@@ -347,7 +347,7 @@
 		border-radius: var(--radius-control);
 		padding: 0 0.45rem;
 		font-family: var(--font-code);
-		font-size: 10.5px;
+		font-size: var(--text-xs);
 	}
 
 	.reader-rate input {

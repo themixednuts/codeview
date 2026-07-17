@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>codeview — design exploration</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="theme.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script
+      src="https://unpkg.com/react@18.3.1/umd/react.development.js"
+      integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"
+      integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"
+      integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y"
+      crossorigin="anonymous"
+    ></script>
+  </head>
+  <body style="background-color: rgb(235, 230, 220); font-family: ui-sans-serif">
+    <div id="root"></div>
+
+    <script type="text/babel" src="design-canvas.jsx"></script>
+    <script type="text/babel" src="shared.jsx"></script>
+    <script type="text/babel" src="doc-parts.jsx"></script>
+    <script type="text/babel" src="palette-spec.jsx"></script>
+    <script type="text/babel" src="tweaks-panel.jsx"></script>
+    <script type="text/babel" src="theme-tweaks.jsx"></script>
+
+    <script type="text/babel" src="home-editorial.jsx"></script>
+    <script type="text/babel" src="home-library.jsx"></script>
+    <script type="text/babel" src="home-search.jsx"></script>
+    <script type="text/babel" src="home-terminal.jsx"></script>
+
+    <script type="text/babel" src="doc-classic.jsx"></script>
+    <script type="text/babel" src="doc-reading.jsx"></script>
+    <script type="text/babel" src="doc-split.jsx"></script>
+
+    <script type="text/babel" src="graph-data.jsx"></script>
+    <script type="text/babel" src="graph-focus.jsx"></script>
+    <script type="text/babel" src="explorer.jsx"></script>
+    <script type="text/babel" src="graph-refined.jsx"></script>
+    <script type="text/babel" src="graph-constellation.jsx"></script>
+    <script type="text/babel" src="graph-banded.jsx"></script>
+
+    <script type="text/babel" data-presets="env,react">
+      const { DesignCanvas, DCSection, DCArtboard } = window;
+
+      function ChartDecision() {
+        const rejected = [
+          { name: 'Constellation', keeps: 'direction (radial)', loses: 'relationship TYPE — every edge looks alike', verdict: 'whole-crate overview only' },
+          { name: 'Banded (pie)',  keeps: 'grouping by type',   loses: 'in/out DIRECTION — membership ≠ arrow',    verdict: 'rejected for a focus view' },
+          { name: 'Refined (dark)',keeps: 'the layout idea',    loses: 'it was an early draft of Focus',            verdict: 'folded into Focus' },
+        ];
+        return (
+          <div className="plate" style={{ width: 440, height: 720, borderRadius: 14, border: '1px solid var(--panel-border)', overflow: 'hidden' }}>
+            <div className="px-6 py-6 h-full flex flex-col" style={{ background: 'var(--panel)' }}>
+              <div className="mono text-[10px] font-semibold uppercase tracking-[0.2em]" style={{ color: 'var(--muted-soft)' }}>Decision</div>
+              <h2 className="font-display font-semibold tracking-tight mt-1" style={{ color: 'var(--ink)', fontSize: 26, lineHeight: 1.05 }}>
+                Which chart, and why
+              </h2>
+              <p className="text-[13px] leading-relaxed mt-3" style={{ color: 'var(--muted)' }}>
+                The chart has one job: answer <em>“what is this item and what connects to it?”</em>
+                That means it must show relationship <b style={{ color: 'var(--ink-soft)' }}>type</b> and
+                <b style={{ color: 'var(--ink-soft)' }}> direction</b> at once, and let you jump.
+              </p>
+
+              <div className="mt-4 rounded-xl p-4" style={{ background: 'var(--accent-soft)', border: '1px solid var(--accent-ring)' }}>
+                <div className="flex items-center gap-2">
+                  <span className="mono text-[10px] font-semibold uppercase tracking-[0.16em] px-1.5 py-0.5 rounded" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}>Chosen</span>
+                  <span className="font-display text-[16px] font-semibold" style={{ color: 'var(--ink)' }}>Focus graph →</span>
+                </div>
+                <ul className="mt-2.5 space-y-1.5 text-[12.5px]" style={{ color: 'var(--muted)' }}>
+                  <li>• Single-axis reading: <b style={{ color: 'var(--ink-soft)' }}>left points in, right points out</b>.</li>
+                  <li>• Edge <b style={{ color: 'var(--ink-soft)' }}>bundling</b> — one labelled trunk per type, no spaghetti.</li>
+                  <li>• Hover to <b style={{ color: 'var(--ink-soft)' }}>peek</b>, click to <b style={{ color: 'var(--ink-soft)' }}>refocus</b> — it IS the navigator.</li>
+                </ul>
+              </div>
+
+              <div className="mono text-[10px] font-semibold uppercase tracking-[0.16em] mt-6 mb-2" style={{ color: 'var(--muted-soft)' }}>Explored &amp; rejected</div>
+              <div className="space-y-2.5">
+                {rejected.map(r => (
+                  <div key={r.name} className="rounded-lg p-3" style={{ border: '1px solid var(--panel-border-soft)', background: 'var(--panel-solid)' }}>
+                    <div className="font-display text-[13.5px] font-semibold" style={{ color: 'var(--ink-soft)' }}>{r.name}</div>
+                    <div className="text-[11.5px] mt-1 leading-snug" style={{ color: 'var(--muted)' }}>
+                      Loses <b style={{ color: 'var(--accent-strong)' }}>{r.loses}</b>. <span style={{ color: 'var(--muted-soft)' }}>→ {r.verdict}.</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+      window.ChartDecision = ChartDecision;
+
+      function App() {
+        const W = window;
+        return (
+          <DesignCanvas
+            title="codeview"
+            subtitle="v5 · Solarized — one navigable Explorer, one relationship chart that answers type + direction"
+          >
+            <DCSection id="explorer" title="Explorer — the whole product (start here)">
+              <DCArtboard id="explorer-app" label="Tree ⇄ graph ⇄ detail, all bound to one focus. Hover a relationship to spotlight it in the graph; click anything to navigate. Real back/forward (or [ and ] keys)." width={1440} height={920}>
+                <W.Explorer />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="graphs" title="The relationship chart">
+              <DCArtboard id="graph-focus" label="★ Focus graph — left→right reading, bundled lanes, hover-to-peek, click-to-refocus." width={1180} height={720}>
+                <W.GraphFocus />
+              </DCArtboard>
+              <DCArtboard id="chart-decision" label="Why this one — and what was rejected." width={440} height={720}>
+                <W.ChartDecision />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="docs" title="Documentation view">
+              <DCArtboard id="doc-classic" label="A · Classic three-pane — module tree + body + TOC" width={1440} height={980}>
+                <W.DocClassic />
+              </DCArtboard>
+              <DCArtboard id="doc-reading" label="B · Reading mode — single column, book-like" width={1440} height={980}>
+                <W.DocReading />
+              </DCArtboard>
+              <DCArtboard id="doc-split" label="C · Split with source — read docs and src together" width={1440} height={980}>
+                <W.DocSplit />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="home" title="Home page">
+              <DCArtboard id="home-terminal" label="D · Terminal / codey (dark) — mono-forward" width={1280} height={900}>
+                <W.HomeTerminal />
+              </DCArtboard>
+              <DCArtboard id="home-editorial" label="A · Editorial calm — quiet hero, sparklines" width={1280} height={900}>
+                <W.HomeMain />
+              </DCArtboard>
+              <DCArtboard id="home-library" label="B · Library index — two-pane category browser" width={1280} height={900}>
+                <W.HomeLibrary />
+              </DCArtboard>
+              <DCArtboard id="home-search" label="C · Search-forward — page IS a command palette" width={1280} height={900}>
+                <W.HomeSearch />
+              </DCArtboard>
+            </DCSection>
+
+            <DCSection id="palette" title="Palette spec">
+              <DCArtboard id="palette-spec" label="Light + dark — the token system at a glance" width={1200} height={720}>
+                <W.PaletteSpec />
+              </DCArtboard>
+            </DCSection>
+          </DesignCanvas>
+        );
+      }
+
+      function Wrapped() {
+        return (
+          <>
+            <App />
+            {window.ThemeTweaks ? <window.ThemeTweaks /> : null}
+          </>
+        );
+      }
+
+      function tryRender() {
+        const required = ['ThemeTweaks','useTweaks','TweaksPanel','PaletteSpec','DocClassic','DocReading','DocSplit','HomeTerminal','HomeMain','HomeLibrary','HomeSearch','GraphConstellation','GraphBanded','FocusGraphView','GraphFocus','Explorer','focusModel','nodeOf','relCounts','DesignCanvas','DCSection','DCArtboard'];
+        const missing = required.filter(k => !(k in window));
+        if (missing.length === 0) {
+          ReactDOM.createRoot(document.getElementById('root')).render(<Wrapped />);
+        } else {
+          window.__missing = missing;
+          setTimeout(tryRender, 80);
+        }
+      }
+      tryRender();
+    </script>
+  </body>
+</html>

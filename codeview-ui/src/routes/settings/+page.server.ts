@@ -2,8 +2,9 @@ import {
 	ACCENT_KEY,
 	ACCENT_VALUES,
 	CODE_DARK_KEY,
+	CODE_DARK_VALUES,
 	CODE_LIGHT_KEY,
-	CODE_VALUES,
+	CODE_LIGHT_VALUES,
 	DENSITY_KEY,
 	DENSITY_VALUES,
 	DOC_LAYOUT_KEY,
@@ -11,6 +12,8 @@ import {
 	PREF_COOKIE_MAX_AGE_SECONDS,
 	THEME_KEY,
 	THEME_VALUES,
+	TEXT_SIZE_KEY,
+	TEXT_SIZE_VALUES,
 	VOICE_KEY,
 	VOICE_VALUES,
 	readAllowedPreference,
@@ -23,10 +26,11 @@ const preferences = [
 	[THEME_KEY, THEME_VALUES, 'system'],
 	[ACCENT_KEY, ACCENT_VALUES, 'orange'],
 	[DENSITY_KEY, DENSITY_VALUES, 'comfortable'],
+	[TEXT_SIZE_KEY, TEXT_SIZE_VALUES, 'standard'],
 	[VOICE_KEY, VOICE_VALUES, 'editorial'],
 	[DOC_LAYOUT_KEY, DOC_LAYOUT_VALUES, 'classic'],
-	[CODE_LIGHT_KEY, CODE_VALUES, 'solarized-light'],
-	[CODE_DARK_KEY, CODE_VALUES, 'solarized-dark'],
+	[CODE_LIGHT_KEY, CODE_LIGHT_VALUES, 'solarized-light'],
+	[CODE_DARK_KEY, CODE_DARK_VALUES, 'solarized-dark'],
 ] as const;
 
 function readPreferences(event: RequestEvent) {

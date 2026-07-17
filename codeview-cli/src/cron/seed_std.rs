@@ -1,7 +1,8 @@
 //! `codeview cron seed-std` — populate R2 with std crate artifacts.
 //!
 //! `std`, `core`, `alloc`, `proc_macro`, and `test` aren't on docs.rs;
-//! their rustdoc JSON ships via the `rust-docs-json` rustup component.
+//! their rustdoc JSON either ships via the `rust-docs-json` rustup component
+//! or is generated from an exact Rust source checkout.
 //! This subcommand:
 //!
 //! 1. Detects a rustup-installed toolchain's sysroot (`rustc +<tc> --print sysroot`).
@@ -11,14 +12,16 @@
 //! 4. Writes channel-alias pointers for the matching toolchain. `stable`
 //!    also serves `latest`; `beta` and `nightly` remain distinct.
 //!
-//! Idempotent: `--if-missing` skips when `rust/alloc/stable.json` is
-//! already present in R2.  Used by `cf:dev` to auto-seed on first run.
+//! Idempotent: `--if-missing` skips when every requested channel alias is
+//! already present in R2. Used by `cf:dev` to auto-seed on first run.
 //!
 //! Replaces the deleted `scripts/build-std-docs.ts` +
 //! `scripts/seed-std-if-missing.ts` + `INCLUDE_STD=1` arm of
 //! `scripts/publish-static-batch.ts`.
 
-use anyhow::{Context, Result};
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, bail};
 use clap::Args;
 
 use crate::publisher::artifacts::{CrateSource, Outcome, PublishOptions, publish_one};
@@ -29,15 +32,20 @@ use super::CronContext;
 
 #[derive(Debug, Args)]
 pub struct SeedStd {
-    /// Comma-separated toolchains to seed (default `nightly`).  Each
-    /// must have `rust-docs-json` installed. Bare channel names publish
+    /// Comma-separated toolchains to seed (default `nightly`). The JSON may
+    /// come from `rust-docs-json` or `--json-dir`. Bare channel names publish
     /// matching channel aliases.
     #[arg(long, default_value = "nightly")]
     pub toolchains: String,
 
-    /// Skip work entirely when `rust/alloc/stable.json` already exists
-    /// in R2.  `cf:dev` uses this so first-run startups seed and
-    /// subsequent ones are fast.
+    /// Read JSON files from this directory instead of the rustup component.
+    /// This is used for stable and beta, where Rust does not distribute
+    /// `rust-docs-json`. Only one toolchain may be supplied with this option.
+    #[arg(long)]
+    pub json_dir: Option<PathBuf>,
+
+    /// Skip work when all requested channel aliases already exist in R2.
+    /// `cf:dev` uses this so first-run startups seed and subsequent ones are fast.
     #[arg(long)]
     pub if_missing: bool,
 
@@ -53,28 +61,46 @@ pub struct SeedStd {
 
 pub async fn run(args: SeedStd) -> Result<()> {
     let ctx = CronContext::build(&args.bucket).await?;
-
-    // ─── Idempotency probe ───────────────────────────────────────
-    if args.if_missing {
-        let probe = ctx
-            .r2
-            .get("rust/alloc/stable.json")
-            .await
-            .context("probe rust/alloc/stable.json")?;
-        if probe.is_some() {
-            eprintln!(
-                "[seed-std] alloc/stable already in R2 — skipping (pass --force or omit --if-missing to refresh)"
-            );
-            return Ok(());
-        }
-    }
-
     let toolchains: Vec<&str> = args
         .toolchains
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect();
+    if toolchains.is_empty() {
+        bail!("at least one toolchain is required");
+    }
+    if args.json_dir.is_some() && toolchains.len() != 1 {
+        bail!("--json-dir requires exactly one toolchain");
+    }
+
+    // ─── Idempotency probe ───────────────────────────────────────
+    if args.if_missing {
+        let mut all_present = true;
+        for toolchain in &toolchains {
+            let alias = aliases_for_toolchain(toolchain)
+                .into_iter()
+                .find(|alias| *alias != "latest")
+                .unwrap_or(toolchain);
+            let key = format!("rust/alloc/{alias}.json");
+            if ctx
+                .r2
+                .get(&key)
+                .await
+                .with_context(|| format!("probe {key}"))?
+                .is_none()
+            {
+                all_present = false;
+                break;
+            }
+        }
+        if all_present {
+            eprintln!(
+                "[seed-std] requested toolchain aliases already exist in R2 — skipping (pass --force or omit --if-missing to refresh)"
+            );
+            return Ok(());
+        }
+    }
 
     eprintln!(
         "[seed-std] parser={} toolchains={}",
@@ -87,13 +113,24 @@ pub async fn run(args: SeedStd) -> Result<()> {
     let mut total_failed = 0usize;
 
     for toolchain in toolchains {
-        let info = match detect_sysroot(Some(toolchain)) {
+        let detected = match detect_sysroot(Some(toolchain)) {
             Ok(info) => info,
             Err(err) => {
                 eprintln!("[seed-std] toolchain {toolchain}: detect failed: {err:#}");
                 total_failed += 1;
                 continue;
             }
+        };
+        let info = match args.json_dir.clone() {
+            Some(json_dir) => match detected.with_json_dir(json_dir) {
+                Ok(info) => info,
+                Err(err) => {
+                    eprintln!("[seed-std] toolchain {toolchain}: external JSON failed: {err:#}");
+                    total_failed += 1;
+                    continue;
+                }
+            },
+            None => detected,
         };
         eprintln!(
             "\n── {toolchain} → {} ────────────────────────",

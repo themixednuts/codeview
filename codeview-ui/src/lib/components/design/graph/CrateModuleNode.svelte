@@ -61,10 +61,10 @@
 
 	<div class="mb-2 flex min-w-0 items-center gap-2">
 		<KindBadge kind={data.module.kind} size={17} />
-		<span class="mono min-w-0 flex-1 truncate text-[12.5px] font-semibold text-(--ink)">
+		<span class="mono min-w-0 flex-1 truncate text-sm font-semibold text-(--ink)">
 			{data.module.name}
 		</span>
-		<span class="mono shrink-0 rounded bg-(--panel-muted) px-1.5 py-0.5 text-[10px] text-(--muted)">
+		<span class="mono shrink-0 rounded bg-(--panel-muted) px-1.5 py-0.5 text-2xs text-(--muted)">
 			d{data.module.depth}
 		</span>
 	</div>
@@ -76,7 +76,7 @@
 		></div>
 	</div>
 
-	<div class="mono flex items-center gap-3 text-[10.5px] text-(--muted-soft)">
+	<div class="mono flex items-center gap-3 text-xs text-(--muted-soft)">
 		<span><b class="text-(--ink-soft)">{data.module.totalNodeCount.toLocaleString()}</b> items</span>
 		{#if data.module.childModuleCount > 0}
 			<span><b class="text-(--ink-soft)">{data.module.childModuleCount}</b> children</span>

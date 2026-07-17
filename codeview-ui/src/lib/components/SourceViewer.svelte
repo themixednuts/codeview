@@ -38,6 +38,7 @@
 	const isOpen = $derived(browser && !!spanKey && viewState.src === spanKey);
 
 	let sourceData = $state<SourceResult | null>(null);
+	let sourceReady = $state(false);
 	const sourceContent = $derived(sourceData?.content ?? null);
 	const absolutePath = $derived(sourceData?.absolutePath ?? null);
 	const repoUrl = $derived(sourceData?.repoUrl ?? null);
@@ -48,6 +49,7 @@
 	$effect(() => {
 		if (!isOpen || !span) {
 			sourceData = null;
+			sourceReady = false;
 			return;
 		}
 
@@ -59,6 +61,7 @@
 		};
 		let cancelled = false;
 		sourceData = null;
+		sourceReady = false;
 
 		void getSource(input)
 			.then((result) => {
@@ -106,6 +109,8 @@
 	}
 
 	function updateSourceParam(src: string | null) {
+		// The serializer returns a concrete URL so query-only modal state never loses the current route.
+		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(serializeExplorerState(page.url, { src }), {
 			replaceState: true,
 			noScroll: true,
@@ -123,6 +128,10 @@
 
 	function handleBackdropClick(e: MouseEvent) {
 		if (e.target === e.currentTarget) close();
+	}
+
+	function handleHighlightStateChange(ready: boolean) {
+		sourceReady = ready;
 	}
 
 	function langFromFile(file: string): 'rust' | 'toml' | 'json' | 'text' {
@@ -149,34 +158,45 @@
 	// Attachment to scroll to highlighted line when content loads
 	const scrollToHighlight: Attachment<HTMLDivElement> = (container) => {
 		let lastKey: string | null = null;
+		let frame: number | null = null;
 
 		$effect(() => {
-			if (!isOpen || !sourceContent) {
+			if (!isOpen || sourceContent === null || !sourceReady) {
 				lastKey = null;
 				return;
 			}
-			if (lastKey === spanKey) return;
-			lastKey = spanKey;
+			const scrollKey = `${spanKey}:${sourceContent.length}`;
+			if (lastKey === scrollKey) return;
+			lastKey = scrollKey;
 
-			requestAnimationFrame(() => {
-				const firstHighlighted = container.querySelector('.line.highlighted');
-				if (firstHighlighted) {
-					const lineTop = (firstHighlighted as HTMLElement).offsetTop;
-					const offset = Math.max(0, lineTop - container.clientHeight / 3);
-					container.scrollTo({ top: offset, behavior: 'instant' });
+			const positionTarget = (attempt: number) => {
+				const target = container.querySelector<HTMLElement>(`.line[data-line="${span.line}"]`);
+				if (!target) {
+					if (attempt < 2) frame = requestAnimationFrame(() => positionTarget(attempt + 1));
+					return;
 				}
-			});
+
+				const containerTop = container.getBoundingClientRect().top;
+				const targetTop = container.scrollTop + target.getBoundingClientRect().top - containerTop;
+				const offset = Math.max(0, targetTop - Math.max(24, container.clientHeight / 3));
+				container.scrollTo({ top: offset, behavior: 'instant' });
+			};
+
+			frame = requestAnimationFrame(() => positionTarget(0));
+			return () => {
+				if (frame !== null) cancelAnimationFrame(frame);
+			};
 		});
 	};
 </script>
 
+<!-- eslint-disable-next-line svelte/no-navigation-without-resolve -- external docs.rs fallback -->
 <a class="source-link" href={sourceHref} onclick={open} title="View source">
 	<span class="token-name">{displayFile}</span>
 	<span class="token-meta">:{span.line}:{span.column}</span>
 </a>
 
 {#if isOpen}
-	<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 	<dialog
 		{@attach syncDialog}
 		onclose={handleDialogClose}
@@ -202,22 +222,34 @@
 					</button>
 				</div>
 			</header>
-			<div class="modal-body" {@attach scrollToHighlight}>
+			<div
+				class="modal-body"
+				aria-busy={sourceContent !== null && !sourceReady}
+				{@attach scrollToHighlight}
+			>
 				{#if sourceData?.error}
 					<p class="source-error">{sourceData.error}</p>
-				{:else if sourceData?.content}
+				{:else if sourceContent !== null}
 					<CodeBlock
-						code={sourceData.content}
+						code={sourceContent}
 						lang={langFromFile(span.file)}
 						{theme}
 						startLine={1}
 						highlightLines={highlightRange}
 						showLineNumbers={true}
+						revealAfterHighlight={true}
+						onHighlightStateChange={handleHighlightStateChange}
 					/>
+					{#if !sourceReady}
+						<div class="source-loading" role="status">
+							<LoaderCircleIcon class="animate-spin" size={14} />
+							<span class="text-xs">Highlighting source...</span>
+						</div>
+					{/if}
 				{:else}
-					<div class="flex items-center gap-2 p-4">
+					<div class="source-loading" role="status">
 						<LoaderCircleIcon class="animate-spin" size={12} />
-						<span class="text-xs text-(--muted)">Loading source...</span>
+						<span class="text-xs">Loading source...</span>
 					</div>
 				{/if}
 			</div>
@@ -231,7 +263,7 @@
 		align-items: center;
 		gap: 0.5rem;
 		font-family: var(--font-code);
-		font-size: 0.8125rem;
+		font-size: var(--text-sm);
 		background: none;
 		border: none;
 		padding: 0;
@@ -270,7 +302,7 @@
 		display: flex;
 		flex-direction: column;
 		width: min(90vw, 900px);
-		max-height: 85vh;
+		height: min(85vh, 760px);
 		border-radius: var(--radius-panel, 12px);
 		border: 1px solid var(--panel-border);
 		background: var(--panel-solid);
@@ -289,7 +321,7 @@
 
 	.modal-title {
 		font-family: var(--font-code);
-		font-size: 0.875rem;
+		font-size: var(--text-sm);
 	}
 
 	.modal-file {
@@ -305,8 +337,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 28px;
-		height: 28px;
+		width: 1.75rem;
+		height: 1.75rem;
 		border-radius: 6px;
 		border: none;
 		background: none;
@@ -325,13 +357,26 @@
 	.modal-actions {
 		display: flex;
 		align-items: center;
-		gap: 2px;
+		gap: 0.125rem;
 	}
 
 	.modal-body {
+		position: relative;
 		overflow: auto;
 		flex: 1;
 		min-height: 0;
+	}
+
+	.source-loading {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.5rem;
+		background: var(--panel-solid);
+		color: var(--muted);
+		z-index: 1;
 	}
 
 	.modal-body :global(pre) {
@@ -342,7 +387,7 @@
 
 	.source-error {
 		color: var(--danger);
-		font-size: 0.8125rem;
+		font-size: var(--text-sm);
 		padding: 1rem;
 	}
 </style>

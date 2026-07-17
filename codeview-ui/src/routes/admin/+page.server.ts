@@ -3,9 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { getAuthState } from '$lib/server/auth';
 import { initProvider } from '$lib/server/provider';
 import { isValidCrateName, isValidVersion, normalizeCrateName } from '$lib/server/validation';
-import { isStdCrate } from '$lib/std';
-
-const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
+import { DEFAULT_RUST_CHANNEL, isStdCrate } from '$lib/std';
 
 export const load: PageServerLoad = async (event) => {
 	event.depends('codeview:admin-dashboard');
@@ -56,7 +54,7 @@ export const actions: Actions = {
 		const provider = await initProvider(event);
 		const version =
 			requestedVersion === 'latest' && isStdCrate(normalizeCrateName(name))
-				? HOSTED_SYSROOT_PARSE_CHANNEL
+				? DEFAULT_RUST_CHANNEL
 				: requestedVersion === 'latest'
 					? ((await provider.getCrateVersions(name, 1).catch(() => []))[0] ?? requestedVersion)
 					: requestedVersion;

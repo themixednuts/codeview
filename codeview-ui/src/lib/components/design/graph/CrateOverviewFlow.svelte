@@ -420,7 +420,7 @@
 		class="flex flex-wrap items-center justify-between gap-3 border-b border-(--panel-border) bg-(--panel) px-4 py-3"
 	>
 		<div>
-			<h2 class="font-display text-[15px] font-semibold text-(--ink)">Module graph</h2>
+			<h2 class="font-display text-md font-semibold text-(--ink)">Module graph</h2>
 			<p class="mt-0.5 text-xs text-(--muted)">
 				showing {cappedModuleNodes.length.toLocaleString()} of {data.moduleNodes.length.toLocaleString()}
 				modules · {cappedSemanticEdges.length.toLocaleString()} of {data.visibleSemanticEdgeCount.toLocaleString()}
@@ -511,7 +511,7 @@
 		{#if activeRelations.length > 0}
 			<div class="ml-auto flex flex-wrap items-center gap-2">
 				{#each activeRelations as relation (relation)}
-					<span class="mono inline-flex items-center gap-1 text-[10.5px] text-(--muted)">
+					<span class="mono inline-flex items-center gap-1 text-xs text-(--muted)">
 						<span class="inline-block h-[3px] w-3 rounded" style={`background: ${REL[relation].color}`}></span>
 						{REL[relation].label}
 					</span>

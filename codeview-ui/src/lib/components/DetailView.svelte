@@ -211,7 +211,10 @@
 </script>
 
 {#if selected && detail}
-	<div class={`space-y-6 ${embedded ? 'px-4 py-4 sm:px-6 md:px-8' : ''}`}>
+	<div
+		class={`mx-auto w-full space-y-6 ${embedded ? 'px-4 py-4 sm:px-6 md:px-8' : ''}`}
+		style="max-width: var(--doc-measure, 74rem);"
+	>
 		<!-- ── Crate sub-nav ──────────────────────────────────────
 				 doc-classic design: text breadcrumb + kind chip + pub
 				 chip + crate-scoped search + version + View source. -->
@@ -244,7 +247,7 @@
 				<div class="ml-auto flex flex-wrap items-center gap-2">
 					{#if crateVersion}
 						<span
-							class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1 font-mono text-[11.5px] text-(--ink-soft)"
+							class="corner-squircle inline-flex items-center gap-1 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-2.5 py-1 font-mono text-xs text-(--ink-soft)"
 							title="Crate version"
 						>
 							v{crateVersion}
@@ -253,7 +256,7 @@
 					{#if selected?.span?.file}
 						<a
 							href={resolveAppPath(getNodeUrl(selected.id))}
-							class="corner-squircle rounded-(--radius-control) px-2.5 py-1 text-[12px] font-medium hover:underline"
+							class="corner-squircle rounded-(--radius-control) px-2.5 py-1 text-sm font-medium hover:underline"
 							style="background: var(--accent-soft); color: var(--accent-strong);"
 						>
 							View source
@@ -305,27 +308,32 @@
 				 The left tree lives in [crate]/[version]/+layout.svelte.
 				 Crate-root pages show the viz switcher above with no TOC. -->
 		{#if isOnCrateRoot}
-			<NodeDetails
-				{selected}
-				{sourceImpls}
-				{blanketImpls}
-				{methodGroups}
-				{traitImplGroups}
-				{requiredTraitMethods}
-				{providedTraitMethods}
-				{traitAssocItems}
-				directItems={detailModel.directItems}
-				{kindLabels}
-				{displayNode}
-				{implementers}
-				{theme}
-				{getNodeUrl}
-				{nodeExists}
-				{nodeMeta}
-				{crateName}
-				{crateVersion}
-				{crateVersions}
-			/>
+			<!-- Crate root is an index (module/struct/enum lists), not prose — it uses
+			     the full centered measure. Long-form prose inside stays capped at its
+			     own reading measure via .documentation-text, so only the item lists widen. -->
+			<div class="crate-index">
+				<NodeDetails
+					{selected}
+					{sourceImpls}
+					{blanketImpls}
+					{methodGroups}
+					{traitImplGroups}
+					{requiredTraitMethods}
+					{providedTraitMethods}
+					{traitAssocItems}
+					directItems={detailModel.directItems}
+					{kindLabels}
+					{displayNode}
+					{implementers}
+					{theme}
+					{getNodeUrl}
+					{nodeExists}
+					{nodeMeta}
+					{crateName}
+					{crateVersion}
+					{crateVersions}
+				/>
+			</div>
 		{:else}
 			<div class="doc-body-grid grid gap-8 xl:grid-cols-[1fr_220px]">
 				<!-- Doc body — primary reading surface. -->
@@ -382,3 +390,11 @@
 		</div>
 	</div>
 {/if}
+
+<style>
+	/* The crate-root index fills the full centered measure — override NodeDetails'
+	   built-in reading-width cap here (mirrors the doc-layout overrides). */
+	.crate-index :global(> .max-w-3xl) {
+		max-width: none;
+	}
+</style>

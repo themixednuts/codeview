@@ -174,18 +174,48 @@ jobs:
         with:
           shared-key: cron-release
 
-      - name: Install requested rustdoc JSON toolchain
+      - name: Generate exact rustdoc JSON
+        id: rustdoc_json
         env:
           REQUEST_VERSION: ${{ inputs.version }}
           REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
         run: |
           TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
-          if [[ "$TOOLCHAIN" == "stable" || "$TOOLCHAIN" == "beta" ]]; then
-            echo "::error::rust-docs-json is not published for the $TOOLCHAIN channel in this hosted parse path. Use nightly."
+          if [[ ! "$TOOLCHAIN" =~ ^(stable|beta|nightly)$ ]]; then
+            echo "::error::sysroot toolchain must be stable, beta, or nightly"
             exit 1
           fi
           rustup toolchain install "$TOOLCHAIN" --profile minimal
-          rustup component add rust-docs-json --toolchain "$TOOLCHAIN"
+
+          if [[ "$TOOLCHAIN" == "nightly" ]]; then
+            rustup component add rust-docs-json --toolchain "$TOOLCHAIN"
+            SYSROOT="$(rustup run "$TOOLCHAIN" rustc --print sysroot)"
+            JSON_DIR="$SYSROOT/share/doc/rust/json"
+          else
+            RUST_COMMIT="$(rustup run "$TOOLCHAIN" rustc -vV | awk '/^commit-hash:/ { print $2 }')"
+            if [[ ! "$RUST_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::could not resolve the exact $TOOLCHAIN rustc commit"
+              exit 1
+            fi
+            git init rust-source
+            git -C rust-source remote add origin https://github.com/rust-lang/rust.git
+            git -C rust-source -c protocol.version=2 fetch \
+              --depth=1 --filter=blob:none origin "$RUST_COMMIT"
+            git -C rust-source checkout --detach FETCH_HEAD
+            (
+              cd rust-source
+              ./x doc --stage 0 --json library
+            )
+            JSON_DIR="$(find rust-source/build -type d -name json-doc -print -quit)"
+          fi
+
+          for CRATE in std core alloc proc_macro test; do
+            test -s "$JSON_DIR/$CRATE.json" || {
+              echo "::error::missing generated $CRATE.json in $JSON_DIR"
+              exit 1
+            }
+          done
+          echo "json_dir=$JSON_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Build codeview-cli
         run: cargo build --release -p codeview-cli
@@ -194,18 +224,16 @@ jobs:
         env:
           REQUEST_VERSION: ${{ inputs.version }}
           REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
+          JSON_DIR: ${{ steps.rustdoc_json.outputs.json_dir }}
         run: |
           TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
-          if [[ "$TOOLCHAIN" == "stable" || "$TOOLCHAIN" == "beta" ]]; then
-            echo "::error::rust-docs-json is not published for the $TOOLCHAIN channel in this hosted parse path. Use nightly."
-            exit 1
-          fi
           FORCE_FLAG=""
           if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
             FORCE_FLAG="--force"
           fi
           target/release/codeview cron seed-std \
             --toolchains "$TOOLCHAIN" \
+            --json-dir "$JSON_DIR" \
             $FORCE_FLAG \
             --bucket "$R2_BUCKET"
 

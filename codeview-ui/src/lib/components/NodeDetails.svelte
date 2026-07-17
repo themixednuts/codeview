@@ -616,7 +616,7 @@
 	{@const implGenerics = implBlock.generics?.params ?? []}
 	{@const implWhere = implBlock.generics?.where_predicates ?? []}
 	<div class="min-w-0">
-		<code class="text-[13px] leading-6 font-(--font-code) text-(--ink)">
+		<code class="text-sm leading-6 font-(--font-code) text-(--ink)">
 			<span class="token-keyword">impl</span>
 			{#if implBlock.impl_category === 'Negative'}<span class="text-(--danger)">
 					!
@@ -631,7 +631,7 @@
 			{/if}
 		</code>
 		{#if implWhere.length > 0}
-			<div class="pl-4 text-[12px] leading-5 font-(--font-code) text-(--ink-soft)">
+			<div class="pl-4 text-sm leading-5 font-(--font-code) text-(--ink-soft)">
 				<span class="token-keyword">where</span>
 				{#each implWhere as pred, i (i)}
 					<span class="ml-2">
@@ -644,7 +644,9 @@
 {/snippet}
 
 {#snippet implMemberRow(member: Node, index: number)}
-	<div class={`bg-(--panel-solid) px-3 py-3 ${index ? 'border-t border-(--panel-border)' : ''}`}>
+	<div
+		class={`impl-member-row bg-(--panel-solid) px-3 ${index ? 'border-t border-(--panel-border)' : ''}`}
+	>
 		{#if !member.signature || member.span}
 			<div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
 				<div class="flex min-w-0 items-center gap-2">
@@ -736,7 +738,7 @@
 {/snippet}
 
 {#if selected}
-	<div class="max-w-3xl">
+	<div class="mx-auto max-w-3xl">
 		<!-- Header — kind label + h1 + source link. The qualified path is
 		     shown once, in the breadcrumb sub-nav, so we don't repeat it
 		     here (the old header listed the path three times). -->
@@ -744,14 +746,14 @@
 			<div class="flex flex-wrap items-baseline gap-3">
 				<span
 					class="kind-label"
-					style="color: {kindColors[selectedKind]}"
+					style="color: var(--ink-soft)"
 					aria-label={kindLabels[selected.kind]}
 				>
 					<span class="kind-label-bar" style="background: {kindColors[selectedKind]}"></span>
 					{kindLabels[selected.kind]}
 				</span>
 				<h1
-					class="doc-item-title font-display min-w-0 text-[28px] leading-tight font-semibold tracking-tight break-words text-(--ink) sm:text-[32px] {selected.is_deprecated
+					class="doc-item-title font-display min-w-0 text-2xl leading-tight font-semibold break-words text-(--ink) {selected.is_deprecated
 						? 'line-through opacity-80'
 						: ''}"
 				>
@@ -826,7 +828,7 @@
 		<!-- Attributes are source syntax and belong immediately before the
 		     declaration they annotate. -->
 		{#if selected.attrs && selected.attrs.length > 0}
-			<div class="mb-1 text-[13px] leading-5 font-(--font-code)">
+			<div class="mb-1 text-sm leading-5 font-(--font-code)">
 				{#each selected.attrs as attr (attr)}
 					<code class="token-meta block">{attr}</code>
 				{/each}
@@ -856,11 +858,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.StructField}"></span>
 					<h2
-						class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Fields
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{selected.fields.length}
 					</span>
 				</div>
@@ -900,11 +902,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Variant}"></span>
 					<h2
-						class="font-display text-[20px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Variants
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{selected.variants.length}
 					</span>
 				</div>
@@ -983,11 +985,11 @@
 		{#if selected.docs}
 			<section id="documentation" class="doc-section group">
 				<div
-					class="section-header mt-9 mb-4 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-2"
+					class="section-header mt-8 mb-3 flex items-baseline gap-3 border-b border-(--panel-border-soft) pb-1.5"
 				>
 					<span class="section-bar section-bar-muted"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Documentation
 					</h2>
@@ -1009,26 +1011,29 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Module}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						{selectedKind === 'Crate' ? 'Public API' : 'Items'}
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{directItems.length}
 					</span>
 				</div>
-				<div class="space-y-7">
+				<div class="direct-item-groups flex flex-col">
 					{#each directItemGroups as group (group.kind)}
 						<section aria-labelledby={`items-${group.kind}`}>
-							<div class="mb-2 flex items-center gap-2">
+							<div class="mb-1.5 flex items-center gap-2">
 								<span
 									class="size-2 shrink-0 rounded-sm"
 									style={`background: ${kindColors[group.kind]}`}
 								></span>
-								<h3 id={`items-${group.kind}`} class="text-sm font-semibold text-(--ink)">
+								<h3
+									id={`items-${group.kind}`}
+									class="text-xs font-semibold tracking-wide text-(--muted) uppercase"
+								>
 									{group.label}
 								</h3>
-								<span class="font-mono text-[10px] text-(--muted-soft)">{group.items.length}</span>
+								<span class="font-mono text-2xs text-(--muted-soft)">{group.items.length}</span>
 							</div>
 							<div
 								class="divide-y divide-(--panel-border-soft) border-y border-(--panel-border-soft)"
@@ -1036,18 +1041,18 @@
 								{#each group.items as item (item.id)}
 									{@const summary = docsSummary(item.docs)}
 									<div
-										class="crate-item-row grid min-w-0 gap-1 py-2.5 sm:grid-cols-[minmax(8rem,0.38fr)_minmax(0,1fr)] sm:gap-4"
+										class="crate-item-row grid min-w-0 gap-x-4 gap-y-0.5 sm:grid-cols-[minmax(9rem,0.34fr)_minmax(0,1fr)]"
 									>
 										<a
 											href={nodeHref(item.id)}
 											data-sveltekit-noscroll
-											class="min-w-0 self-start font-mono text-[13px] font-semibold text-(--accent) underline-offset-2 hover:underline"
+											class="min-w-0 self-start font-mono text-md leading-[1.35] font-semibold text-(--accent) underline-offset-2 hover:underline"
 										>
 											<span class="break-words">{item.name}</span>
 										</a>
 										{#if summary}
 											<div
-												class="crate-item-summary min-w-0 text-[13px] leading-relaxed text-(--muted)"
+												class="crate-item-summary min-w-0 text-md leading-[1.35] text-(--muted)"
 											>
 												<Documentation
 													docs={summary}
@@ -1059,7 +1064,7 @@
 												/>
 											</div>
 										{:else}
-											<span class="text-[12px] text-(--muted-soft)">
+											<span class="text-sm leading-[1.4] text-(--muted-soft)">
 												No documentation provided.
 											</span>
 										{/if}
@@ -1082,11 +1087,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.AssocType}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Associated items
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{traitAssocItems.length}
 					</span>
 				</div>
@@ -1107,11 +1112,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Function}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Required methods
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{requiredTraitMethods.length}
 					</span>
 				</div>
@@ -1132,11 +1137,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Function}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Provided methods
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{providedTraitMethods.length}
 					</span>
 				</div>
@@ -1158,11 +1163,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Function}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Methods
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{methodCountValue()}
 					</span>
 				</div>
@@ -1273,11 +1278,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Trait}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Trait implementations
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{sourceImpls.length}
 					</span>
 				</div>
@@ -1320,11 +1325,11 @@
 				>
 					<span class="section-bar" style="background: {kindColors.Struct}"></span>
 					<h2
-						class="font-display text-[22px] leading-tight font-semibold tracking-tight text-(--ink)"
+						class="font-display text-xl leading-tight font-semibold tracking-tight text-(--ink)"
 					>
 						Implementers
 					</h2>
-					<span class="font-mono text-[11px] text-(--muted-soft) tabular-nums">
+					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
 						{implementers.length}
 					</span>
 				</div>
@@ -1381,7 +1386,7 @@
 		align-items: center;
 		gap: 0.4rem;
 		font-family: var(--font-code);
-		font-size: 11px;
+		font-size: var(--text-xs);
 		font-weight: 600;
 		letter-spacing: 0.16em;
 		text-transform: uppercase;
@@ -1389,7 +1394,7 @@
 	.kind-label-bar {
 		display: inline-block;
 		width: 3px;
-		height: 13px;
+		height: 0.8125rem;
 		border-radius: 2px;
 		flex-shrink: 0;
 	}
@@ -1403,7 +1408,7 @@
 		gap: 0.3rem;
 		padding: 0.12rem 0.5rem;
 		border-radius: var(--radius-control, 6px);
-		font-size: 11.5px;
+		font-size: var(--text-xs);
 		color: var(--ink-soft);
 		background: var(--panel);
 		border: 1px solid var(--panel-border-soft);
@@ -1447,7 +1452,7 @@
 	.section-bar {
 		display: inline-block;
 		width: 3px;
-		height: 18px;
+		height: 1.125rem;
 		border-radius: 2px;
 		background: var(--muted-soft);
 		flex-shrink: 0;
@@ -1469,6 +1474,15 @@
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 2;
 		line-clamp: 2;
+	}
+	.direct-item-groups {
+		gap: var(--density-section-gap);
+	}
+	.crate-item-row {
+		padding-block: var(--density-row-padding);
+	}
+	.impl-member-row {
+		padding-block: calc(var(--density-row-padding) * 2.25);
 	}
 	.crate-item-summary :global(p) {
 		margin: 0;

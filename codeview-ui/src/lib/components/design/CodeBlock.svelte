@@ -76,7 +76,7 @@
 >
 	{#if label}
 		<div
-			class="mono flex items-center justify-between gap-3 border-b border-[color:var(--code-border)] px-3 py-1.5 text-[11px]"
+			class="mono flex items-center justify-between gap-3 border-b border-[color:var(--code-border)] px-3 py-1.5 text-xs"
 			style="color: var(--syntax-comment)"
 		>
 			<span class="truncate">{label}</span>
@@ -107,8 +107,8 @@
 
 	.design-codeblock :global(code) {
 		font-family: var(--font-code);
-		font-size: 13.5px;
-		line-height: 1.7;
+		font-size: var(--code-fs, 0.9375rem);
+		line-height: 1.65;
 	}
 
 	.design-codeblock--flat {

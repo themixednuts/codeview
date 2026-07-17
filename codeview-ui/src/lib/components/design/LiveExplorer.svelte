@@ -845,7 +845,7 @@
 		href={resolveAppPath(modeHref)}
 		data-sveltekit-noscroll
 		data-sveltekit-keepfocus
-		class="flex items-center gap-1 rounded px-2.5 py-0.5 text-[11.5px] no-underline transition-colors {mode ===
+		class="flex items-center gap-1 rounded px-2.5 py-0.5 text-xs no-underline transition-colors {mode ===
 		nextMode
 			? 'bg-(--panel-solid) text-(--ink) shadow-(--shadow-soft)'
 			: 'text-(--muted)'}"
@@ -881,13 +881,13 @@
 		<KindBadge kind={node.kind} size={14} />
 		<span class="min-w-0 flex-1">
 			<span
-				class="mono block truncate text-[12px] font-semibold {isSelected
+				class="mono block truncate text-sm font-semibold {isSelected
 					? 'text-(--accent-strong)'
 					: 'text-(--ink-soft)'}"
 			>
 				{node.name}
 			</span>
-			<span class="mono block truncate text-[10px] text-(--muted-soft)">{node.id}</span>
+			<span class="mono block truncate text-2xs text-(--muted-soft)">{node.id}</span>
 		</span>
 	</a>
 {/snippet}
@@ -947,7 +947,7 @@
 		>
 			<KindBadge kind={node.kind} size={14} />
 			<span
-				class="mono min-w-0 flex-1 truncate text-[12px]"
+				class="mono min-w-0 flex-1 truncate text-sm"
 				class:line-through={node.is_deprecated}
 				style={`color: ${
 					isSelected ? 'var(--accent-strong)' : isAncestor ? 'var(--ink)' : 'var(--ink-soft)'
@@ -956,7 +956,7 @@
 				{node.name}
 			</span>
 			{#if node.visibility.kind === 'Public'}
-				<span class="mono shrink-0 text-[9.5px] font-semibold text-(--accent-strong)">pub</span>
+				<span class="mono shrink-0 text-2xs font-semibold text-(--accent-strong)">pub</span>
 			{/if}
 		</a>
 	</div>
@@ -965,10 +965,10 @@
 {#snippet relationshipList(title: string, count: number, groups: RelationshipGroup[])}
 	<div>
 		<div class="mb-2 flex items-center justify-between px-1.5">
-			<span class="text-[11px] font-semibold tracking-[0.16em] text-(--muted-soft) uppercase">
+			<span class="text-xs font-semibold tracking-[0.16em] text-(--muted-soft) uppercase">
 				{title}
 			</span>
-			<span class="mono text-[10.5px] text-(--muted-soft)">{count}</span>
+			<span class="mono text-xs text-(--muted-soft)">{count}</span>
 		</div>
 		{#if groups.length}
 			<div class="space-y-3">
@@ -976,7 +976,7 @@
 					<div>
 						<div class="mb-1 flex items-center gap-2 px-1.5">
 							<span
-								class="mono text-[10px] font-semibold tracking-[0.16em] uppercase"
+								class="mono text-2xs font-semibold tracking-[0.16em] uppercase"
 								style={`color: ${group.color}`}
 							>
 								{group.label}
@@ -992,17 +992,17 @@
 								>
 									<KindBadge kind={item.node.kind} size={13} />
 									<span
-										class="mono min-w-0 flex-1 truncate text-[11.5px] font-semibold text-(--ink-soft)"
+										class="mono min-w-0 flex-1 truncate text-xs font-semibold text-(--ink-soft)"
 									>
 										{item.node.name}
 									</span>
 									{#if item.count > 1}
-										<span class="mono text-[10px] text-(--muted-soft)">{item.count}</span>
+										<span class="mono text-2xs text-(--muted-soft)">{item.count}</span>
 									{/if}
 								</a>
 							{/each}
 							{#if group.items.length > 8}
-								<div class="mono px-1.5 py-1 text-[10.5px] text-(--muted-soft)">
+								<div class="mono px-1.5 py-1 text-xs text-(--muted-soft)">
 									+{group.items.length - 8} more
 								</div>
 							{/if}
@@ -1011,7 +1011,7 @@
 				{/each}
 			</div>
 		{:else}
-			<p class="mono px-1.5 py-2 text-[11.5px] text-(--muted-soft)">None recorded.</p>
+			<p class="mono px-1.5 py-2 text-xs text-(--muted-soft)">None recorded.</p>
 		{/if}
 	</div>
 {/snippet}
@@ -1022,7 +1022,7 @@
 		aria-label="Module tree"
 	>
 		<div class="border-b border-(--panel-border-soft) px-4 pt-4 pb-3">
-			<div class="mb-1 text-[10px] font-semibold tracking-[0.22em] text-(--muted-soft) uppercase">
+			<div class="mb-1 text-2xs font-semibold tracking-[0.22em] text-(--muted-soft) uppercase">
 				Module tree
 			</div>
 			<div class="flex min-w-0 items-center gap-2">
@@ -1030,7 +1030,7 @@
 					href={canonicalCrateName && version
 						? resolveAppPath(`/${canonicalCrateName}/${version}`)
 						: '#'}
-					class="font-display min-w-0 truncate text-[15px] font-semibold text-(--ink)"
+					class="font-display min-w-0 truncate text-md font-semibold text-(--ink)"
 				>
 					{canonicalCrateName ?? crateName ?? 'crate'}
 				</a>
@@ -1041,7 +1041,7 @@
 						<input type="hidden" name="query" value={page.url.search} />
 						<select
 							name="version"
-							class="mono corner-squircle max-w-28 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-1.5 py-0.5 text-[10.5px] text-(--muted)"
+							class="mono corner-squircle max-w-28 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-1.5 py-0.5 text-xs text-(--muted)"
 							aria-label="Crate version"
 							value={version}
 							onchange={onVersionChange}
@@ -1050,13 +1050,13 @@
 								<option value={option}>v{option}</option>
 							{/each}
 						</select>
-						<button type="submit" class="no-js-only text-[10px] font-semibold text-(--accent)">
+						<button type="submit" class="no-js-only text-2xs font-semibold text-(--accent)">
 							Go
 						</button>
 					</form>
 				{/if}
 			</div>
-			<div class="mono mt-0.5 text-[10.5px] text-(--muted-soft)">
+			<div class="mono mt-0.5 text-xs text-(--muted-soft)">
 				{#if totalItems > 0}
 					{totalItems.toLocaleString()} items
 				{:else if crateListCount != null}
@@ -1082,7 +1082,7 @@
 					placeholder="Filter items..."
 					aria-label="Filter crate items"
 					value={filterDraft}
-					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-12 pl-7 text-[11.5px] text-(--ink) shadow-(--shadow-soft) transition-colors outline-none hover:border-(--panel-border-strong) focus:border-(--accent) focus:ring-2 focus:ring-(--accent-ring)"
+					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-12 pl-7 text-xs text-(--ink) shadow-(--shadow-soft) transition-colors outline-none hover:border-(--panel-border-strong) focus:border-(--accent) focus:ring-2 focus:ring-(--accent-ring)"
 					oninput={handleFilterInput}
 				/>
 				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
@@ -1103,14 +1103,14 @@
 					placeholder="Filter items..."
 					aria-label="Filter crate items"
 					value={filter}
-					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-14 pl-7 text-[11.5px] text-(--ink) shadow-(--shadow-soft) outline-none"
+					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-14 pl-7 text-xs text-(--ink) shadow-(--shadow-soft) outline-none"
 				/>
 				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
 					<Icon name="search" size={12} />
 				</span>
 				<button
 					type="submit"
-					class="absolute inset-y-1 right-1 rounded-sm px-2 text-[10px] font-semibold text-(--accent)"
+					class="absolute inset-y-1 right-1 rounded-sm px-2 text-2xs font-semibold text-(--accent)"
 				>
 					Filter
 				</button>
@@ -1147,7 +1147,7 @@
 			{/if}
 			{#if debugInfo}
 				<div
-					class="mono mt-2 rounded-sm border border-(--panel-border) bg-(--panel-solid) px-2 py-1 text-[10px] text-(--muted)"
+					class="mono mt-2 rounded-sm border border-(--panel-border) bg-(--panel-solid) px-2 py-1 text-2xs text-(--muted)"
 				>
 					<div>{debugInfo.statusDebugKey}</div>
 					<div>{debugInfo.progressDebugKey}</div>
@@ -1175,7 +1175,7 @@
 					</div>
 				{:else}
 					<div class="min-h-0 flex-1 overflow-y-auto px-2.5 py-3">
-						<div class="mono mb-1 px-2 text-[10.5px] text-(--muted-soft)">
+						<div class="mono mb-1 px-2 text-xs text-(--muted-soft)">
 							{searchResults.length} result{searchResults.length === 1 ? '' : 's'}
 						</div>
 						{#each searchResults as node (node.id)}
@@ -1243,19 +1243,19 @@
 		{#if crateList.length > 0 || loadingCrateSwitcher}
 			<div class="border-t border-(--panel-border-soft) px-4 py-3">
 				<div class="mb-2 flex items-center gap-2">
-					<span class="text-[9.5px] font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
+					<span class="text-2xs font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
 						{crateSwitcherLabel}
 					</span>
 					<span class="h-px flex-1 bg-(--panel-border-soft)"></span>
 				</div>
 				{#if loadingCrateSwitcher}
-					<p class="mono text-[11px] text-(--muted-soft)">Loading crates...</p>
+					<p class="mono text-xs text-(--muted-soft)">Loading crates...</p>
 				{:else}
 					<div class="max-h-24 overflow-y-auto">
 						{#each crateList.slice(0, 6) as item (item.id)}
 							<a
 								href={resolveAppPath(`/${item.id}/${item.version}`)}
-								class="mono block truncate rounded px-1.5 py-1 text-[11px] text-(--muted) hover:bg-(--panel-muted) hover:text-(--ink)"
+								class="mono block truncate rounded px-1.5 py-1 text-xs text-(--muted) hover:bg-(--panel-muted) hover:text-(--ink)"
 							>
 								{item.name ?? item.id}@{item.version}
 							</a>
@@ -1353,31 +1353,31 @@
 			<div class="border-b border-(--panel-border-soft) px-5 pt-5 pb-4">
 				<div class="mb-2 flex items-center gap-2">
 					<span
-						class="mono rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.14em] uppercase"
+						class="mono rounded px-1.5 py-0.5 text-2xs font-semibold tracking-[0.14em] uppercase"
 						style="background: var(--accent-soft); color: var(--accent-strong)"
 					>
 						{selectedDesign.kindLabel}
 					</span>
 					{#if selectedDesign.external}
-						<span class="mono rounded bg-(--panel-muted) px-1.5 py-0.5 text-[10px] text-(--muted)">
+						<span class="mono rounded bg-(--panel-muted) px-1.5 py-0.5 text-2xs text-(--muted)">
 							external
 						</span>
 					{/if}
-					<span class="mono ml-auto text-[10.5px] text-(--muted-soft)">
+					<span class="mono ml-auto text-xs text-(--muted-soft)">
 						{visibilityLabel(selected.visibility)}
 					</span>
 				</div>
 				<h2
-					class="font-display truncate text-[26px] leading-none font-semibold tracking-tight text-(--ink)"
+					class="font-display truncate text-2xl leading-none font-semibold tracking-tight text-(--ink)"
 					title={selected.name}
 				>
 					{selected.name}
 				</h2>
-				<div class="mono mt-2 truncate text-[11px] text-(--muted-soft)" title={selectedPath}>
+				<div class="mono mt-2 truncate text-xs text-(--muted-soft)" title={selectedPath}>
 					{selectedPath}
 				</div>
 				{#if docSummary}
-					<p class="mt-3 line-clamp-4 text-[13px] leading-relaxed text-(--muted)">
+					<p class="mt-3 line-clamp-4 text-sm leading-relaxed text-(--muted)">
 						{docSummary}
 					</p>
 				{/if}
@@ -1388,14 +1388,14 @@
 				{/if}
 				<div class="mt-4 grid grid-cols-2 gap-2">
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2">
-						<div class="mono text-[10px] text-(--muted-soft)">outgoing</div>
-						<div class="mono text-[18px] font-semibold text-(--ink)">
+						<div class="mono text-2xs text-(--muted-soft)">outgoing</div>
+						<div class="mono text-lg font-semibold text-(--ink)">
 							{selectedEdges.outgoing.length}
 						</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-3 py-2">
-						<div class="mono text-[10px] text-(--muted-soft)">incoming</div>
-						<div class="mono text-[18px] font-semibold text-(--ink)">
+						<div class="mono text-2xs text-(--muted-soft)">incoming</div>
+						<div class="mono text-lg font-semibold text-(--ink)">
 							{selectedEdges.incoming.length}
 						</div>
 					</div>
@@ -1418,7 +1418,7 @@
 			<div class="flex items-center gap-2 border-t border-(--panel-border-soft) px-5 py-3">
 				<a
 					href={docsHref}
-					class="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-(--accent) py-1.5 text-[12px] font-medium text-(--on-accent)"
+					class="flex flex-1 items-center justify-center gap-1.5 rounded-md bg-(--accent) py-1.5 text-sm font-medium text-(--on-accent)"
 					onclick={(event) => {
 						if (
 							event.metaKey ||
@@ -1439,7 +1439,7 @@
 				<a
 					href={resolveAppPath(getNodeUrl(selected.id))}
 					data-sveltekit-noscroll
-					class="rounded-md border border-(--panel-border) bg-(--panel-solid) px-3 py-1.5 text-[12px] text-(--ink-soft)"
+					class="rounded-md border border-(--panel-border) bg-(--panel-solid) px-3 py-1.5 text-sm text-(--ink-soft)"
 				>
 					Permalink
 				</a>
@@ -1462,7 +1462,7 @@
 			{/if}
 			<nav
 				aria-label="Node path"
-				class="mono flex min-w-0 flex-nowrap items-baseline gap-1 overflow-hidden text-[13px]"
+				class="mono flex min-w-0 flex-nowrap items-baseline gap-1 overflow-hidden text-sm"
 			>
 				{#each ancestors as ancestor, index (ancestor.id)}
 					<a
@@ -1482,7 +1482,7 @@
 			</nav>
 		</div>
 		<div class="ml-auto flex shrink-0 items-center gap-2">
-			<span class="mono hidden text-[11px] text-(--muted-soft) sm:inline">
+			<span class="mono hidden text-xs text-(--muted-soft) sm:inline">
 				{relationshipTotal} relationships
 			</span>
 			<div

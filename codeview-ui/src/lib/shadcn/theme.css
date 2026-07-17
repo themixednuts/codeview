@@ -5,10 +5,20 @@
  * codeview's existing CSS variables from app.css.
  *
  * We do NOT duplicate the tailwindcss import (app.css already does that).
- * We do NOT use .dark class — codeview uses [data-theme='dark'] on :root.
+ * We do NOT use .dark class — codeview uses an SSR theme preference on :root.
  */
 
-@custom-variant dark (&:is([data-theme='dark'] *));
+@custom-variant dark {
+	&:is([data-theme='dark'] *) {
+		@slot;
+	}
+
+	@media (prefers-color-scheme: dark) {
+		&:is([data-theme='system'] *) {
+			@slot;
+		}
+	}
+}
 
 :root {
 	--radius: 0.625rem;

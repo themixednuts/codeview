@@ -4,11 +4,7 @@
 
 	type TocEntry = { anchor: string; title: string; count?: number | null };
 
-	let {
-		entries,
-		openGraphHref,
-		nodeId,
-	} = $props<{
+	let { entries, openGraphHref, nodeId } = $props<{
 		entries: TocEntry[];
 		openGraphHref?: string;
 		nodeId?: string;
@@ -51,31 +47,34 @@
 	};
 </script>
 
-{#if entries.length > 0}
+{#if entries.length >= 3 || (openGraphHref && nodeId)}
 	<aside class="doc-toc" {@attach observeSections}>
-		<div class="mb-2 text-[10px] font-semibold tracking-[0.22em] text-(--muted-soft) uppercase">
-			On this page
-		</div>
-		<nav class="doc-toc-list" aria-label="On this page">
-			{#each entries as entry (entry.anchor)}
-				{@const active = activeAnchor === entry.anchor}
-				<a href={`#${entry.anchor}`} class="doc-toc-link {active ? 'is-active' : ''}">
-					<span class="flex-1 truncate">{entry.title}</span>
-					{#if entry.count != null}
-						<span class="font-mono text-[10px] text-(--muted-soft) tabular-nums">{entry.count}</span>
-					{/if}
-				</a>
-			{/each}
-		</nav>
+		{#if entries.length >= 3}
+			<div class="mb-2 text-xs font-semibold text-(--muted) uppercase">On this page</div>
+			<nav class="doc-toc-list" aria-label="On this page">
+				{#each entries as entry (entry.anchor)}
+					{@const active = activeAnchor === entry.anchor}
+					<a href={`#${entry.anchor}`} class="doc-toc-link {active ? 'is-active' : ''}">
+						<span class="flex-1 truncate">{entry.title}</span>
+						{#if entry.count != null}
+							<span class="font-mono text-2xs text-(--muted-soft) tabular-nums">
+								{entry.count}
+							</span>
+						{/if}
+					</a>
+				{/each}
+			</nav>
+		{/if}
 
 		{#if openGraphHref && nodeId}
 			<div
-				class="corner-squircle mt-6 rounded-(--radius-card) border border-(--panel-border-soft) bg-(--panel) p-3"
+				class="corner-squircle rounded-(--radius-card) border border-(--panel-border-soft) bg-(--panel) p-3"
+				class:mt-6={entries.length >= 3}
 			>
 				<a
 					href={resolve(openGraphHref)}
 					data-sveltekit-noscroll
-					class="inline-flex items-center gap-1 text-[10.5px] font-mono text-(--accent-strong) hover:text-(--accent)"
+					class="inline-flex items-center gap-1 font-mono text-xs text-(--accent-strong) hover:text-(--accent)"
 				>
 					Open in graph
 					<span aria-hidden="true">→</span>
@@ -103,8 +102,8 @@
 		display: flex;
 		align-items: baseline;
 		gap: 0.5rem;
-		padding: 3px 0 3px 10px;
-		font-size: 12px;
+		padding: 0.1875rem 0 0.1875rem 0.625rem;
+		font-size: var(--text-sm);
 		color: var(--muted);
 		border-left: 2px solid transparent;
 		transition:

@@ -38,6 +38,7 @@
 		ExternalLinkMode,
 		SourceProviderMode,
 		Theme,
+		TextSizeMode,
 		VcsMode,
 		VoiceMode,
 	} from '$lib/context';
@@ -47,6 +48,7 @@
 		theme: Theme;
 		accentMode: AccentMode;
 		densityMode: DensityMode;
+		textSizeMode: TextSizeMode;
 		voiceMode: VoiceMode;
 		docLayout: DocLayoutMode;
 		codeThemeLight: CodeTheme;
@@ -58,6 +60,7 @@
 		onThemeChange: (theme: Theme) => void;
 		onAccentChange: (mode: AccentMode) => void;
 		onDensityChange: (mode: DensityMode) => void;
+		onTextSizeChange: (mode: TextSizeMode) => void;
 		onVoiceChange: (mode: VoiceMode) => void;
 		onDocLayoutChange: (mode: DocLayoutMode) => void;
 		onCodeThemeLightChange: (theme: CodeTheme) => void;
@@ -75,6 +78,7 @@
 		theme,
 		accentMode,
 		densityMode,
+		textSizeMode,
 		voiceMode,
 		docLayout,
 		codeThemeLight,
@@ -86,6 +90,7 @@
 		onThemeChange,
 		onAccentChange,
 		onDensityChange,
+		onTextSizeChange,
 		onVoiceChange,
 		onDocLayoutChange,
 		onCodeThemeLightChange,
@@ -123,12 +128,17 @@
 		{ id: 'char', label: 'Charcoal', swatch: ['#2b323a', '#fdf6e3', '#586e75'] },
 	];
 	const densityOptions: Array<{ id: DensityMode; label: string; hint: string }> = [
-		{ id: 'compact', label: 'Compact', hint: '13px' },
-		{ id: 'comfortable', label: 'Comfort', hint: '14px' },
-		{ id: 'spacious', label: 'Spacious', hint: '15px' },
+		{ id: 'compact', label: 'Compact', hint: 'Tight rows' },
+		{ id: 'comfortable', label: 'Comfort', hint: 'Balanced' },
+		{ id: 'spacious', label: 'Spacious', hint: 'More air' },
+	];
+	const textSizeOptions: Array<{ id: TextSizeMode; label: string; hint: string }> = [
+		{ id: 'standard', label: 'Standard', hint: '17px docs' },
+		{ id: 'large', label: 'Large', hint: '18px docs' },
+		{ id: 'extra-large', label: 'XL', hint: '20px docs' },
 	];
 	const voiceOptions: Array<{ id: VoiceMode; label: string; hint: string }> = [
-		{ id: 'editorial', label: 'Editorial', hint: 'Fraunces / Inter' },
+		{ id: 'editorial', label: 'Editorial', hint: 'Literata / Plex' },
 		{ id: 'technical', label: 'Technical', hint: 'IBM Plex Sans' },
 		{ id: 'geometric', label: 'Geometric', hint: 'Space Grotesk' },
 	];
@@ -187,6 +197,7 @@
 
 	const themeIndex = $derived(activeIndex(themeOptions, theme));
 	const densityIndex = $derived(activeIndex(densityOptions, densityMode));
+	const textSizeIndex = $derived(activeIndex(textSizeOptions, textSizeMode));
 	const voiceIndex = $derived(activeIndex(voiceOptions, voiceMode));
 	const docLayoutIndex = $derived(activeIndex(docLayoutOptions, docLayout));
 	const linkIndex = $derived(activeIndex(linkOptions, extLinkMode));
@@ -257,11 +268,11 @@
 					>
 						<SettingsIcon size={14} class="text-(--on-accent)" />
 					</div>
-					<Sheet.Title class="font-display text-[17px] leading-none font-semibold text-(--ink)">
+					<Sheet.Title class="font-display text-lg leading-none font-semibold text-(--ink)">
 						Settings
 					</Sheet.Title>
 				</div>
-				<Sheet.Description class="text-[11px] text-(--muted)">
+				<Sheet.Description class="text-xs text-(--muted)">
 					Theme, type, density and integration preferences.
 				</Sheet.Description>
 			</Sheet.Header>
@@ -315,7 +326,7 @@
 						</SettingsRadioOption>
 					{/each}
 				</RadioGroup.Root>
-				<p class="mt-2 text-[10.5px] text-(--muted)">
+				<p class="mt-2 text-xs text-(--muted)">
 					{accentOptions.find((option) => option.id === accentMode)?.label}: accent, paper, ink
 				</p>
 			</section>
@@ -342,7 +353,35 @@
 							contentClass="flex-col gap-0.5"
 						>
 							<span>{option.label}</span>
-							<span class="font-mono text-[9px] opacity-70">{option.hint}</span>
+							<span class="font-mono text-2xs opacity-70">{option.hint}</span>
+						</SettingsRadioOption>
+					{/each}
+				</RadioGroup.Root>
+			</section>
+
+			<section class="settings-card" aria-labelledby="settings-text-size">
+				<h2 id="settings-text-size" class="settings-card-title">Text size</h2>
+				<RadioGroup.Root
+					value={textSizeMode}
+					orientation="horizontal"
+					class="settings-segmented grid-cols-3"
+					onValueChange={(value) => selectedRadio<TextSizeMode>(value, onTextSizeChange)}
+				>
+					<span
+						class="settings-segmented-indicator"
+						style={indicatorStyle(textSizeIndex, textSizeOptions.length)}
+					></span>
+					{#each textSizeOptions as option (option.id)}
+						<SettingsRadioOption
+							id={`settings-text-size-${option.id}`}
+							value={option.id}
+							label={`${option.label} text size`}
+							variant="segmented"
+							class="h-10"
+							contentClass="flex-col gap-0.5"
+						>
+							<span>{option.label}</span>
+							<span class="font-mono text-2xs opacity-70">{option.hint}</span>
 						</SettingsRadioOption>
 					{/each}
 				</RadioGroup.Root>
@@ -370,7 +409,7 @@
 							contentClass="flex-col gap-0.5"
 						>
 							<span>{option.label}</span>
-							<span class="max-w-full truncate font-mono text-[8.5px] opacity-70">
+							<span class="max-w-full truncate font-mono text-2xs opacity-70">
 								{option.hint}
 							</span>
 						</SettingsRadioOption>
@@ -379,10 +418,10 @@
 				<div
 					class="corner-squircle mt-2 rounded-(--radius-chip) border border-(--panel-border-soft) bg-(--panel) px-3 py-2"
 				>
-					<div class="font-display text-[15px] font-semibold text-(--ink)">
+					<div class="font-display text-md font-semibold text-(--ink)">
 						Type that fits the page
 					</div>
-					<div class="text-[11px] text-(--muted)">A quick brown fox jumps over the lazy dog.</div>
+					<div class="text-xs text-(--muted)">A quick brown fox jumps over the lazy dog.</div>
 				</div>
 			</section>
 
@@ -410,11 +449,11 @@
 							<span class="inline-flex items-center gap-1.5">
 								<option.Icon size={13} />{option.label}
 							</span>
-							<span class="font-mono text-[8.5px] opacity-70">{option.hint}</span>
+							<span class="font-mono text-2xs opacity-70">{option.hint}</span>
 						</SettingsRadioOption>
 					{/each}
 				</RadioGroup.Root>
-				<p class="mt-1.5 text-[10px] text-(--muted)">
+				<p class="mt-1.5 text-2xs text-(--muted)">
 					Layouts change the full documentation route composition.
 				</p>
 			</section>
@@ -438,7 +477,7 @@
 						</NativeSelect.Root>
 						<div
 							data-code-theme={codeThemeLight}
-							class="codeblock corner-squircle overflow-hidden rounded-(--radius-chip) font-mono text-[11px] leading-[1.65]"
+							class="codeblock corner-squircle overflow-hidden rounded-(--radius-chip) font-mono text-xs leading-[1.65]"
 						>
 							<pre class="m-0 px-3 py-2"><span class="tok-kw">pub fn</span> <span
 									class="tok-fn">greet</span>(<span class="tok-id">name</span>: <span
@@ -465,7 +504,7 @@
 						</NativeSelect.Root>
 						<div
 							data-code-theme={codeThemeDark}
-							class="codeblock corner-squircle overflow-hidden rounded-(--radius-chip) font-mono text-[11px] leading-[1.65]"
+							class="codeblock corner-squircle overflow-hidden rounded-(--radius-chip) font-mono text-xs leading-[1.65]"
 						>
 							<pre class="m-0 px-3 py-2"><span class="tok-kw">pub fn</span> <span
 									class="tok-fn">greet</span>(<span class="tok-id">name</span>: <span
@@ -481,7 +520,7 @@
 							<label for="settings-ligatures" class="text-xs font-medium text-(--ink)">
 								Ligatures
 							</label>
-							<p class="text-[10px] text-(--muted)">Combine glyphs like =&gt; -&gt; !=</p>
+							<p class="text-2xs text-(--muted)">Combine glyphs like =&gt; -&gt; !=</p>
 						</div>
 						<Switch
 							id="settings-ligatures"
@@ -519,7 +558,7 @@
 								</SettingsRadioOption>
 							{/each}
 						</RadioGroup.Root>
-						<p class="mt-1.5 text-[10px] text-(--muted)">
+						<p class="mt-1.5 text-2xs text-(--muted)">
 							{extLinkMode === 'docs'
 								? 'External crate links open on docs.rs.'
 								: 'External crate links stay within Codeview.'}
@@ -582,7 +621,7 @@
 									value={option.id}
 									label={option.label}
 									variant="segmented"
-									contentClass="text-[10.5px]"
+									contentClass="text-xs"
 								>
 									{option.label}
 								</SettingsRadioOption>
@@ -597,17 +636,17 @@
 								id="settings-custom-editor"
 								value={customScheme}
 								placeholder={'scheme://file/{path}:{line}'}
-								class="bg-(--panel) font-mono text-[11px]"
+								class="bg-(--panel) font-mono text-xs"
 								oninput={(event) => setCustomScheme(event.currentTarget.value)}
 							/>
 						{:else}
 							<div
-								class="corner-squircle rounded-(--radius-chip) border border-(--panel-border) bg-(--code-bg) px-3 py-2 font-mono text-[11px] text-(--code-ink)"
+								class="corner-squircle rounded-(--radius-chip) border border-(--panel-border) bg-(--code-bg) px-3 py-2 font-mono text-xs text-(--code-ink)"
 							>
 								{activeEditorScheme}
 							</div>
 						{/if}
-						<p class="mt-1 text-[10px] text-(--muted)">
+						<p class="mt-1 text-2xs text-(--muted)">
 							<code class="text-(--accent)">{'{path}'}</code>
 							and
 							<code class="text-(--accent)">{'{line}'}</code>
@@ -621,10 +660,10 @@
 							id="settings-source-root"
 							value={sourceRoot}
 							placeholder="C:\\src\\project"
-							class="bg-(--panel) font-mono text-[11px]"
+							class="bg-(--panel) font-mono text-xs"
 							oninput={(event) => onSourceRootChange?.(event.currentTarget.value)}
 						/>
-						<p class="mt-1 text-[10px] text-(--muted)">
+						<p class="mt-1 text-2xs text-(--muted)">
 							Used by hosted editor links for repository source paths.
 						</p>
 					</div>
@@ -655,7 +694,7 @@
 						</SettingsRadioOption>
 					{/each}
 				</RadioGroup.Root>
-				<p class="mt-1.5 text-[10px] text-(--muted)">Used when cloning repositories.</p>
+				<p class="mt-1.5 text-2xs text-(--muted)">Used when cloning repositories.</p>
 			</section>
 		</div>
 	</Sheet.Content>
@@ -671,7 +710,7 @@
 	.settings-card-title {
 		margin-bottom: 0.75rem;
 		font-family: var(--font-display);
-		font-size: 13px;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		letter-spacing: 0;
 		text-transform: uppercase;
@@ -702,16 +741,16 @@
 	.settings-field-label {
 		display: block;
 		margin-bottom: 0.25rem;
-		font-size: 10px;
+		font-size: var(--text-2xs);
 		font-weight: 500;
 		text-transform: uppercase;
 		color: var(--muted);
 	}
 
 	:global(.settings-sheet button[data-bits-dialog-close]) {
-		top: 14px;
-		right: 14px;
-		padding: 6px;
+		top: 0.875rem;
+		right: 0.875rem;
+		padding: 0.375rem;
 		border: 1px solid var(--panel-border);
 		border-radius: 6px;
 		background: var(--panel-strong);

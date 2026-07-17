@@ -167,7 +167,7 @@
 								</div>
 							</div>
 
-							<div class="ml-2 flex flex-wrap items-center gap-1.5 text-[10px] text-(--muted)">
+							<div class="ml-2 flex flex-wrap items-center gap-1.5 text-2xs text-(--muted)">
 								{#if m.childModuleCount > 0}
 									<span>{m.childModuleCount} submodules</span>
 								{/if}
@@ -179,7 +179,7 @@
 							{#if summary && summary.topKinds.length > 0}
 								<div class="ml-2 flex flex-wrap gap-1">
 									{#each summary.topKinds as [kind, count] (kind)}
-										<span class="badge badge-sm text-[9px]">
+										<span class="badge badge-sm text-2xs">
 											{edgeLabels[kind]}
 											{count}
 										</span>

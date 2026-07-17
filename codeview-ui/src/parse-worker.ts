@@ -56,6 +56,8 @@ const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
 const GITHUB_API_VERSION = '2026-03-10';
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);
+const SYSROOT_CHANNELS = new Set(['stable', 'beta', 'nightly']);
+const SYSROOT_CRATES = new Set(['std', 'core', 'alloc', 'proc_macro', 'test']);
 const MAX_WS_MESSAGE_CHARS = 4096;
 const MAX_WS_TAGS_PER_MESSAGE = 20;
 const MAX_WS_TAGS_PER_SOCKET = 100;
@@ -86,9 +88,14 @@ const WORKFLOW_ARTIFACT_VERIFY_STEP_CONFIG = {
 	retries: { limit: 12, delay: '15 seconds', backoff: 'linear' },
 	timeout: '45 seconds',
 } satisfies WorkflowStepConfig;
-const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
 const HOSTED_SYSROOT_UNAVAILABLE_MESSAGE =
-	'Hosted standard-library parsing currently supports the nightly rustdoc JSON channel.';
+	'Hosted standard-library parsing requires a stable, beta, or nightly channel.';
+const HOSTED_SYSROOT_CRATE_UNAVAILABLE_MESSAGE =
+	'Hosted toolchain parsing supports std, core, alloc, proc_macro, and test.';
+
+function isSupportedSysrootCrate(name: string): boolean {
+	return SYSROOT_CRATES.has(name.replaceAll('-', '_'));
+}
 
 type RateBucketConfig = {
 	name: string;
@@ -462,7 +469,7 @@ function githubDispatchBody(env: ParseWorkerEnv, params: ParseWorkflowParams, wo
 			crate: params.name,
 			version: params.version,
 			request_kind: params.kind,
-			toolchain: params.kind === 'sysroot' ? HOSTED_SYSROOT_PARSE_CHANNEL : '',
+			toolchain: params.kind === 'sysroot' ? params.version : '',
 			parse_force: params.force ? 'true' : 'false',
 			workflow_id: workflowId,
 			request_id: params.requestId,
@@ -843,7 +850,7 @@ function plannedParseItem(
 	const version = value.version ?? '';
 	if (!isSafeCrateName(name) || !isSafeVersion(version)) return null;
 	if (value.kind === 'std' || value.kind === 'sysroot') {
-		if (version !== HOSTED_SYSROOT_PARSE_CHANNEL) return null;
+		if (!SYSROOT_CHANNELS.has(version) || !isSupportedSysrootCrate(name)) return null;
 		return {
 			kind: 'sysroot',
 			name,
@@ -2074,7 +2081,22 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
 		message.ack();
 		return;
 	}
-	if (message.body.kind === 'sysroot' && message.body.version !== HOSTED_SYSROOT_PARSE_CHANNEL) {
+	if (message.body.kind === 'sysroot' && !isSupportedSysrootCrate(message.body.name)) {
+		await updateStatus(env, {
+			name: message.body.name,
+			version: message.body.version,
+			kind: message.body.kind,
+			status: 'failed',
+			step: 'unsupported',
+			error: HOSTED_SYSROOT_CRATE_UNAVAILABLE_MESSAGE,
+			requestId: message.body.requestId,
+			workflowId: parseWorkflowId(message.body.requestId),
+			requestedBy: message.body.requestedBy,
+		});
+		message.ack();
+		return;
+	}
+	if (message.body.kind === 'sysroot' && !SYSROOT_CHANNELS.has(message.body.version)) {
 		await updateStatus(env, {
 			name: message.body.name,
 			version: message.body.version,

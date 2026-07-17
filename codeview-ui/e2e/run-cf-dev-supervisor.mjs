@@ -7,10 +7,13 @@ let firstRun = true;
 
 function launch() {
 	const script = firstRun ? 'cf:dev:clear' : 'cf:dev';
+	const port = process.env.CODEVIEW_E2E_PORT;
+	const args = ['run', script];
+	if (port) args.push('--', '--port', port);
 	firstRun = false;
 
 	console.log(`[cf-supervisor] starting ${script}`);
-	child = spawn(bunCmd, ['run', script], {
+	child = spawn(bunCmd, args, {
 		stdio: 'inherit',
 		env: process.env,
 	});

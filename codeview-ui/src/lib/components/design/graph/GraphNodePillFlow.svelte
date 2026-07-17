@@ -57,7 +57,7 @@
 		{data.node.label || data.node.id}
 	</span>
 	{#if data.isFocus}
-		<span class="mono ml-auto shrink-0 text-[9.5px] tracking-wider uppercase opacity-70">
+		<span class="mono ml-auto shrink-0 text-2xs tracking-wider uppercase opacity-70">
 			{data.node.kindLabel ?? data.node.kind}
 		</span>
 	{/if}
@@ -89,7 +89,7 @@
 
 	.graph-node-pill-flow__label {
 		font-family: var(--font-code);
-		font-size: 12px;
+		font-size: var(--text-sm);
 		font-weight: 600;
 		color: var(--pill-ink);
 	}
@@ -107,7 +107,7 @@
 
 	.graph-node-pill-flow[data-focus='true'] .graph-node-pill-flow__label {
 		font-family: var(--font-display);
-		font-size: 15.5px;
+		font-size: var(--text-md);
 		font-weight: 700;
 	}
 </style>

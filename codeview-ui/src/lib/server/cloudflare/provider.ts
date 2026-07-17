@@ -19,7 +19,14 @@ import {
 	isCurrentHostedArtifactMetadata,
 } from '$lib/hosted-contract';
 import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
-import { isStdCrate } from '$lib/std';
+import {
+	DEFAULT_RUST_CHANNEL,
+	RUST_CHANNEL_ORDER,
+	isRustChannel,
+	isStdCrate,
+	isStdJsonCrate,
+	searchToolchainCrates,
+} from '$lib/std';
 import type {
 	CrateSummaryResult,
 	CrossEdgeData,
@@ -254,9 +261,8 @@ const REF_CACHE_MAX = 512;
 const JSON_CACHE_MAX = 128;
 const ARTIFACT_JSON_CACHE_MAX = 256;
 const IMMUTABLE_ARTIFACT_CACHE_CONTROL = 'public, max-age=31536000, immutable';
-const HOSTED_SYSROOT_PARSE_CHANNEL = 'nightly';
 const HOSTED_SYSROOT_UNAVAILABLE_MESSAGE =
-	'Hosted standard-library parsing currently supports the nightly rustdoc JSON channel. Use nightly for forced std/core/alloc/proc_macro/test parses.';
+	'Choose stable, beta, or nightly for std/core/alloc/proc_macro/test.';
 
 function uniqueCrateNameVariants(name: string): string[] {
 	return [...new Set(crateNameVariants(name))];
@@ -1040,9 +1046,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				view.detail.relatedNodes
 					.filter(
 						(node) =>
-							node.kind === 'Impl' &&
-							node.impl_category === 'Trait' &&
-							Boolean(node.impl_trait),
+							node.kind === 'Impl' && node.impl_category === 'Trait' && Boolean(node.impl_trait),
 					)
 					.map((node) => node.impl_trait as string),
 			),
@@ -1126,6 +1130,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			listPublishedVersionsFromRefs(name, limit),
 			listRegistryVersions(name, limit),
 		]);
+		if (isStdCrate(normalizeCrateName(name))) {
+			return mergeVersions([...RUST_CHANNEL_ORDER], refsVersions, limit);
+		}
 		if (registryVersions.length > 0) return mergeVersions(registryVersions, refsVersions, limit);
 		return refsVersions ?? [];
 	}
@@ -1955,7 +1962,14 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			const normalizedName = normalizeCrateName(name);
 			const requestKind = isStdCrate(normalizedName) ? 'sysroot' : 'crate';
 			const requestedVersion =
-				requestKind === 'sysroot' && version === 'latest' ? HOSTED_SYSROOT_PARSE_CHANNEL : version;
+				requestKind === 'sysroot' && version === 'latest' ? DEFAULT_RUST_CHANNEL : version;
+			if (requestKind === 'sysroot' && !isStdJsonCrate(normalizedName)) {
+				return Result.err(
+					new NotAvailableError({
+						message: 'Hosted toolchain parsing supports std, core, alloc, proc_macro, and test.',
+					}),
+				);
+			}
 			let parseContext: Awaited<ReturnType<typeof resolveParseRequestContext>> | null = null;
 			if (force) {
 				parseContext = await resolveParseRequestContext({ rateLimit: false });
@@ -1976,7 +1990,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 					}
 				}
 			}
-			if (requestKind === 'sysroot' && requestedVersion !== HOSTED_SYSROOT_PARSE_CHANNEL) {
+			if (requestKind === 'sysroot' && !isRustChannel(requestedVersion)) {
 				return Result.err(
 					new NotAvailableError({
 						message: HOSTED_SYSROOT_UNAVAILABLE_MESSAGE,
@@ -2047,31 +2061,45 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		async searchRegistry(query: string) {
 			const needle = query.trim().toLowerCase();
 			if (!needle) return [];
+			const toolchainResults = searchToolchainCrates(needle);
+			let registryResults: CrateSummaryResult[] = [];
 			const registryResult = getRegistry('rust');
 			if (!registryResult.isErr()) {
 				const live = await registryResult.value.search(needle, 20);
-				if (live.length > 0) return live.map(registrySummary);
+				registryResults = live.map(registrySummary);
 			}
-			const crates = await listPublishedCrates();
-			return crates
-				.map((crate) => {
-					const name = crate.name.toLowerCase();
-					const id = (crate.id ?? crate.name).toLowerCase();
-					const description = crate.description?.toLowerCase() ?? '';
-					if (name === needle || id === needle) return { crate, score: 0 };
-					if (name.startsWith(needle) || id.startsWith(needle)) return { crate, score: 1 };
-					if (name.includes(needle) || id.includes(needle)) return { crate, score: 2 };
-					if (description.includes(needle)) return { crate, score: 3 };
-					return null;
+			if (registryResults.length === 0) {
+				const crates = await listPublishedCrates();
+				registryResults = crates
+					.map((crate) => {
+						const name = crate.name.toLowerCase();
+						const id = (crate.id ?? crate.name).toLowerCase();
+						const description = crate.description?.toLowerCase() ?? '';
+						if (name === needle || id === needle) return { crate, score: 0 };
+						if (name.startsWith(needle) || id.startsWith(needle)) return { crate, score: 1 };
+						if (name.includes(needle) || id.includes(needle)) return { crate, score: 2 };
+						if (description.includes(needle)) return { crate, score: 3 };
+						return null;
+					})
+					.filter((entry): entry is { crate: CrateSummaryResult; score: number } => entry !== null)
+					.sort(
+						(a, b) =>
+							a.score - b.score ||
+							a.crate.name.localeCompare(b.crate.name, undefined, { sensitivity: 'base' }),
+					)
+					.map((entry) => entry.crate);
+			}
+
+			const merged = [...toolchainResults, ...registryResults];
+			const seen = new Set<string>();
+			return merged
+				.filter((crate) => {
+					const key = `${crate.id ?? crate.name}@${crate.version}`;
+					if (seen.has(key)) return false;
+					seen.add(key);
+					return true;
 				})
-				.filter((entry): entry is { crate: CrateSummaryResult; score: number } => entry !== null)
-				.sort(
-					(a, b) =>
-						a.score - b.score ||
-						a.crate.name.localeCompare(b.crate.name, undefined, { sensitivity: 'base' }),
-				)
-				.slice(0, 20)
-				.map((entry) => entry.crate);
+				.slice(0, 20);
 		},
 
 		async getTopCrates(limit = 10) {

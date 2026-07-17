@@ -81,12 +81,16 @@
 
 <style>
 	.documentation-text {
-		font-family: var(--font-body);
+		max-inline-size: var(--doc-prose-measure, 70ch);
+		font-family: var(--font-prose);
+		font-size: var(--doc-fs, 1.0625rem);
+		font-size-adjust: 0.52;
+		line-height: var(--doc-leading, 1.65);
 	}
 
 	.documentation-text :global(p) {
-		margin: 0.5rem 0;
-		line-height: 1.6;
+		margin: 0 0 0.9em;
+		line-height: inherit;
 	}
 
 	.documentation-text :global(p:first-child) {
@@ -101,10 +105,12 @@
 		margin: 0;
 	}
 
-	/* doc-classic styling for in-prose headings (Examples / Safety / etc.).
-	   Markdown `## Heading` / `### Heading` lands here. Use Fraunces with a
-	   modest size step per level so they read as part of the same family
-	   as the page-level Documentation/Methods section headers. */
+	.documentation-compact .documentation-text {
+		font-size: inherit;
+		line-height: inherit;
+	}
+
+	/* Prose headings use the neutral interface face for fast scanning. */
 	.documentation-text :global(h1),
 	.documentation-text :global(h2),
 	.documentation-text :global(h3),
@@ -113,31 +119,31 @@
 	.documentation-text :global(h6) {
 		font-family: var(--font-display);
 		font-weight: 600;
-		letter-spacing: -0.01em;
+		letter-spacing: 0;
 		color: var(--ink);
 		line-height: 1.25;
 	}
 	.documentation-text :global(h1) {
-		font-size: 20px;
-		margin-top: 1.5rem;
-		margin-bottom: 0.5rem;
+		font-size: 1.45em;
+		margin-top: 1.75em;
+		margin-bottom: 0.5em;
 	}
 	.documentation-text :global(h2) {
-		font-size: 17px;
-		margin-top: 1.25rem;
-		margin-bottom: 0.5rem;
+		font-size: 1.28em;
+		margin-top: 1.55em;
+		margin-bottom: 0.45em;
 	}
 	.documentation-text :global(h3) {
-		font-size: 15px;
-		margin-top: 1rem;
-		margin-bottom: 0.4rem;
+		font-size: 1.12em;
+		margin-top: 1.35em;
+		margin-bottom: 0.4em;
 	}
 	.documentation-text :global(h4),
 	.documentation-text :global(h5),
 	.documentation-text :global(h6) {
-		font-size: 13.5px;
-		margin-top: 0.75rem;
-		margin-bottom: 0.3rem;
+		font-size: 1em;
+		margin-top: 1.2em;
+		margin-bottom: 0.35em;
 	}
 
 	.documentation-text :global(a) {
@@ -147,7 +153,7 @@
 	}
 
 	.documentation-text :global(a:hover) {
-		opacity: 0.8;
+		text-decoration-thickness: 2px;
 	}
 
 	/* Intra-doc links (links to other items in the crate) */
@@ -161,7 +167,7 @@
 
 	.documentation-text :global(code) {
 		font-family: var(--font-code);
-		font-size: 0.875em;
+		font-size: 0.9em;
 		background: var(--code-bg);
 		padding: 0.125rem 0.375rem;
 		border-radius: 0.25rem;
@@ -183,6 +189,6 @@
 	}
 
 	.documentation-text :global(li) {
-		margin: 0.25rem 0;
+		margin: 0.45em 0;
 	}
 </style>

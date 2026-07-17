@@ -585,10 +585,10 @@ fn refs_from_aggregate(entries: &BTreeMap<String, AggregateEntry>) -> Vec<CrateR
             entries.sort_by(|left, right| compare_entries_for_newest(left, right));
             let newest = entries[0];
             let mut aliases = BTreeMap::new();
-            insert_alias(&mut aliases, "latest", newest);
             if entries.iter().any(|entry| entry.source == Source::Sysroot) {
                 insert_std_aliases(&mut aliases, &entries);
             } else {
+                insert_alias(&mut aliases, "latest", newest);
                 insert_alias(&mut aliases, "stable", newest);
             }
 
@@ -631,11 +631,12 @@ fn insert_std_aliases(aliases: &mut BTreeMap<String, CrateRefAlias>, entries: &[
     if let Some(entry) = newest_nightly {
         insert_alias(aliases, "nightly", entry);
     }
-    if let Some(entry) = newest_beta.or(newest_nightly) {
+    if let Some(entry) = newest_beta {
         insert_alias(aliases, "beta", entry);
     }
-    if let Some(entry) = newest_stable.or(newest_nightly) {
+    if let Some(entry) = newest_stable {
         insert_alias(aliases, "stable", entry);
+        insert_alias(aliases, "latest", entry);
     }
 }
 
@@ -1217,9 +1218,48 @@ mod tests {
             entry(
                 "std",
                 None,
-                "1.95.0-nightly",
+                "1.96.0",
                 "2026-07-01T00:00:00Z",
-                "hash-std",
+                "hash-std-stable",
+                Source::Sysroot,
+            ),
+        )
+        .await;
+        record(
+            &r2,
+            &freshness,
+            entry(
+                "std",
+                None,
+                "1.97.0-beta.2",
+                "2026-07-02T00:00:00Z",
+                "hash-std-beta",
+                Source::Sysroot,
+            ),
+        )
+        .await;
+        record(
+            &r2,
+            &freshness,
+            entry(
+                "std",
+                None,
+                "1.98.0-nightly",
+                "2026-07-03T00:00:00Z",
+                "hash-std-nightly",
+                Source::Sysroot,
+            ),
+        )
+        .await;
+        record(
+            &r2,
+            &freshness,
+            entry(
+                "core",
+                None,
+                "1.98.0-nightly",
+                "2026-07-03T00:00:00Z",
+                "hash-core-nightly",
                 Source::Sysroot,
             ),
         )
@@ -1240,10 +1280,16 @@ mod tests {
         assert_eq!(serde_ref.versions[0].edges, 20);
 
         let std_ref: CrateRefFile = r2.json("rust/_refs/std.json").await;
-        assert_eq!(std_ref.aliases["latest"].version, "1.95.0-nightly");
-        assert_eq!(std_ref.aliases["nightly"].graph_hash, "hash-std");
-        assert_eq!(std_ref.aliases["beta"].version, "1.95.0-nightly");
-        assert_eq!(std_ref.aliases["stable"].version, "1.95.0-nightly");
+        assert_eq!(std_ref.aliases["latest"].version, "1.96.0");
+        assert_eq!(std_ref.aliases["stable"].graph_hash, "hash-std-stable");
+        assert_eq!(std_ref.aliases["beta"].graph_hash, "hash-std-beta");
+        assert_eq!(std_ref.aliases["nightly"].graph_hash, "hash-std-nightly");
+
+        let core_ref: CrateRefFile = r2.json("rust/_refs/core.json").await;
+        assert_eq!(core_ref.aliases["nightly"].graph_hash, "hash-core-nightly");
+        assert!(!core_ref.aliases.contains_key("latest"));
+        assert!(!core_ref.aliases.contains_key("stable"));
+        assert!(!core_ref.aliases.contains_key("beta"));
     }
 
     #[test]

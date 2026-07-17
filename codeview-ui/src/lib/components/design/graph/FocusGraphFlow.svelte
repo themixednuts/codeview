@@ -414,11 +414,11 @@
 		class="pointer-events-none absolute left-0 right-0 flex items-center justify-between px-6"
 		style="top: 12px"
 	>
-		<div class="mono flex items-center gap-2 text-[10px] tracking-[0.2em] text-(--muted-soft) uppercase">
+		<div class="mono flex items-center gap-2 text-2xs tracking-[0.2em] text-(--muted-soft) uppercase">
 			<span class="inline-block h-px w-6 bg-(--panel-border)"></span>
 			<span>points into {detail.node.name}</span>
 		</div>
-		<div class="mono flex items-center gap-2 text-[10px] tracking-[0.2em] text-(--muted-soft) uppercase">
+		<div class="mono flex items-center gap-2 text-2xs tracking-[0.2em] text-(--muted-soft) uppercase">
 			<span>{detail.node.name} points to</span>
 			<span class="inline-block h-px w-6 bg-(--panel-border)"></span>
 		</div>
@@ -426,7 +426,7 @@
 
 	{#if graphIsCapped}
 		<div
-			class="pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-2.5 py-1 text-[11px] text-(--muted)"
+			class="pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-2.5 py-1 text-xs text-(--muted)"
 			style="top: 42px"
 		>
 			showing {shownGraphStats.relatedNodes.toLocaleString()} of {fullGraphStats.relatedNodes.toLocaleString()}
@@ -484,19 +484,19 @@
 			>
 				<div class="mb-1.5 flex items-center gap-2">
 					<KindBadge kind={hoveredNode.node.kind} size={16} />
-					<span class="mono truncate text-[13px] font-semibold text-(--ink)">
+					<span class="mono truncate text-sm font-semibold text-(--ink)">
 						{hoveredNode.node.label}
 					</span>
 					<span
-						class="mono ml-auto rounded bg-(--panel-muted) px-1.5 py-0.5 text-[9.5px] tracking-wider text-(--muted) uppercase"
+						class="mono ml-auto rounded bg-(--panel-muted) px-1.5 py-0.5 text-2xs tracking-wider text-(--muted) uppercase"
 					>
 						{hoveredNode.node.kindLabel}
 					</span>
 				</div>
-				<div class="mono mb-2 truncate text-[10px] text-(--muted-soft)">
+				<div class="mono mb-2 truncate text-2xs text-(--muted-soft)">
 					{hoveredNode.node.path}
 				</div>
-				<div class="flex items-center gap-3 text-[10.5px] text-(--muted)">
+				<div class="flex items-center gap-3 text-xs text-(--muted)">
 					<span class="inline-flex items-center gap-1">
 						<b class="text-(--ink-soft)">{hoveredNode.inCount}</b>
 						incoming
@@ -517,7 +517,7 @@
 
 	{#if flowReady && layout.edges.length === 0}
 		<div
-			class="mono absolute left-1/2 -translate-x-1/2 text-[12px] text-(--muted-soft)"
+			class="mono absolute left-1/2 -translate-x-1/2 text-sm text-(--muted-soft)"
 			style={`top: ${layout.centerY + 44}px`}
 		>
 			no relationships recorded for this item
@@ -533,7 +533,7 @@
 				{@const active = hoveredRel === rel}
 				<button
 					type="button"
-					class="mono flex items-center gap-1.5 rounded-md px-2 py-0.5 text-[10.5px] transition-colors {active
+					class="mono flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs transition-colors {active
 						? 'bg-(--panel-muted) text-(--ink)'
 						: 'text-(--muted)'}"
 					onmouseenter={() => (hoveredRel = rel)}

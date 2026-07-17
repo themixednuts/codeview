@@ -15,7 +15,7 @@ import type {
 import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from '$lib/schema';
 import { buildCrateMapData, type CrateMapData, type CrateMapOptions } from '$lib/graph/crate-map';
 import { parseWorkspace } from '$lib/schema';
-import { isStdCrate, STD_JSON_CRATES } from '$lib/std';
+import { RUST_CHANNEL_ORDER, isStdJsonCrate, isStdCrate, searchToolchainCrates } from '$lib/std';
 import { getLogger } from '$lib/log';
 import { perf } from '$lib/perf';
 import { decodeGzipStream } from '$lib/server/gzip';
@@ -870,7 +870,7 @@ export function createLocalProvider(): DataProvider {
 	): Promise<void> {
 		const lc = await getCache();
 		for (const c of crates) {
-			if (!isStdCrate(c.name) || !STD_JSON_CRATES.includes(c.name)) continue;
+			if (!isStdCrate(c.name) || !isStdJsonCrate(c.name)) continue;
 			if (lc.hasCrate(c.name, c.version)) continue;
 			const key = parseKey(c.name, c.version);
 			if (inFlight.has(key)) continue;
@@ -1444,12 +1444,13 @@ export function createLocalProvider(): DataProvider {
 
 		async searchRegistry(query: string): Promise<CrateSummaryResult[]> {
 			const results = await registry.search(query);
-			return results.map((r) => ({
+			const registryResults = results.map((r) => ({
 				id: hyphenateCrateName(r.name),
 				name: r.name,
 				version: r.version,
 				description: r.description,
 			}));
+			return [...searchToolchainCrates(query), ...registryResults].slice(0, 20);
 		},
 
 		async getTopCrates(limit = 10): Promise<CrateSummaryResult[]> {
@@ -1468,6 +1469,9 @@ export function createLocalProvider(): DataProvider {
 		},
 
 		async getCrateVersions(name: string, limit = Number.POSITIVE_INFINITY): Promise<string[]> {
+			if (isStdCrate(normalizeCrateName(name))) {
+				return RUST_CHANNEL_ORDER.slice(0, limit);
+			}
 			const localVersion = (await getWorkspaceCrate(name))?.version;
 			// Try both hyphen and underscore variants for registry lookup
 			let registryVersions: string[] = [];

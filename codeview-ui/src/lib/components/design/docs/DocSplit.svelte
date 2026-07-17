@@ -144,14 +144,14 @@
 			aria-label={`Source for ${detail.node.name}`}
 		>
 			<div
-				class="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-[color:var(--code-border)] bg-(--code-bg-soft) px-4 font-mono text-[11.5px]"
+				class="flex h-10 shrink-0 items-center justify-between gap-3 border-b border-[color:var(--code-border)] bg-(--code-bg-soft) px-4 font-mono text-xs"
 				style="color: var(--syntax-comment)"
 			>
 				<div class="flex min-w-0 items-center gap-2">
 					<span class="truncate" title={displayFile}>{displayFile}</span>
 					{#if lineLabel}
 						<span
-							class="shrink-0 rounded px-1.5 py-[1px] text-[10px]"
+							class="shrink-0 rounded px-1.5 py-[1px] text-2xs"
 							style="background: var(--accent-soft); color: var(--accent)"
 						>
 							{lineLabel}
@@ -189,7 +189,7 @@
 			</div>
 
 			<div
-				class="flex h-9 shrink-0 items-center gap-3 border-t border-[color:var(--code-border)] bg-(--code-bg-soft) px-4 font-mono text-[10.5px]"
+				class="flex h-9 shrink-0 items-center gap-3 border-t border-[color:var(--code-border)] bg-(--code-bg-soft) px-4 font-mono text-xs"
 				style="color: var(--syntax-comment)"
 			>
 				<span>{langFromFile(displayFile)}</span>
@@ -218,7 +218,7 @@
 	}
 
 	.doc-split :global(.doc-article--split .doc-section h2) {
-		font-size: 1.375rem;
+		font-size: var(--text-xl);
 	}
 
 	.doc-split :global(.doc-article--split > .max-w-3xl) {
