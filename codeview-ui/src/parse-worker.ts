@@ -288,6 +288,13 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/** Allows 0 so planned siphon can be disabled via PLAN_DRAIN_BATCH_SIZE=0. */
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+	if (value === undefined || value.trim() === '') return fallback;
+	const parsed = Number.parseInt(value, 10);
+	return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function finiteNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -1041,7 +1048,9 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
 		budgetLimited: false,
 	};
 	if (!env.PARSE_REQUESTS) return empty;
-	const batchSize = parsePositiveInteger(env.PLAN_DRAIN_BATCH_SIZE, 2);
+	// 0 disables plan→queue siphon; shards own daily planned work.
+	const batchSize = parseNonNegativeInteger(env.PLAN_DRAIN_BATCH_SIZE, 0);
+	if (batchSize === 0) return empty;
 	const pressure = await readDrainPressure(env);
 	if (!pressure.capacityReliable) {
 		return {

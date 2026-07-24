@@ -1,5 +1,5 @@
 import { prerender, query } from '$app/server';
-import { Data, Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 import { getLogger } from '$lib/log';
 import { perf } from '$lib/perf';
 import type { TreeNodeDTO } from '$lib/schema';
@@ -9,11 +9,14 @@ import { TreeNodeInputSchema } from './schemas';
 
 const log = getLogger('rpc.children');
 
-class TreeChildrenLoadError extends Data.TaggedError('TreeChildrenLoadError')<{
-	readonly key: string;
-	readonly cause: unknown;
-	readonly message: string;
-}> {}
+class TreeChildrenLoadError extends Schema.TaggedErrorClass<TreeChildrenLoadError>()(
+	'TreeChildrenLoadError',
+	{
+		key: Schema.String,
+		cause: Schema.Defect(),
+		message: Schema.String,
+	},
+) {}
 
 function unknownMessage(cause: unknown): string {
 	return cause instanceof Error ? cause.message : String(cause);

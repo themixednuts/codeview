@@ -25,7 +25,8 @@
 	const planned = $derived(snapshot.planned);
 	const plannedItems = $derived(planned?.items ?? []);
 	const activeCount = $derived(active.length);
-	const plannedCount = $derived(planned?.total ?? 0);
+	const plannedCount = $derived(planned?.pending ?? 0);
+	const plannedReadyCount = $derived(planned?.ready ?? 0);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
 	let refreshPending = $state(false);
 	const activePageCount = $derived(Math.max(1, Math.ceil(active.length / PAGE_SIZE)));
@@ -152,6 +153,7 @@
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 						<div class="text-2xs tracking-wider text-(--muted) uppercase">Planned</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{plannedCount}</div>
+						<div class="mt-1 text-xs text-(--muted-soft)">{plannedReadyCount} ready via shards</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 						<div class="text-2xs tracking-wider text-(--muted) uppercase">Recent failures</div>
@@ -244,7 +246,7 @@
 					<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 						{#if planned}
 							<span class="truncate font-mono text-xs text-(--muted-soft)">
-								{planned.total} planned
+								{planned.pending} pending · {planned.ready} ready
 							</span>
 						{/if}
 						{#if plannedItems.length > PAGE_SIZE}
@@ -277,6 +279,9 @@
 											{item.version}
 										</span>
 										<span class="badge badge-sm">{priorityLabel(item.priorityTier)}</span>
+										<span class="badge badge-sm">
+											{item.state === 'ready' ? 'Ready' : 'Pending'}
+										</span>
 									</div>
 									<div
 										class="mt-1 line-clamp-1 min-h-[18px] text-sm text-(--muted)"

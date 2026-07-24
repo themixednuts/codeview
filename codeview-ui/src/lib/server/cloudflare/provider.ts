@@ -1,5 +1,5 @@
 import { Result } from 'better-result';
-import { Data, Effect } from 'effect';
+import { Cache, Duration, Effect, Exit, Schema } from 'effect';
 import type { RequestEvent } from '@sveltejs/kit';
 import type { CrateGraph, Edge, Node, NodeKind } from '$lib/graph';
 import type {
@@ -104,7 +104,8 @@ type AppEnv = Env & {
 type SearchEntry = NodeSummary & { score?: number };
 const DEFAULT_GITHUB_WORKFLOW_FILE = 'parse.yml';
 const DEFAULT_PLAN_DRAIN_ACTIVE_TARGET = 4;
-const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 2;
+/** 0 = planned siphon disabled; shards own daily plan work. */
+const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 0;
 const DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT = 35;
 const GITHUB_API_VERSION = '2026-03-10';
 const ACTIVE_GITHUB_RUN_STATUSES = [
@@ -163,6 +164,13 @@ function parsePositiveInteger(value: string | undefined, fallback: number): numb
 	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
+/** Allows 0 so planned siphon can be disabled via PLAN_DRAIN_BATCH_SIZE=0. */
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+	if (value === undefined || value.trim() === '') return fallback;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
 function parsePositiveNumber(value: string | undefined, fallback: number): number {
 	if (value === undefined || value.trim() === '') return fallback;
 	const parsed = Number(value);
@@ -213,23 +221,23 @@ function registrySummary(result: PackageMetadata): CrateSummaryResult {
 	};
 }
 
-class R2ReadError extends Data.TaggedError('R2ReadError')<{
-	readonly key: string;
-	readonly cause: unknown;
-	readonly message: string;
-}> {}
+class R2ReadError extends Schema.TaggedErrorClass<R2ReadError>()('R2ReadError', {
+	key: Schema.String,
+	cause: Schema.Defect(),
+	message: Schema.String,
+}) {}
 
-class R2DecodeError extends Data.TaggedError('R2DecodeError')<{
-	readonly key: string;
-	readonly cause: unknown;
-	readonly message: string;
-}> {}
+class R2DecodeError extends Schema.TaggedErrorClass<R2DecodeError>()('R2DecodeError', {
+	key: Schema.String,
+	cause: Schema.Defect(),
+	message: Schema.String,
+}) {}
 
-class R2ParseError extends Data.TaggedError('R2ParseError')<{
-	readonly key: string;
-	readonly cause: unknown;
-	readonly message: string;
-}> {}
+class R2ParseError extends Schema.TaggedErrorClass<R2ParseError>()('R2ParseError', {
+	key: Schema.String,
+	cause: Schema.Defect(),
+	message: Schema.String,
+}) {}
 
 type R2JsonError = R2ReadError | R2DecodeError | R2ParseError;
 
@@ -592,65 +600,60 @@ type HostedAliasShard = {
 	aliases: Record<string, { canonicalId: string; canonicalPath?: string }>;
 };
 
-function readR2JsonEffect<T>(r2: R2Bucket, key: string): Effect.Effect<T | null, R2JsonError> {
-	return Effect.gen(function* () {
-		const obj = yield* Effect.tryPromise({
-			try: () => r2.get(key),
-			catch: (cause) =>
-				new R2ReadError({
-					key,
-					cause,
-					message: `R2 read failed for ${key}: ${errorMessage(cause)}`,
-				}),
-		});
-		if (!obj) return null;
+const readR2JsonEffect = Effect.fn('CloudflareProvider.readR2Json')(function* <T>(
+	r2: R2Bucket,
+	key: string,
+) {
+	const obj = yield* Effect.tryPromise({
+		try: () => r2.get(key),
+		catch: (cause) =>
+			new R2ReadError({
+				key,
+				cause,
+				message: `R2 read failed for ${key}: ${errorMessage(cause)}`,
+			}),
+	});
+	if (!obj) return null as T | null;
 
-		const bytes = yield* Effect.tryPromise({
-			try: async () => new Uint8Array(await obj.arrayBuffer()),
-			catch: (cause) =>
-				new R2DecodeError({
-					key,
-					cause,
-					message: `R2 body decode failed for ${key}: ${errorMessage(cause)}`,
-				}),
-		});
+	const bytes = yield* Effect.tryPromise({
+		try: async () => new Uint8Array(await obj.arrayBuffer()),
+		catch: (cause) =>
+			new R2DecodeError({
+				key,
+				cause,
+				message: `R2 body decode failed for ${key}: ${errorMessage(cause)}`,
+			}),
+	});
 
-		if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-			return yield* Effect.tryPromise({
-				try: async () => {
-					const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-					return (await new Response(stream).json()) as T;
-				},
-				catch: (cause) =>
-					new R2ParseError({
-						key,
-						cause,
-						message: `R2 gzip JSON parse failed for ${key}: ${errorMessage(cause)}`,
-					}),
-			});
-		}
-
-		return yield* Effect.try({
-			try: () => JSON.parse(new TextDecoder().decode(bytes)) as T,
+	if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+		return yield* Effect.tryPromise({
+			try: async () => {
+				const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+				return (await new Response(stream).json()) as T;
+			},
 			catch: (cause) =>
 				new R2ParseError({
 					key,
 					cause,
-					message: `R2 JSON parse failed for ${key}: ${errorMessage(cause)}`,
+					message: `R2 gzip JSON parse failed for ${key}: ${errorMessage(cause)}`,
 				}),
 		});
+	}
+
+	return yield* Effect.try({
+		try: () => JSON.parse(new TextDecoder().decode(bytes)) as T,
+		catch: (cause) =>
+			new R2ParseError({
+				key,
+				cause,
+				message: `R2 JSON parse failed for ${key}: ${errorMessage(cause)}`,
+			}),
 	});
-}
+});
 
 const artifactJsonCache = new Map<string, Promise<unknown | null>>();
 const artifactJsonInflight = new Map<string, Promise<unknown | null>>();
 const sourceFileCache = new Map<string, string>();
-type JsonCacheEntry = {
-	value: Promise<unknown | null>;
-	expiresAt: number;
-};
-
-const jsonCache = new Map<string, JsonCacheEntry>();
 const SOURCE_FILE_CACHE_MAX = 512;
 
 function artifactR2Key(ref: ArtifactRef, path: string): string {
@@ -736,6 +739,29 @@ async function readArtifactJsonWithCache<T>(
 }
 
 export function createCloudflareProvider(env: AppEnv, request?: Request): DataProvider {
+	const mutableJsonCache = Effect.runSync(
+		Cache.makeWith(
+			(key: string) =>
+				readR2JsonEffect<unknown>(env.CRATE_GRAPHS, key).pipe(
+					Effect.catch((err: R2JsonError) =>
+						Effect.sync(() => {
+							log.warn`${err.message}`;
+							return null;
+						}),
+					),
+				),
+			{
+				capacity: JSON_CACHE_MAX,
+				timeToLive: (exit, key) => {
+					if (!Exit.isSuccess(exit) || exit.value === null) return Duration.zero;
+					return key.includes('/_refs/')
+						? Duration.millis(REF_TTL_MS)
+						: Duration.millis(MUTABLE_JSON_TTL_MS);
+				},
+			},
+		),
+	);
+
 	function sourceCacheKey(
 		crateName: string,
 		crateVersion: string,
@@ -805,34 +831,8 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
-	function readJson<T>(key: string, ttlMs = MUTABLE_JSON_TTL_MS): Promise<T | null> {
-		const now = Date.now();
-		let cached = jsonCache.get(key);
-		if (cached && cached.expiresAt <= now) {
-			jsonCache.delete(key);
-			cached = undefined;
-		}
-		if (!cached) {
-			const value = Effect.runPromise(
-				readR2JsonEffect<T>(env.CRATE_GRAPHS, key).pipe(
-					Effect.catch((err) =>
-						Effect.sync(() => {
-							jsonCache.delete(key);
-							log.warn`${err.message}`;
-							return null;
-						}),
-					),
-				),
-			);
-			cached = { value, expiresAt: now + ttlMs };
-			jsonCache.set(key, cached);
-			while (jsonCache.size > JSON_CACHE_MAX) {
-				const oldestKey = jsonCache.keys().next().value;
-				if (oldestKey === undefined) break;
-				jsonCache.delete(oldestKey);
-			}
-		}
-		return cached.value as Promise<T | null>;
+	function readJson<T>(key: string, _ttlMs = MUTABLE_JSON_TTL_MS): Promise<T | null> {
+		return Effect.runPromise(Cache.get(mutableJsonCache, key)) as Promise<T | null>;
 	}
 
 	async function readArtifactJson<T>(ref: ArtifactRef, path: string): Promise<T | null> {
@@ -1365,28 +1365,61 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	}
 
 	async function buildParseQueueSnapshot(limit: number): Promise<ParseQueueSnapshot> {
-		const boundedLimit = Math.max(1, Math.min(limit, 100));
-		const [queue, activeRuns] = await Promise.all([
-			readHostedQueue(boundedLimit),
-			listActiveGitHubParseRuns(boundedLimit).catch((err) => {
-				log.warn`active GitHub parse run load failed: ${String(err)}`;
-				return [];
+		return Effect.runPromise(
+			Effect.gen(function* () {
+				const boundedLimit = Math.max(1, Math.min(limit, 100));
+				const [queue, activeRuns] = yield* Effect.all(
+					[
+						Effect.tryPromise({
+							try: () => readHostedQueue(boundedLimit),
+							catch: (cause) => new Error(`hosted queue load failed: ${errorMessage(cause)}`),
+						}).pipe(
+							Effect.catch((err) =>
+								Effect.sync(() => {
+									log.warn`${err.message}`;
+									return { active: [], recent: [] } satisfies StoredParseQueueSnapshot;
+								}),
+							),
+						),
+						Effect.tryPromise({
+							try: () => listActiveGitHubParseRuns(boundedLimit),
+							catch: (cause) =>
+								new Error(`active GitHub parse run load failed: ${errorMessage(cause)}`),
+						}).pipe(
+							Effect.catch((err) =>
+								Effect.sync(() => {
+									log.warn`${err.message}`;
+									return [] as ActiveParseRun[];
+								}),
+							),
+						),
+					],
+					{ concurrency: 2 },
+				);
+				const recent = yield* Effect.promise(() => removeStaleFailedQueueEntries(queue.recent));
+				const planned = yield* Effect.tryPromise({
+					try: () =>
+						loadLatestPlannedRun(
+							boundedLimit,
+							queueStatusKeys({ active: queue.active, recent }),
+						),
+					catch: (cause) => new Error(`planned parse run load failed: ${errorMessage(cause)}`),
+				}).pipe(
+					Effect.catch((err) =>
+						Effect.sync(() => {
+							log.warn`${err.message}`;
+							return null;
+						}),
+					),
+				);
+				return {
+					active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
+					activeRuns,
+					recent: recent.map((entry) => storedStatusToQueueEntry(entry)),
+					planned,
+				} satisfies ParseQueueSnapshot;
 			}),
-		]);
-		const recent = await removeStaleFailedQueueEntries(queue.recent);
-		const planned = await loadLatestPlannedRun(
-			boundedLimit,
-			queueStatusKeys({ active: queue.active, recent }),
-		).catch((err) => {
-			log.warn`planned parse run load failed: ${String(err)}`;
-			return null;
-		});
-		return {
-			active: queue.active.map((entry, index) => storedStatusToQueueEntry(entry, index + 1)),
-			activeRuns,
-			recent: recent.map((entry) => storedStatusToQueueEntry(entry)),
-			planned,
-		};
+		);
 	}
 
 	async function hasReadyArtifact(name: string, version: string): Promise<boolean> {
@@ -1413,7 +1446,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			env.PLAN_DRAIN_ACTIVE_TARGET,
 			DEFAULT_PLAN_DRAIN_ACTIVE_TARGET,
 		);
-		const batchSize = parsePositiveInteger(
+		const batchSize = parseNonNegativeInteger(
 			env.PLAN_DRAIN_BATCH_SIZE,
 			DEFAULT_PLAN_DRAIN_BATCH_SIZE,
 		);
@@ -1538,7 +1571,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 			: false;
 	}
 
-	async function readPlanFreshness(item: PlannedParseItem): Promise<FreshnessEntry | null> {
+	async function readPlanFreshness(
+		item: Pick<PlannedParseItem, 'name' | 'version'>,
+	): Promise<FreshnessEntry | null> {
 		for (const variant of crateNameVariants(item.name)) {
 			const entry = await readJson<FreshnessEntry>(
 				`rust/_index/by-version/${normalizeCrateName(variant)}/${item.version}.json`,
@@ -1549,7 +1584,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	}
 
 	async function plannedItemSatisfiedByFreshness(
-		item: PlannedParseItem,
+		item: Pick<PlannedParseItem, 'name' | 'version' | 'priorityTier' | 'reason'>,
 		planGeneratedAt: string,
 	): Promise<boolean> {
 		const freshness = await readPlanFreshness(item);
@@ -1587,7 +1622,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 
 	function planItemFromArtifact(
 		item: NonNullable<WorkPlanArtifact['work']>[number],
-	): PlannedParseItem | null {
+	): Omit<PlannedParseItem, 'state'> | null {
 		if (!item.name || !item.version) return null;
 		const kind = item.kind === 'std' || item.kind === 'sysroot' ? 'sysroot' : 'crate';
 		return {
@@ -1613,22 +1648,28 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		const work = Array.isArray(plan.work) ? plan.work : [];
 		const candidates = work
 			.map(planItemFromArtifact)
-			.filter((entry): entry is PlannedParseItem => entry !== null)
+			.filter((entry): entry is Omit<PlannedParseItem, 'state'> => entry !== null)
 			.filter((entry) => !excludedKeys.has(planItemKey(entry.kind, entry.name, entry.version)));
-		const items = (
-			await Promise.all(
-				candidates.map(async (entry) =>
-					(await plannedItemSatisfiedByFreshness(entry, generatedAt)) ? null : entry,
-				),
-			)
-		).filter((entry): entry is PlannedParseItem => entry !== null);
+		const annotated = await Promise.all(
+			candidates.map(async (entry) => {
+				const ready = await plannedItemSatisfiedByFreshness(entry, generatedAt);
+				return { ...entry, state: ready ? ('ready' as const) : ('pending' as const) };
+			}),
+		);
+		const pending = annotated.filter((entry) => entry.state === 'pending');
+		const ready = annotated.filter((entry) => entry.state === 'ready');
+		const pendingShown = pending.slice(0, Math.max(1, limit));
+		const readySlots = Math.max(0, Math.max(1, limit) - pendingShown.length);
+		const items = [...pendingShown, ...ready.slice(0, readySlots)];
 		return {
 			runId,
 			generatedAt,
 			mode: plan.mode ?? 'unknown',
 			shardCount: plan.shard_count ?? plan.shardCount ?? 0,
-			total: items.length,
-			items: items.slice(0, Math.max(1, limit)),
+			total: pending.length,
+			pending: pending.length,
+			ready: ready.length,
+			items,
 		};
 	}
 

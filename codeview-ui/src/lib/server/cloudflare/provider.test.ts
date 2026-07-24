@@ -717,6 +717,48 @@ describe('createCloudflareProvider', () => {
 		});
 	});
 
+	test('treats PLAN_DRAIN_BATCH_SIZE=0 as planned siphon disabled', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input));
+				if (url.pathname === '/repos/themixednuts/codeview') {
+					return new Response(
+						JSON.stringify({
+							full_name: 'themixednuts/codeview',
+							private: false,
+							owner: { login: 'themixednuts', type: 'User' },
+						}),
+						{ status: 200, headers: { 'content-type': 'application/json' } },
+					);
+				}
+				if (url.pathname === '/repos/themixednuts/codeview/actions/workflows/parse.yml/runs') {
+					return new Response(JSON.stringify({ workflow_runs: [], total_count: 0 }), {
+						status: 200,
+						headers: { 'content-type': 'application/json' },
+					});
+				}
+				return new Response('{}', { status: 404 });
+			}),
+		);
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(new Map()),
+			GITHUB_REPO: 'themixednuts/codeview',
+			GITHUB_WORKFLOW_FILE: 'parse.yml',
+			GITHUB_TOKEN: 'token',
+			PLAN_DRAIN_ACTIVE_TARGET: '4',
+			PLAN_DRAIN_BATCH_SIZE: '0',
+		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const dashboard = await provider.getAdminDashboard?.(10);
+
+		expect(dashboard?.allowance).toMatchObject({
+			activeTarget: 4,
+			batchSize: 0,
+			availableSlots: 4,
+		});
+	});
+
 	test('enqueues hosted parse requests', async () => {
 		const objects = new Map<string, unknown>();
 		const sent: unknown[] = [];

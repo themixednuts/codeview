@@ -15,8 +15,8 @@ interface __BaseEnv_Env {
 	GITHUB_REPO: "themixednuts/codeview";
 	GITHUB_REF: "main";
 	GITHUB_WORKFLOW_FILE: "parse.yml";
-	PLAN_DRAIN_ACTIVE_TARGET: "2";
-	PLAN_DRAIN_BATCH_SIZE: "1";
+	PLAN_DRAIN_ACTIVE_TARGET: "4";
+	PLAN_DRAIN_BATCH_SIZE: "0";
 	GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35";
 	PARSE_STATUS: DurableObjectNamespace /* ParseStatusDurableObject from codeview-parser */;
 }

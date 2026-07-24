@@ -181,7 +181,9 @@
 								{allowance.actionsInUse}/{allowance.activeTarget}
 							</div>
 							<div class="mt-1 text-xs text-(--muted-soft)">
-								{allowance.availableSlots} open · batch {allowance.batchSize}
+								{allowance.availableSlots} open · {allowance.batchSize === 0
+									? 'planned siphon off'
+									: `batch ${allowance.batchSize}`}
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
@@ -190,7 +192,9 @@
 								{queue?.active.length ?? 0} tracked · {queue?.activeRuns.length ?? 0} GitHub
 							</div>
 							<div class="mt-1 text-xs text-(--muted-soft)">
-								{queue?.planned?.total ?? 0} planned
+								{queue?.planned
+									? `${queue.planned.pending} pending · ${queue.planned.ready} ready`
+									: '0 planned'}
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
@@ -389,7 +393,9 @@
 						</div>
 						<div class="ml-auto flex flex-wrap items-center justify-end gap-2">
 							<span class="font-mono text-xs text-(--muted-soft)">
-								{queue?.planned?.total ?? 0} planned
+								{queue?.planned
+									? `${queue.planned.pending} pending · ${queue.planned.ready} ready`
+									: '0 planned'}
 							</span>
 							{#if plannedItems.length > PAGE_SIZE}
 								<StablePagination
@@ -420,6 +426,9 @@
 												{item.version}
 											</span>
 											<span class="badge badge-sm">{priorityLabel(item.priorityTier)}</span>
+											<span class="badge badge-sm">
+												{item.state === 'ready' ? 'Ready' : 'Pending'}
+											</span>
 										</div>
 										<div
 											class="mt-1 line-clamp-1 min-h-[18px] text-sm text-(--muted)"

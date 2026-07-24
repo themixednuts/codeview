@@ -8,14 +8,14 @@ interface __BaseEnv_Env {
 	GITHUB_REF: "main";
 	GITHUB_WORKFLOW_FILE: "parse.yml";
 	PARSE_CALLBACK_BASE_URL: "https://codeview-parser.jonfonts.workers.dev";
-	PARSE_DISPATCH_BURST: "2";
+	PARSE_DISPATCH_BURST: "4";
 	PARSE_DISPATCH_REFILL_SECONDS: "45";
 	DOCSRS_PARSE_BURST: "4";
 	DOCSRS_PARSE_REFILL_SECONDS: "20";
 	SYSROOT_PARSE_BURST: "1";
 	SYSROOT_PARSE_REFILL_SECONDS: "600";
-	PLAN_DRAIN_ACTIVE_TARGET: "2";
-	PLAN_DRAIN_BATCH_SIZE: "1";
+	PLAN_DRAIN_ACTIVE_TARGET: "4";
+	PLAN_DRAIN_BATCH_SIZE: "0";
 	PARSE_STATUS: DurableObjectNamespace<import("../../../../parse-worker").ParseStatusDurableObject>;
 	PARSE_WORKFLOW: Workflow<Parameters<import("../../../../parse-worker").ParseCrateWorkflow['run']>[0]['payload']>;
 }

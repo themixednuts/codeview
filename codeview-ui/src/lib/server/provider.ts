@@ -60,6 +60,8 @@ export interface PlannedParseItem {
 	reason: string;
 	downloadRank?: number;
 	workId: string;
+	/** pending = still needed; ready = satisfied via shards/CF freshness. */
+	state: 'pending' | 'ready';
 }
 
 export interface PlannedParseRun {
@@ -67,7 +69,10 @@ export interface PlannedParseRun {
 	generatedAt: string;
 	mode: string;
 	shardCount: number;
+	/** Remaining unsatisfied plan items (badge / capacity signal). */
 	total: number;
+	pending: number;
+	ready: number;
 	items: PlannedParseItem[];
 }
 

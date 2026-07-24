@@ -1,15 +1,15 @@
 import { getRequestEvent, query } from '$app/server';
-import { Data, Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 import { initProvider } from '$lib/server/provider';
 import type { SourceResult } from '$lib/schema';
 import { assertCrateName, assertCrateRef } from './remote-utils';
 import { GetSourceInputSchema } from './schemas';
 
-class SourceLoadError extends Data.TaggedError('SourceLoadError')<{
-	readonly key: string;
-	readonly cause: unknown;
-	readonly message: string;
-}> {}
+class SourceLoadError extends Schema.TaggedErrorClass<SourceLoadError>()('SourceLoadError', {
+	key: Schema.String,
+	cause: Schema.Defect(),
+	message: Schema.String,
+}) {}
 
 function unknownMessage(cause: unknown): string {
 	return cause instanceof Error ? cause.message : String(cause);
