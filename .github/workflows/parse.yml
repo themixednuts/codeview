@@ -111,12 +111,17 @@ jobs:
         with:
           toolchain: nightly
 
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cron-release
 
       - name: Build codeview-cli
-        run: cargo build --release -p codeview-cli
+        run: cargo +stable build --release -p codeview-cli
 
       - name: Parse and publish exact crate
         env:
@@ -303,12 +308,17 @@ jobs:
         with:
           toolchain: nightly
 
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: cron-release
 
       - name: Build codeview-cli
-        run: cargo build --release -p codeview-cli
+        run: cargo +stable build --release -p codeview-cli
 
       - name: Drain shard
         run: |
