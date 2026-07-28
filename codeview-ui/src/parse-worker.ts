@@ -344,7 +344,7 @@ function isSafeId(value: string): boolean {
 }
 
 function isValidSubscriptionTag(tag: string): boolean {
-	if (tag === 'processing:rust') return true;
+	if (tag === 'processing:rust' || tag === 'queue:rust') return true;
 	const parts = tag.split(':');
 	return (
 		parts.length === 3 &&
@@ -1500,12 +1500,11 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			return;
 		}
 		if (tag === 'processing:rust') {
-			ws.send(
-				JSON.stringify({
-					tag,
-					data: { type: 'processing', count: this.processing(100).length },
-				}),
-			);
+			ws.send(JSON.stringify({ tag, data: this.processingSnapshot() }));
+			return;
+		}
+		if (tag === 'queue:rust') {
+			ws.send(JSON.stringify({ tag, data: this.realtimeQueueSnapshot() }));
 		}
 	}
 
@@ -1573,6 +1572,32 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 			active: this.processing(limit),
 			recent: this.recent(limit),
 		};
+	}
+
+	private processingSnapshot() {
+		const active = this.processing(100);
+		return {
+			type: 'processing',
+			count: active.length,
+			crates: active.slice(0, 20).map((status) => ({
+				id: hyphenateCrateName(status.name),
+				name: status.name,
+				version: status.version,
+				description: status.step ?? 'Parsing',
+			})),
+		};
+	}
+
+	private realtimeQueueSnapshot() {
+		return {
+			type: 'queue',
+			...this.queueSnapshot(100),
+		};
+	}
+
+	private broadcastStatusSnapshots(): void {
+		this.broadcast('processing:rust', this.processingSnapshot());
+		this.broadcast('queue:rust', this.realtimeQueueSnapshot());
 	}
 
 	private readBucket(config: RateBucketConfig, nowMs: number): RateBucketState {
@@ -1680,7 +1705,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		const status = this.getStatus(message.name, message.version);
 		if (!status) throw new Error('failed to register queued parse');
 		this.broadcast(crateStatusTag(message.name, message.version), status);
-		this.broadcast('processing:rust', { type: 'processing', count: this.processing(100).length });
+		this.broadcastStatusSnapshots();
 		return status;
 	}
 
@@ -1812,7 +1837,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 		const status = this.getStatus(event.name, event.version);
 		if (!status) throw new Error('failed to write parse status');
 		this.broadcast(crateStatusTag(event.name, event.version), status);
-		this.broadcast('processing:rust', { type: 'processing', count: this.processing(100).length });
+		this.broadcastStatusSnapshots();
 		return status;
 	}
 }
@@ -2250,29 +2275,6 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 }
 
 export default {
-	async scheduled(_controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
-		const reconciled = await reconcileFinalizingParses(env);
-		if (reconciled.ready > 0 || reconciled.failed > 0) {
-			console.log(
-				`reconciled finalizing parses ready=${reconciled.ready} failed=${reconciled.failed}`,
-			);
-		}
-		const stale = await reconcileStaleProcessingParses(env);
-		if (stale.ready > 0 || stale.failed > 0) {
-			console.log(
-				`reconciled stale parses ready=${stale.ready} failed=${stale.failed} kept=${stale.kept}`,
-			);
-		}
-		const result = await drainPlannedParses(env);
-		if (result.budgetLimited) {
-			console.log(`planned parse drain paused reason=${result.budgetReason ?? 'budget-limited'}`);
-		} else if (result.queued > 0) {
-			console.log(
-				`drained planned parses queued=${result.queued} skipped=${result.skipped} activeTarget=${result.activeTarget} actionsInUse=${result.actionsInUse} statusActive=${result.statusActive} githubActive=${result.githubActive}`,
-			);
-		}
-	},
-
 	async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
 		for (const message of batch.messages) {
 			await handleQueueMessage(message, env);

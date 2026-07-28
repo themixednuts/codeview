@@ -4,7 +4,6 @@
 	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
-	import { getProcessingCrates } from '$lib/rpc/crate.remote';
 	import { ProcessingStatusConnection } from '$lib/realtime';
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import { perf } from '$lib/perf';
@@ -75,19 +74,6 @@
 	import { toast } from 'svelte-sonner';
 	import { forceRefreshClient } from '$lib/client/invalidation';
 
-	type ProcessingCrateItem = {
-		id?: string;
-		name?: string;
-		version: string;
-	};
-
-	type ProcessingCratesResource =
-		| Promise<unknown>
-		| {
-				run?: () => Promise<unknown>;
-				current?: unknown;
-		  };
-
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
 	onNavigate((navigation) => {
@@ -112,10 +98,8 @@
 
 	const processingConn = new ProcessingStatusConnection();
 	const processingCount = $derived(processingConn.count);
+	const processingCrates = $derived(processingConn.crates);
 	let showProcessing = $state(false);
-	let processingCrates = $state.raw<ProcessingCrateItem[]>([]);
-	let processingCrateFetchSeq = 0;
-	let lastProcessingCrateRefresh = 0;
 	const visibleProcessingCount = $derived(Math.max(processingCount, processingCrates.length));
 	let appUpdateToastVisible = false;
 	let appRefreshStarted = false;
@@ -145,38 +129,6 @@
 
 	function processingCrateName(crate: { id?: string; name?: string } | null | undefined): string {
 		return crate?.name || crate?.id || '';
-	}
-
-	function isProcessingCrateItem(value: unknown): value is ProcessingCrateItem {
-		if (!value || typeof value !== 'object') return false;
-		const item = value as { id?: unknown; name?: unknown; version?: unknown };
-		return (
-			typeof item.version === 'string' &&
-			(typeof item.name === 'string' || typeof item.id === 'string')
-		);
-	}
-
-	function processingCrateItems(value: unknown): ProcessingCrateItem[] {
-		return Array.isArray(value) ? value.filter(isProcessingCrateItem) : [];
-	}
-
-	async function resolveProcessingCrates(refresh: number): Promise<ProcessingCrateItem[]> {
-		const resource = getProcessingCrates({ refresh }) as ProcessingCratesResource;
-		const value =
-			resource && typeof (resource as { run?: unknown }).run === 'function'
-				? await (resource as { run: () => Promise<unknown> }).run()
-				: await resource;
-		return processingCrateItems(value);
-	}
-
-	async function refreshProcessingCrates(refresh: number) {
-		const seq = ++processingCrateFetchSeq;
-		try {
-			const crates = await resolveProcessingCrates(refresh);
-			if (seq === processingCrateFetchSeq) processingCrates = crates;
-		} catch {
-			if (seq === processingCrateFetchSeq) processingCrates = [];
-		}
 	}
 
 	function refreshForAppUpdate() {
@@ -314,50 +266,25 @@
 		};
 	}
 
-	$effect(() => {
-		if (!browser) return;
-
-		const count = processingCount;
-		if (count <= 0) {
-			lastProcessingCrateRefresh = 0;
-			processingCrateFetchSeq += 1;
-			processingCrates = [];
-			return;
-		}
-
-		if (count !== lastProcessingCrateRefresh) {
-			lastProcessingCrateRefresh = count;
-			void refreshProcessingCrates(count);
-		}
-	});
-
 	onDestroy(() => {
 		processingConn.destroy();
 	});
 
 	onMount(() => {
 		if (!browser) return () => processingConn.destroy();
-		let processingPollTimer: ReturnType<typeof setInterval> | null = null;
 		const cleanupAppUpdates = setupAppUpdateNotifications();
-		const pollProcessingCrates = () => {
-			if (document.visibilityState !== 'visible') return;
-			void refreshProcessingCrates(Date.now());
-		};
 		const syncProcessingStream = () => {
 			if (document.visibilityState === 'visible') {
 				processingConn.connect('rust');
-				pollProcessingCrates();
 			} else {
 				processingConn.disconnect();
 			}
 		};
 		syncProcessingStream();
 		void updated.check();
-		processingPollTimer = setInterval(pollProcessingCrates, 2_000);
 		document.addEventListener('visibilitychange', syncProcessingStream);
 		return () => {
 			cleanupAppUpdates();
-			if (processingPollTimer) clearInterval(processingPollTimer);
 			document.removeEventListener('visibilitychange', syncProcessingStream);
 			processingConn.destroy();
 		};

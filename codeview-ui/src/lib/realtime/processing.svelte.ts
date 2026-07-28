@@ -1,14 +1,17 @@
 import { getLogger } from '$lib/log';
 import { connect } from '$realtime';
+import type { CrateSummaryResult } from '$lib/server/provider';
 import type { RealtimeClient } from './types';
 
 interface ProcessingMessage {
 	type?: string;
 	count?: number;
+	crates?: unknown;
 }
 
 export class ProcessingStatusConnection implements Disposable {
 	count = $state(0);
+	crates = $state.raw<CrateSummaryResult[]>([]);
 
 	#client: RealtimeClient = connect();
 	#log = getLogger('processing');
@@ -46,6 +49,9 @@ export class ProcessingStatusConnection implements Disposable {
 			this.#log.debug`msg ${this.tag} count=${String(msg.count)}`;
 			this.count = msg.count;
 		}
+		if (Array.isArray(msg.crates)) {
+			this.crates = msg.crates.filter(isCrateSummary);
+		}
 	}
 
 	destroy() {
@@ -55,4 +61,15 @@ export class ProcessingStatusConnection implements Disposable {
 	[Symbol.dispose]() {
 		this.destroy();
 	}
+}
+
+function isCrateSummary(value: unknown): value is CrateSummaryResult {
+	if (!value || typeof value !== 'object') return false;
+	const crate = value as Partial<CrateSummaryResult>;
+	return (
+		typeof crate.name === 'string' &&
+		typeof crate.version === 'string' &&
+		(crate.id === undefined || typeof crate.id === 'string') &&
+		(crate.description === undefined || typeof crate.description === 'string')
+	);
 }

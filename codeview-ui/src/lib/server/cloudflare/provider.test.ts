@@ -81,6 +81,7 @@ function fakeRateLimit(success = true): RateLimit {
 function fakeParseStatusNamespace(
 	initialStatus: unknown,
 	registrations: unknown[] = [],
+	queueSnapshot?: { active: unknown[]; recent: unknown[] },
 ): DurableObjectNamespace {
 	let status = initialStatus;
 	const stub = {
@@ -112,6 +113,18 @@ function fakeParseStatusNamespace(
 			if (url.pathname === '/processing') {
 				return Response.json(
 					(status as { status?: string } | null)?.status === 'processing' ? [status] : [],
+				);
+			}
+			if (url.pathname === '/queue') {
+				return Response.json(
+					queueSnapshot ?? {
+						active:
+							(status as { status?: string } | null)?.status === 'processing' ? [status] : [],
+						recent:
+							(status as { status?: string } | null)?.status === 'processing' || !status
+								? []
+								: [status],
+					},
 				);
 			}
 			return new Response(null, { status: 404 });
@@ -602,6 +615,74 @@ describe('createCloudflareProvider', () => {
 			],
 			recent: [],
 			planned: null,
+		});
+	});
+
+	test('keeps current plan items visible when an older status row has the same crate version', async () => {
+		const objects = new Map<string, unknown>([
+			[
+				'rust/_runs/run-1/plan.json',
+				{
+					run_id: 'run-1',
+					generated_at: '2026-07-28T06:00:00Z',
+					mode: 'daily',
+					shard_count: 8,
+					work: [
+						{
+							work_id: 'crate:demo:1.0.0:default',
+							kind: 'crate',
+							name: 'demo',
+							version: '1.0.0',
+							channel: 'default',
+							priority_tier: 'top-download-stale',
+							reason: 'parser old0000 → target123',
+							download_rank: 1,
+						},
+					],
+				},
+			],
+			[
+				'rust/_index/by-version/demo/1.0.0.json',
+				{
+					name: 'demo',
+					version: '1.0.0',
+					parsedAt: '2026-07-28T06:10:00Z',
+					parserRevision: 'target1234567890',
+					schemaVersion: 1,
+				},
+			],
+		]);
+		const oldStatus = {
+			ecosystem: 'rust',
+			kind: 'crate',
+			name: 'demo',
+			version: '1.0.0',
+			status: 'ready',
+			createdAt: '2026-07-01T00:00:00Z',
+			updatedAt: '2026-07-01T00:05:00Z',
+			sequence: 1,
+		};
+		const provider = createCloudflareProvider({
+			CRATE_GRAPHS: fakeBucket(objects),
+			PARSE_STATUS: fakeParseStatusNamespace(null, [], {
+				active: [],
+				recent: [oldStatus],
+			}),
+		} as Env & { CRATE_GRAPHS: R2Bucket });
+
+		const snapshot = await provider.getParseQueue?.(100);
+
+		expect(snapshot?.planned).toMatchObject({
+			runId: 'run-1',
+			pending: 0,
+			ready: 1,
+			items: [
+				{
+					name: 'demo',
+					version: '1.0.0',
+					state: 'ready',
+				},
+			],
 		});
 	});
 

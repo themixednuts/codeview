@@ -1,16 +1,15 @@
 <script lang="ts">
-	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/design/Icon.svelte';
 	import StablePagination from '$lib/components/StablePagination.svelte';
 	import { readPageParam } from '$lib/pagination';
+	import { QueueStatusConnection } from '$lib/realtime';
 	import { stepLabels } from '$lib/realtime/constants';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
 	const PAGE_SIZE = 10;
-	const REFRESH_INTERVAL_MS = 15_000;
 	const DATE_TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
 		dateStyle: 'medium',
 		timeStyle: 'short',
@@ -19,16 +18,15 @@
 
 	let { data }: PageProps = $props();
 
-	const snapshot = $derived(data.snapshot);
-	const active = $derived(snapshot.active);
-	const recent = $derived(snapshot.recent);
-	const planned = $derived(snapshot.planned);
+	const queueConnection = new QueueStatusConnection();
+	const active = $derived(queueConnection.received ? queueConnection.active : data.snapshot.active);
+	const recent = $derived(queueConnection.received ? queueConnection.recent : data.snapshot.recent);
+	const planned = $derived(data.snapshot.planned);
 	const plannedItems = $derived(planned?.items ?? []);
 	const activeCount = $derived(active.length);
 	const plannedCount = $derived(planned?.pending ?? 0);
 	const plannedReadyCount = $derived(planned?.ready ?? 0);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
-	let refreshPending = $state(false);
 	const activePageCount = $derived(Math.max(1, Math.ceil(active.length / PAGE_SIZE)));
 	const plannedPageCount = $derived(Math.max(1, Math.ceil(plannedItems.length / PAGE_SIZE)));
 	const recentPageCount = $derived(Math.max(1, Math.ceil(recent.length / PAGE_SIZE)));
@@ -93,26 +91,9 @@
 		return actor ? `@${actor.login}` : '';
 	}
 
-	async function refreshQueue() {
-		if (refreshPending || document.visibilityState === 'hidden') return;
-		refreshPending = true;
-		try {
-			await invalidate('codeview:parse-queue');
-		} finally {
-			refreshPending = false;
-		}
-	}
-
 	onMount(() => {
-		const interval = window.setInterval(() => void refreshQueue(), REFRESH_INTERVAL_MS);
-		const onVisibilityChange = () => {
-			if (document.visibilityState === 'visible') void refreshQueue();
-		};
-		document.addEventListener('visibilitychange', onVisibilityChange);
-		return () => {
-			window.clearInterval(interval);
-			document.removeEventListener('visibilitychange', onVisibilityChange);
-		};
+		queueConnection.connect('rust');
+		return () => queueConnection.destroy();
 	});
 </script>
 
@@ -133,9 +114,7 @@
 						</h1>
 					</div>
 					<div class="flex items-center gap-2">
-						<span class="badge badge-sm text-(--accent)">
-							{refreshPending ? 'Refreshing' : 'Live'}
-						</span>
+						<span class="badge badge-sm text-(--accent)">Live</span>
 						<a
 							href={resolve('/')}
 							class="corner-squircle inline-flex items-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-sm text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"

@@ -63,7 +63,14 @@ export const emit = {
 	progress(name: string, version: string, data: unknown) {
 		broadcastToTag(`progress:rust:${name}:${version}`, data);
 	},
-	processing(ecosystem: string, data: { type: 'processing'; count: number }) {
+	processing(
+		ecosystem: string,
+		data: {
+			type: 'processing';
+			count: number;
+			crates: Array<{ name: string; version: string }>;
+		},
+	) {
 		broadcastToTag(`processing:${ecosystem}`, data);
 	},
 	edges(nodeId: string, data: { type: 'cross-edges'; nodeId: string }) {
@@ -101,6 +108,10 @@ export interface LocalProviderInternals {
 	getCache(): Promise<{
 		getStatus(ecosystem: string, name: string, version: string): CrateStatus;
 		getProcessingCount(ecosystem: string): number;
+		getProcessingCrates(
+			ecosystem: string,
+			limit?: number,
+		): Array<{ name: string; version: string }>;
 	}>;
 	getCrateStatus(name: string, version: string): Promise<CrateStatus>;
 }
@@ -184,8 +195,16 @@ export async function sendInitialState(
 					const ecosystem = parts[1];
 					const cache = await internals.getCache();
 					const count = cache.getProcessingCount(ecosystem);
-					ws.send(JSON.stringify({ tag, data: { type: 'processing', count } }));
+					const crates = cache.getProcessingCrates(ecosystem, 20);
+					ws.send(JSON.stringify({ tag, data: { type: 'processing', count, crates } }));
 				}
+			} else if (tag === 'queue:rust') {
+				ws.send(
+					JSON.stringify({
+						tag,
+						data: { type: 'queue', active: [], recent: [] },
+					}),
+				);
 			} else if (!tag.startsWith('edge:')) {
 				const parts = tag.split(':');
 				if (parts.length === 3) {

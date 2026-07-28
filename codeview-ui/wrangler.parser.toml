@@ -20,9 +20,6 @@ PLAN_DRAIN_ACTIVE_TARGET = "4"
 # 0 = do not siphon the daily R2 plan into the CF queue; shards own planned work.
 PLAN_DRAIN_BATCH_SIZE = "0"
 
-[triggers]
-crons = ["*/5 * * * *"]
-
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"
 bucket_name = "crate-graphs"

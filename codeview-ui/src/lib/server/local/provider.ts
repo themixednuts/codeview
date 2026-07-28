@@ -251,7 +251,8 @@ export function createLocalProvider(): DataProvider {
 		emit.status(name, version, fullStatus);
 
 		const count = lc.getProcessingCount('rust');
-		emit.processing('rust', { type: 'processing', count });
+		const crates = lc.getProcessingCrates('rust', 20);
+		emit.processing('rust', { type: 'processing', count, crates });
 	}
 
 	async function emitWorkspaceReady(

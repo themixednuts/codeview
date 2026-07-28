@@ -1398,11 +1398,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 				);
 				const recent = yield* Effect.promise(() => removeStaleFailedQueueEntries(queue.recent));
 				const planned = yield* Effect.tryPromise({
-					try: () =>
-						loadLatestPlannedRun(
-							boundedLimit,
-							queueStatusKeys({ active: queue.active, recent }),
-						),
+					try: () => loadLatestPlannedRun(boundedLimit),
 					catch: (cause) => new Error(`planned parse run load failed: ${errorMessage(cause)}`),
 				}).pipe(
 					Effect.catch((err) =>
@@ -1535,18 +1531,6 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		};
 	}
 
-	function planItemKey(kind: string, name: string, version: string): string {
-		return `${kind}:${name}:${version}`;
-	}
-
-	function queueStatusKeys(queue: StoredParseQueueSnapshot): Set<string> {
-		const keys = new Set<string>();
-		for (const entry of [...queue.active, ...queue.recent]) {
-			keys.add(planItemKey(entry.kind, entry.name, entry.version));
-		}
-		return keys;
-	}
-
 	function planReasonParserTarget(reason: string | undefined): string | null {
 		const match = /\bparser\s+\S+\s+(?:\u2192|->)\s+([0-9a-fA-F]{7,40})\b/.exec(reason ?? '');
 		return match?.[1] ?? null;
@@ -1640,7 +1624,6 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 	async function planFromArtifact(
 		plan: WorkPlanArtifact,
 		limit: number,
-		excludedKeys = new Set<string>(),
 	): Promise<PlannedParseRun | null> {
 		const runId = plan.run_id ?? plan.runId;
 		const generatedAt = plan.generated_at ?? plan.generatedAt;
@@ -1648,8 +1631,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		const work = Array.isArray(plan.work) ? plan.work : [];
 		const candidates = work
 			.map(planItemFromArtifact)
-			.filter((entry): entry is Omit<PlannedParseItem, 'state'> => entry !== null)
-			.filter((entry) => !excludedKeys.has(planItemKey(entry.kind, entry.name, entry.version)));
+			.filter((entry): entry is Omit<PlannedParseItem, 'state'> => entry !== null);
 		const annotated = await Promise.all(
 			candidates.map(async (entry) => {
 				const ready = await plannedItemSatisfiedByFreshness(entry, generatedAt);
@@ -1698,14 +1680,11 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 		);
 	}
 
-	async function loadLatestPlannedRun(
-		limit: number,
-		excludedKeys = new Set<string>(),
-	): Promise<PlannedParseRun | null> {
+	async function loadLatestPlannedRun(limit: number): Promise<PlannedParseRun | null> {
 		const plans = await Promise.all(
 			(await listPlanKeys()).slice(0, 25).map(async ({ key }) => {
 				const raw = await readJson<WorkPlanArtifact>(key);
-				return raw ? await planFromArtifact(raw, limit, excludedKeys) : null;
+				return raw ? await planFromArtifact(raw, limit) : null;
 			}),
 		);
 		return (

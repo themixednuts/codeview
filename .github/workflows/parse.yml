@@ -1,4 +1,8 @@
 name: parse
+run-name: >-
+  ${{ inputs.crate != ''
+    && format('parse {0}@{1} ({2})', inputs.crate, inputs.version, inputs.request_id)
+    || format('parse scheduled backfill ({0})', github.run_id) }}
 
 # Bounded static R2 artifact publisher.
 #
@@ -56,11 +60,11 @@ on:
       corpus:
         description: "`catalog`, `top:N`, `file:<path>`, or `all`"
         required: false
-        default: 'catalog'
+        default: 'top:5000'
       max_total:
         description: 'Maximum crates in this run'
         required: false
-        default: '20'
+        default: '100'
       shard_count:
         description: 'Deterministic publish shards'
         required: false
@@ -68,7 +72,7 @@ on:
       max_per_shard:
         description: 'Maximum crates each shard can drain'
         required: false
-        default: '3'
+        default: '15'
       max_duration_minutes:
         description: 'Wall-clock cap for each shard'
         required: false
@@ -88,7 +92,6 @@ on:
 env:
   R2_BUCKET: crate-graphs
   STATIC_R2_TARGET: remote
-  PARSER_REVISION: ${{ github.sha }}
   R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -97,6 +100,7 @@ env:
 concurrency:
   group: codeview-static-publish
   cancel-in-progress: false
+  queue: max
 
 jobs:
   parse_one:
@@ -122,6 +126,9 @@ jobs:
 
       - name: Build codeview-cli
         run: cargo +stable build --release -p codeview-cli
+
+      - name: Resolve parser revision
+        run: bash .github/scripts/export-parser-revision.sh
 
       - name: Parse and publish exact crate
         env:
@@ -223,7 +230,10 @@ jobs:
           echo "json_dir=$JSON_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Build codeview-cli
-        run: cargo build --release -p codeview-cli
+        run: cargo +stable build --release -p codeview-cli
+
+      - name: Resolve parser revision
+        run: bash .github/scripts/export-parser-revision.sh
 
       - name: Seed and publish std artifacts
         env:
@@ -272,7 +282,10 @@ jobs:
           shared-key: cron-release
 
       - name: Build codeview-cli
-        run: cargo build --release -p codeview-cli
+        run: cargo +stable build --release -p codeview-cli
+
+      - name: Resolve parser revision
+        run: bash .github/scripts/export-parser-revision.sh
 
       - name: Build bounded work plan
         id: plan
@@ -281,9 +294,9 @@ jobs:
           PLAN_KEY="rust/_runs/${RUN_ID}/plan.json"
           target/release/codeview cron plan \
             --mode daily \
-            --corpus "${{ inputs.corpus || 'catalog' }}" \
-            --max-total "${{ inputs.max_total || '20' }}" \
-            --max-per-shard "${{ inputs.max_per_shard || '3' }}" \
+            --corpus "${{ inputs.corpus || 'top:5000' }}" \
+            --max-total "${{ inputs.max_total || '100' }}" \
+            --max-per-shard "${{ inputs.max_per_shard || '15' }}" \
             --shard-count "${{ inputs.shard_count || '8' }}" \
             --force "${{ inputs.force || '' }}" \
             --plan-out "r2:${PLAN_KEY}" \
@@ -320,6 +333,9 @@ jobs:
       - name: Build codeview-cli
         run: cargo +stable build --release -p codeview-cli
 
+      - name: Resolve parser revision
+        run: bash .github/scripts/export-parser-revision.sh
+
       - name: Drain shard
         run: |
           PLAN_KEY="rust/_runs/${{ needs.plan.outputs.run_id }}/plan.json"
@@ -327,7 +343,7 @@ jobs:
             --plan "r2:${PLAN_KEY}" \
             --shard-index "${{ matrix.shard_index }}" \
             --shard-count "${{ needs.plan.outputs.shard_count }}" \
-            --max-items "${{ inputs.max_per_shard || '3' }}" \
+            --max-items "${{ inputs.max_per_shard || '15' }}" \
             --max-duration-minutes "${{ inputs.max_duration_minutes || '45' }}" \
             --docsrs-min-delay-ms "${{ inputs.docsrs_min_delay_ms || '15000' }}" \
             --run-id "${{ needs.plan.outputs.run_id }}" \
@@ -351,7 +367,10 @@ jobs:
           shared-key: cron-release
 
       - name: Build codeview-cli
-        run: cargo build --release -p codeview-cli
+        run: cargo +stable build --release -p codeview-cli
+
+      - name: Resolve parser revision
+        run: bash .github/scripts/export-parser-revision.sh
 
       - name: Merge deltas and publish catalog
         run: |

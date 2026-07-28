@@ -6,8 +6,6 @@ const log = getLogger('ws-client');
 const RECONNECT_DELAY_INITIAL_MS = 500;
 const RECONNECT_DELAY_MAX_MS = 5000;
 const CONNECT_ACK_TIMEOUT_MS = 10_000;
-const HEARTBEAT_INTERVAL_MS = 10_000;
-const HEARTBEAT_STALE_MS = 30_000;
 
 /**
  * Browser WebSocket client for real-time event subscriptions.
@@ -36,10 +34,6 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 	#retryDelay = RECONNECT_DELAY_INITIAL_MS;
 	#retryTimer: ReturnType<typeof setTimeout> | null = null;
 	#connectAckTimer: ReturnType<typeof setTimeout> | null = null;
-
-	// Liveness / heartbeat
-	#heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-	#lastServerActivityMs = 0;
 
 	// Pending subscribe/unsubscribe batched while disconnected
 	#pendingSubscribes = new Set<string>();
@@ -106,7 +100,6 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 	destroy(): void {
 		this.#destroyed = true;
 		this.#cancelRetry();
-		this.#stopHeartbeat();
 		this.#cancelConnectAckTimer();
 		this.#closeSocket();
 		this.#subscriptions.clear();
@@ -191,8 +184,6 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 	}
 
 	#onMessage(raw: string): void {
-		this.#lastServerActivityMs = Date.now();
-
 		let msg: { type?: string; connectionId?: string; tag?: string; data?: unknown };
 		try {
 			msg = JSON.parse(raw);
@@ -209,15 +200,10 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 			this.#connecting = false;
 			this.#retryDelay = RECONNECT_DELAY_INITIAL_MS;
 			this.#cancelConnectAckTimer();
-			this.#startHeartbeat();
 			log.debug`connected id=${msg.connectionId}`;
 
 			// Subscribe to all active tags
 			this.#resubscribeAll();
-			return;
-		}
-
-		if (msg.type === 'pong') {
 			return;
 		}
 
@@ -240,7 +226,6 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 
 	#onDisconnect(): void {
 		this.#cancelConnectAckTimer();
-		this.#stopHeartbeat();
 		this.#connected = false;
 		this.#connecting = false;
 		this.#connectionId = null;
@@ -285,7 +270,6 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 
 	#closeSocket(): void {
 		this.#cancelConnectAckTimer();
-		this.#stopHeartbeat();
 		this.#connected = false;
 		this.#connecting = false;
 		if (this.#ws) {
@@ -327,33 +311,6 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 		}
 	}
 
-	#startHeartbeat(): void {
-		this.#stopHeartbeat();
-		this.#lastServerActivityMs = Date.now();
-		this.#heartbeatTimer = setInterval(() => {
-			if (!this.#connected || !this.#ws || this.#ws.readyState !== WebSocket.OPEN) return;
-
-			const idleMs = Date.now() - this.#lastServerActivityMs;
-			if (idleMs > HEARTBEAT_STALE_MS) {
-				log.warn`stale connection idleMs=${String(idleMs)} forcing reconnect`;
-				try {
-					this.#ws.close();
-				} catch {
-					this.#onDisconnect();
-				}
-				return;
-			}
-
-			this.#send({ action: 'ping' });
-		}, HEARTBEAT_INTERVAL_MS);
-	}
-
-	#stopHeartbeat(): void {
-		if (this.#heartbeatTimer) {
-			clearInterval(this.#heartbeatTimer);
-			this.#heartbeatTimer = null;
-		}
-	}
 }
 
 // Global singleton - one WebSocket connection per browser tab

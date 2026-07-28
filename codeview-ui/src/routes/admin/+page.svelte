@@ -1,17 +1,16 @@
 <script lang="ts">
-	import { invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
 	import Icon from '$lib/components/design/Icon.svelte';
 	import AdminForceParseForm from '$lib/components/AdminForceParseForm.svelte';
 	import StablePagination from '$lib/components/StablePagination.svelte';
 	import { readPageParam } from '$lib/pagination';
+	import { QueueStatusConnection } from '$lib/realtime';
 	import { stepLabels } from '$lib/realtime/constants';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
 	const PAGE_SIZE = 10;
-	const REFRESH_INTERVAL_MS = 15_000;
 	const DATE_TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
 		dateStyle: 'medium',
 		timeStyle: 'short',
@@ -19,14 +18,16 @@
 	});
 
 	let { data, form }: PageProps = $props();
-	let refreshPending = $state(false);
+	const queueConnection = new QueueStatusConnection();
 
 	const auth = $derived(data.auth);
 	const dashboard = $derived(data.dashboard);
 	const queue = $derived(dashboard?.queue ?? null);
 	const allowance = $derived(dashboard?.allowance ?? null);
-	const activeEntries = $derived(queue?.active ?? []);
-	const recent = $derived(queue?.recent ?? []);
+	const activeEntries = $derived(
+		queueConnection.received ? queueConnection.active : (queue?.active ?? []),
+	);
+	const recent = $derived(queueConnection.received ? queueConnection.recent : (queue?.recent ?? []));
 	const plannedItems = $derived(queue?.planned?.items ?? []);
 	const failedCount = $derived(recent.filter((entry) => entry.status === 'failed').length);
 	const activePageCount = $derived(Math.max(1, Math.ceil(activeEntries.length / PAGE_SIZE)));
@@ -110,26 +111,9 @@
 		return 'Unknown';
 	}
 
-	async function refreshAdmin() {
-		if (refreshPending || document.visibilityState === 'hidden') return;
-		refreshPending = true;
-		try {
-			await invalidate('codeview:admin-dashboard');
-		} finally {
-			refreshPending = false;
-		}
-	}
-
 	onMount(() => {
-		const interval = window.setInterval(() => void refreshAdmin(), REFRESH_INTERVAL_MS);
-		const onVisibilityChange = () => {
-			if (document.visibilityState === 'visible') void refreshAdmin();
-		};
-		document.addEventListener('visibilitychange', onVisibilityChange);
-		return () => {
-			window.clearInterval(interval);
-			document.removeEventListener('visibilitychange', onVisibilityChange);
-		};
+		queueConnection.connect('rust');
+		return () => queueConnection.destroy();
 	});
 </script>
 
@@ -148,9 +132,7 @@
 						<h1 class="font-display text-2xl font-semibold text-(--ink)">Parse operations</h1>
 					</div>
 					<div class="flex items-center gap-2">
-						<span class="badge badge-sm text-(--accent)">
-							{refreshPending ? 'Refreshing' : 'Live'}
-						</span>
+						<span class="badge badge-sm text-(--accent)">Live</span>
 						<a
 							href={resolve('/queue')}
 							class="corner-squircle inline-flex items-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-sm text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"
@@ -189,7 +171,7 @@
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
 							<div class="text-2xs tracking-wider text-(--muted) uppercase">Queue</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">
-								{queue?.active.length ?? 0} tracked · {queue?.activeRuns.length ?? 0} GitHub
+								{activeEntries.length} tracked · {queue?.activeRuns.length ?? 0} GitHub
 							</div>
 							<div class="mt-1 text-xs text-(--muted-soft)">
 								{queue?.planned
