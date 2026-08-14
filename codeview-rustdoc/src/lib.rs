@@ -378,6 +378,16 @@ pub fn generate_rustdoc_json_with_options(
         .status()?;
 
     if !status.success() {
+        // `--cfg docsrs` enables `feature(doc_auto_cfg)`, which nightly 1.92
+        // removed (merged into `doc_cfg`). Retry without the docs.rs cfg so
+        // crates that still declare the old feature can still emit JSON.
+        if options.docs_rs {
+            eprintln!("docs.rs-style rustdoc failed; retrying without --cfg docsrs");
+            return generate_rustdoc_json_with_options(
+                manifest_path,
+                RustdocBuildOptions::default(),
+            );
+        }
         return Err(RustdocError::RustdocFailed(status));
     }
 
@@ -6439,6 +6449,24 @@ mod tests {
         assert!(report.warnings.iter().any(|warning| {
             warning.contains("left 1 of 1 rustdoc intra-doc link targets unresolved")
         }));
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn default_command_plan_omits_docsrs_cfg() {
+        let plan = rustdoc_command_plan(
+            &serde_json::json!({}),
+            &[],
+            None,
+            RustdocBuildOptions::default(),
+        );
+        assert!(
+            !plan
+                .rustdoc_args
+                .windows(2)
+                .any(|args| args[0] == "--cfg" && args[1] == "docsrs")
+        );
+        assert!(!plan.cargo_args.iter().any(|arg| arg == "--all-features"));
     }
 
     #[cfg(feature = "native")]
