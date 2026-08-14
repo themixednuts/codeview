@@ -954,8 +954,8 @@ pub fn load_graph_from_path_with_sources(
 // ---------------------------------------------------------------------------
 // Multi-version rustdoc JSON compatibility layer
 //
-// `rustdoc-types` targets FORMAT_VERSION 57. docs.rs serves JSON from whatever
-// nightly built the crate, so the format version varies (observed: v35–v57+).
+// `rustdoc-types` targets FORMAT_VERSION 61. docs.rs serves JSON from whatever
+// nightly built the crate, so the format version varies (observed: v35–v61+).
 //
 // Strategy:
 //   1. Fast path — `from_str::<Crate>` directly (zero-copy, zero allocation).
@@ -1064,6 +1064,7 @@ fn parse_rustdoc_lenient(json: &str) -> Result<rdt::Crate, RustdocError> {
 /// | 58  | `16d4d0853c03` | Added required `Item.stability`                      |
 /// | 59  | `6b6982e08e32` | Added required `Item.const_stability`                |
 /// | 60  | `fd623933c2a9` | Added required default-body stability fields         |
+/// | 61  | `d1da7c52545d` | Nested `Stability.level` (no serde flatten)          |
 ///
 /// Non-breaking bumps (v45–v46, v48–v50, v52–v53, v55–v56) only changed
 /// attribute pretty-printing or added new enum variants — no fixup needed.
@@ -1093,6 +1094,9 @@ mod compat {
         }
         if source < 60 && TARGET >= 60 {
             walk(doc, fixup_default_body_stability);
+        }
+        if source < 61 && TARGET >= 61 {
+            walk(doc, fixup_stability_level_nesting);
         }
         // Always: catch unknown Attribute variants from newer nightlies.
         walk(doc, fixup_unknown_attrs);
@@ -1153,6 +1157,27 @@ mod compat {
                 continue;
             };
             payload.entry("default_unstable").or_insert(Value::Null);
+        }
+    }
+
+    /// v61: `Stability.level` is nested instead of flattened beside `since`.
+    ///
+    /// v60 JSON: `{"feature":"x","level":"stable","since":"1.0.0"}`
+    /// v61 JSON: `{"feature":"x","level":{"stable":{"since":"1.0.0"}}}`
+    /// Unstable stays `"level":"unstable"` in both versions.
+    fn fixup_stability_level_nesting(map: &mut serde_json::Map<String, Value>) {
+        for key in ["stability", "const_stability"] {
+            let Some(Value::Object(stability)) = map.get_mut(key) else {
+                continue;
+            };
+            let Some(Value::String(level)) = stability.get("level") else {
+                continue;
+            };
+            if level != "stable" {
+                continue;
+            }
+            let since = stability.remove("since").unwrap_or(Value::Null);
+            stability.insert("level".to_string(), json!({ "stable": { "since": since } }));
         }
     }
 
@@ -6574,7 +6599,7 @@ pub struct Small;
     }
 
     #[test]
-    fn rustdoc_compat_fills_required_fields_through_v60() {
+    fn rustdoc_compat_fills_required_fields_through_v61() {
         let mut value = minimal_rustdoc_value("fixture");
         value["format_version"] = serde_json::json!(57);
         value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
@@ -6610,6 +6635,7 @@ pub struct Small;
     #[test]
     fn rustdoc_v60_stability_metadata_projects_to_nodes() {
         let mut value = minimal_rustdoc_value("fixture");
+        value["format_version"] = serde_json::json!(60);
         value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
         value["index"]["1"] = rustdoc_function_item(1, "f");
         value["index"]["1"]["stability"] = serde_json::json!({
@@ -6675,6 +6701,71 @@ pub struct Small;
             node.default_unstable,
             Some(ProvidedDefaultUnstable {
                 feature: "fixture_default_body".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn rustdoc_v61_nested_stability_projects_to_nodes() {
+        let mut value = minimal_rustdoc_value("fixture");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_function_item(1, "f");
+        value["index"]["1"]["stability"] = serde_json::json!({
+            "feature": "fixture_api",
+            "level": { "stable": { "since": "1.2.3" } }
+        });
+        value["index"]["1"]["const_stability"] = serde_json::json!({
+            "feature": "fixture_const_api",
+            "level": "unstable"
+        });
+        value["index"]["1"]["inner"]["function"]["default_unstable"] = serde_json::json!({
+            "feature": "fixture_default_body"
+        });
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["fixture", "f"],
+            "kind": "function"
+        });
+
+        let validated = validate_rustdoc_json(
+            &value.to_string(),
+            "fixture",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("v61 rustdoc JSON validates");
+        let (graph, _) = build_graph_with_stats(
+            &validated.krate,
+            "fixture",
+            BuildGraphOptions {
+                workspace_members: None,
+                source: None,
+                call_mode: CallMode::Ambiguous,
+                skip_external_nodes: false,
+                rustdoc_name: None,
+            },
+        )
+        .expect("graph builds");
+
+        let node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "fixture::f")
+            .expect("function node");
+
+        assert_eq!(
+            node.stability,
+            Some(StabilityInfo {
+                feature: "fixture_api".to_string(),
+                level: StabilityLevel::Stable {
+                    since: Some("1.2.3".to_string())
+                },
+            })
+        );
+        assert_eq!(
+            node.const_stability,
+            Some(StabilityInfo {
+                feature: "fixture_const_api".to_string(),
+                level: StabilityLevel::Unstable,
             })
         );
     }
