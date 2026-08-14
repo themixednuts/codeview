@@ -1,4 +1,4 @@
-import type { VisEdge, VisNode } from "#lib/graph/layout/types";
+import type { VisEdge, VisNode } from "#lib/graph/layout/types.js";
 
 export type LabelPosition = { x: number; y: number; anchor: string };
 export type SimilarityInfo = { group: number[]; indexOf: number };

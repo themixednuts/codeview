@@ -1,4 +1,4 @@
-import type { Node, NodeKind, Visibility } from "#lib/graph";
+import type { Node, NodeKind, Visibility } from "#lib/graph.js";
 import {
   renderGenericBound,
   renderGenericParams,
@@ -16,7 +16,7 @@ import {
  *    a trailing comma, closing `)` on its own line followed by `-> Return`.
  *    Matches what `cargo fmt` produces when forced to a narrower max_width.
  *
- * Callers pick which to render based on measured width (see SignatureBlock).
+ * Callers pick which to render based on measured width (see design/Signature).
  */
 export interface FormattedSignature {
   inline: string;
@@ -77,16 +77,20 @@ export function formatSignature(node: Pick<Node, "name" | "signature">): Formatt
 /** Render a `Visibility` as its source keyword, or '' when omitted. */
 function visibilityPrefix(visibility: Visibility | undefined): string {
   if (!visibility) return "";
-  const raw = visibility as { kind?: string; path?: string };
-  switch (raw.kind) {
+  switch (visibility.kind) {
     case "Public":
       return "pub ";
     case "Crate":
       return "pub(crate) ";
     case "Restricted":
-      return `pub(in ${raw.path ?? "crate"}) `;
-    default:
+      return `pub(in ${visibility.path ?? "crate"}) `;
+    case "Inherited":
+    case "Unknown":
       return "";
+    default: {
+      const _exhaustive: never = visibility;
+      return _exhaustive;
+    }
   }
 }
 

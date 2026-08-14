@@ -70,6 +70,18 @@ export const Website = Cloudflare.Website.SvelteKit(
           className: "ParseStatusDurableObject",
           scriptName: parserScriptName,
         }),
+        RATE_LIMIT_API: Cloudflare.RateLimit("RATE_LIMIT_API", {
+          namespaceId: 1001,
+          simple: { limit: 60, period: 60 },
+        }),
+        RATE_LIMIT_PARSE_ANON: Cloudflare.RateLimit("RATE_LIMIT_PARSE_ANON", {
+          namespaceId: 1002,
+          simple: { limit: 6, period: 60 },
+        }),
+        RATE_LIMIT_PARSE_AUTH: Cloudflare.RateLimit("RATE_LIMIT_PARSE_AUTH", {
+          namespaceId: 1003,
+          simple: { limit: 60, period: 60 },
+        }),
         BETTER_AUTH_URL: "https://codeview.codes",
         GITHUB_OAUTH_CLIENT_ID: "Ov23liaAIxx0Vmp8F0zE",
         GITHUB_ADMIN_LOGINS: "themixednuts",

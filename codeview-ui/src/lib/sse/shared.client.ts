@@ -1,10 +1,11 @@
-import type { RealtimeCallback, RealtimeClient } from "#lib/realtime/types";
-import { getLogger } from "#lib/log";
+import type { RealtimeCallback, RealtimeClient } from "#lib/realtime/types.js";
+import { getLogger } from "#lib/log.js";
 import { SSEConnection, type SSEEndReason } from "./connection";
+import * as Predicate from "effect/Predicate";
+import type { Json, JsonObject } from "effect/Schema";
 
-interface SharedEventMessage {
-  tag: string;
-  data: unknown;
+function isJsonObject(value: Json): value is JsonObject {
+  return Predicate.isObject(value);
 }
 
 /**
@@ -33,14 +34,14 @@ export class Client extends SSEConnection implements RealtimeClient {
   /**
    * Subscribe to a tag. Creates the shared connection if needed.
    */
-  async subscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): Promise<void> {
+  async subscribe(tag: string, callback: RealtimeCallback): Promise<void> {
     // Add callback to subscriptions
     let callbacks = this.subscriptions.get(tag);
     if (!callbacks) {
       callbacks = new Set();
       this.subscriptions.set(tag, callbacks);
     }
-    callbacks.add(callback as RealtimeCallback);
+    callbacks.add(callback);
 
     // If already connected and subscribed, nothing to do
     if (this.subscribedTags.has(tag)) {
@@ -63,11 +64,11 @@ export class Client extends SSEConnection implements RealtimeClient {
   /**
    * Unsubscribe from a tag.
    */
-  async unsubscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): Promise<void> {
+  async unsubscribe(tag: string, callback: RealtimeCallback): Promise<void> {
     const callbacks = this.subscriptions.get(tag);
     if (!callbacks) return;
 
-    callbacks.delete(callback as RealtimeCallback);
+    callbacks.delete(callback);
 
     // If no more callbacks for this tag, unsubscribe from server
     if (callbacks.size === 0) {
@@ -140,23 +141,24 @@ export class Client extends SSEConnection implements RealtimeClient {
       }
 
       // Apply initialData immediately (server returns current state for each tag)
-      const payload = (await response.json().catch(() => null)) as {
-        success?: boolean;
-        initialData?: Record<string, unknown>;
-      } | null;
+      // SAFETY: subscribe responses are JSON objects with an optional initialData map.
+      const parsed = (await response.json().catch(() => null)) as Json | null;
+      if (!isJsonObject(parsed) || !isJsonObject(parsed.initialData)) {
+        return;
+      }
 
-      const initialData = payload?.initialData;
-      if (initialData) {
-        for (const [tag, data] of Object.entries(initialData)) {
-          if (data === null || data === undefined) continue;
-          const callbacks = this.subscriptions.get(tag);
-          if (!callbacks) continue;
-          for (const cb of callbacks) {
-            try {
-              cb(data);
-            } catch (err) {
-              this.log.error`initialData callback error for ${tag}: ${String(err)}`;
-            }
+      const initialData = parsed.initialData;
+      for (const tag of Object.keys(initialData)) {
+        if (!Object.hasOwn(initialData, tag)) continue;
+        const data = initialData[tag];
+        if (data === null || data === undefined) continue;
+        const callbacks = this.subscriptions.get(tag);
+        if (!callbacks) continue;
+        for (const cb of callbacks) {
+          try {
+            cb(data);
+          } catch (err) {
+            this.log.error`initialData callback error for ${tag}: ${String(err)}`;
           }
         }
       }
@@ -206,32 +208,33 @@ export class Client extends SSEConnection implements RealtimeClient {
     }
   }
 
-  protected onData(data: unknown): void {
-    const msg = data as { type?: string; clientId?: string; tag?: string; data?: unknown };
+  protected onData(data: Json): void {
+    if (!isJsonObject(data)) return;
 
-    // Handle connection acknowledgment
-    if (msg.type === "connected" && msg.clientId) {
-      this.clientId = msg.clientId;
-      this.log.debug`connected with clientId=${msg.clientId}`;
+    if (
+      "type" in data &&
+      data.type === "connected" &&
+      "clientId" in data &&
+      Predicate.isString(data.clientId)
+    ) {
+      this.clientId = data.clientId;
+      this.log.debug`connected with clientId=${data.clientId}`;
 
-      // Subscribe to any pending tags
       if (this.pendingSubscriptions.size > 0) {
         this.sendSubscribe(Array.from(this.pendingSubscriptions));
       }
       return;
     }
 
-    // Handle tagged messages
-    if (msg.tag) {
-      const callbacks = this.subscriptions.get(msg.tag);
-      if (callbacks) {
-        for (const callback of callbacks) {
-          try {
-            callback(msg.data);
-          } catch (err) {
-            this.log.error`callback error for ${msg.tag}: ${String(err)}`;
-          }
-        }
+    if (!("tag" in data) || !Predicate.isString(data.tag)) return;
+    const callbacks = this.subscriptions.get(data.tag);
+    if (!callbacks) return;
+    const payload = "data" in data ? data.data : null;
+    for (const callback of callbacks) {
+      try {
+        callback(payload);
+      } catch (err) {
+        this.log.error`callback error for ${data.tag}: ${String(err)}`;
       }
     }
   }

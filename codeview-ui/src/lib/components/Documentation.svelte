@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { parseDocumentation } from '#lib/highlight/documentation';
-	import type { SupportedLanguage } from '#lib/highlight/languages';
-	import type { DocLinks } from '#lib/highlight/markdown';
-	import { resolveAppPath } from '#lib/app-paths';
-	import { externalDocsUrl } from '#lib/docs';
-	import CodeBlock from './CodeBlock.svelte';
-	import { extLinkModeCtx } from '#lib/context';
+	import { parseDocumentation } from '#lib/highlight/documentation.js';
+	import type { SupportedLanguage } from '#lib/highlight/languages.js';
+	import type { DocLinks } from '#lib/highlight/markdown.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import { externalDocsUrl } from '#lib/docs.js';
+	import CodeBlock from '#lib/components/design/CodeBlock.svelte';
+	import { extLinkModeCtx } from '#lib/context.js';
 
 	const extLinkMode = $derived(extLinkModeCtx.get());
 
@@ -43,10 +43,10 @@
 	 * Otherwise navigates within codeview.
 	 */
 	function handleClick(event: Event) {
-		const target = event.target as HTMLElement;
-		const link = target.closest('a.intra-doc-link') as HTMLAnchorElement | null;
-
-		if (!link) return;
+		const target = event.target;
+		if (!(target instanceof Element)) return;
+		const link = target.closest('a.intra-doc-link');
+		if (!(link instanceof HTMLAnchorElement)) return;
 
 		const nodeId = link.dataset.nodeId;
 		if (!nodeId) return;

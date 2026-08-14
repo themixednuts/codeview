@@ -1,13 +1,10 @@
-import type { Graph, Node } from "#lib/graph";
-import type { VisNode, VisEdge } from "./types";
+import type { Graph, Node } from "#lib/graph.js";
+import type { VisNode, VisEdge, VisLayout } from "./types";
 import { CENTER_X, CENTER_Y, LAYOUT_HEIGHT, MIN_NODE_SPACING } from "./types";
-import { getNodeVisual } from "#lib/graph/visual/node-visual";
+import { getNodeVisual } from "#lib/graph/visual/node-visual.js";
 import { resolveCollisions } from "./collision";
 
-export function computeHierarchicalLayout(
-  graph: Graph,
-  selected: Node,
-): { nodes: VisNode[]; edges: VisEdge[] } {
+export function computeHierarchicalLayout(graph: Graph, selected: Node): VisLayout {
   const nodeMap = new Map<string, Node>();
   for (const node of graph.nodes) {
     nodeMap.set(node.id, node);

@@ -1,8 +1,9 @@
 <script lang="ts">
-	import type { NodeKind } from '#lib/schema';
-	import { kindLabels } from '#lib/display-names';
-	import { kindColors } from '#lib/tree';
-	import { designKindToNodeKind } from '#lib/design/live-node';
+	import type { NodeKind } from '#lib/schema.js';
+	import { kindLabels } from '#lib/display-names.js';
+	import { kindColors } from '#lib/tree.js';
+	import { designKindToNodeKind } from '#lib/design/live-node.js';
+	import * as Predicate from 'effect/Predicate';
 
 	let {
 		kind,
@@ -23,17 +24,19 @@
 	const color = $derived(nodeKind ? (kindColors[nodeKind] ?? 'var(--muted)') : 'var(--muted)');
 	const glyphSize = $derived(Math.max(9, Math.round(size * 0.56)));
 	const glyph = $derived(displayLabel.slice(0, 1).toUpperCase());
-	const labelText = $derived(typeof label === 'string' ? label : displayLabel);
+	const labelText = $derived(Predicate.isString(label) ? label : displayLabel);
 	const style = $derived(
 		`width: ${size / 16}rem; height: ${size / 16}rem; background: ${color}; font-size: ${glyphSize / 16}rem`,
 	);
 
-	function primitiveText(value: unknown): string {
-		if (typeof value === 'string') return value;
-		if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+	type PrimitiveTextInput = string | number | boolean | bigint | symbol | null | undefined;
+
+	function primitiveText(value: PrimitiveTextInput): string {
+		if (Predicate.isString(value)) return value;
+		if (Predicate.isNumber(value) || Predicate.isBoolean(value) || Predicate.isBigInt(value)) {
 			return String(value);
 		}
-		if (typeof value === 'symbol') return value.description ?? 'unknown';
+		if (Predicate.isSymbol(value)) return value.description ?? 'unknown';
 		return 'unknown';
 	}
 </script>

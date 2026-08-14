@@ -23,7 +23,7 @@ import oneDarkPro from "@shikijs/themes/one-dark-pro";
 import githubLight from "@shikijs/themes/github-light";
 import githubDark from "@shikijs/themes/github-dark";
 
-const solarizedLightContrastMap: Record<string, string> = {
+const solarizedLightContrastMap = {
   "#268bd2": "#1f6fa5",
   "#2aa198": "#176d68",
   "#657b83": "#4f656d",
@@ -34,9 +34,9 @@ const solarizedLightContrastMap: Record<string, string> = {
   "#cb4b16": "#a93b0c",
   "#d33682": "#9f2861",
   "#dc322f": "#ad2422",
-};
+} as const;
 
-const solarizedDarkContrastMap: Record<string, string> = {
+const solarizedDarkContrastMap = {
   "#268bd2": "#5fb3eb",
   "#2aa198": "#55bfb5",
   "#586e75": "#7f9296",
@@ -46,7 +46,17 @@ const solarizedDarkContrastMap: Record<string, string> = {
   "#cb4b16": "#ff9d66",
   "#d33682": "#e66aa6",
   "#dc322f": "#ff7b72",
-};
+} as const;
+
+function contrastColor(
+  map: typeof solarizedLightContrastMap | typeof solarizedDarkContrastMap,
+  foreground: string,
+): string | undefined {
+  for (const [hex, contrast] of Object.entries(map)) {
+    if (hex === foreground) return contrast;
+  }
+  return undefined;
+}
 
 // Solarized targets equal perceived lightness, but several accents fall below
 // 4.5:1 against their editor background. Preserve the hue relationships while
@@ -64,7 +74,7 @@ const readableSolarizedLight = {
       settings: {
         ...token.settings,
         foreground: foreground
-          ? (solarizedLightContrastMap[foreground] ?? token.settings.foreground)
+          ? (contrastColor(solarizedLightContrastMap, foreground) ?? token.settings.foreground)
           : undefined,
       },
     };
@@ -84,7 +94,7 @@ const readableSolarizedDark = {
       settings: {
         ...token.settings,
         foreground: foreground
-          ? (solarizedDarkContrastMap[foreground] ?? token.settings.foreground)
+          ? (contrastColor(solarizedDarkContrastMap, foreground) ?? token.settings.foreground)
           : undefined,
       },
     };
@@ -109,7 +119,7 @@ const CODE_THEMES = [
   "github-dark",
 ] as const;
 
-const CODE_THEME_BACKGROUNDS: Record<(typeof CODE_THEMES)[number], string> = {
+const CODE_THEME_BACKGROUNDS = {
   "solarized-light": "#f2ebd7",
   "solarized-dark": "#001f27",
   "catppuccin-latte": "#eff1f5",
@@ -118,7 +128,7 @@ const CODE_THEME_BACKGROUNDS: Record<(typeof CODE_THEMES)[number], string> = {
   "one-dark": "#282c34",
   "github-light": "#ffffff",
   "github-dark": "#0d1117",
-};
+} as const satisfies { [K in (typeof CODE_THEMES)[number]]: string };
 
 const MINIMUM_CODE_CONTRAST = 4.5;
 

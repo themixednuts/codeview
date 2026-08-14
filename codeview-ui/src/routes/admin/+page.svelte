@@ -4,9 +4,9 @@
 	import Icon from '#lib/components/design/Icon.svelte';
 	import AdminForceParseForm from '#lib/components/AdminForceParseForm.svelte';
 	import StablePagination from '#lib/components/StablePagination.svelte';
-	import { readPageParam } from '#lib/pagination';
-	import { QueueStatusConnection } from '#lib/realtime';
-	import { stepLabels } from '#lib/realtime/constants';
+	import { readPageParam } from '#lib/pagination.js';
+	import { QueueStatusConnection } from '#lib/realtime/index.js';
+	import { labelForParseStep } from '#lib/realtime/constants.js';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
@@ -48,7 +48,8 @@
 	}
 
 	function statusLabel(status: string, step?: string): string {
-		if (step && stepLabels[step]) return stepLabels[step].replace(/\.\.\.$/, '');
+		const label = step ? labelForParseStep(step) : undefined;
+		if (label) return label.replace(/\.\.\.$/, '');
 		if (step) return step;
 		if (status === 'ready') return 'Ready';
 		if (status === 'failed') return 'Failed';
@@ -84,7 +85,7 @@
 	}
 
 	function fmtNumber(value: number | null | undefined, digits = 0): string {
-		if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+		if (value === null || value === undefined || !Number.isFinite(value)) return 'n/a';
 		return value.toLocaleString('en-US', {
 			maximumFractionDigits: digits,
 			minimumFractionDigits: digits > 0 ? Math.min(1, digits) : 0,
@@ -92,12 +93,12 @@
 	}
 
 	function fmtMinutes(value: number | null | undefined): string {
-		if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+		if (value === null || value === undefined || !Number.isFinite(value)) return 'n/a';
 		return `${fmtNumber(value, value >= 10 ? 0 : 1)} min`;
 	}
 
 	function fmtPercent(value: number | null | undefined): string {
-		if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+		if (value === null || value === undefined || !Number.isFinite(value)) return 'n/a';
 		return `${fmtNumber(value, 1)}%`;
 	}
 

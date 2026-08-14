@@ -5,4 +5,4 @@
  * Re-exports the shared SSE connection with the same interface as ws/client.ts.
  */
 export { connect } from "./shared.client";
-export type { RealtimeCallback } from "#lib/realtime/types";
+export type { RealtimeCallback } from "#lib/realtime/types.js";

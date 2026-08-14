@@ -2,15 +2,17 @@
 	import { SvelteFlow } from '@xyflow/svelte';
 	import type { Edge as FlowEdge, Node as FlowNode } from '@xyflow/svelte';
 	import { onMount } from 'svelte';
-	import type {
-		CrateMapData,
-		CrateMapModuleEdge,
-		CrateMapModuleNode,
-		CrateMapSemanticKind,
-	} from '#lib/graph/crate-map';
-	import { findContainingModule, moduleDepthColor } from '#lib/graph/crate-map';
-	import { resolveAppPath } from '#lib/app-paths';
-	import { edgeKindToRelation, REL, REL_ORDER, type DesignRelation } from '#lib/design/live-node';
+	import {
+		CRATE_MAP_SEMANTIC_KINDS,
+		findContainingModule,
+		moduleDepthColor,
+		type CrateMapData,
+		type CrateMapModuleEdge,
+		type CrateMapModuleNode,
+		type CrateMapSemanticKind,
+	} from '#lib/graph/crate-map.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import { edgeKindToRelation, REL, REL_ORDER, type DesignRelation } from '#lib/design/live-node.js';
 	import CrateModuleNode from './CrateModuleNode.svelte';
 	import { DISABLED_FLOW_SHORTCUTS } from './flow-shortcuts';
 
@@ -140,7 +142,7 @@
 			const stats: ModuleStats = statsByModule.get(module.id) ?? {
 				incoming: 0,
 				outgoing: 0,
-				topKinds: [] as Array<[CrateMapSemanticKind, number]>,
+				topKinds: [],
 			};
 			const active = hoveredModuleId === module.id;
 			const dim = hoveredModuleId != null && !connectedIds.has(module.id);
@@ -242,11 +244,9 @@
 		for (const edge of edges) {
 			ensure(edge.from).outgoing += edge.total;
 			ensure(edge.to).incoming += edge.total;
-			for (const [kind, count] of Object.entries(edge.kindCounts) as [
-				CrateMapSemanticKind,
-				number,
-			][]) {
-				if (count <= 0) continue;
+			for (const kind of CRATE_MAP_SEMANTIC_KINDS) {
+				const count = edge.kindCounts[kind];
+				if (count === undefined || count <= 0) continue;
 				addKind(edge.from, kind, count);
 				addKind(edge.to, kind, count);
 			}
@@ -391,11 +391,9 @@
 	function dominantKind(edge: CrateMapModuleEdge): CrateMapSemanticKind | null {
 		let best: CrateMapSemanticKind | null = null;
 		let bestCount = 0;
-		for (const [kind, count] of Object.entries(edge.kindCounts) as [
-			CrateMapSemanticKind,
-			number,
-		][]) {
-			if (count > bestCount) {
+		for (const kind of CRATE_MAP_SEMANTIC_KINDS) {
+			const count = edge.kindCounts[kind];
+			if (count !== undefined && count > bestCount) {
 				best = kind;
 				bestCount = count;
 			}

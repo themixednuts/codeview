@@ -1,7 +1,7 @@
-import type { Node, NodeKind } from "#lib/graph";
+import type { Node, NodeKind } from "#lib/graph.js";
 import type { Component } from "svelte";
-import { kindVisuals } from "#lib/graph/visual";
-import { compareNodeLike, kindOrder } from "#lib/node-order";
+import { kindVisuals } from "#lib/graph/visual/index.js";
+import { compareNodeLike, kindOrder } from "#lib/node-order.js";
 import Package from "@lucide/svelte/icons/package";
 import FolderCode from "@lucide/svelte/icons/folder-code";
 import Box from "@lucide/svelte/icons/box";
@@ -21,14 +21,31 @@ import Import from "@lucide/svelte/icons/import";
 import Sparkles from "@lucide/svelte/icons/sparkles";
 
 /** Node fill colors — derived from the canonical kindVisuals palette. */
-export const kindColors: Record<NodeKind, string> = Object.fromEntries(
-  (Object.entries(kindVisuals) as [NodeKind, { fill: string; stroke: string }][]).map(([k, v]) => [
-    k,
-    v.fill,
-  ]),
-) as Record<NodeKind, string>;
+export const kindColors = {
+  Crate: kindVisuals.Crate.fill,
+  Module: kindVisuals.Module.fill,
+  Struct: kindVisuals.Struct.fill,
+  StructField: kindVisuals.StructField.fill,
+  Union: kindVisuals.Union.fill,
+  Enum: kindVisuals.Enum.fill,
+  Variant: kindVisuals.Variant.fill,
+  Trait: kindVisuals.Trait.fill,
+  TraitAlias: kindVisuals.TraitAlias.fill,
+  Impl: kindVisuals.Impl.fill,
+  Function: kindVisuals.Function.fill,
+  TypeAlias: kindVisuals.TypeAlias.fill,
+  AssocType: kindVisuals.AssocType.fill,
+  Constant: kindVisuals.Constant.fill,
+  AssocConst: kindVisuals.AssocConst.fill,
+  Static: kindVisuals.Static.fill,
+  Macro: kindVisuals.Macro.fill,
+  Primitive: kindVisuals.Primitive.fill,
+  ExternCrate: kindVisuals.ExternCrate.fill,
+  Import: kindVisuals.Import.fill,
+  ProcMacro: kindVisuals.ProcMacro.fill,
+} satisfies Record<NodeKind, string>;
 
-export const kindIcons: Record<NodeKind, Component> = {
+export const kindIcons = {
   Crate: Package,
   Module: FolderCode,
   Struct: Box,
@@ -50,7 +67,7 @@ export const kindIcons: Record<NodeKind, Component> = {
   ExternCrate: PackageOpen,
   Import: Import,
   ProcMacro: Sparkles,
-};
+} as const satisfies { [K in NodeKind]: Component };
 
 export { kindOrder };
 
@@ -70,13 +87,20 @@ export function compareTreeNodes(a: TreeNode, b: TreeNode): number {
  * haven't been resolved yet".  Consumers compare `=== CHILDREN_PLACEHOLDER`
  * and call a resolver when they need the real children.
  */
-export const CHILDREN_PLACEHOLDER: TreeNode[] = Object.freeze([
+export const CHILDREN_PLACEHOLDER: TreeNode[] = [
   {
-    node: { id: "", name: "", kind: "Module" as const, visibility: { kind: "Public" as const } },
+    node: {
+      id: "",
+      name: "",
+      kind: "Module",
+      visibility: { kind: "Public" },
+      attrs: [],
+    },
     children: [],
     selectable: false,
   },
-]) as unknown as TreeNode[];
+];
+Object.freeze(CHILDREN_PLACEHOLDER);
 
 export function matchesFilter(node: Node, filter: string, kindFilter: Set<NodeKind>): boolean {
   if (kindFilter.size > 0 && !kindFilter.has(node.kind)) {

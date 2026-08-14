@@ -9,19 +9,60 @@ import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from "../db/schema";
 import { normalizeCrateName } from "../validation";
-import type { CrateGraph, Node, Edge, Visibility } from "#lib/graph";
-import type { CrateIndex, CrateTree } from "#lib/schema";
-import { getLogger } from "#lib/log";
-import { visibilityKey, parseVisibilityKey } from "#lib/display-names";
-import { buildCrateTree } from "#lib/node-summary";
+import type { CrateGraph, Node, Edge, Visibility } from "#lib/graph.js";
+import {
+  ConfidenceSchema,
+  CrateIndexSchema,
+  CrateStatusValueSchema,
+  CrateTreeSchema,
+  EdgeKindSchema,
+  NodeSchema,
+  type CrateIndex,
+  type CrateTree,
+} from "#lib/schema.js";
+import { getLogger } from "#lib/log.js";
+import { visibilityKey, parseVisibilityKey } from "#lib/display-names.js";
+import { buildCrateTree } from "#lib/node-summary.js";
 import type { drizzle as nodeSqliteDrizzle } from "drizzle-orm/node-sqlite";
+import * as v from "valibot";
 
 const log = getLogger("cache");
 
 type LocalSqliteDatabase = ReturnType<typeof nodeSqliteDrizzle>;
 
+function drizzleMigratorSession<T>(db: T): { session: Parameters<typeof migrateSync>[1] } {
+  // SAFETY: drizzle-orm's sqlite client stores the migrator session on the db object; LocalSqliteDatabase does not declare that field.
+  return db as { session: Parameters<typeof migrateSync>[1] };
+}
+
+function globalThisWithBun<T>(value: T): T & { Bun?: {} } {
+  // SAFETY: Bun is an optional host global; we only branch on that own-property before importing bun:sqlite.
+  return value as T & { Bun?: {} };
+}
+
+type CrossEdgeRecord = {
+  from: string;
+  to: string;
+  kind: string;
+  confidence: string;
+  is_glob?: boolean;
+};
+
+type CrossEdgeNode = {
+  id: string;
+  name: string;
+  kind: string;
+  visibility: Visibility;
+  is_external?: boolean;
+};
+
+type CrossEdgeData = {
+  edges: CrossEdgeRecord[];
+  nodes: CrossEdgeNode[];
+};
+
 type SqliteDatabaseCtor = new (path: string) => {
-  exec(sql: string): unknown;
+  exec(sql: string): void;
 };
 
 type SqliteModules = {
@@ -35,13 +76,13 @@ type SqliteModules = {
  * compile of `@jesterkit/exe-sveltekit` still uses `bun:sqlite`.
  */
 async function loadSqliteModules(): Promise<SqliteModules> {
-  const bunRuntime = (globalThis as { Bun?: unknown }).Bun;
-  if (bunRuntime !== undefined) {
+  if (globalThisWithBun(globalThis).Bun !== undefined) {
     const { Database } = await import("bun:sqlite");
     const { drizzle } = await import("drizzle-orm/bun-sqlite");
     return {
       Database,
-      drizzle: drizzle as unknown as SqliteModules["drizzle"],
+      // SAFETY: bun-sqlite drizzle({ client }) matches SqliteModules.drizzle; the bun and node package types do not unify.
+      drizzle: drizzle as SqliteModules["drizzle"],
     };
   }
 
@@ -49,15 +90,16 @@ async function loadSqliteModules(): Promise<SqliteModules> {
   const { drizzle } = await import("drizzle-orm/node-sqlite");
   return {
     Database: DatabaseSync,
-    drizzle: drizzle as unknown as SqliteModules["drizzle"],
+    // SAFETY: node-sqlite drizzle({ client }) matches SqliteModules.drizzle; the bun and node package types do not unify.
+    drizzle: drizzle as SqliteModules["drizzle"],
   };
 }
 
-const sqlModules = import.meta.glob("../db/migrations/*/migration.sql", {
+const sqlModules = import.meta.glob<string>("../db/migrations/*/migration.sql", {
   query: "?raw",
   eager: true,
   import: "default",
-}) as Record<string, string>;
+});
 
 const migrations: MigrationMeta[] = Object.entries(sqlModules)
   .map(([path, sql]) => {
@@ -127,7 +169,7 @@ export class LocalCache {
     client.exec("PRAGMA journal_mode = WAL;");
     client.exec("PRAGMA busy_timeout = 5000;");
     this.db = drizzle({ client });
-    const { session } = this.db as unknown as { session: Parameters<typeof migrateSync>[1] };
+    const { session } = drizzleMigratorSession(this.db);
     migrateSync(migrations, session);
 
     // Reset zombie statuses from a crashed/killed parse process.
@@ -212,7 +254,7 @@ export class LocalCache {
 
     const nodes: Node[] = [];
     for (const row of nodeRows) {
-      const result = Result.try(() => JSON.parse(row.nodeJson) as Node);
+      const result = Result.try(() => v.parse(NodeSchema, JSON.parse(row.nodeJson)));
       if (result.isOk()) nodes.push(result.value);
     }
 
@@ -235,8 +277,8 @@ export class LocalCache {
     const graphEdges: Edge[] = edgeRows.map((row) => ({
       from: row.fromId,
       to: row.toId,
-      kind: row.kind as Edge["kind"],
-      confidence: row.confidence as Edge["confidence"],
+      kind: v.parse(EdgeKindSchema, row.kind),
+      confidence: v.parse(ConfidenceSchema, row.confidence),
       is_glob: row.isGlob ? true : undefined,
     }));
 
@@ -272,7 +314,7 @@ export class LocalCache {
       )
       .get();
     if (!row) return null;
-    const result = Result.try(() => JSON.parse(row.nodeJson) as Node);
+    const result = Result.try(() => v.parse(NodeSchema, JSON.parse(row.nodeJson)));
     return result.isOk() ? result.value : null;
   }
 
@@ -336,8 +378,8 @@ export class LocalCache {
     return edgeRows.map((row) => ({
       from: row.fromId,
       to: row.toId,
-      kind: row.kind as Edge["kind"],
-      confidence: row.confidence as Edge["confidence"],
+      kind: v.parse(EdgeKindSchema, row.kind),
+      confidence: v.parse(ConfidenceSchema, row.confidence),
       is_glob: row.isGlob ? true : undefined,
     }));
   }
@@ -356,7 +398,7 @@ export class LocalCache {
       )
       .get();
     if (!row) return null;
-    const result = Result.try(() => JSON.parse(row.indexJson) as CrateIndex);
+    const result = Result.try(() => v.parse(CrateIndexSchema, JSON.parse(row.indexJson)));
     if (result.isErr()) {
       log.error`Failed to parse cached index for ${n}@${version}`;
       return null;
@@ -379,7 +421,7 @@ export class LocalCache {
       .get();
     const treeJson = row?.treeJson;
     if (!treeJson) return null;
-    const result = Result.try(() => JSON.parse(treeJson) as CrateTree);
+    const result = Result.try(() => v.parse(CrateTreeSchema, JSON.parse(treeJson)));
     if (result.isErr()) {
       log.error`Failed to parse cached tree for ${n}@${version}`;
       return null;
@@ -590,11 +632,13 @@ export class LocalCache {
       row.status === "processing"
         ? (this.stepMap.get(stepKey) ?? row.lastStep ?? undefined)
         : undefined;
-    return {
-      status: row.status as CrateStatusValue,
-      ...(row.error ? { error: row.error } : {}),
-      ...(step ? { step } : {}),
+    const parsedStatus = v.safeParse(CrateStatusValueSchema, row.status);
+    const result: CrateStatusResult = {
+      status: parsedStatus.success ? parsedStatus.output : "unknown",
     };
+    if (row.error) result.error = row.error;
+    if (step) result.step = step;
+    return result;
   }
 
   setStatus(
@@ -743,25 +787,7 @@ export class LocalCache {
     }
   }
 
-  getCrossEdgeData(
-    ecosystem: string,
-    nodeId: string,
-  ): {
-    edges: Array<{
-      from: string;
-      to: string;
-      kind: string;
-      confidence: string;
-      is_glob?: boolean;
-    }>;
-    nodes: Array<{
-      id: string;
-      name: string;
-      kind: string;
-      visibility: Visibility;
-      is_external?: boolean;
-    }>;
-  } {
+  getCrossEdgeData(ecosystem: string, nodeId: string): CrossEdgeData {
     const edgeRows = this.db
       .select({
         fromId: crossEdges.fromId,

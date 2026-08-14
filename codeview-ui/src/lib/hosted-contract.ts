@@ -1,4 +1,7 @@
-import { STATIC_ARTIFACT_SCHEMA_VERSION } from "#lib/schema";
+import { STATIC_ARTIFACT_SCHEMA_VERSION } from "#lib/schema.js";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 export const HOSTED_ARTIFACT_CACHE_NAMESPACE = `hosted-artifact-v${STATIC_ARTIFACT_SCHEMA_VERSION}`;
 
@@ -7,21 +10,46 @@ type HostedArtifactExpectation = {
   version: string;
 };
 
+const HostedArtifactMetadata = Schema.Struct({
+  schema_version: Schema.Literal(STATIC_ARTIFACT_SCHEMA_VERSION),
+  name: Schema.String,
+  version: Schema.String,
+  index: Schema.Unknown,
+  artifacts: Schema.Struct({
+    kindIndex: Schema.Literal(true),
+    nodeViewBucketCount: Schema.Number,
+    treeChildrenBucketCount: Schema.Number,
+    aliasBucketCount: Schema.Number,
+    searchPrefixLength: Schema.Literal(2),
+  }),
+});
+
+type HostedArtifactMetadataInput = {
+  schema_version: number;
+  name: string;
+  version: string;
+  artifacts: {
+    kindIndex: boolean;
+    nodeViewBucketCount: number;
+    treeChildrenBucketCount: number;
+    aliasBucketCount: number;
+    searchPrefixLength: number;
+  };
+};
+
 export function isCurrentHostedArtifactMetadata(
-  value: unknown,
+  value: HostedArtifactMetadataInput | Schema.Json | null,
   expected?: HostedArtifactExpectation,
 ): boolean {
-  if (typeof value !== "object" || value === null) return false;
-  const metadata = value as Record<string, unknown>;
-  if (metadata.schema_version !== STATIC_ARTIFACT_SCHEMA_VERSION) return false;
-  if (typeof metadata.name !== "string" || typeof metadata.version !== "string") return false;
+  if (value === null) return false;
+  const metadata = Option.getOrUndefined(Schema.decodeUnknownOption(HostedArtifactMetadata)(value));
+  if (!metadata) return false;
   if (expected && (metadata.name !== expected.name || metadata.version !== expected.version)) {
     return false;
   }
-  if (typeof metadata.index !== "object" || metadata.index === null) return false;
-  if (typeof metadata.artifacts !== "object" || metadata.artifacts === null) return false;
+  if (!Predicate.isObjectOrArray(metadata.index)) return false;
 
-  const artifacts = metadata.artifacts as Record<string, unknown>;
+  const artifacts = metadata.artifacts;
   return (
     artifacts.kindIndex === true &&
     isPositiveInteger(artifacts.nodeViewBucketCount) &&
@@ -31,6 +59,6 @@ export function isCurrentHostedArtifactMetadata(
   );
 }
 
-function isPositiveInteger(value: unknown): value is number {
+function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && Number(value) > 0;
 }

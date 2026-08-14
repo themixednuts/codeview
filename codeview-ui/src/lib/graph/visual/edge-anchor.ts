@@ -1,6 +1,6 @@
-import type { NodeKind } from "#lib/graph";
-import type { Point } from "#lib/geo";
-import { rectangleIntersectLineSegment, ellipseSegmentInterceptPoints } from "#lib/geo";
+import type { NodeKind } from "#lib/graph.js";
+import type { Point } from "#lib/geo/index.js";
+import { rectangleIntersectLineSegment, ellipseSegmentInterceptPoints } from "#lib/geo/index.js";
 import type { NodeVisual } from "./types";
 import { getNodeVisual } from "./node-visual";
 
@@ -10,13 +10,13 @@ import { getNodeVisual } from "./node-visual";
  *
  * Uses exact intersection algorithms from geo for rect and ellipse shapes.
  */
-export function shapeEdgeAnchor(
+export function glyphEdgeAnchor(
   visual: NodeVisual,
   cx: number,
   cy: number,
   tx: number,
   ty: number,
-): { x: number; y: number } {
+): Point {
   const dx = tx - cx;
   const dy = ty - cy;
   if (dx === 0 && dy === 0) return { x: cx, y: cy };
@@ -24,7 +24,7 @@ export function shapeEdgeAnchor(
   const hw = visual.width / 2;
   const hh = visual.height / 2;
 
-  switch (visual.shape) {
+  switch (visual.glyph) {
     case "rect":
     case "rounded-rect":
     case "chamfered-rect":
@@ -122,5 +122,5 @@ export function getVisNodeEdgeAnchor(
   to: { x: number; y: number },
 ): Point {
   const visual = getNodeVisual(from.node.kind, from.isCenter);
-  return shapeEdgeAnchor(visual, from.x, from.y, to.x, to.y);
+  return glyphEdgeAnchor(visual, from.x, from.y, to.x, to.y);
 }

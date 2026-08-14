@@ -7,4 +7,4 @@ export {
   STEP_ORDER,
   stepLabels,
   stepPercents,
-} from "#lib/realtime";
+} from "#lib/realtime/index.js";

@@ -1,18 +1,15 @@
-import type { Node } from "#lib/graph";
-import type { VisNode } from "./types";
+import type { Node } from "#lib/graph.js";
+import type { VisNode, NodeBox } from "./types";
 import { MIN_NODE_SPACING } from "./types";
-import { getNodeVisual } from "#lib/graph/visual/node-visual";
-import { isRectLike } from "#lib/graph/visual/shapes";
+import { getNodeVisual } from "#lib/graph/visual/node-visual.js";
+import { isRectLike } from "#lib/graph/visual/glyphs.js";
 import { LABEL_CHAR_WIDTH, ARROWHEAD_LENGTH } from "./types";
 
-export function getNodeBoundingBox(
-  node: Node,
-  isCenter: boolean,
-): { width: number; height: number } {
+export function getNodeBoundingBox(node: Node, isCenter: boolean): NodeBox {
   const visual = getNodeVisual(node.kind, isCenter);
   const labelWidth = node.name.length * LABEL_CHAR_WIDTH;
 
-  const effectiveWidth = isRectLike(visual.shape)
+  const effectiveWidth = isRectLike(visual.glyph)
     ? visual.width
     : Math.max(visual.width, labelWidth + 8);
 
@@ -27,8 +24,8 @@ export function getNodeBoundingBox(
 export function resolveCollisionPair(
   a: VisNode,
   b: VisNode,
-  boxA: { width: number; height: number },
-  boxB: { width: number; height: number },
+  boxA: NodeBox,
+  boxB: NodeBox,
   centerId: string,
 ): boolean {
   const halfWidthA = boxA.width / 2;

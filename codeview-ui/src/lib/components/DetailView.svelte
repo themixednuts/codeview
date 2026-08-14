@@ -1,23 +1,22 @@
 <script lang="ts">
-	import type { Node, NodeKind } from '#lib/graph';
+	import type { Node, NodeKind } from '#lib/graph.js';
 	import type { VizMode } from '#lib/components/VizSwitcher.svelte';
-	import type { NodeView } from '#lib/schema';
-	import type { CrateMapData } from '#lib/graph/crate-map';
+	import type { NodeView } from '#lib/schema.js';
+	import type { CrateMapData } from '#lib/graph/crate-map.js';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { resolveAppPath } from '#lib/app-paths';
-	import { getNodeView, getStaticNodeView } from '#lib/rpc/nodeView.remote';
-	import { kindLabels, isPublic } from '#lib/display-names';
-	import { materializeDetailDocModel } from '#lib/detail-model';
-	import { isHosted } from '#lib/platform';
-	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import { getNodeView, getStaticNodeView } from '#lib/rpc/nodeView.remote.js';
+	import { kindLabels, isPublic } from '#lib/display-names.js';
+	import { materializeDetailDocModel } from '#lib/detail-model.js';
+	import { isHosted } from '#lib/platform.js';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
 	import Breadcrumbs from '#lib/components/Breadcrumbs.svelte';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import VizSwitcher from '#lib/components/VizSwitcher.svelte';
 	import NodeDetails from '#lib/components/NodeDetails.svelte';
 	import DocToc from '#lib/components/DocToc.svelte';
-	import { getLogger } from '#lib/log';
-
+	import { getLogger } from '#lib/log.js';
 	import {
 		resolvedThemeCtx,
 		getNodeUrlCtx,
@@ -26,15 +25,17 @@
 		parseProgressCtx,
 		setExpandPathCtx,
 		type ExpandPath,
-	} from '#lib/context';
+	} from '#lib/context.js';
 
 	const LARGE_CRATE_GRAPH_DEFAULT_MODULES = 96;
 	const LARGE_CRATE_GRAPH_DEFAULT_NODES = 5_000;
 
-	let { nodeId, embedded = false } = $props<{
+	type DetailViewProps = {
 		nodeId: string;
 		embedded?: boolean;
-	}>();
+	};
+
+	let { nodeId, embedded = false }: DetailViewProps = $props();
 
 	const theme = $derived(resolvedThemeCtx.get());
 	const getNodeUrl = $derived(getNodeUrlCtx.get());
@@ -48,9 +49,7 @@
 	// route content. Keeping this synchronous prevents the route from hydrating
 	// a pending shell and shifting once the detail payload arrives.
 	const loadNodeView = $derived(
-		page.data?.nodeId === nodeId && page.data?.nodeView
-			? (page.data.nodeView as NodeView | null)
-			: null,
+		page.data?.nodeId === nodeId && page.data?.nodeView ? page.data.nodeView : null,
 	);
 	const nodeViewQuery = $derived(
 		crateName && crateVersion && page.data?.nodeView == null
@@ -62,9 +61,7 @@
 			: null,
 	);
 	const nodeViewLoading = $derived(nodeViewQuery?.loading ?? false);
-	const nodeView = $derived(
-		loadNodeView ?? (nodeViewQuery?.current as NodeView | null | undefined) ?? null,
-	);
+	const nodeView = $derived(loadNodeView ?? nodeViewQuery?.current ?? null);
 	const rawDetail = $derived(nodeView?.detail ?? null);
 	const ancestors = $derived(nodeView?.ancestors ?? []);
 	// Accept the detail even if the node ID differs from the URL-derived nodeId.
@@ -73,12 +70,16 @@
 	const detail = $derived(rawDetail ?? null);
 	const log = getLogger('detail-view');
 
-	function refreshRemote(resource: unknown): Promise<unknown> {
-		const refresh = (resource as { refresh?: () => Promise<unknown> } | null | undefined)?.refresh;
-		return refresh ? refresh.call(resource) : Promise.resolve();
+	type MaybeRefreshableRemote = {
+		loading: boolean;
+		refresh?: () => Promise<void>;
+	};
+
+	function refreshRemote(resource: MaybeRefreshableRemote | null | undefined): Promise<void> {
+		return resource?.refresh ? resource.refresh() : Promise.resolve();
 	}
 
-	const loadCrateMap = $derived((page.data?.crateMap as CrateMapData | null | undefined) ?? null);
+	const loadCrateMap = $derived(page.data?.crateMap ?? null);
 	const crateMap = $derived(loadCrateMap);
 	const defaultVizMode: VizMode = $derived(isLargeCrateMap(crateMap) ? 'grid' : 'graph');
 	const viewState = $derived(parseExplorerState(page.url));
@@ -91,7 +92,7 @@
 		if (!nodeViewQuery) return;
 		if (page.data?.nodeView != null) return;
 		log.debug`status ready: refreshing nodeView ${crateName}@${crateVersion} nodeId="${nodeId}"`;
-		void refreshRemote(nodeViewQuery).catch((error: unknown) => {
+		void refreshRemote(nodeViewQuery).catch((error: Error) => {
 			log.warn`nodeView refresh failed for ${crateName}@${crateVersion} nodeId="${nodeId}": ${String(error)}`;
 		});
 	});

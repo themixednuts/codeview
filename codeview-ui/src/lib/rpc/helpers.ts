@@ -1,11 +1,11 @@
 import { getRequestEvent } from "$app/server";
 import * as Effect from "effect/Effect";
-import { hasLocalWorkspace, initProvider } from "#lib/server/provider";
-import { perf } from "#lib/perf";
-import { isHosted } from "#lib/platform";
-import { normalizeCrateName, hyphenateCrateName } from "#lib/crate-names";
-import { TreeIndex } from "#lib/graph/tree-index";
-import type { Node, Edge, Workspace } from "#lib/graph";
+import { hasLocalWorkspace, initProvider } from "#lib/server/provider.js";
+import { perf } from "#lib/perf.js";
+import { isHosted } from "#lib/platform.js";
+import { normalizeCrateName, hyphenateCrateName } from "#lib/crate-names.js";
+import { TreeIndex } from "#lib/graph/tree-index.js";
+import type { Node, Edge, Workspace, NodeKind } from "#lib/graph.js";
 import type {
   NodeSummary,
   CrateTree,
@@ -14,10 +14,10 @@ import type {
   KindFacet,
   TreeNodeDTO,
   NodeView,
-} from "#lib/schema";
-import { kindLabels, nodeKindOrder } from "#lib/display-names";
-import { getLogger } from "#lib/log";
-import { summarizeNode } from "#lib/node-summary";
+} from "#lib/schema.js";
+import { kindLabels, nodeKindOrder } from "#lib/display-names.js";
+import { getLogger } from "#lib/log.js";
+import { summarizeNode } from "#lib/node-summary.js";
 import type { NodeViewInput } from "./schemas";
 
 const log = getLogger("rpc.helpers");
@@ -31,6 +31,15 @@ export type NodeDetailInput = {
 
 export type TreeMode = "structural" | "complete";
 
+type KindCountMap = { [K in NodeKind]?: number };
+
+type CrossCrateEdges = Workspace["cross_crate_edges"];
+
+type CrossEdgeIndex = {
+  bySrc: Map<string, CrossCrateEdges>;
+  byDst: Map<string, CrossCrateEdges>;
+};
+
 // ── Tree utilities ─────────────────────────────────────────────────────
 
 interface TreeOps {
@@ -39,7 +48,7 @@ interface TreeOps {
     crateTree: CrateTree,
     options?: { mode?: TreeMode; includeExternal?: boolean },
   ): CrateTree;
-  kindCounts(idx: TreeIndex): Record<string, number>;
+  kindCounts(idx: TreeIndex): KindCountMap;
 }
 
 export const tree = {
@@ -152,8 +161,8 @@ export const tree = {
     return { nodes: outNodes, edges: outEdges };
   },
 
-  kindCounts(idx: TreeIndex): Record<string, number> {
-    const counts: Record<string, number> = {};
+  kindCounts(idx: TreeIndex): KindCountMap {
+    const counts: KindCountMap = {};
     for (const node of idx.nodes.values()) {
       counts[node.kind] = (counts[node.kind] ?? 0) + 1;
     }
@@ -161,7 +170,7 @@ export const tree = {
   },
 } satisfies TreeOps;
 
-function buildKindFacets(kindCounts: Record<string, number>): KindFacet[] {
+function buildKindFacets(kindCounts: KindCountMap): KindFacet[] {
   return nodeKindOrder.map((kind) => ({
     kind,
     label: kindLabels[kind],
@@ -186,7 +195,7 @@ export class Loader {
     name: string,
     version?: string,
     p?: Provider,
-  ): Promise<import("#lib/graph").CrateGraph | null> {
+  ): Promise<import("#lib/graph.js").CrateGraph | null> {
     const resolved = await this.provider(p);
     return resolved.loadCrateGraph(name, version ?? "latest");
   }
@@ -216,10 +225,7 @@ export function getAllNodes(ws: Workspace): Map<string, Node> {
   return map;
 }
 
-export function getCrossEdgesByNode(ws: Workspace): {
-  bySrc: Map<string, typeof ws.cross_crate_edges>;
-  byDst: Map<string, typeof ws.cross_crate_edges>;
-} {
+export function getCrossEdgesByNode(ws: Workspace): CrossEdgeIndex {
   if (_edgesBySrcCache && _edgesByDstCache && _cachedWorkspaceRef === ws) {
     return { bySrc: _edgesBySrcCache, byDst: _edgesByDstCache };
   }
@@ -477,7 +483,7 @@ export class Resolver {
       if (!crateTree) return null;
 
       const idx = new TreeIndex();
-      // NodeSummary is a subset of Node — TreeIndex only uses id/kind/name
+      // SAFETY: TreeIndex only reads id/kind/name; NodeSummary is a structural Pick of those Node fields.
       idx.ensure({ nodes: crateTree.nodes as Node[], edges: crateTree.edges });
       status ??= await resolved.getCrateStatus(name, version);
       this.#cache.set(key, { idx, ready: status.status === "ready" });

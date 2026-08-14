@@ -1,8 +1,8 @@
-import type { Edge, EdgeKind, Graph, Node } from "#lib/graph";
-import type { LayoutMode, VisEdge, VisNode } from "#lib/graph/layout";
-import type { LabelPosition, SimilarityInfo } from "#lib/graph/labels";
-import { computeLayout } from "#lib/graph/layout";
-import { getLabelProvider, computeAllLabelPositions } from "#lib/graph/labels";
+import type { Edge, EdgeKind, Graph, Node } from "#lib/graph.js";
+import type { LayoutMode, VisEdge, VisNode } from "#lib/graph/layout/index.js";
+import type { LabelPosition, SimilarityInfo } from "#lib/graph/labels/index.js";
+import { computeLayout } from "#lib/graph/layout/index.js";
+import { getLabelProvider, computeAllLabelPositions } from "#lib/graph/labels/index.js";
 
 /**
  * A logical group of scene elements that belong together.
@@ -67,8 +67,8 @@ export function filterEdges(
   opts: { showStructural: boolean; showSemantic: boolean },
 ): Edge[] {
   return edges.filter((edge: Edge) => {
-    if ((structuralEdgeKinds as readonly string[]).includes(edge.kind)) return opts.showStructural;
-    if ((semanticEdgeKinds as readonly string[]).includes(edge.kind)) return opts.showSemantic;
+    if (structuralEdgeKinds.includes(edge.kind)) return opts.showStructural;
+    if (semanticEdgeKinds.includes(edge.kind)) return opts.showSemantic;
     return true;
   });
 }

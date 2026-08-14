@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { paginationHref } from '#lib/pagination';
-	import { Button } from '#lib/components/ui/button';
-	import * as Pagination from '#lib/components/ui/pagination';
+	import { paginationHref } from '#lib/pagination.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Pagination from '#lib/components/ui/pagination/index.js';
 	import ChevronLeftIcon from '@lucide/svelte/icons/chevron-left';
 	import ChevronRightIcon from '@lucide/svelte/icons/chevron-right';
 

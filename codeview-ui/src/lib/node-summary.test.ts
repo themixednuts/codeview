@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { CrateGraph, Node } from "#lib/schema";
+import type { CrateGraph, Node } from "#lib/schema.js";
 import { buildCrateTree } from "./node-summary";
 
 const publicVisibility = { kind: "Public" } as const;
 
 function node(id: string, name: string, kind: Node["kind"], isExternal = false): Node {
-  return {
+  const next: Node = {
     id,
     name,
     kind,
     visibility: publicVisibility,
     attrs: [],
-    ...(isExternal ? { is_external: true } : {}),
   };
+  if (isExternal) next.is_external = true;
+  return next;
 }
 
 describe("buildCrateTree", () => {

@@ -1,6 +1,6 @@
-import type { Edge, EdgeKind, Graph, Node, NodeKind } from "#lib/graph";
-import type { LayoutMode } from "#lib/graph/layout";
-import { filterEdges } from "#lib/renderers/graph";
+import type { Edge, EdgeKind, Graph, Node, NodeKind } from "#lib/graph.js";
+import type { LayoutMode } from "#lib/graph/layout/index.js";
+import { filterEdges } from "#lib/renderers/graph.js";
 
 export const GRAPH_PROJECTION_NODE_CAP = 180;
 export const GRAPH_PROJECTION_EDGE_CAP = 360;
@@ -149,13 +149,18 @@ function collectHopNodeIds(selectedId: string, edges: Edge[], maxHops: number): 
   return seen;
 }
 
+type CappedSelection = {
+  keptNodeIds: Set<string>;
+  overflow: OverflowNodeInfo;
+};
+
 function capNodesAroundSelection(
   nodeIds: Set<string>,
   edges: Edge[],
   nodeMap: Map<string, Node>,
   selectedId: string,
   maxNodes: number,
-): { keptNodeIds: Set<string>; overflow: OverflowNodeInfo } {
+): CappedSelection {
   const overflow: OverflowNodeInfo = {
     incoming: 0,
     outgoing: 0,

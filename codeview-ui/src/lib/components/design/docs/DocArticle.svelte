@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { Node, NodeDetail, NodeSummary } from '#lib/schema';
-	import type { MaterializedDetailDocModel } from '#lib/detail-model';
-	import { kindLabels } from '#lib/display-names';
+	import type { Node, NodeDetail, NodeSummary } from '#lib/schema.js';
+	import type { MaterializedDetailDocModel } from '#lib/detail-model.js';
+	import { kindLabels } from '#lib/display-names.js';
 	import Breadcrumbs from '#lib/components/Breadcrumbs.svelte';
 	import NodeDetails from '#lib/components/NodeDetails.svelte';
 	import DocReadAloud from './DocReadAloud.svelte';

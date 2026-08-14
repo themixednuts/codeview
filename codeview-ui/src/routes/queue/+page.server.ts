@@ -1,5 +1,5 @@
 import type { PageServerLoad } from "./$types";
-import { initProvider, type ParseQueueSnapshot } from "#lib/server/provider";
+import { initProvider, type ParseQueueSnapshot } from "#lib/server/provider.js";
 
 const emptySnapshot: ParseQueueSnapshot = {
   active: [],

@@ -1,8 +1,26 @@
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import type { AuthState } from "../auth";
+import * as Predicate from "effect/Predicate";
+import type { Json } from "effect/Schema";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import {
+  isParseRequestMessage,
+  type ParseRequestMessage,
+  type StoredParseStatus,
+} from "./parse-contract";
 
-const mockAuthState = vi.hoisted(() => ({
-  value: null as AuthState | null,
+function fakeBinding<T>(value: {}): T {
+  // SAFETY: Cloudflare binding types are ambient Worker interfaces; this suite only stubs the methods each test calls.
+  return value as T;
+}
+
+type MockAuthState = {
+  value: AuthState | null;
+};
+
+const mockAuthState = vi.hoisted((): MockAuthState => ({
+  value: null,
 }));
 
 vi.mock("../auth", async (importOriginal) => {
@@ -22,20 +40,37 @@ vi.mock("../auth", async (importOriginal) => {
 
 import { createCloudflareProvider } from "./provider";
 
-function jsonObject(value: unknown): R2ObjectBody {
-  return new Response(
-    typeof value === "string" ? value : JSON.stringify(value),
-  ) as unknown as R2ObjectBody;
+type HostedTestEnv = {
+  CRATE_GRAPHS: R2Bucket;
+  PARSE_STATUS?: DurableObjectNamespace;
+  PARSE_REQUESTS?: Queue<ParseRequestMessage>;
+  RATE_LIMIT_PARSE_ANON?: RateLimit;
+  GITHUB_REPO?: string;
+  GITHUB_WORKFLOW_FILE?: string;
+  GITHUB_TOKEN?: string;
+  PLAN_DRAIN_ACTIVE_TARGET?: string;
+  PLAN_DRAIN_BATCH_SIZE?: string;
+  GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT?: string;
+};
+
+function testEnv(value: HostedTestEnv): Env & { CRATE_GRAPHS: R2Bucket } {
+  return fakeBinding<Env & { CRATE_GRAPHS: R2Bucket }>(value);
 }
 
-function fakeBucket(objects: Map<string, unknown>): R2Bucket {
-  return {
+function jsonObject(value: Json): R2ObjectBody {
+  return fakeBinding<R2ObjectBody>(
+    new Response(Predicate.isString(value) ? value : JSON.stringify(value)),
+  );
+}
+
+function fakeBucket(objects: Map<string, Json>): R2Bucket {
+  return fakeBinding<R2Bucket>({
     async get(key: string) {
       const value = objects.get(key);
       return value === undefined ? null : jsonObject(value);
     },
     async put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream) {
-      if (typeof value === "string") {
+      if (Predicate.isString(value)) {
         objects.set(key, value);
       } else if (value instanceof ReadableStream) {
         objects.set(key, await new Response(value).text());
@@ -48,51 +83,57 @@ function fakeBucket(objects: Map<string, unknown>): R2Bucket {
       return null;
     },
     async head(key: string) {
-      return objects.has(key) ? ({} as R2Object) : null;
+      return objects.has(key) ? fakeBinding<R2Object>({}) : null;
     },
     async list(options?: R2ListOptions) {
       const prefix = options?.prefix ?? "";
       const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
-      return {
+      return fakeBinding<R2Objects>({
         objects: keys.map((key) => ({ key })),
         delimitedPrefixes: [],
         truncated: false,
-      } as unknown as R2Objects;
+      });
     },
-  } as unknown as R2Bucket;
+  });
 }
 
-function fakeQueue(sent: unknown[]): Queue {
-  return {
-    async send(body: unknown) {
+function fakeQueue(sent: ParseRequestMessage[]): Queue {
+  return fakeBinding<Queue>({
+    async send(body: ParseRequestMessage) {
       sent.push(body);
     },
-  } as unknown as Queue;
+  });
 }
 
 function fakeRateLimit(success = true): RateLimit {
-  return {
+  return fakeBinding<RateLimit>({
     async limit() {
       return { success };
     },
-  } as unknown as RateLimit;
+  });
 }
 
 function fakeParseStatusNamespace(
-  initialStatus: unknown,
-  registrations: unknown[] = [],
-  queueSnapshot?: { active: unknown[]; recent: unknown[] },
+  initialStatus: StoredParseStatus | null,
+  registrations: ParseRequestMessage[] = [],
+  queueSnapshot?: { active: StoredParseStatus[]; recent: StoredParseStatus[] },
 ): DurableObjectNamespace {
   let status = initialStatus;
   const stub = {
     async fetch(input: RequestInfo | URL, init?: RequestInit) {
       const url = new URL(input instanceof Request ? input.url : input.toString());
       if (url.pathname === "/queued") {
-        const message = (
-          input instanceof Request
-            ? await input.clone().json()
-            : JSON.parse(String(init?.body ?? "{}"))
-        ) as Record<string, unknown>;
+        const raw: Json | undefined = Option.getOrUndefined(
+          Schema.decodeUnknownOption(Schema.Json)(
+            input instanceof Request
+              ? await input.clone().json()
+              : JSON.parse(String(init?.body ?? "{}")),
+          ),
+        );
+        if (raw === undefined || !isParseRequestMessage(raw)) {
+          throw new Error("invalid test parse request");
+        }
+        const message = raw;
         registrations.push(message);
         status = {
           ecosystem: "rust",
@@ -111,32 +152,27 @@ function fakeParseStatusNamespace(
       }
       if (url.pathname === "/status") return Response.json(status);
       if (url.pathname === "/processing") {
-        return Response.json(
-          (status as { status?: string } | null)?.status === "processing" ? [status] : [],
-        );
+        return Response.json(status?.status === "processing" ? [status] : []);
       }
       if (url.pathname === "/queue") {
         return Response.json(
           queueSnapshot ?? {
-            active: (status as { status?: string } | null)?.status === "processing" ? [status] : [],
-            recent:
-              (status as { status?: string } | null)?.status === "processing" || !status
-                ? []
-                : [status],
+            active: status?.status === "processing" ? [status] : [],
+            recent: status?.status === "processing" || !status ? [] : [status],
           },
         );
       }
       return new Response(null, { status: 404 });
     },
   };
-  return {
+  return fakeBinding<DurableObjectNamespace>({
     idFromName() {
       return {};
     },
     get() {
       return stub;
     },
-  } as unknown as DurableObjectNamespace;
+  });
 }
 
 function fnv1a32(value: string): number {
@@ -154,10 +190,14 @@ function nodeViewBucket(nodeId: string, bucketCount = 128): string {
   return bucket.toString(16).padStart(width, "0");
 }
 
+type HostedMetaArtifactOverrides = {
+  kindIndex?: boolean;
+};
+
 function hostedMeta(
   nodeViewBucketCount: number,
   version = "1.0.0",
-  artifacts: Record<string, unknown> = {},
+  artifacts: HostedMetaArtifactOverrides = {},
   name = "demo",
 ) {
   return {
@@ -205,11 +245,7 @@ function crateRefs(version = "1.0.0", storageName = "demo") {
   };
 }
 
-function hostedNodeViewArtifact(
-  prefix: string,
-  nodeId: string,
-  version = "1.0.0",
-): [string, unknown] {
+function hostedNodeViewArtifact(prefix: string, nodeId: string, version = "1.0.0"): [string, Json] {
   const bucket = nodeViewBucket(nodeId);
   return [
     `${prefix}/site/node-views/${bucket}.json`,
@@ -247,7 +283,7 @@ describe("createCloudflareProvider", () => {
   });
 
   test("resolves published crates through canonical refs", async () => {
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       [
         "rust/_refs/proc_macro.json",
         {
@@ -273,9 +309,11 @@ describe("createCloudflareProvider", () => {
         hostedMeta(128, "1.98.0-nightly", {}, "proc_macro"),
       ],
     ]);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+      }),
+    );
 
     await expect(provider.getCrateStatus("proc-macro", "1.98.0-nightly")).resolves.toEqual({
       status: "ready",
@@ -283,7 +321,7 @@ describe("createCloudflareProvider", () => {
   });
 
   test("rejects stale ready status when no current artifact is published", async () => {
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       ["rust/_refs/demo.json", crateRefs()],
       [
         "rust/demo/1.0.0/site/meta.json",
@@ -294,19 +332,21 @@ describe("createCloudflareProvider", () => {
         },
       ],
     ]);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_STATUS: fakeParseStatusNamespace({
-        ecosystem: "rust",
-        kind: "crate",
-        name: "demo",
-        version: "1.0.0",
-        status: "ready",
-        createdAt: "2026-07-09T00:00:00.000Z",
-        updatedAt: "2026-07-09T00:00:00.000Z",
-        sequence: 1,
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_STATUS: fakeParseStatusNamespace({
+          ecosystem: "rust",
+          kind: "crate",
+          name: "demo",
+          version: "1.0.0",
+          status: "ready",
+          createdAt: "2026-07-09T00:00:00.000Z",
+          updatedAt: "2026-07-09T00:00:00.000Z",
+          sequence: 1,
+        }),
       }),
-    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+    );
 
     await expect(provider.getCrateStatus("demo", "1.0.0")).resolves.toEqual({
       status: "failed",
@@ -329,13 +369,15 @@ describe("createCloudflareProvider", () => {
       aliases: { latest: { version, graphHash } },
       versions: [{ version, graphHash }],
     });
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       [refsKey, refs("old-hash")],
       [metaKey, { schema_version: 1, name, version }],
     ]);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+      }),
+    );
 
     await expect(provider.getCrateStatus(name, version)).resolves.toMatchObject({
       status: "failed",
@@ -351,13 +393,15 @@ describe("createCloudflareProvider", () => {
   test("does not assemble node views from base shards", async () => {
     const prefix = "rust/demo/1.0.0";
     const nodeId = "demo";
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       ["rust/_refs/demo.json", crateRefs()],
       [`${prefix}/site/meta.json`, hostedMeta(128)],
     ]);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+      }),
+    );
     const loadNodeViewDirect = provider.loadNodeViewDirect;
     expect(loadNodeViewDirect).toBeDefined();
     if (!loadNodeViewDirect) throw new Error("loadNodeViewDirect missing");
@@ -369,14 +413,16 @@ describe("createCloudflareProvider", () => {
     const version = "1.0.1";
     const prefix = `rust/demo/${version}`;
     const nodeId = "demo";
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       ["rust/_refs/demo.json", crateRefs(version)],
       [`${prefix}/site/meta.json`, hostedMeta(128, version)],
       hostedNodeViewArtifact(prefix, nodeId, version),
     ]);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+      }),
+    );
     const loadNodeViewDirect = provider.loadNodeViewDirect;
     expect(loadNodeViewDirect).toBeDefined();
     if (!loadNodeViewDirect) throw new Error("loadNodeViewDirect missing");
@@ -398,7 +444,7 @@ describe("createCloudflareProvider", () => {
     const version = "1.0.0";
     const prefix = `rust/${crateName}/${version}`;
     const nestedNodeId = `${crateName}::hidden::Widget`;
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       [`rust/_refs/${crateName}.json`, crateRefs(version, crateName)],
       [`${prefix}/site/meta.json`, hostedMeta(128, version, { kindIndex: true }, crateName)],
       [
@@ -419,9 +465,11 @@ describe("createCloudflareProvider", () => {
         },
       ],
     ]);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+      }),
+    );
 
     await expect(
       provider.searchNodesDirect?.(crateName, version, "", 10, ["Struct"]),
@@ -459,9 +507,11 @@ describe("createCloudflareProvider", () => {
           ),
       ),
     );
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+      }),
+    );
 
     await expect(provider.getTopCrates(1)).resolves.toEqual([
       {
@@ -487,32 +537,34 @@ describe("createCloudflareProvider", () => {
       );
     });
     vi.stubGlobal("fetch", fetchMock);
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(
-        new Map([
-          [
-            "rust/_refs/hashbrown.json",
-            {
-              schemaVersion: 1,
-              storageName: "hashbrown",
-              displayName: "hashbrown",
-              aliases: {
-                latest: {
-                  version: "0.17.1",
-                  graphHash: "hash-0.17.1",
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(
+          new Map([
+            [
+              "rust/_refs/hashbrown.json",
+              {
+                schemaVersion: 1,
+                storageName: "hashbrown",
+                displayName: "hashbrown",
+                aliases: {
+                  latest: {
+                    version: "0.17.1",
+                    graphHash: "hash-0.17.1",
+                  },
                 },
+                versions: [
+                  {
+                    version: "0.17.1",
+                    graphHash: "hash-0.17.1",
+                  },
+                ],
               },
-              versions: [
-                {
-                  version: "0.17.1",
-                  graphHash: "hash-0.17.1",
-                },
-              ],
-            },
-          ],
-        ]),
-      ),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+            ],
+          ]),
+        ),
+      }),
+    );
 
     await expect(provider.getCrateVersions("hashbrown", 5)).resolves.toEqual([
       "0.17.1",
@@ -524,24 +576,26 @@ describe("createCloudflareProvider", () => {
   });
 
   test("lists toolchain channels before concrete published versions", async () => {
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(
-        new Map([
-          [
-            "rust/_refs/std.json",
-            {
-              schemaVersion: 1,
-              storageName: "std",
-              displayName: "std",
-              aliases: {
-                nightly: { version: "1.98.0-nightly", graphHash: "hash-nightly" },
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(
+          new Map([
+            [
+              "rust/_refs/std.json",
+              {
+                schemaVersion: 1,
+                storageName: "std",
+                displayName: "std",
+                aliases: {
+                  nightly: { version: "1.98.0-nightly", graphHash: "hash-nightly" },
+                },
+                versions: [{ version: "1.98.0-nightly", graphHash: "hash-nightly" }],
               },
-              versions: [{ version: "1.98.0-nightly", graphHash: "hash-nightly" }],
-            },
-          ],
-        ]),
-      ),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+            ],
+          ]),
+        ),
+      }),
+    );
 
     await expect(provider.getCrateVersions("std")).resolves.toEqual([
       "stable",
@@ -556,9 +610,11 @@ describe("createCloudflareProvider", () => {
       "fetch",
       vi.fn(async () => new Response(JSON.stringify({ crates: [] }), { status: 200 })),
     );
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+      }),
+    );
 
     await expect(provider.searchRegistry("std@nightly")).resolves.toMatchObject([
       { id: "std", name: "std", version: "nightly" },
@@ -594,11 +650,13 @@ describe("createCloudflareProvider", () => {
         );
       }),
     );
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-      GITHUB_REPO: "themixednuts/codeview",
-      GITHUB_WORKFLOW_FILE: "parse.yml",
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        GITHUB_REPO: "themixednuts/codeview",
+        GITHUB_WORKFLOW_FILE: "parse.yml",
+      }),
+    );
 
     await expect(provider.getParseQueue?.(10)).resolves.toMatchObject({
       active: [],
@@ -618,7 +676,7 @@ describe("createCloudflareProvider", () => {
   });
 
   test("keeps current plan items visible when an older status row has the same crate version", async () => {
-    const objects = new Map<string, unknown>([
+    const objects = new Map<string, Json>([
       [
         "rust/_runs/run-1/plan.json",
         {
@@ -660,14 +718,16 @@ describe("createCloudflareProvider", () => {
       createdAt: "2026-07-01T00:00:00Z",
       updatedAt: "2026-07-01T00:05:00Z",
       sequence: 1,
-    };
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_STATUS: fakeParseStatusNamespace(null, [], {
-        active: [],
-        recent: [oldStatus],
+    } as const satisfies StoredParseStatus;
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_STATUS: fakeParseStatusNamespace(null, [], {
+          active: [],
+          recent: [oldStatus],
+        }),
       }),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    );
 
     const snapshot = await provider.getParseQueue?.(100);
 
@@ -765,15 +825,17 @@ describe("createCloudflareProvider", () => {
         return new Response("{}", { status: 404 });
       }),
     );
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-      GITHUB_REPO: "themixednuts/codeview",
-      GITHUB_WORKFLOW_FILE: "parse.yml",
-      GITHUB_TOKEN: "token",
-      PLAN_DRAIN_ACTIVE_TARGET: "4",
-      PLAN_DRAIN_BATCH_SIZE: "2",
-      GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35",
-    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        GITHUB_REPO: "themixednuts/codeview",
+        GITHUB_WORKFLOW_FILE: "parse.yml",
+        GITHUB_TOKEN: "token",
+        PLAN_DRAIN_ACTIVE_TARGET: "4",
+        PLAN_DRAIN_BATCH_SIZE: "2",
+        GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35",
+      }),
+    );
 
     const dashboard = await provider.getAdminDashboard?.(10);
 
@@ -821,14 +883,16 @@ describe("createCloudflareProvider", () => {
         return new Response("{}", { status: 404 });
       }),
     );
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-      GITHUB_REPO: "themixednuts/codeview",
-      GITHUB_WORKFLOW_FILE: "parse.yml",
-      GITHUB_TOKEN: "token",
-      PLAN_DRAIN_ACTIVE_TARGET: "4",
-      PLAN_DRAIN_BATCH_SIZE: "0",
-    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        GITHUB_REPO: "themixednuts/codeview",
+        GITHUB_WORKFLOW_FILE: "parse.yml",
+        GITHUB_TOKEN: "token",
+        PLAN_DRAIN_ACTIVE_TARGET: "4",
+        PLAN_DRAIN_BATCH_SIZE: "0",
+      }),
+    );
 
     const dashboard = await provider.getAdminDashboard?.(10);
 
@@ -840,15 +904,17 @@ describe("createCloudflareProvider", () => {
   });
 
   test("enqueues hosted parse requests", async () => {
-    const objects = new Map<string, unknown>();
-    const sent: unknown[] = [];
-    const registrations: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_REQUESTS: fakeQueue(sent),
-      PARSE_STATUS: fakeParseStatusNamespace(null, registrations),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const objects = new Map<string, Json>();
+    const sent: ParseRequestMessage[] = [];
+    const registrations: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_REQUESTS: fakeQueue(sent),
+        PARSE_STATUS: fakeParseStatusNamespace(null, registrations),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("serde", "1.0.228");
     if (result.isErr()) throw result.error;
@@ -887,11 +953,13 @@ describe("createCloudflareProvider", () => {
   });
 
   test("fails closed when hosted parse rate limiting is missing", async () => {
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-      PARSE_REQUESTS: fakeQueue(sent),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+      }),
+    );
 
     const result = await provider.triggerParse("serde", "1.0.228");
     expect(result.isErr()).toBe(true);
@@ -902,12 +970,14 @@ describe("createCloudflareProvider", () => {
   });
 
   test("requires admin auth for forced hosted parses", async () => {
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-      PARSE_REQUESTS: fakeQueue(sent),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("serde", "1.0.228", true);
     expect(result.isErr()).toBe(true);
@@ -918,7 +988,7 @@ describe("createCloudflareProvider", () => {
   });
 
   test("lets admin force parses bypass parse rate limiting", async () => {
-    const sent: unknown[] = [];
+    const sent: ParseRequestMessage[] = [];
     mockAuthState.value = {
       user: {
         id: "github-user-1",
@@ -938,10 +1008,10 @@ describe("createCloudflareProvider", () => {
       adminAllowlistConfigured: true,
     };
     const provider = createCloudflareProvider(
-      {
+      testEnv({
         CRATE_GRAPHS: fakeBucket(new Map()),
         PARSE_REQUESTS: fakeQueue(sent),
-      } as Env & { CRATE_GRAPHS: R2Bucket },
+      }),
       new Request("https://codeview.codes/admin"),
     );
 
@@ -966,13 +1036,15 @@ describe("createCloudflareProvider", () => {
   });
 
   test("enqueues hosted sysroot parse requests for std crates", async () => {
-    const objects = new Map<string, unknown>();
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_REQUESTS: fakeQueue(sent),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const objects = new Map<string, Json>();
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("std", "nightly");
     if (result.isErr()) throw result.error;
@@ -989,13 +1061,15 @@ describe("createCloudflareProvider", () => {
   });
 
   test("queues std latest as stable hosted parse request", async () => {
-    const objects = new Map<string, unknown>();
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_REQUESTS: fakeQueue(sent),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const objects = new Map<string, Json>();
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("std", "latest");
     if (result.isErr()) throw result.error;
@@ -1012,13 +1086,15 @@ describe("createCloudflareProvider", () => {
   });
 
   test.each(["stable", "beta"])("queues the %s hosted sysroot channel", async (channel) => {
-    const objects = new Map<string, unknown>();
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_REQUESTS: fakeQueue(sent),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const objects = new Map<string, Json>();
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("std", channel);
     if (result.isErr()) throw result.error;
@@ -1027,12 +1103,14 @@ describe("createCloudflareProvider", () => {
   });
 
   test("rejects concrete versions for hosted sysroot parse requests", async () => {
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(new Map()),
-      PARSE_REQUESTS: fakeQueue(sent),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("std", "1.96.0");
     expect(result.isErr()).toBe(true);
@@ -1043,13 +1121,15 @@ describe("createCloudflareProvider", () => {
   });
 
   test("queues hyphenated proc macro route as hosted std-library parse request", async () => {
-    const objects = new Map<string, unknown>();
-    const sent: unknown[] = [];
-    const provider = createCloudflareProvider({
-      CRATE_GRAPHS: fakeBucket(objects),
-      PARSE_REQUESTS: fakeQueue(sent),
-      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const objects = new Map<string, Json>();
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+    );
 
     const result = await provider.triggerParse("proc-macro", "nightly");
     if (result.isErr()) throw result.error;

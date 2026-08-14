@@ -1,4 +1,4 @@
-export type NodeShape =
+export type NodeGlyph =
   | "rect"
   | "rounded-rect"
   | "pill"
@@ -8,7 +8,7 @@ export type NodeShape =
   | "chamfered-rect";
 
 export type NodeVisual = {
-  shape: NodeShape;
+  glyph: NodeGlyph;
   width: number;
   height: number;
   fill: string;
@@ -23,8 +23,8 @@ export type NodeVisual = {
   labelColor: string;
 };
 
-export type ShapeSpec = {
-  shape: NodeShape;
+export type GlyphSpec = {
+  glyph: NodeGlyph;
   width: number;
   height: number;
   cornerRadius: number;

@@ -77,6 +77,10 @@ const md = new MarkdownIt({
 // Keep the tags as inline HTML so MarkdownIt still parses their contents.
 md.block.ruler.disable(["html_block"]);
 
+function markdownEnv(env: RenderEnvironment | null | undefined): RenderEnvironment {
+  return env ?? {};
+}
+
 function docLinkHref(env: RenderEnvironment | undefined, nodeId: string): string {
   if (!env?.resolveDocLink) return `#${nodeId}`;
   try {
@@ -134,7 +138,7 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
   const closeBracket = pos - 1;
   const content = state.src.slice(start + 1, closeBracket);
 
-  const docLinks = (state.env as RenderEnvironment | undefined)?.docLinks;
+  const docLinks = markdownEnv(state.env).docLinks;
   if (!docLinks) return false;
 
   let lookupContent = content;
@@ -175,7 +179,7 @@ function intraDocLinkRule(state: StateInline, silent: boolean): boolean {
     // Create link_open token
     let token = state.push("link_open", "a", 1);
     token.attrs = [
-      ["href", docLinkHref(state.env as RenderEnvironment | undefined, nodeId)],
+      ["href", docLinkHref(markdownEnv(state.env), nodeId)],
       ["class", "intra-doc-link"],
       ["data-node-id", nodeId],
     ];
@@ -227,7 +231,7 @@ md.renderer.rules.fence = (tokens, idx, options, env, self) =>
     tokens,
     idx,
     options,
-    env as RenderEnvironment,
+    markdownEnv(env),
     self,
     defaultFence ?? self.renderToken.bind(self),
   );
@@ -237,7 +241,7 @@ md.renderer.rules.code_block = (tokens, idx, options, env, self) =>
     tokens,
     idx,
     options,
-    env as RenderEnvironment,
+    markdownEnv(env),
     self,
     defaultCodeBlock ?? self.renderToken.bind(self),
   );
@@ -254,12 +258,12 @@ md.renderer.rules.link_open = (tokens: any, idx: any, options: any, env: any, se
 
   if (!classAttr.includes("intra-doc-link")) {
     const href = token.attrGet("href") ?? "";
-    const docLinks = (env as RenderEnvironment | undefined)?.docLinks;
+    const docLinks = markdownEnv(env).docLinks;
 
     // Resolve rustdoc-style path links
     if (docLinks && href && href in docLinks) {
       const nodeId = docLinks[href];
-      token.attrSet("href", docLinkHref(env as RenderEnvironment | undefined, nodeId));
+      token.attrSet("href", docLinkHref(markdownEnv(env), nodeId));
       token.attrSet("class", "intra-doc-link");
       token.attrSet("data-node-id", nodeId);
     } else {
@@ -287,11 +291,16 @@ export function renderMarkdown(
   );
 }
 
+type RenderedMarkdownDocument = {
+  html: string;
+  codeBlocks: MarkdownCodeBlock[];
+};
+
 export function renderMarkdownDocument(
   text: string,
   docLinks?: DocLinks,
   resolveDocLink?: DocLinkResolver,
-): { html: string; codeBlocks: MarkdownCodeBlock[] } {
+): RenderedMarkdownDocument {
   const codeBlocks: MarkdownCodeBlock[] = [];
   const html = sanitizeRenderedHtml(
     md.render(text, { docLinks, codeBlocks, resolveDocLink } satisfies RenderEnvironment),

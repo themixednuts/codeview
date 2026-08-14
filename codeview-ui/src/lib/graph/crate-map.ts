@@ -1,4 +1,4 @@
-import { normalizeCrateName } from "#lib/crate-names";
+import { normalizeCrateName } from "#lib/crate-names.js";
 import {
   forceCenter,
   forceCollide,
@@ -10,11 +10,20 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
-import type { EdgeKind, Graph, NodeKind } from "#lib/graph";
+import type { EdgeKind, Graph, NodeKind } from "#lib/graph.js";
 
 const STRUCTURAL_EDGE_KINDS = new Set<EdgeKind>(["Contains", "Defines"]);
 
 export type CrateMapSemanticKind = Exclude<EdgeKind, "Contains" | "Defines">;
+
+export const CRATE_MAP_SEMANTIC_KINDS = [
+  "UsesType",
+  "Implements",
+  "CallsStatic",
+  "CallsRuntime",
+  "Derives",
+  "ReExports",
+] as const satisfies readonly CrateMapSemanticKind[];
 
 export type CrateMapModuleNode = {
   id: string;
@@ -66,7 +75,22 @@ type MutableModuleEdge = {
 };
 
 function semanticKind(kind: EdgeKind): CrateMapSemanticKind | null {
-  return STRUCTURAL_EDGE_KINDS.has(kind) ? null : (kind as CrateMapSemanticKind);
+  switch (kind) {
+    case "Contains":
+    case "Defines":
+      return null;
+    case "UsesType":
+    case "Implements":
+    case "CallsStatic":
+    case "CallsRuntime":
+    case "Derives":
+    case "ReExports":
+      return kind;
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
 }
 
 function parentScore(kind: NodeKind, edgeKind: EdgeKind): number {

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { NodeDetail, NodeSummary, SourceResult } from '#lib/schema';
-	import type { MaterializedDetailDocModel } from '#lib/detail-model';
-	import { getSource } from '#lib/rpc/source.remote';
-	import { sourceProviderModeCtx } from '#lib/context';
+	import type { NodeDetail, NodeSummary, SourceResult } from '#lib/schema.js';
+	import type { MaterializedDetailDocModel } from '#lib/detail-model.js';
+	import { getSource } from '#lib/rpc/source.remote.js';
+	import { sourceProviderModeCtx } from '#lib/context.js';
 	import CodeBlock from '#lib/components/design/CodeBlock.svelte';
 	import SourceActions from '#lib/components/SourceActions.svelte';
 	import DocArticle from './DocArticle.svelte';

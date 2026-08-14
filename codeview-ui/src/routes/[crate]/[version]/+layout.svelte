@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { KindFacet, TreeNodeDTO } from '#lib/schema';
+	import type { TreeNodeDTO } from '#lib/schema.js';
 	import {
 		getNodeUrlCtx,
 		crateVersionsCtx,
@@ -9,28 +9,28 @@
 		setExpandPathCtx,
 		type CrateStatusValue,
 		type ExpandPath,
-	} from '#lib/context';
+	} from '#lib/context.js';
 	import { page } from '$app/state';
 	import { afterNavigate, beforeNavigate, goto, invalidate } from '$app/navigation';
-	import { resolveAppPath } from '#lib/app-paths';
+	import { resolveAppPath } from '#lib/app-paths.js';
 	import { browser } from '$app/env';
 	import type { Snippet } from 'svelte';
-	import { getLocalCrates } from '#lib/rpc/crate.remote';
-	import { getCrateMeta, getStaticCrateMeta } from '#lib/rpc/meta.remote';
-	import { getStaticTreeRoots, getTreeRoots } from '#lib/rpc/roots.remote';
-	import { nodeIdFromPath, nodeUrlForRoute } from '#lib/url';
-	import { hyphenateCrateName } from '#lib/crate-names';
-	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
+	import { getLocalCrates } from '#lib/rpc/crate.remote.js';
+	import { getCrateMeta, getStaticCrateMeta } from '#lib/rpc/meta.remote.js';
+	import { getStaticTreeRoots, getTreeRoots } from '#lib/rpc/roots.remote.js';
+	import { nodeIdFromPath, nodeUrlForRoute } from '#lib/url.js';
+	import { hyphenateCrateName } from '#lib/crate-names.js';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
 	import { onMount } from 'svelte';
 	import CrateParseState from '#lib/components/CrateParseState.svelte';
 	import LiveExplorer from '#lib/components/design/LiveExplorer.svelte';
-	import { CrateStatusConnection, ParseProgressConnection } from '#lib/realtime';
-	import { perf } from '#lib/perf';
+	import { CrateStatusConnection, ParseProgressConnection } from '#lib/realtime/index.js';
+	import { perf } from '#lib/perf.js';
 	import { perfTick } from '#lib/perf.svelte';
-	import { getLogger } from '#lib/log';
-	import { isValidCrateNameParam, isValidVersionParam } from '#lib/crate-ref';
-	import { isHosted } from '#lib/platform';
-	import { hasNonEmptyArray, preferNonEmptyArray } from '#lib/load-precedence';
+	import { getLogger } from '#lib/log.js';
+	import { isValidCrateNameParam, isValidVersionParam } from '#lib/crate-ref.js';
+	import { isHosted } from '#lib/platform.js';
+	import { hasNonEmptyArray, preferNonEmptyArray } from '#lib/load-precedence.js';
 
 	const log = getLogger('layout');
 
@@ -69,9 +69,13 @@
 	let metaRefreshInFlight: Promise<void> | null = null;
 	let clientReady = $state(false);
 
-	function refreshRemote(resource: unknown): Promise<unknown> {
-		const refresh = (resource as { refresh?: () => Promise<unknown> } | null | undefined)?.refresh;
-		return refresh ? refresh.call(resource) : Promise.resolve();
+	type MaybeRefreshableRemote = {
+		loading: boolean;
+		refresh?: () => Promise<void>;
+	};
+
+	function refreshRemote(resource: MaybeRefreshableRemote | null | undefined): Promise<void> {
+		return resource?.refresh ? resource.refresh() : Promise.resolve();
 	}
 
 	function startMainThreadMonitor() {
@@ -121,7 +125,7 @@
 				const ms = Math.round(performance.now() - t0);
 				log.debug`meta refresh done ${routeLabel} in ${ms}ms reason=${reason}`;
 			})
-			.catch((err: unknown) => {
+			.catch((err: Error) => {
 				const errText = String(err);
 				const cancelledPrimeRequest = reason === 'prime' && errText.includes('Failed to fetch');
 				if (cancelledPrimeRequest) {
@@ -347,8 +351,8 @@
 	});
 
 	function onVersionChange(e: Event) {
-		const target = e.currentTarget as HTMLSelectElement | null;
-		if (!target) return;
+		const target = e.currentTarget;
+		if (!(target instanceof HTMLSelectElement)) return;
 		const nextVersion = target.value;
 		if (!canonicalCrateName || !nextVersion || nextVersion === version) return;
 		const nextPath = page.params.path ? `/${page.params.path}` : '';
@@ -457,7 +461,7 @@
 	const indexFromQuery = $derived(meta?.index ?? null);
 	const versionsFromQuery = $derived(meta?.versions ?? []);
 	const hasTreeData = $derived(treeRoots != null && treeRoots.length > 0);
-	const kindFacets = $derived((meta?.kindFacets ?? []) as KindFacet[]);
+	const kindFacets = $derived(meta?.kindFacets ?? []);
 	const crateSwitcherCount = $derived(buildCrateSwitcherCount(localCrates, indexFromQuery));
 	const crateSwitcherItems = $derived(
 		buildCrateSwitcherItems(localCrates, indexFromQuery, crateName),

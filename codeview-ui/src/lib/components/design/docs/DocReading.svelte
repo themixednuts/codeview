@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { NodeDetail, NodeSummary } from '#lib/schema';
-	import type { MaterializedDetailDocModel } from '#lib/detail-model';
+	import type { NodeDetail, NodeSummary } from '#lib/schema.js';
+	import type { MaterializedDetailDocModel } from '#lib/detail-model.js';
 	import DocArticle from './DocArticle.svelte';
 
 	let {

@@ -1,10 +1,11 @@
 import type { Logger } from "@logtape/logtape";
+import type { Json } from "effect/Schema";
 
 export type SSEEndReason = "eof" | "aborted" | "fetch-error" | "bad-response" | "read-error";
 
 type WorkerMessage =
   | { type: "ready"; id: number }
-  | { type: "data"; id: number; payload: unknown }
+  | { type: "data"; id: number; payload: Json }
   | { type: "warn"; id: number; error: string }
   | { type: "end"; id: number; reason: SSEEndReason; detail?: string };
 
@@ -47,7 +48,7 @@ export abstract class SSEConnection implements Disposable, AsyncDisposable {
   protected abstract get endpoint(): string;
 
   /** Handle a parsed JSON message from the stream. */
-  protected abstract onData(data: unknown): void;
+  protected abstract onData(data: Json): void;
   protected onStreamOpening() {}
   protected onStreamReady() {}
   protected onStreamWarn(_error: string) {}

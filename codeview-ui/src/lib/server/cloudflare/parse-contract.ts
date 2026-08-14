@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import type { CrateStatus } from "../provider";
 
 export const PARSE_REQUEST_SCHEMA_VERSION = 1;
@@ -114,7 +116,9 @@ export async function registerQueuedParseRequest(
   if (!response.ok) {
     throw new Error(`parse queue registration failed: ${response.status}`);
   }
-  return (await response.json()) as QueueParseResponse;
+  const value: unknown = await response.json();
+  // SAFETY: PARSE_STATUS Durable Object /queued returns QueueParseResponse that this worker just serialized.
+  return value as QueueParseResponse;
 }
 
 export function shouldAcceptQueuedParseRequest(
@@ -144,8 +148,8 @@ export function makeParseRequest(
   requestedBy?: ParseRequestActor,
 ): ParseRequestMessage {
   const requestId =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
+    globalThis.crypto !== undefined && "randomUUID" in globalThis.crypto
+      ? globalThis.crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return {
     schemaVersion: PARSE_REQUEST_SCHEMA_VERSION,
@@ -161,38 +165,29 @@ export function makeParseRequest(
   };
 }
 
-export function isParseRequestMessage(value: unknown): value is ParseRequestMessage {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<ParseRequestMessage>;
-  return (
-    candidate.schemaVersion === PARSE_REQUEST_SCHEMA_VERSION &&
-    candidate.ecosystem === "rust" &&
-    (candidate.kind === "crate" || candidate.kind === "sysroot") &&
-    typeof candidate.name === "string" &&
-    candidate.name.length > 0 &&
-    typeof candidate.version === "string" &&
-    candidate.version.length > 0 &&
-    typeof candidate.force === "boolean" &&
-    typeof candidate.requestId === "string" &&
-    candidate.requestId.length > 0 &&
-    typeof candidate.requestedAt === "string" &&
-    Number.isFinite(Date.parse(candidate.requestedAt)) &&
-    (candidate.source === "ui" ||
-      candidate.source === "manual" ||
-      candidate.source === "planned") &&
-    (candidate.requestedBy === undefined || isParseRequestActor(candidate.requestedBy))
-  );
-}
+const ParseRequestActorSchema = Schema.Struct({
+  provider: Schema.Literal("github"),
+  id: Schema.String.check(Schema.isMinLength(1)),
+  login: Schema.String.check(Schema.isMinLength(1)),
+  avatarUrl: Schema.optionalKey(Schema.String),
+});
 
-function isParseRequestActor(value: unknown): value is ParseRequestActor {
-  if (typeof value !== "object" || value === null) return false;
-  const candidate = value as Partial<ParseRequestActor>;
-  return (
-    candidate.provider === "github" &&
-    typeof candidate.id === "string" &&
-    candidate.id.length > 0 &&
-    typeof candidate.login === "string" &&
-    candidate.login.length > 0 &&
-    (candidate.avatarUrl === undefined || typeof candidate.avatarUrl === "string")
+const ParseRequestMessageSchema = Schema.Struct({
+  schemaVersion: Schema.Literal(PARSE_REQUEST_SCHEMA_VERSION),
+  ecosystem: Schema.Literal("rust"),
+  kind: Schema.Literals(["crate", "sysroot"]),
+  name: Schema.String.check(Schema.isMinLength(1)),
+  version: Schema.String.check(Schema.isMinLength(1)),
+  force: Schema.Boolean,
+  requestId: Schema.String.check(Schema.isMinLength(1)),
+  requestedAt: Schema.String,
+  source: Schema.Literals(["ui", "manual", "planned"]),
+  requestedBy: Schema.optionalKey(ParseRequestActorSchema),
+});
+
+export function isParseRequestMessage(value: Schema.Json): value is ParseRequestMessage {
+  const candidate = Option.getOrUndefined(
+    Schema.decodeUnknownOption(ParseRequestMessageSchema)(value),
   );
+  return candidate !== undefined && Number.isFinite(Date.parse(candidate.requestedAt));
 }

@@ -103,10 +103,12 @@ export function stdRustRef(version: string): string {
 }
 
 /** GitHub raw + blob URL pair for an std-library source path. */
-export function buildStdSourceUrls(
-  relativePath: string,
-  version: string,
-): { rawUrl: string; blobUrl: string } {
+type StdSourceUrls = {
+  rawUrl: string;
+  blobUrl: string;
+};
+
+export function buildStdSourceUrls(relativePath: string, version: string): StdSourceUrls {
   const ref = stdRustRef(version);
   const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
   return {

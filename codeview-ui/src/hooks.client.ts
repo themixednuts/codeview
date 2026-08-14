@@ -1,5 +1,5 @@
 import type { HandleClientError } from "@sveltejs/kit/hooks";
-import { getLogger, setupLogging } from "#lib/log";
+import { getLogger, setupLogging } from "#lib/log.js";
 
 const log = getLogger("client-hooks");
 

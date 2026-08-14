@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { requestCrateParse } from '#lib/rpc/crate.remote';
+	import { requestCrateParse } from '#lib/rpc/crate.remote.js';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { isHosted } from '#lib/platform';
-	import { isStdCrate } from '#lib/std';
-	import { normalizeCrateName } from '#lib/crate-names';
-	import { Button } from '#lib/components/ui/button';
-	import * as NativeSelect from '#lib/components/ui/native-select';
+	import { isHosted } from '#lib/platform.js';
+	import { isStdCrate } from '#lib/std.js';
+	import { normalizeCrateName } from '#lib/crate-names.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
 
 	let {
 		crateName,

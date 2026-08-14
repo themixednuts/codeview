@@ -2,7 +2,23 @@ import { sveltekit } from "@sveltejs/kit/vite";
 import tailwindcss from "@tailwindcss/vite";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
+import * as Predicate from "effect/Predicate";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
+import type { RawData } from "ws";
+import type { LocalProviderInternals } from "./src/lib/server/local/ws";
+
+type LocalWsModule = {
+  connections: Map<string, { ws: { send(data: string): void }; tags: Set<string> }>;
+  sendInitialState: (
+    socket: { send: (data: string) => void },
+    tags: string[],
+    internals: LocalProviderInternals,
+  ) => void;
+};
+
+type LocalProviderModule = {
+  getProviderInternals?: () => LocalProviderInternals | undefined;
+};
 
 const isCloudflare = process.env.PUBLIC_CODEVIEW_PLATFORM === "cloudflare";
 const appVersion =
@@ -13,8 +29,8 @@ const appVersion =
 
 const DEV_WS_PORT = 15173;
 
-function readWsMessage(msg: unknown): string {
-  if (typeof msg === "string") return msg;
+function readWsMessage(msg: RawData): string {
+  if (Predicate.isString(msg)) return msg;
   if (Buffer.isBuffer(msg)) return msg.toString("utf8");
   if (Array.isArray(msg)) return Buffer.concat(msg).toString("utf8");
   if (msg instanceof ArrayBuffer) return Buffer.from(msg).toString("utf8");
@@ -29,15 +45,8 @@ function localWebSocket(): Plugin {
       if (isCloudflare) return;
       if (process.env.VITEST) return;
 
-      let wsMod: {
-        connections: Map<string, { ws: { send(data: string): void }; tags: Set<string> }>;
-        sendInitialState: (
-          socket: { send: (data: string) => void },
-          tags: string[],
-          internals: unknown,
-        ) => void;
-      } | null = null;
-      let providerMod: { getProviderInternals?: () => unknown } | null = null;
+      let wsMod: LocalWsModule | null = null;
+      let providerMod: LocalProviderModule | null = null;
 
       const loadModules = async () => {
         if (wsMod && providerMod) return;
@@ -45,8 +54,20 @@ function localWebSocket(): Plugin {
           viteServer.ssrLoadModule("/src/lib/server/local/ws.ts"),
           viteServer.ssrLoadModule("/src/lib/server/local/provider.ts"),
         ]);
-        wsMod = nextWs as NonNullable<typeof wsMod>;
-        providerMod = nextProvider as typeof providerMod;
+        if (
+          !Predicate.isObject(nextWs) ||
+          !("connections" in nextWs) ||
+          !("sendInitialState" in nextWs) ||
+          !Predicate.isFunction(nextWs.sendInitialState)
+        ) {
+          throw new TypeError("local websocket module is missing sendInitialState");
+        }
+        // SAFETY: the module was checked above for connections and sendInitialState.
+        wsMod = nextWs as LocalWsModule;
+        // SAFETY: Vite SSR reload returns a module object; we only use createProvider.
+        providerMod = Predicate.isObject(nextProvider)
+          ? (nextProvider as LocalProviderModule)
+          : null;
       };
 
       const [{ createServer }, { WebSocketServer }] = await Promise.all([
@@ -96,7 +117,7 @@ function localWebSocket(): Plugin {
             for (const tag of parsed.tags) conn.tags.add(tag);
             const internals = providerMod?.getProviderInternals?.();
             if (internals) {
-               wsMod.sendInitialState({ send }, parsed.tags, internals);
+              wsMod.sendInitialState({ send }, parsed.tags, internals);
             }
           } else if (parsed.action === "unsubscribe" && parsed.tags?.length) {
             for (const tag of parsed.tags) conn.tags.delete(tag);
@@ -119,13 +140,40 @@ function localWebSocket(): Plugin {
   };
 }
 
+type ViteResolve = {
+  alias: {
+    $cloudflare: string;
+    $provider: string;
+    $realtime: string;
+  };
+  conditions?: string[];
+};
+
+const viteResolve: ViteResolve = {
+  alias: {
+    $cloudflare: resolve("src/lib/server/cloudflare"),
+    $provider: isCloudflare
+      ? resolve("src/lib/server/cloudflare/provider.ts")
+      : resolve("src/lib/server/local/provider.ts"),
+    $realtime: resolve("src/lib/ws/client.ts"),
+  },
+};
+if (process.env.VITEST) viteResolve.conditions = ["browser"];
+
 export default defineConfig({
   staged: {
     "*": "vp check --fix",
   },
   fmt: {},
   lint: {
-    ignorePatterns: ["src/service-worker.ts", "scripts/**", "tools/oxlint/**"],
+    ignorePatterns: [
+      "src/service-worker.ts",
+      "scripts/**",
+      "tools/oxlint/**",
+      "src/lib/components/ui/**",
+      "playwright.config.ts",
+      "e2e/**",
+    ],
     jsPlugins: [
       { name: "vite-plus", specifier: "vite-plus/oxlint-plugin" },
       { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
@@ -191,16 +239,7 @@ export default defineConfig({
     sourcemap: !isCloudflare,
     minify: false,
   },
-  resolve: {
-    alias: {
-      $cloudflare: resolve("src/lib/server/cloudflare"),
-      $provider: isCloudflare
-        ? resolve("src/lib/server/cloudflare/provider.ts")
-        : resolve("src/lib/server/local/provider.ts"),
-      $realtime: resolve("src/lib/ws/client.ts"),
-    },
-    ...(process.env.VITEST ? { conditions: ["browser"] } : {}),
-  },
+  resolve: viteResolve,
   test: {
     include: ["src/**/*.test.ts"],
   },

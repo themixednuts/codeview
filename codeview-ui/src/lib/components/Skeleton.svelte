@@ -3,17 +3,19 @@
 	 * Skeleton loading component with shimmer animation.
 	 * Uses CSS custom properties for theming consistency.
 	 */
+	type SkeletonProps = {
+		class?: string;
+		width?: string;
+		height?: string;
+		rounded?: 'sm' | 'md' | 'lg' | 'full';
+	};
+
 	let {
 		class: className = '',
 		width = '100%',
 		height = '1rem',
 		rounded = 'md',
-	} = $props<{
-		class?: string;
-		width?: string;
-		height?: string;
-		rounded?: 'sm' | 'md' | 'lg' | 'full';
-	}>();
+	}: SkeletonProps = $props();
 
 	const radiusMap = {
 		sm: 'var(--radius-chip)',
@@ -27,7 +29,7 @@
 	class="skeleton {className}"
 	style:width
 	style:height
-	style:border-radius={radiusMap[rounded as keyof typeof radiusMap]}
+	style:border-radius={radiusMap[rounded]}
 ></div>
 
 <style>

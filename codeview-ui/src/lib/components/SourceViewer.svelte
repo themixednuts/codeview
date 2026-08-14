@@ -1,16 +1,16 @@
 <script lang="ts">
-	import type { Span } from '#lib/graph';
+	import type { Span } from '#lib/graph.js';
 	import type { Attachment } from 'svelte/attachments';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { browser } from '$app/env';
-	import { getSource } from '#lib/rpc/source.remote';
-	import { sourceProviderModeCtx } from '#lib/context';
-	import type { SourceResult } from '#lib/schema';
-	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
-	import { docsRsSourceUrl } from '#lib/source-links';
-	import CodeBlock from './CodeBlock.svelte';
+	import { getSource } from '#lib/rpc/source.remote.js';
+	import { sourceProviderModeCtx } from '#lib/context.js';
+	import type { SourceResult } from '#lib/schema.js';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
+	import { docsRsSourceUrl } from '#lib/source-links.js';
+	import CodeBlock from '#lib/components/design/CodeBlock.svelte';
 	import SourceActions from './SourceActions.svelte';
 	import X from '@lucide/svelte/icons/x';
 

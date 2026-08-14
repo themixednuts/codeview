@@ -1,5 +1,26 @@
 <script lang="ts">
-	import { normalizeLanguage, type SupportedLanguage } from '#lib/highlight/languages';
+	import { normalizeLanguage, type SupportedLanguage } from '#lib/highlight/languages.js';
+	import { tick } from 'svelte';
+
+	type CodeBlockProps = {
+		code: string;
+		lang?: SupportedLanguage | string;
+		theme?: 'dark' | 'light';
+		label?: string;
+		lines?: boolean;
+		showLineNumbers?: boolean;
+		startLine?: number;
+		highlightLines?: number[];
+		variant?: 'default' | 'flat';
+		revealAfterHighlight?: boolean;
+		onHighlightStateChange?: (ready: boolean) => void;
+	};
+
+	type PlainCodeOptions = {
+		startLine?: number;
+		highlightLines?: number[];
+		showLineNumbers?: boolean;
+	};
 
 	let {
 		code,
@@ -11,17 +32,9 @@
 		startLine,
 		highlightLines,
 		variant = 'default',
-	} = $props<{
-		code: string;
-		lang?: SupportedLanguage | string;
-		theme?: 'dark' | 'light';
-		label?: string;
-		lines?: boolean;
-		showLineNumbers?: boolean;
-		startLine?: number;
-		highlightLines?: number[];
-		variant?: 'default' | 'flat';
-	}>();
+		revealAfterHighlight = false,
+		onHighlightStateChange,
+	}: CodeBlockProps = $props();
 
 	const normalizedLang = $derived(normalizeLanguage(lang));
 	const withLineNumbers = $derived(lines || showLineNumbers);
@@ -35,13 +48,42 @@
 			.replace(/'/g, '&#039;');
 	}
 
-	function plainCodeHtml(source: string): string {
-		return `<pre class="shiki"><code>${escapeHtml(source)}</code></pre>`;
+	function plainCodeHtml(source: string, options: PlainCodeOptions): string {
+		const escaped = escapeHtml(source);
+		const firstLine = options.startLine ?? 1;
+		if (!options.showLineNumbers && !options.highlightLines?.length) {
+			return `<pre class="shiki"><code>${escaped}</code></pre>`;
+		}
+
+		const renderedLines = escaped
+			.split('\n')
+			.map((line, index) => {
+				const lineNumber = firstLine + index;
+				const classes = [
+					'line',
+					options.showLineNumbers ? 'has-line-number' : '',
+					options.highlightLines?.includes(lineNumber) ? 'highlighted' : '',
+				]
+					.filter(Boolean)
+					.join(' ');
+				const dataLine = options.showLineNumbers ? ` data-line="${lineNumber}"` : '';
+				return `<span class="${classes}"${dataLine}>${line}</span>`;
+			})
+			.join('\n');
+
+		return `<pre class="shiki"><code>${renderedLines}</code></pre>`;
 	}
 
 	let highlightedHtml = $state('');
-	const fallbackHtml = $derived(plainCodeHtml(code));
+	const fallbackHtml = $derived(
+		plainCodeHtml(code, {
+			startLine,
+			highlightLines,
+			showLineNumbers: withLineNumbers,
+		}),
+	);
 	const renderedHtml = $derived(highlightedHtml || fallbackHtml);
+	const highlightReady = $derived(highlightedHtml.length > 0);
 
 	$effect(() => {
 		const nextCode = code;
@@ -54,15 +96,23 @@
 		};
 		let cancelled = false;
 		highlightedHtml = '';
+		onHighlightStateChange?.(false);
 
-		void import('#lib/highlight/shiki')
-			.then(({ highlightCode }) => highlightCode(nextCode, nextLang, nextTheme, options))
-			.then((html) => {
-				if (!cancelled) highlightedHtml = html;
-			})
-			.catch(() => {
-				if (!cancelled) highlightedHtml = plainCodeHtml(nextCode);
-			});
+		// Shiki is a large highlighter; load it on first paint of a code block.
+		void (async () => {
+			let html: string;
+			try {
+				const { highlightCode } = await import('#lib/highlight/shiki.js');
+				html = await highlightCode(nextCode, nextLang, nextTheme, options);
+			} catch {
+				html = plainCodeHtml(nextCode, options);
+			}
+
+			if (cancelled) return;
+			highlightedHtml = html;
+			await tick();
+			if (!cancelled) onHighlightStateChange?.(true);
+		})();
 
 		return () => {
 			cancelled = true;
@@ -73,6 +123,9 @@
 <div
 	class="design-codeblock codeblock corner-squircle overflow-hidden"
 	class:design-codeblock--flat={variant === 'flat'}
+	class:design-codeblock--deferred={revealAfterHighlight}
+	class:design-codeblock--ready={highlightReady}
+	aria-busy={revealAfterHighlight && !highlightReady}
 >
 	{#if label}
 		<div
@@ -85,7 +138,7 @@
 	{/if}
 
 	<div class="design-codeblock__body">
-		<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized Shiki output -->
+		<!-- Shiki output is escaped HTML from highlightCode / plainCodeHtml. -->
 		{@html renderedHtml}
 	</div>
 </div>
@@ -119,6 +172,10 @@
 
 	.design-codeblock--flat :global(pre) {
 		padding: 0;
+	}
+
+	:global(html[data-hydrated='true']) .design-codeblock--deferred:not(.design-codeblock--ready) {
+		visibility: hidden;
 	}
 
 	.design-codeblock :global(.line.has-line-number)::before {

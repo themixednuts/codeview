@@ -1,5 +1,5 @@
 import type { LabelPositionProvider, LabelContext, LabelPosition } from "./types";
-import { getVisNodeEdgeAnchor } from "#lib/graph/visual/edge-anchor";
+import { getVisNodeEdgeAnchor } from "#lib/graph/visual/edge-anchor.js";
 
 const EDGE_NODE_PADDING = 10;
 

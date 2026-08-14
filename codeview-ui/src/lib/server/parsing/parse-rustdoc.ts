@@ -19,11 +19,14 @@ import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import type { Edge, Node } from "#lib/graph";
-import type { CrateTree } from "#lib/schema";
-import { getLogger } from "#lib/log";
-import { normalizeCrateName } from "#lib/crate-names";
-import { buildCrateTree } from "#lib/node-summary";
+import * as Predicate from "effect/Predicate";
+import type { Json } from "effect/Schema";
+import type { Edge, Node } from "#lib/graph.js";
+import { CrateGraphSchema, type CrateTree } from "#lib/schema.js";
+import { getLogger } from "#lib/log.js";
+import { normalizeCrateName } from "#lib/crate-names.js";
+import { buildCrateTree } from "#lib/node-summary.js";
+import * as v from "valibot";
 
 const log = getLogger("parse-rustdoc");
 
@@ -57,14 +60,6 @@ export interface ParseRustdocOptions {
   onFinalizingStart?: () => void;
 }
 
-interface CrateGraphJson {
-  id: string;
-  name: string;
-  version: string;
-  nodes: Node[];
-  edges: Edge[];
-}
-
 /**
  * Materialise the rustdoc JSON to a temp file, invoke
  * `codeview-cli parse-json`, read the emitted graph back, and feed it
@@ -83,7 +78,7 @@ export async function parseWithRustBinary(
   const graphPath = join(tmpDir, "graph.json");
 
   try {
-    if (typeof input === "string") {
+    if (Predicate.isString(input)) {
       writeFileSync(jsonPath, input, "utf-8");
     } else if (input instanceof Uint8Array) {
       writeFileSync(jsonPath, input);
@@ -145,7 +140,8 @@ export async function parseWithRustBinary(
     // Keep the dev SSR process responsive while Rust parses large crates.
     await runCargo(args);
 
-    const graph = JSON.parse(readFileSync(graphPath, "utf-8")) as CrateGraphJson;
+    const parsed: Json = JSON.parse(readFileSync(graphPath, "utf-8"));
+    const graph = v.parse(CrateGraphSchema, parsed);
     storageCallbacks.storeNodes(graph.nodes);
     storageCallbacks.storeEdges(graph.edges);
 

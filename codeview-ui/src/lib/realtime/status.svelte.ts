@@ -1,9 +1,12 @@
-import type { CrateStatus } from "#lib/schema";
-import { triggerCrateParse } from "#lib/rpc/crate.remote";
-import { getLogger } from "#lib/log";
+import type { CrateStatus } from "#lib/schema.js";
+import { CrateStatusSchema } from "#lib/schema.js";
+import { triggerCrateParse } from "#lib/rpc/crate.remote.js";
+import { getLogger } from "#lib/log.js";
 import { connect } from "$realtime";
-import { STEP_ORDER, stepLabels, stepPercents } from "./constants";
+import { STEP_ORDER, isParseStep, stepLabels, stepPercents } from "./constants";
 import type { RealtimeClient } from "./types";
+import type { Json } from "effect/Schema";
+import * as v from "valibot";
 
 type CrateStatusValue = CrateStatus["status"];
 
@@ -24,7 +27,10 @@ export class CrateStatusConnection implements Disposable {
   // Stable callback reference — same identity across subscribe/unsubscribe calls.
   // Using a per-call closure caused a race: the #unsubscribe closure was set after
   // an await, creating a microtask window where disconnect() couldn't clean up.
-  #callback = (data: unknown) => this.#onStatusData(data as CrateStatus);
+  #callback = (data: Json) => {
+    const parsed = v.safeParse(CrateStatusSchema, data);
+    if (parsed.success) this.#onStatusData(parsed.output);
+  };
 
   get tag() {
     return `${this.#name}@${this.#version}`;
@@ -77,8 +83,8 @@ export class CrateStatusConnection implements Disposable {
     this.installedVersion = msg.installedVersion;
 
     const incoming = msg.step ?? null;
-    if (incoming !== null) {
-      const curIdx = this.step ? STEP_ORDER.indexOf(this.step) : -1;
+    if (incoming !== null && isParseStep(incoming)) {
+      const curIdx = this.step && isParseStep(this.step) ? STEP_ORDER.indexOf(this.step) : -1;
       const newIdx = STEP_ORDER.indexOf(incoming);
       if (newIdx >= curIdx) this.step = incoming;
     }

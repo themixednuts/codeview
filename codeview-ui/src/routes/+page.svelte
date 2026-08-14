@@ -3,8 +3,8 @@
 	import { page } from '$app/state';
 	import Icon from '#lib/components/design/Icon.svelte';
 	import KindBadge from '#lib/components/design/KindBadge.svelte';
-	import type { CrateSearchResult, CrateSummary } from '#lib/schema';
-	import { parseHomeState, serializeHomeState } from '#lib/url-state';
+	import type { CrateSearchResult, CrateSummary } from '#lib/schema.js';
+	import { parseHomeState, serializeHomeState } from '#lib/url-state.js';
 	import type { PageProps } from './$types';
 
 	type CrateListItem = CrateSearchResult | CrateSummary;

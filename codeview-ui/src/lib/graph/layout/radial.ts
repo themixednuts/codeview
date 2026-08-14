@@ -1,12 +1,9 @@
-import type { Graph, Node } from "#lib/graph";
-import type { VisNode, VisEdge } from "./types";
+import type { Graph, Node } from "#lib/graph.js";
+import type { VisNode, VisEdge, VisLayout } from "./types";
 import { CENTER_X, CENTER_Y, RADIAL_RADIUS, MIN_NODE_SPACING, ARROWHEAD_LENGTH } from "./types";
 import { getNodeBoundingBox, resolveCollisions } from "./collision";
 
-export function computeRadialLayout(
-  graph: Graph,
-  selected: Node,
-): { nodes: VisNode[]; edges: VisEdge[] } {
+export function computeRadialLayout(graph: Graph, selected: Node): VisLayout {
   const nodeMap = new Map<string, Node>();
   for (const node of graph.nodes) {
     nodeMap.set(node.id, node);

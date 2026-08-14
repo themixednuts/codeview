@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { requestCrateParse } from '#lib/rpc/crate.remote';
-	import { Button } from '#lib/components/ui/button';
+	import { requestCrateParse } from '#lib/rpc/crate.remote.js';
+	import { Button } from '#lib/components/ui/button/index.js';
 
 	let {
 		crateName,

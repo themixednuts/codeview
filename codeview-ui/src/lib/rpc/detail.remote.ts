@@ -1,6 +1,6 @@
 import { query } from "$app/server";
 import * as Effect from "effect/Effect";
-import type { NodeDetail } from "#lib/schema";
+import type { NodeDetail } from "#lib/schema.js";
 import { loader, resolve, type NodeDetailInput } from "./helpers";
 import { NodeDetailInputSchema } from "./schemas";
 

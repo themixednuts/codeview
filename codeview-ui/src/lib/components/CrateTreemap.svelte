@@ -1,13 +1,13 @@
 <script lang="ts">
-	import type { CrateMapData, CrateMapModuleNode } from '#lib/graph/crate-map';
-	import { resolveAppPath } from '#lib/app-paths';
+	import type { CrateMapData, CrateMapModuleNode } from '#lib/graph/crate-map.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
 	import {
 		computeSquarifiedLayout,
 		findContainingModule,
 		moduleDepthColor,
 		type TreemapRect,
 		type LayoutRect,
-	} from '#lib/graph/crate-map';
+	} from '#lib/graph/crate-map.js';
 
 	let {
 		data,

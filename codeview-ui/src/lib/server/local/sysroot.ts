@@ -2,8 +2,8 @@ import { execFile as execFileCb } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { getLogger } from "#lib/log";
-import { normalizeCrateName } from "#lib/crate-names";
+import { getLogger } from "#lib/log.js";
+import { normalizeCrateName } from "#lib/crate-names.js";
 
 const execFile = promisify(execFileCb);
 const log = getLogger("sysroot");

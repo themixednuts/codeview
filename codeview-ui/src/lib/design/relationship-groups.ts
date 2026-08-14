@@ -1,5 +1,5 @@
-import type { Edge, Node, NodeDetail, RelationshipGroup, RelationshipGroups } from "#lib/schema";
-import { summarizeNode } from "#lib/node-summary";
+import type { Edge, Node, NodeDetail, RelationshipGroup, RelationshipGroups } from "#lib/schema.js";
+import { summarizeNode } from "#lib/node-summary.js";
 import { edgeKindToRelation, REL_ORDER, type DesignRelation } from "./live-node";
 
 export type RelationshipDirection = "incoming" | "outgoing";

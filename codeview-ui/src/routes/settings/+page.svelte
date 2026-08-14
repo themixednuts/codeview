@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Button } from '#lib/components/ui/button';
-	import * as Field from '#lib/components/ui/field';
-	import * as NativeSelect from '#lib/components/ui/native-select';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Field from '#lib/components/ui/field/index.js';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
 	import {
 		ACCENT_KEY,
 		CODE_DARK_KEY,
@@ -11,7 +11,7 @@
 		THEME_KEY,
 		TEXT_SIZE_KEY,
 		VOICE_KEY,
-	} from '#lib/preferences';
+	} from '#lib/preferences.js';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();

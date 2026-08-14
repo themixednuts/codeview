@@ -2,16 +2,14 @@
 	import { resolve } from '$app/paths';
 	import Icon from '#lib/components/design/Icon.svelte';
 	import KindBadge from '#lib/components/design/KindBadge.svelte';
-	import * as Command from '#lib/components/ui/command';
-	import { searchRegistry } from '#lib/rpc/crate.remote';
-	import type { CrateSearchResult } from '#lib/schema';
+	import * as Command from '#lib/components/ui/command/index.js';
+	import { searchRegistry } from '#lib/rpc/crate.remote.js';
+	import type { CrateSearchResult } from '#lib/schema.js';
+	import * as Predicate from 'effect/Predicate';
 
-	type RemoteResource<T> =
-		| Promise<T>
-		| {
-				run?: () => Promise<T>;
-				current?: T;
-		  };
+	type RunnableResource<T> = {
+		run: () => Promise<T>;
+	};
 
 	let {
 		open = $bindable(false),
@@ -27,12 +25,6 @@
 	const trimmedQuery = $derived(query.trim());
 	const canSearch = $derived(trimmedQuery.length >= 2);
 
-	function isCrateResult(value: unknown): value is CrateSearchResult {
-		if (!value || typeof value !== 'object') return false;
-		const raw = value as Partial<CrateSearchResult>;
-		return typeof raw.name === 'string' && typeof raw.version === 'string';
-	}
-
 	function crateKey(crate: CrateSearchResult): string {
 		return `${crate.id ?? crate.name}:${crate.version}`;
 	}
@@ -44,11 +36,13 @@
 		});
 	}
 
-	async function resolveResource<T>(resource: RemoteResource<T>): Promise<T> {
-		if (resource && typeof (resource as { run?: unknown }).run === 'function') {
-			return await (resource as { run: () => Promise<T> }).run();
-		}
-		return await (resource as Promise<T>);
+	function hasRun<T>(resource: Promise<T> | RunnableResource<T>): resource is RunnableResource<T> {
+		return Predicate.isObject(resource) && 'run' in resource && Predicate.isFunction(resource.run);
+	}
+
+	async function resolveResource<T>(resource: Promise<T> | RunnableResource<T>): Promise<T> {
+		if (hasRun(resource)) return await resource.run();
+		return await resource;
 	}
 
 	function closeCommand() {
@@ -68,10 +62,10 @@
 		}
 		loading = true;
 		const timer = setTimeout(() => {
-			void resolveResource(searchRegistry({ q: term }) as RemoteResource<CrateSearchResult[]>)
+			void resolveResource(searchRegistry({ q: term }))
 				.then((value) => {
 					if (seq !== searchSeq) return;
-					results = Array.isArray(value) ? value.filter(isCrateResult) : [];
+					results = Array.isArray(value) ? value : [];
 				})
 				.catch(() => {
 					if (seq === searchSeq) results = [];

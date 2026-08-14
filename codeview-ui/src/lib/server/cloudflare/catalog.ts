@@ -1,5 +1,5 @@
-import type { StaticCrateCatalogEntry } from "#lib/schema";
-import { isStdCrate } from "#lib/std";
+import type { StaticCrateCatalogEntry } from "#lib/schema.js";
+import { isStdCrate } from "#lib/std.js";
 import { crateNameVariants, normalizeCrateName } from "../validation";
 
 export type CatalogCrateSummary = {
@@ -10,8 +10,7 @@ export type CatalogCrateSummary = {
 };
 
 function catalogEntryVersion(entry: StaticCrateCatalogEntry): string | null {
-  const version = entry.version;
-  return typeof version === "string" && version.length > 0 ? version : null;
+  return entry.version.length > 0 ? entry.version : null;
 }
 
 export function catalogEntryToSummary(entry: StaticCrateCatalogEntry): CatalogCrateSummary | null {

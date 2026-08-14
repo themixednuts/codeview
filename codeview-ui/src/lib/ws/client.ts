@@ -1,5 +1,8 @@
-import { getLogger } from "#lib/log";
-import type { RealtimeCallback, RealtimeClient } from "#lib/realtime/types";
+import { getLogger } from "#lib/log.js";
+import type { RealtimeCallback, RealtimeClient } from "#lib/realtime/types.js";
+import { browser } from "$app/env";
+import * as Predicate from "effect/Predicate";
+import type { Json } from "effect/Schema";
 
 const log = getLogger("ws-client");
 
@@ -45,14 +48,14 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
   /**
    * Subscribe to a tag. Opens the connection if needed.
    */
-  subscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): void {
+  subscribe(tag: string, callback: RealtimeCallback): void {
     let callbacks = this.#subscriptions.get(tag);
     if (!callbacks) {
       callbacks = new Set();
       this.#subscriptions.set(tag, callbacks);
     }
-    const isNew = !callbacks.has(callback as RealtimeCallback) && callbacks.size === 0;
-    callbacks.add(callback as RealtimeCallback);
+    const isNew = !callbacks.has(callback) && callbacks.size === 0;
+    callbacks.add(callback);
 
     if (isNew) {
       if (this.#connected && this.#ws) {
@@ -70,11 +73,11 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
    * Unsubscribe a callback from a tag.
    * When the last callback for a tag is removed, unsubscribes from the server.
    */
-  unsubscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): void {
+  unsubscribe(tag: string, callback: RealtimeCallback): void {
     const callbacks = this.#subscriptions.get(tag);
     if (!callbacks) return;
 
-    callbacks.delete(callback as RealtimeCallback);
+    callbacks.delete(callback);
     log.debug`unsubscribe ${tag} (remaining=${String(callbacks.size)})`;
 
     if (callbacks.size === 0) {
@@ -119,7 +122,7 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
 
   #ensureConnection(): void {
     if (this.#destroyed || this.#connecting || this.#connected) return;
-    if (typeof window === "undefined") return; // SSR guard
+    if (!browser) return;
     this.#connect();
   }
 
@@ -156,7 +159,8 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
     };
 
     ws.onmessage = (event) => {
-      this.#onMessage(event.data as string);
+      if (!Predicate.isString(event.data)) return;
+      this.#onMessage(event.data);
     };
 
     ws.onclose = (event) => {
@@ -184,9 +188,15 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
   }
 
   #onMessage(raw: string): void {
-    let msg: { type?: string; connectionId?: string; tag?: string; data?: unknown };
+    let msg: { type?: string; connectionId?: string; tag?: string; data?: Json };
     try {
-      msg = JSON.parse(raw);
+      // SAFETY: WS frames are JSON objects with optional type/tag/data fields.
+      msg = JSON.parse(raw) as {
+        type?: string;
+        connectionId?: string;
+        tag?: string;
+        data?: Json;
+      };
     } catch {
       const preview = raw.length > 120 ? `${raw.slice(0, 120)}...` : raw;
       log.warn`invalid JSON from server payload=${preview}`;
@@ -213,7 +223,7 @@ export class Client implements Disposable, AsyncDisposable, RealtimeClient {
       if (callbacks && callbacks.size > 0) {
         for (const cb of callbacks) {
           try {
-            cb(msg.data);
+            cb(msg.data ?? null);
           } catch (err) {
             log.error`callback error for ${msg.tag}: ${String(err)}`;
           }

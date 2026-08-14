@@ -1,18 +1,14 @@
-import type { Graph, Node } from "#lib/graph";
-import type { LayoutMode, VisNode, VisEdge } from "./types";
+import type { Graph, Node } from "#lib/graph.js";
+import type { LayoutMode, VisLayout } from "./types";
 import { computeEgoLayout } from "./ego";
 import { computeForceLayout } from "./force";
 import { computeHierarchicalLayout } from "./hierarchical";
 import { computeRadialLayout } from "./radial";
-import { getPerfLogger } from "#lib/log";
+import { getPerfLogger } from "#lib/log.js";
 
-export function computeLayout(
-  graph: Graph,
-  selected: Node,
-  mode: LayoutMode,
-): { nodes: VisNode[]; edges: VisEdge[] } {
+export function computeLayout(graph: Graph, selected: Node, mode: LayoutMode): VisLayout {
   const t0 = performance.now();
-  let result: { nodes: VisNode[]; edges: VisEdge[] };
+  let result: VisLayout;
   switch (mode) {
     case "ego":
       result = computeEgoLayout(graph, selected);

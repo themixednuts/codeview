@@ -1,6 +1,6 @@
-import type { NodeKind } from "#lib/graph";
+import type { NodeKind } from "#lib/graph.js";
 
-export const kindOrder: Record<NodeKind, number> = {
+export const kindOrder = {
   Crate: 0,
   Module: 1,
   TypeAlias: 2,
@@ -22,7 +22,7 @@ export const kindOrder: Record<NodeKind, number> = {
   Impl: 18,
   Trait: 19,
   TraitAlias: 20,
-};
+} as const satisfies { [K in NodeKind]: number };
 
 export type OrderedNodeLike = {
   id?: string;

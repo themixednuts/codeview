@@ -84,7 +84,11 @@ export function readAllowedPreference<T extends string>(
   allowed: readonly T[],
   fallback: T,
 ): T {
-  return value && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
+  if (value === undefined || value === null) return fallback;
+  for (const candidate of allowed) {
+    if (candidate === value) return candidate;
+  }
+  return fallback;
 }
 
 export function readClientPref(key: string, fallback: string): string {
@@ -92,7 +96,7 @@ export function readClientPref(key: string, fallback: string): string {
   if (cookieValue !== null) return cookieValue;
 
   try {
-    if (typeof localStorage === "undefined") return fallback;
+    if (globalThis.localStorage === undefined) return fallback;
     return localStorage.getItem(key) ?? fallback;
   } catch {
     return fallback;
@@ -109,14 +113,14 @@ export function readStoredPref<T extends string>(
 
 export function writePref(key: string, value: string): void {
   try {
-    if (typeof localStorage !== "undefined") {
+    if (globalThis.localStorage !== undefined) {
       localStorage.setItem(key, value);
     }
   } catch {
     // A blocked localStorage write should not prevent the SSR cookie mirror.
   }
 
-  if (typeof document !== "undefined") {
+  if (globalThis.document !== undefined) {
     document.cookie = `${key}=${encodeURIComponent(
       value,
     )}; path=/; max-age=${PREF_COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`;
@@ -125,7 +129,7 @@ export function writePref(key: string, value: string): void {
 
 export function writeClientPref(key: string, value: string): void {
   try {
-    if (typeof localStorage === "undefined") return;
+    if (globalThis.localStorage === undefined) return;
     const next = value.trim();
     if (next) localStorage.setItem(key, next);
     else localStorage.removeItem(key);
@@ -135,7 +139,7 @@ export function writeClientPref(key: string, value: string): void {
 }
 
 function readClientCookie(key: string): string | null {
-  if (typeof document === "undefined" || !document.cookie) return null;
+  if (globalThis.document === undefined || !document.cookie) return null;
 
   const prefix = `${key}=`;
   for (const rawPart of document.cookie.split(";")) {

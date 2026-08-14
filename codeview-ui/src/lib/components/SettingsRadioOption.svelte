@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import * as RadioGroup from '#lib/components/ui/radio-group';
-	import { cn } from '#lib/utils';
+	import * as RadioGroup from '#lib/components/ui/radio-group/index.js';
+	import { cn } from '#lib/utils.js';
 
 	let {
 		id,

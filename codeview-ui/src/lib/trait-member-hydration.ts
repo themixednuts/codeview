@@ -1,4 +1,4 @@
-import type { Edge, Node, NodeViewBase } from "#lib/schema";
+import type { Edge, Node, NodeViewBase } from "#lib/schema.js";
 
 const MEMBER_KINDS = new Set<Node["kind"]>([
   "Function",

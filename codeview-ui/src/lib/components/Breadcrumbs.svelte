@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Node } from '#lib/graph';
-	import type { NodeSummary } from '#lib/schema';
+	import type { Node } from '#lib/graph.js';
+	import type { NodeSummary } from '#lib/schema.js';
 	import { resolve } from '$app/paths';
 
 	let { ancestors, selected, getNodeUrl } = $props<{

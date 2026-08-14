@@ -1,13 +1,10 @@
-import { getLogger } from "#lib/log";
+import { getLogger } from "#lib/log.js";
 import { connect } from "$realtime";
 import type { RealtimeClient } from "./types";
+import * as Predicate from "effect/Predicate";
+import type { Json } from "effect/Schema";
 
 const CONNECT_DELAY_MS = 1_500;
-
-interface EdgeUpdateMessage {
-  type?: string;
-  nodeId?: string;
-}
 
 export class CrossEdgeUpdatesConnection implements Disposable {
   updateTick = $state(0);
@@ -41,7 +38,7 @@ export class CrossEdgeUpdatesConnection implements Disposable {
   }
 
   async #doSubscribe(tag: string) {
-    const callback = (data: unknown) => this.#onData(data as EdgeUpdateMessage);
+    const callback = (data: Json) => this.#onData(data);
     await this.#client.subscribe(tag, callback);
     this.#unsubscribe = () => {
       void this.#client.unsubscribe(tag, callback);
@@ -64,8 +61,10 @@ export class CrossEdgeUpdatesConnection implements Disposable {
     this.#currentTag = null;
   }
 
-  #onData(msg: EdgeUpdateMessage) {
-    if (msg.type && msg.type !== "cross-edges") return;
+  #onData(data: Json) {
+    if (!Predicate.isObject(data)) return;
+    const type = "type" in data && Predicate.isString(data.type) ? data.type : undefined;
+    if (type && type !== "cross-edges") return;
     this.updateTick += 1;
     this.#log.debug`update ${this.tag} tick=${String(this.updateTick)}`;
   }

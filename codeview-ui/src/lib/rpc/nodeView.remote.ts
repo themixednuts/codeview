@@ -1,7 +1,7 @@
 import { prerender, query } from "$app/server";
-import { getLogger } from "#lib/log";
-import { perf } from "#lib/perf";
-import type { NodeView } from "#lib/schema";
+import { getLogger } from "#lib/log.js";
+import { perf } from "#lib/perf.js";
+import type { NodeView } from "#lib/schema.js";
 import { resolve } from "./helpers";
 import { assertCrateRef } from "./remote-utils";
 import { NodeViewInputSchema } from "./schemas";

@@ -3,9 +3,9 @@
 	import { page } from '$app/state';
 	import Icon from '#lib/components/design/Icon.svelte';
 	import StablePagination from '#lib/components/StablePagination.svelte';
-	import { readPageParam } from '#lib/pagination';
-	import { QueueStatusConnection } from '#lib/realtime';
-	import { stepLabels } from '#lib/realtime/constants';
+	import { readPageParam } from '#lib/pagination.js';
+	import { QueueStatusConnection } from '#lib/realtime/index.js';
+	import { labelForParseStep } from '#lib/realtime/constants.js';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
@@ -48,7 +48,8 @@
 	}
 
 	function statusLabel(status: string, step?: string): string {
-		if (step && stepLabels[step]) return stepLabels[step].replace(/\.\.\.$/, '');
+		const label = step ? labelForParseStep(step) : undefined;
+		if (label) return label.replace(/\.\.\.$/, '');
 		if (step) return step;
 		if (status === 'ready') return 'Ready';
 		if (status === 'failed') return 'Failed';

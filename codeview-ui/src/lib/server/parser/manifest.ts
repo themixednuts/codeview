@@ -143,10 +143,22 @@ function parsePackageName(content: string): string | null {
   return section ? readKey(section, "name") : null;
 }
 
-function parseManifestPaths(content: string): {
+type ManifestBin = {
+  name?: string;
+  path?: string;
+};
+
+type ManifestPaths = {
   libPath?: string;
-  bins: { name?: string; path?: string }[];
-} {
+  bins: ManifestBin[];
+};
+
+type WorkspaceMembers = {
+  members: string[];
+  exclude: string[];
+};
+
+function parseManifestPaths(content: string): ManifestPaths {
   const libSection = extractSection(content, "lib");
   const libPath = libSection ? (readKey(libSection, "path") ?? undefined) : undefined;
   const binSections = extractArraySections(content, "bin");
@@ -157,7 +169,7 @@ function parseManifestPaths(content: string): {
   return { libPath, bins };
 }
 
-function parseWorkspace(content: string): { members: string[]; exclude: string[] } {
+function parseWorkspace(content: string): WorkspaceMembers {
   const section = extractSection(content, "workspace");
   if (!section) return { members: [], exclude: [] };
   return {

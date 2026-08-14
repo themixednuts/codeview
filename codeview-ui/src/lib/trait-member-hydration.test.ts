@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vite-plus/test";
-import type { Edge, Node, NodeViewBase } from "#lib/schema";
+import type { Edge, Node, NodeViewBase } from "#lib/schema.js";
 import { mergeTraitMemberDocumentation } from "./trait-member-hydration";
 
 function node(id: string, name: string, kind: Node["kind"], extra: Partial<Node> = {}): Node {

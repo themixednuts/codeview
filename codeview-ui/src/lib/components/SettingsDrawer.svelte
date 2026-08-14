@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { browser } from '$app/env';
 	import { onMount } from 'svelte';
-	import { Input } from '#lib/components/ui/input';
-	import * as NativeSelect from '#lib/components/ui/native-select';
-	import * as RadioGroup from '#lib/components/ui/radio-group';
-	import * as Sheet from '#lib/components/ui/sheet';
-	import { Switch } from '#lib/components/ui/switch';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
+	import * as RadioGroup from '#lib/components/ui/radio-group/index.js';
+	import * as Sheet from '#lib/components/ui/sheet/index.js';
+	import { Switch } from '#lib/components/ui/switch/index.js';
 	import SettingsRadioOption from './SettingsRadioOption.svelte';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import Columns2Icon from '@lucide/svelte/icons/columns-2';
@@ -29,7 +29,7 @@
 		readStoredPref,
 		type EditorId,
 		writePref,
-	} from '#lib/preferences';
+	} from '#lib/preferences.js';
 	import type {
 		AccentMode,
 		CodeTheme,
@@ -41,7 +41,7 @@
 		TextSizeMode,
 		VcsMode,
 		VoiceMode,
-	} from '#lib/context';
+	} from '#lib/context.js';
 
 	interface Props {
 		open: boolean;
@@ -206,12 +206,41 @@
 	const vcsIndex = $derived(activeIndex(vcsOptions, vcsMode));
 	const activeEditorScheme = $derived(editorScheme());
 
-	function selectedValue<T extends string>(event: Event, update: (value: T) => void) {
-		update((event.currentTarget as HTMLSelectElement).value as T);
+	function pickId<T extends string>(value: string, options: ReadonlyArray<{ id: T }>): T | undefined {
+		for (const option of options) {
+			if (option.id === value) return option.id;
+		}
+		return undefined;
 	}
 
-	function selectedRadio<T extends string>(value: string, update: (value: T) => void) {
-		update(value as T);
+	function pickCodedValue<T extends string>(
+		value: string,
+		options: ReadonlyArray<{ value: T }>,
+	): T | undefined {
+		for (const option of options) {
+			if (option.value === value) return option.value;
+		}
+		return undefined;
+	}
+
+	function selectedValue<T extends string>(
+		event: Event,
+		options: ReadonlyArray<{ value: T }>,
+		update: (value: T) => void,
+	) {
+		const target = event.currentTarget;
+		if (!(target instanceof HTMLSelectElement)) return;
+		const next = pickCodedValue(target.value, options);
+		if (next !== undefined) update(next);
+	}
+
+	function selectedRadio<T extends string>(
+		value: string,
+		options: ReadonlyArray<{ id: T }>,
+		update: (value: T) => void,
+	) {
+		const next = pickId(value, options);
+		if (next !== undefined) update(next);
 	}
 
 	function editorScheme(value = editor): string {
@@ -285,7 +314,7 @@
 					value={theme}
 					orientation="horizontal"
 					class="settings-segmented grid-cols-3"
-					onValueChange={(value) => selectedRadio<Theme>(value, onThemeChange)}
+					onValueChange={(value) => selectedRadio(value, themeOptions, onThemeChange)}
 				>
 					<span
 						class="settings-segmented-indicator"
@@ -311,7 +340,7 @@
 					value={accentMode}
 					orientation="horizontal"
 					class="grid grid-cols-5 gap-1.5"
-					onValueChange={(value) => selectedRadio<AccentMode>(value, onAccentChange)}
+					onValueChange={(value) => selectedRadio(value, accentOptions, onAccentChange)}
 				>
 					{#each accentOptions as option (option.id)}
 						<SettingsRadioOption
@@ -337,7 +366,7 @@
 					value={densityMode}
 					orientation="horizontal"
 					class="settings-segmented grid-cols-3"
-					onValueChange={(value) => selectedRadio<DensityMode>(value, onDensityChange)}
+					onValueChange={(value) => selectedRadio(value, densityOptions, onDensityChange)}
 				>
 					<span
 						class="settings-segmented-indicator"
@@ -365,7 +394,7 @@
 					value={textSizeMode}
 					orientation="horizontal"
 					class="settings-segmented grid-cols-3"
-					onValueChange={(value) => selectedRadio<TextSizeMode>(value, onTextSizeChange)}
+					onValueChange={(value) => selectedRadio(value, textSizeOptions, onTextSizeChange)}
 				>
 					<span
 						class="settings-segmented-indicator"
@@ -393,7 +422,7 @@
 					value={voiceMode}
 					orientation="horizontal"
 					class="settings-segmented grid-cols-3"
-					onValueChange={(value) => selectedRadio<VoiceMode>(value, onVoiceChange)}
+					onValueChange={(value) => selectedRadio(value, voiceOptions, onVoiceChange)}
 				>
 					<span
 						class="settings-segmented-indicator"
@@ -431,7 +460,7 @@
 					value={docLayout}
 					orientation="horizontal"
 					class="settings-segmented grid-cols-3"
-					onValueChange={(value) => selectedRadio<DocLayoutMode>(value, onDocLayoutChange)}
+					onValueChange={(value) => selectedRadio(value, docLayoutOptions, onDocLayoutChange)}
 				>
 					<span
 						class="settings-segmented-indicator"
@@ -469,7 +498,7 @@
 							id="settings-code-light"
 							value={codeThemeLight}
 							class="w-full bg-(--panel) text-xs"
-							onchange={(event) => selectedValue<CodeTheme>(event, onCodeThemeLightChange)}
+							onchange={(event) => selectedValue(event, lightCodeThemes, onCodeThemeLightChange)}
 						>
 							{#each lightCodeThemes as option (option.value)}
 								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
@@ -496,7 +525,7 @@
 							id="settings-code-dark"
 							value={codeThemeDark}
 							class="w-full bg-(--panel) text-xs"
-							onchange={(event) => selectedValue<CodeTheme>(event, onCodeThemeDarkChange)}
+							onchange={(event) => selectedValue(event, darkCodeThemes, onCodeThemeDarkChange)}
 						>
 							{#each darkCodeThemes as option (option.value)}
 								<NativeSelect.Option value={option.value}>{option.label}</NativeSelect.Option>
@@ -541,7 +570,7 @@
 							value={extLinkMode}
 							orientation="horizontal"
 							class="settings-segmented grid-cols-2"
-							onValueChange={(value) => selectedRadio<ExternalLinkMode>(value, onExtLinkModeChange)}
+							onValueChange={(value) => selectedRadio(value, linkOptions, onExtLinkModeChange)}
 						>
 							<span
 								class="settings-segmented-indicator"
@@ -572,7 +601,7 @@
 							orientation="horizontal"
 							class="settings-segmented grid-cols-3"
 							onValueChange={(value) =>
-								selectedRadio<SourceProviderMode>(value, onSourceProviderModeChange)}
+								selectedRadio(value, sourceProviders, onSourceProviderModeChange)}
 						>
 							<span
 								class="settings-segmented-indicator"
@@ -609,7 +638,7 @@
 							value={editor}
 							orientation="horizontal"
 							class="settings-segmented grid-cols-5"
-							onValueChange={(value) => selectedRadio<EditorId>(value, setEditor)}
+							onValueChange={(value) => selectedRadio(value, editors, setEditor)}
 						>
 							<span
 								class="settings-segmented-indicator"
@@ -677,7 +706,7 @@
 					value={vcsMode}
 					orientation="horizontal"
 					class="settings-segmented grid-cols-2"
-					onValueChange={(value) => selectedRadio<VcsMode>(value, onVcsModeChange)}
+					onValueChange={(value) => selectedRadio(value, vcsOptions, onVcsModeChange)}
 				>
 					<span
 						class="settings-segmented-indicator"

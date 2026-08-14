@@ -9,8 +9,8 @@ import {
   structuralEdgeKinds,
   semanticEdgeKinds,
 } from "./graph";
-import type { Graph, Node, Edge } from "#lib/graph";
-import { isSyntheticProjectionNodeId, projectGraphForRendering } from "#lib/graph/projection";
+import type { Graph, Node, Edge } from "#lib/graph.js";
+import { isSyntheticProjectionNodeId, projectGraphForRendering } from "#lib/graph/projection.js";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -22,7 +22,8 @@ function makeNode(id: string, name: string, kind: Node["kind"] = "Function"): No
     name,
     kind,
     visibility: { kind: "Public" },
-  } as Node;
+    attrs: [],
+  };
 }
 
 function makeEdge(from: string, to: string, kind: Edge["kind"] = "UsesType"): Edge {
@@ -140,7 +141,7 @@ describe("computeEdgeSimilarityGroups", () => {
       expect(groups.has(i)).toBe(true);
       const info = groups.get(i)!;
       expect(info.group).toContain(i);
-      expect(typeof info.indexOf).toBe("number");
+      expect(info.indexOf).toEqual(expect.any(Number));
     }
   });
 });
@@ -442,7 +443,7 @@ describe("buildScene", () => {
       expect(nodeGroups).toHaveLength(scene.nodes.length);
       for (const g of nodeGroups) {
         if (g.type !== "node") continue;
-        expect(typeof g.nodeIndex).toBe("number");
+        expect(g.nodeIndex).toEqual(expect.any(Number));
         expect(g.id).toMatch(/^node:/);
       }
     });
@@ -462,7 +463,7 @@ describe("buildScene", () => {
       expect(edgeGroups).toHaveLength(scene.edges.length);
       for (const g of edgeGroups) {
         if (g.type !== "edge") continue;
-        expect(typeof g.edgeIndex).toBe("number");
+        expect(g.edgeIndex).toEqual(expect.any(Number));
         expect(g.labelIndex).toBeDefined();
         expect(g.id).toMatch(/^edge:/);
       }

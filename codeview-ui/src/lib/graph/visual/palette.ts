@@ -1,4 +1,4 @@
-import type { NodeKind } from "#lib/graph";
+import type { NodeKind } from "#lib/graph.js";
 
 /**
  * Node fill/stroke colors — Solarized accent palette mapped to kinds.
@@ -8,7 +8,12 @@ import type { NodeKind } from "#lib/graph";
  * background). Variants and field-style kinds use a slightly lighter family
  * tone so they read as "child of" the parent kind.
  */
-export const kindVisuals: Record<NodeKind, { fill: string; stroke: string }> = {
+type KindPaint = {
+  fill: string;
+  stroke: string;
+};
+
+export const kindVisuals = {
   Crate: { fill: "#cb4b16", stroke: "#a23a0e" }, // solarized orange
   Module: { fill: "#859900", stroke: "#677500" }, // green
   Struct: { fill: "#6c71c4", stroke: "#5359a8" }, // violet
@@ -30,4 +35,4 @@ export const kindVisuals: Record<NodeKind, { fill: string; stroke: string }> = {
   ExternCrate: { fill: "#cb4b16", stroke: "#a23a0e" },
   Import: { fill: "#93a1a1", stroke: "#73807f" },
   ProcMacro: { fill: "#dc322f", stroke: "#b02524" },
-};
+} as const satisfies { [K in NodeKind]: KindPaint };

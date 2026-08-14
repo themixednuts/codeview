@@ -1,5 +1,7 @@
 /// <reference lib="webworker" />
 
+import type { Json } from "effect/Schema";
+
 type ConnectMessage = { type: "connect"; id: number; endpoint: string };
 type AbortMessage = { type: "abort"; id: number };
 type DisposeMessage = { type: "dispose" };
@@ -7,7 +9,7 @@ type IncomingMessage = ConnectMessage | AbortMessage | DisposeMessage;
 
 type OutgoingMessage =
   | { type: "ready"; id: number }
-  | { type: "data"; id: number; payload: unknown }
+  | { type: "data"; id: number; payload: Json }
   | { type: "warn"; id: number; error: string }
   | {
       type: "end";
@@ -16,6 +18,7 @@ type OutgoingMessage =
       detail?: string;
     };
 
+// SAFETY: this module is loaded as a dedicated worker; TypeScript's lib mix types `self` as Window | WorkerGlobalScope.
 const ctx = self as DedicatedWorkerGlobalScope;
 
 let activeId: number | null = null;
@@ -57,7 +60,8 @@ const parseEvent = (event: string, id: number) => {
   const payload = dataLines.join("\n");
   if (!payload) return;
   try {
-    const parsed = JSON.parse(payload) as unknown;
+    // SAFETY: SSE `data:` frames are JSON text; callers decode the payload into named types.
+    const parsed = JSON.parse(payload) as Json;
     if (isActive(id)) post({ type: "data", id, payload: parsed });
   } catch (err) {
     if (isActive(id)) post({ type: "warn", id, error: String(err) });

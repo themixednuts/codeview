@@ -1,18 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { Node, NodeDetail, NodeKind } from "#lib/schema";
+import type { Node, NodeDetail, NodeKind } from "#lib/schema.js";
 import { buildNodeRelationshipGroups } from "./relationship-groups";
 
 const visibility = { kind: "Public" } as const;
 
 function node(id: string, name: string, kind: NodeKind = "Struct", docs?: string): Node {
-  return {
+  const next: Node = {
     id,
     name,
     kind,
     visibility,
     attrs: [],
-    ...(docs ? { docs } : {}),
   };
+  if (docs) next.docs = docs;
+  return next;
 }
 
 describe("relationship groups", () => {

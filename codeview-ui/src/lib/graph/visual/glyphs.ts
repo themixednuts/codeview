@@ -1,44 +1,44 @@
-import type { NodeKind } from "#lib/graph";
-import type { NodeShape, ShapeSpec } from "./types";
+import type { NodeKind } from "#lib/graph.js";
+import type { NodeGlyph, GlyphSpec } from "./types";
 
-export const BASE_SPECS: Record<NodeKind, ShapeSpec> = {
-  Crate: { shape: "rounded-rect", width: 140, height: 48, cornerRadius: 12 },
-  Module: { shape: "rounded-rect", width: 120, height: 40, cornerRadius: 10 },
-  Struct: { shape: "rect", width: 132, height: 44, cornerRadius: 2 },
-  StructField: { shape: "rect", width: 100, height: 32, cornerRadius: 2 },
-  Enum: { shape: "chamfered-rect", width: 132, height: 44, cornerRadius: 2 },
-  Variant: { shape: "chamfered-rect", width: 100, height: 32, cornerRadius: 2 },
-  Union: { shape: "rect", width: 132, height: 44, cornerRadius: 2, strokeDasharray: "6 3" },
-  Trait: { shape: "diamond", width: 90, height: 60, cornerRadius: 0 },
-  TraitAlias: { shape: "diamond", width: 78, height: 52, cornerRadius: 0 },
-  Impl: { shape: "hexagon", width: 110, height: 48, cornerRadius: 0 },
-  Function: { shape: "pill", width: 120, height: 44, cornerRadius: 22 },
-  TypeAlias: { shape: "parallelogram", width: 120, height: 44, cornerRadius: 0 },
-  AssocType: { shape: "parallelogram", width: 100, height: 36, cornerRadius: 0 },
-  Constant: { shape: "rect", width: 100, height: 36, cornerRadius: 2 },
-  AssocConst: { shape: "rect", width: 100, height: 32, cornerRadius: 2 },
-  Static: { shape: "rect", width: 100, height: 36, cornerRadius: 2, strokeDasharray: "4 2" },
-  Macro: { shape: "chamfered-rect", width: 110, height: 40, cornerRadius: 2 },
-  Primitive: { shape: "rounded-rect", width: 90, height: 36, cornerRadius: 8 },
+export const BASE_SPECS = {
+  Crate: { glyph: "rounded-rect", width: 140, height: 48, cornerRadius: 12 },
+  Module: { glyph: "rounded-rect", width: 120, height: 40, cornerRadius: 10 },
+  Struct: { glyph: "rect", width: 132, height: 44, cornerRadius: 2 },
+  StructField: { glyph: "rect", width: 100, height: 32, cornerRadius: 2 },
+  Enum: { glyph: "chamfered-rect", width: 132, height: 44, cornerRadius: 2 },
+  Variant: { glyph: "chamfered-rect", width: 100, height: 32, cornerRadius: 2 },
+  Union: { glyph: "rect", width: 132, height: 44, cornerRadius: 2, strokeDasharray: "6 3" },
+  Trait: { glyph: "diamond", width: 90, height: 60, cornerRadius: 0 },
+  TraitAlias: { glyph: "diamond", width: 78, height: 52, cornerRadius: 0 },
+  Impl: { glyph: "hexagon", width: 110, height: 48, cornerRadius: 0 },
+  Function: { glyph: "pill", width: 120, height: 44, cornerRadius: 22 },
+  TypeAlias: { glyph: "parallelogram", width: 120, height: 44, cornerRadius: 0 },
+  AssocType: { glyph: "parallelogram", width: 100, height: 36, cornerRadius: 0 },
+  Constant: { glyph: "rect", width: 100, height: 36, cornerRadius: 2 },
+  AssocConst: { glyph: "rect", width: 100, height: 32, cornerRadius: 2 },
+  Static: { glyph: "rect", width: 100, height: 36, cornerRadius: 2, strokeDasharray: "4 2" },
+  Macro: { glyph: "chamfered-rect", width: 110, height: 40, cornerRadius: 2 },
+  Primitive: { glyph: "rounded-rect", width: 90, height: 36, cornerRadius: 8 },
   ExternCrate: {
-    shape: "rounded-rect",
+    glyph: "rounded-rect",
     width: 120,
     height: 40,
     cornerRadius: 10,
     strokeDasharray: "6 3",
   },
-  Import: { shape: "parallelogram", width: 100, height: 36, cornerRadius: 0 },
-  ProcMacro: { shape: "chamfered-rect", width: 110, height: 40, cornerRadius: 2 },
-};
+  Import: { glyph: "parallelogram", width: 100, height: 36, cornerRadius: 0 },
+  ProcMacro: { glyph: "chamfered-rect", width: 110, height: 40, cornerRadius: 2 },
+} as const satisfies { [K in NodeKind]: GlyphSpec };
 
 /**
- * Build a closed SVG `d` attribute for a given shape, centered at (0,0).
+ * Build a closed SVG `d` attribute for a given glyph, centered at (0,0).
  */
-export function nodeSvgPath(shape: NodeShape, w: number, h: number, cr: number): string {
+export function nodeSvgPath(glyph: NodeGlyph, w: number, h: number, cr: number): string {
   const hw = w / 2;
   const hh = h / 2;
 
-  switch (shape) {
+  switch (glyph) {
     case "rect": {
       const r = Math.min(cr, hw, hh);
       if (r <= 0) {
@@ -124,14 +124,19 @@ export function nodeSvgPath(shape: NodeShape, w: number, h: number, cr: number):
 
 const BASE_HEADER_HEIGHT = 18;
 
+type HeaderPath = {
+  headerPath: string;
+  headerHeight: number;
+};
+
 export function buildHeaderPath(
-  shape: NodeShape,
+  glyph: NodeGlyph,
   w: number,
   h: number,
   cr: number,
   isCenter: boolean,
-): { headerPath: string; headerHeight: number } {
-  if (!isHeaderShape(shape)) {
+): HeaderPath {
+  if (!isHeaderGlyph(glyph)) {
     return { headerPath: "", headerHeight: 0 };
   }
 
@@ -143,7 +148,7 @@ export function buildHeaderPath(
   const topY = -hh;
   const headerBottomY = topY + hHeight;
 
-  if (shape === "chamfered-rect") {
+  if (glyph === "chamfered-rect") {
     const chamfer = Math.min(10, hw * 0.15, hh * 0.4);
     const rightXAtHeaderBottom = hHeight <= chamfer ? hw - chamfer + hHeight : hw;
 
@@ -183,16 +188,16 @@ export function buildHeaderPath(
   return { headerPath, headerHeight: hHeight };
 }
 
-export function isRectLike(shape: NodeShape): boolean {
+export function isRectLike(glyph: NodeGlyph): boolean {
   return (
-    shape === "rect" ||
-    shape === "rounded-rect" ||
-    shape === "chamfered-rect" ||
-    shape === "pill" ||
-    shape === "parallelogram"
+    glyph === "rect" ||
+    glyph === "rounded-rect" ||
+    glyph === "chamfered-rect" ||
+    glyph === "pill" ||
+    glyph === "parallelogram"
   );
 }
 
-export function isHeaderShape(shape: NodeShape): boolean {
-  return shape === "rect" || shape === "rounded-rect" || shape === "chamfered-rect";
+export function isHeaderGlyph(glyph: NodeGlyph): boolean {
+  return glyph === "rect" || glyph === "rounded-rect" || glyph === "chamfered-rect";
 }

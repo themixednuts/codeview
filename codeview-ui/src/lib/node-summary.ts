@@ -1,21 +1,20 @@
-import type { CrateGraph, CrateTree, Edge, Node, NodeSummary } from "#lib/schema";
+import type { CrateGraph, CrateTree, Edge, Node, NodeSummary } from "#lib/schema.js";
 
 export function summarizeNode(node: Node): NodeSummary {
-  return {
+  const summary: NodeSummary = {
     id: node.id,
     name: node.name,
     kind: node.kind,
     visibility: node.visibility,
     is_external: node.is_external,
     is_deprecated: node.is_deprecated,
-    ...(node.kind === "Impl"
-      ? {
-          impl_trait: node.impl_trait,
-          impl_category: node.impl_category,
-          generics: node.generics,
-        }
-      : {}),
   };
+  if (node.kind === "Impl") {
+    summary.impl_trait = node.impl_trait;
+    summary.impl_category = node.impl_category;
+    summary.generics = node.generics;
+  }
+  return summary;
 }
 
 export function buildCrateTree(graph: Pick<CrateGraph, "nodes" | "edges">): CrateTree {

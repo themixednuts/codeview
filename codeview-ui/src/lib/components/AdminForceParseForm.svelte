@@ -1,21 +1,19 @@
 <script lang="ts">
 	import Icon from '#lib/components/design/Icon.svelte';
 	import KindBadge from '#lib/components/design/KindBadge.svelte';
-	import * as Command from '#lib/components/ui/command';
-	import { Button } from '#lib/components/ui/button';
-	import * as Field from '#lib/components/ui/field';
-	import * as NativeSelect from '#lib/components/ui/native-select';
-	import { getCrateVersions, searchRegistry } from '#lib/rpc/crate.remote';
-	import type { CrateSearchResult } from '#lib/schema';
-	import { normalizeCrateName } from '#lib/crate-names';
-	import { DEFAULT_RUST_CHANNEL, isRustChannel, isStdCrate, RUST_CHANNEL_ORDER } from '#lib/std';
+	import * as Command from '#lib/components/ui/command/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Field from '#lib/components/ui/field/index.js';
+	import * as NativeSelect from '#lib/components/ui/native-select/index.js';
+	import { getCrateVersions, searchRegistry } from '#lib/rpc/crate.remote.js';
+	import type { CrateSearchResult } from '#lib/schema.js';
+	import { normalizeCrateName } from '#lib/crate-names.js';
+	import { DEFAULT_RUST_CHANNEL, isRustChannel, isStdCrate, RUST_CHANNEL_ORDER } from '#lib/std.js';
+	import * as Predicate from 'effect/Predicate';
 
-	type RemoteResource<T> =
-		| Promise<T>
-		| {
-				run?: () => Promise<T>;
-				current?: T;
-		  };
+	type RunnableResource<T> = {
+		run: () => Promise<T>;
+	};
 
 	let crateQuery = $state('');
 	let crateResults = $state.raw<CrateSearchResult[]>([]);
@@ -31,12 +29,6 @@
 	const toolchainResults = $derived(crateResults.filter((crate) => isToolchainCrate(crate)));
 	const registryResults = $derived(crateResults.filter((crate) => !isToolchainCrate(crate)));
 
-	function isCrateResult(value: unknown): value is CrateSearchResult {
-		if (!value || typeof value !== 'object') return false;
-		const raw = value as Partial<CrateSearchResult>;
-		return typeof raw.name === 'string' && typeof raw.version === 'string';
-	}
-
 	function crateKey(crate: CrateSearchResult): string {
 		return `${crate.id ?? crate.name}:${crate.version}`;
 	}
@@ -45,11 +37,13 @@
 		return !!crate && isStdCrate(normalizeCrateName(crate.name));
 	}
 
-	async function resolveResource<T>(resource: RemoteResource<T>): Promise<T> {
-		if (resource && typeof (resource as { run?: unknown }).run === 'function') {
-			return await (resource as { run: () => Promise<T> }).run();
-		}
-		return await (resource as Promise<T>);
+	function hasRun<T>(resource: Promise<T> | RunnableResource<T>): resource is RunnableResource<T> {
+		return Predicate.isObject(resource) && 'run' in resource && Predicate.isFunction(resource.run);
+	}
+
+	async function resolveResource<T>(resource: Promise<T> | RunnableResource<T>): Promise<T> {
+		if (hasRun(resource)) return await resource.run();
+		return await resource;
 	}
 
 	function selectCrate(crate: CrateSearchResult) {
@@ -65,11 +59,11 @@
 			return;
 		}
 		loadingVersions = true;
-		void resolveResource(getCrateVersions({ name: crate.name }) as RemoteResource<string[]>)
+		void resolveResource(getCrateVersions({ name: crate.name }))
 			.then((value) => {
 				if (seq !== versionSeq) return;
 				const nextVersions = Array.isArray(value)
-					? value.filter((version): version is string => typeof version === 'string')
+					? value.filter((version): version is string => Predicate.isString(version))
 					: [];
 				versions = nextVersions.length > 0 ? nextVersions : versions;
 				selectedVersion = versions[0] ?? crate.version;
@@ -100,10 +94,10 @@
 		}
 		searching = true;
 		const timer = setTimeout(() => {
-			void resolveResource(searchRegistry({ q: term }) as RemoteResource<CrateSearchResult[]>)
+			void resolveResource(searchRegistry({ q: term }))
 				.then((value) => {
 					if (seq !== searchSeq) return;
-					crateResults = Array.isArray(value) ? value.filter(isCrateResult) : [];
+					crateResults = Array.isArray(value) ? value : [];
 				})
 				.catch(() => {
 					if (seq === searchSeq) crateResults = [];

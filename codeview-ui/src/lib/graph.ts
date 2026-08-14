@@ -16,7 +16,7 @@ import type {
   VariantInfo,
   Visibility,
   Workspace,
-} from "#lib/schema";
+} from "#lib/schema.js";
 
 export type {
   ArgumentInfo,

@@ -1,6 +1,6 @@
 import type { PageServerLoad } from "./$types";
-import { hasLocalWorkspace, initProvider } from "#lib/server/provider";
-import { isHosted } from "#lib/platform";
+import { hasLocalWorkspace, initProvider } from "#lib/server/provider.js";
+import { isHosted } from "#lib/platform.js";
 
 const TOP_CRATES_TTL_MS = 5 * 60 * 1000;
 
@@ -13,9 +13,7 @@ type TopCrate = {
 
 let topCratesCache: { fetchedAt: number; data: TopCrate[] } | null = null;
 
-async function getTopCratesCached(
-  provider: ReturnType<typeof initProvider>,
-): Promise<TopCrate[]> {
+async function getTopCratesCached(provider: ReturnType<typeof initProvider>): Promise<TopCrate[]> {
   const now = Date.now();
   if (topCratesCache && now - topCratesCache.fetchedAt < TOP_CRATES_TTL_MS) {
     return topCratesCache.data;
@@ -35,7 +33,7 @@ export const load: PageServerLoad = async (event) => {
   const canLoadLocalWorkspace = !isHosted && hasLocalWorkspace(provider);
   const workspace = canLoadLocalWorkspace ? await provider.loadWorkspace() : null;
   const [top, searchResults] = await Promise.all([
-    getTopCratesCached(provider).catch(() => [] as TopCrate[]),
+    getTopCratesCached(provider).catch((): TopCrate[] => []),
     searchQuery ? provider.searchRegistry(searchQuery).catch(() => []) : Promise.resolve([]),
   ]);
 

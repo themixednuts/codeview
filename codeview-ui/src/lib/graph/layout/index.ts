@@ -1,4 +1,13 @@
-export type { LayoutMode, VisNode, VisEdge, LayoutNode, LayoutLink, LayoutState } from "./types";
+export type {
+  LayoutMode,
+  VisNode,
+  VisEdge,
+  VisLayout,
+  NodeBox,
+  LayoutNode,
+  LayoutLink,
+  LayoutState,
+} from "./types";
 export {
   LAYOUT_WIDTH,
   LAYOUT_HEIGHT,

@@ -9,8 +9,9 @@ import {
   type SimulationLinkDatum,
   type SimulationNodeDatum,
 } from "d3-force";
-import type { Edge, Graph, Node } from "#lib/graph";
-import type { VisNode, VisEdge } from "./types";
+import * as Predicate from "effect/Predicate";
+import type { Edge, Graph, Node } from "#lib/graph.js";
+import type { VisNode, VisEdge, VisLayout } from "./types";
 import {
   CENTER_X,
   CENTER_Y,
@@ -34,10 +35,7 @@ type ForceLink = SimulationLinkDatum<ForceDatum> & {
 const FORCE_TICKS = 90;
 const VIEWPORT_MARGIN = 50;
 
-export function computeForceLayout(
-  graph: Graph,
-  selected: Node,
-): { nodes: VisNode[]; edges: VisEdge[] } {
+export function computeForceLayout(graph: Graph, selected: Node): VisLayout {
   const nodeMap = new Map<string, Node>();
   for (const node of graph.nodes) {
     nodeMap.set(node.id, node);
@@ -91,8 +89,12 @@ export function computeForceLayout(
   const layoutLinks: ForceLink[] = graph.edges
     .filter((edge) => connectedIds.has(edge.from) && connectedIds.has(edge.to))
     .map((edge) => ({ source: edge.from, target: edge.to, edge }));
-  const resolveLinkDatum = (endpoint: ForceLink["source"]): ForceDatum | undefined =>
-    typeof endpoint === "object" ? endpoint : layoutNodeMap.get(String(endpoint));
+  const resolveLinkDatum = (endpoint: ForceLink["source"]): ForceDatum | undefined => {
+    if (Predicate.isString(endpoint) || Predicate.isNumber(endpoint)) {
+      return layoutNodeMap.get(String(endpoint));
+    }
+    return endpoint;
+  };
 
   const simulation = forceSimulation(layoutNodes)
     .force(

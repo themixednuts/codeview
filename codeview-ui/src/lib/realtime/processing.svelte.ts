@@ -1,13 +1,10 @@
-import { getLogger } from "#lib/log";
+import { getLogger } from "#lib/log.js";
 import { connect } from "$realtime";
-import type { CrateSummaryResult } from "#lib/server/provider";
+import type { CrateSummaryResult } from "#lib/server/provider.js";
 import type { RealtimeClient } from "./types";
-
-interface ProcessingMessage {
-  type?: string;
-  count?: number;
-  crates?: unknown;
-}
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 export class ProcessingStatusConnection implements Disposable {
   count = $state(0);
@@ -17,7 +14,7 @@ export class ProcessingStatusConnection implements Disposable {
   #log = getLogger("processing");
   #ecosystem = "rust";
   #currentTag: string | null = null;
-  #callback = (data: unknown) => this.#onData(data as ProcessingMessage);
+  #callback = (data: Schema.Json) => this.#onData(data);
 
   get tag() {
     return `processing:${this.#ecosystem}`;
@@ -43,14 +40,20 @@ export class ProcessingStatusConnection implements Disposable {
     }
   }
 
-  #onData(msg: ProcessingMessage) {
-    if (msg.type && msg.type !== "processing") return;
-    if (typeof msg.count === "number") {
-      this.#log.debug`msg ${this.tag} count=${String(msg.count)}`;
-      this.count = msg.count;
+  #onData(data: Schema.Json) {
+    if (!Predicate.isObject(data)) return;
+    const type = "type" in data && Predicate.isString(data.type) ? data.type : undefined;
+    if (type && type !== "processing") return;
+    if ("count" in data && Predicate.isNumber(data.count)) {
+      this.#log.debug`msg ${this.tag} count=${String(data.count)}`;
+      this.count = data.count;
     }
-    if (Array.isArray(msg.crates)) {
-      this.crates = msg.crates.filter(isCrateSummary);
+    if ("crates" in data && Array.isArray(data.crates)) {
+      this.crates = [
+        ...(Option.getOrUndefined(
+          Schema.decodeUnknownOption(Schema.Array(CrateSummarySchema))(data.crates),
+        ) ?? []),
+      ];
     }
   }
 
@@ -63,13 +66,9 @@ export class ProcessingStatusConnection implements Disposable {
   }
 }
 
-function isCrateSummary(value: unknown): value is CrateSummaryResult {
-  if (!value || typeof value !== "object") return false;
-  const crate = value as Partial<CrateSummaryResult>;
-  return (
-    typeof crate.name === "string" &&
-    typeof crate.version === "string" &&
-    (crate.id === undefined || typeof crate.id === "string") &&
-    (crate.description === undefined || typeof crate.description === "string")
-  );
-}
+const CrateSummarySchema = Schema.Struct({
+  name: Schema.String,
+  version: Schema.String,
+  id: Schema.optionalKey(Schema.String),
+  description: Schema.optionalKey(Schema.String),
+});

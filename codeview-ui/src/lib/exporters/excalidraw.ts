@@ -1,9 +1,9 @@
-import type { GraphRenderer, GraphScene, SceneGroup } from "#lib/renderers/graph";
-import type { VisNode, VisEdge } from "#lib/graph/layout";
-import type { LabelPosition } from "#lib/graph/labels";
-import { getNodeVisual, getVisNodeEdgeAnchor } from "#lib/graph/visual";
-import type { NodeVisual } from "#lib/graph/visual";
-import { nodeUrl } from "#lib/url";
+import type { GraphRenderer, GraphScene, SceneGroup } from "#lib/renderers/graph.js";
+import type { VisNode, VisEdge } from "#lib/graph/layout/index.js";
+import type { LabelPosition } from "#lib/graph/labels/index.js";
+import { getNodeVisual, getVisNodeEdgeAnchor } from "#lib/graph/visual/index.js";
+import type { NodeVisual } from "#lib/graph/visual/index.js";
+import { nodeUrl } from "#lib/url.js";
 
 import type { ExcalidrawElement, Arrowhead } from "@excalidraw/excalidraw/element/types";
 
@@ -45,8 +45,8 @@ export function deterministicId(prefix: string, ...parts: string[]): string {
   return `${prefix}_${parts.join("_")}`.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-/** Excalidraw element ID for a node shape. */
-export function nodeShapeId(nodeId: string): string {
+/** Excalidraw element ID for a node glyph. */
+export function nodeGlyphId(nodeId: string): string {
   return deterministicId("node", nodeId);
 }
 
@@ -87,16 +87,54 @@ export function arrowheadForEdgeKind(kind: string): Arrowhead {
   }
 }
 
-function baseElement(
-  overrides: Record<string, unknown> & {
-    id: string;
-    type: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  },
-): ExcalidrawElement {
+type ExcalidrawCustomData = {
+  nodeId?: string;
+  kind?: string;
+  visibility?: { kind: string };
+  isExternal?: boolean;
+  elementRole?: string;
+  fromId?: string;
+  toId?: string;
+  edgeKind?: string;
+};
+
+type ExcalidrawElementOverrides = {
+  id: string;
+  type: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  backgroundColor?: string;
+  strokeColor?: string;
+  strokeWidth?: number;
+  strokeStyle?: "solid" | "dashed" | "dotted";
+  fillStyle?: string;
+  roundness?: { type: number; value?: number } | null;
+  groupIds?: string[];
+  boundElements?: Array<{ id: string; type: "text" | "arrow" }> | null;
+  link?: string | null;
+  customData?: ExcalidrawCustomData;
+  text?: string;
+  originalText?: string;
+  autoResize?: boolean;
+  lineHeight?: number;
+  fontSize?: number;
+  fontFamily?: number;
+  textAlign?: string;
+  verticalAlign?: string;
+  containerId?: string | null;
+  points?: Array<[number, number]>;
+  lastCommittedPoint?: [number, number] | null;
+  startBinding?: { elementId: string; focus: number; gap: number } | null;
+  endBinding?: { elementId: string; focus: number; gap: number } | null;
+  startArrowhead?: Arrowhead | null;
+  endArrowhead?: Arrowhead | null;
+  elbowed?: boolean;
+};
+
+function baseElement(overrides: ExcalidrawElementOverrides): ExcalidrawElement {
+  // SAFETY: ExcalidrawElement is a large discriminated union; converters pass the matching `type` plus geometry and we fill the shared base fields here.
   return {
     angle: 0,
     strokeColor: "#1e1e1e",
@@ -127,17 +165,19 @@ function baseElement(
 // ---------------------------------------------------------------------------
 
 /**
- * Convert a VisNode to its Excalidraw shape + text elements.
+ * Convert a VisNode to its Excalidraw glyph + text elements.
  * @param groupIds - Excalidraw group IDs this node belongs to
  */
 /**
- * Map a NodeVisual shape to the best Excalidraw element type and roundness.
+ * Map a NodeVisual glyph to the best Excalidraw element type and roundness.
  */
-function shapeToExcalidraw(visual: NodeVisual): {
+type ExcalidrawGlyph = {
   type: "rectangle" | "diamond" | "ellipse";
   roundness: { type: number; value?: number } | null;
-} {
-  switch (visual.shape) {
+};
+
+function glyphToExcalidraw(visual: NodeVisual): ExcalidrawGlyph {
+  switch (visual.glyph) {
     case "diamond":
       return { type: "diamond", roundness: null };
     case "hexagon":
@@ -165,17 +205,17 @@ export function nodeToExcalidraw(
   opts?: ExcalidrawExportOptions,
 ): ExcalidrawElement[] {
   const visual = getNodeVisual(node.node.kind, node.isCenter);
-  const id = nodeShapeId(node.node.id);
+  const id = nodeGlyphId(node.node.id);
   const textId = nodeLabelId(node.node.id);
-  const excaShape = shapeToExcalidraw(visual);
+  const excalidrawGlyph = glyphToExcalidraw(visual);
 
   const link = opts?.baseUrl
     ? opts.baseUrl + nodeUrl(node.node.id, opts.crateVersions ?? {})
     : null;
 
-  const shapeEl = baseElement({
+  const glyphEl = baseElement({
     id,
-    type: excaShape.type,
+    type: excalidrawGlyph.type,
     x: node.x - visual.width / 2,
     y: node.y - visual.height / 2,
     width: visual.width,
@@ -185,7 +225,7 @@ export function nodeToExcalidraw(
     strokeWidth: visual.strokeWidth,
     strokeStyle: visual.strokeDasharray ? "dashed" : "solid",
     fillStyle: "solid",
-    roundness: excaShape.roundness,
+    roundness: excalidrawGlyph.roundness,
     groupIds,
     boundElements: [{ id: textId, type: "text" }],
     link,
@@ -227,7 +267,7 @@ export function nodeToExcalidraw(
     },
   });
 
-  return [shapeEl, textEl];
+  return [glyphEl, textEl];
 }
 
 /**
@@ -249,8 +289,8 @@ export function edgeToExcalidraw(
   const relY = endAnchor.y - startAnchor.y;
 
   const edgeColor = edge.direction === "out" ? "#5b8abf" : "#94a3b8";
-  const fromShapeId = nodeShapeId(edge.from.node.id);
-  const toShapeId = nodeShapeId(edge.to.node.id);
+  const fromGlyphId = nodeGlyphId(edge.from.node.id);
+  const toGlyphId = nodeGlyphId(edge.to.node.id);
   const id = edgeArrowId(edge.from.node.id, edge.to.node.id, edge.kind);
 
   const labelId = edgeLabelId(edge.from.node.id, edge.to.node.id, edge.kind);
@@ -269,8 +309,8 @@ export function edgeToExcalidraw(
       [relX, relY],
     ],
     lastCommittedPoint: null,
-    startBinding: { elementId: fromShapeId, focus: 0, gap: 4 },
-    endBinding: { elementId: toShapeId, focus: 0, gap: 4 },
+    startBinding: { elementId: fromGlyphId, focus: 0, gap: 4 },
+    endBinding: { elementId: toGlyphId, focus: 0, gap: 4 },
     startArrowhead: null,
     endArrowhead: arrowheadForEdgeKind(edge.kind),
     elbowed: false,
@@ -363,16 +403,20 @@ export function renderExcalidraw(
     }
   }
 
-  // Element lookup by ID — used to append arrow bindings to node shapes
-  const elementById = new Map<string, ExcalidrawElement>();
+  type BoundElement = { id: string; type: "arrow" | "text" };
+  type MutableGlyph = ExcalidrawElement & { boundElements: BoundElement[] | null };
+
+  // Element lookup by ID — used to append arrow bindings to node glyphs
+  const elementById = new Map<string, MutableGlyph>();
   const elements: ExcalidrawElement[] = [];
 
   function addElement(el: ExcalidrawElement) {
     elements.push(el);
-    elementById.set(el.id, el);
+    // SAFETY: glyphs we just inserted are mutable builder objects; ExcalidrawElement types boundElements as readonly on live scene elements.
+    elementById.set(el.id, el as MutableGlyph);
   }
 
-  // 1. Nodes (shapes + text labels)
+  // 1. Nodes (glyphs + text labels)
   for (let i = 0; i < scene.nodes.length; i++) {
     const gids = nodeGroupIds.get(i) ?? [];
     for (const el of nodeToExcalidraw(scene.nodes[i], gids, opts)) {
@@ -388,21 +432,15 @@ export function renderExcalidraw(
     const arrowEl = edgeToExcalidraw(edge, nodeMap, gids);
     addElement(arrowEl);
 
-    // Register arrow as a bound element on both endpoint shapes.
-    // We cast to mutable because we're building elements, not editing live state.
-    const fromShape = elementById.get(nodeShapeId(edge.from.node.id)) as
-      | (ExcalidrawElement & { boundElements: { id: string; type: "arrow" | "text" }[] | null })
-      | undefined;
-    const toShape = elementById.get(nodeShapeId(edge.to.node.id)) as
-      | (ExcalidrawElement & { boundElements: { id: string; type: "arrow" | "text" }[] | null })
-      | undefined;
-    if (fromShape) {
-      fromShape.boundElements = fromShape.boundElements ?? [];
-      fromShape.boundElements.push({ id: arrowEl.id, type: "arrow" });
+    const fromGlyph = elementById.get(nodeGlyphId(edge.from.node.id));
+    const toGlyph = elementById.get(nodeGlyphId(edge.to.node.id));
+    if (fromGlyph) {
+      fromGlyph.boundElements = fromGlyph.boundElements ?? [];
+      fromGlyph.boundElements.push({ id: arrowEl.id, type: "arrow" });
     }
-    if (toShape) {
-      toShape.boundElements = toShape.boundElements ?? [];
-      toShape.boundElements.push({ id: arrowEl.id, type: "arrow" });
+    if (toGlyph) {
+      toGlyph.boundElements = toGlyph.boundElements ?? [];
+      toGlyph.boundElements.push({ id: arrowEl.id, type: "arrow" });
     }
 
     // Edge label (same group as arrow)

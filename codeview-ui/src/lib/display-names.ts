@@ -1,6 +1,6 @@
-import type { EdgeKind, NodeKind, Visibility } from "#lib/graph";
+import type { EdgeKind, NodeKind, Visibility } from "#lib/graph.js";
 
-export const kindLabels: Record<NodeKind, string> = {
+export const kindLabels = {
   Crate: "Crate",
   Module: "Module",
   Struct: "Struct",
@@ -22,7 +22,7 @@ export const kindLabels: Record<NodeKind, string> = {
   ExternCrate: "Extern crate",
   Import: "Import",
   ProcMacro: "Proc macro",
-};
+} as const satisfies { [K in NodeKind]: string };
 
 /**
  * Render a Visibility as a Rust source-like label.
@@ -77,59 +77,16 @@ export function visibilityKey(visibility: Visibility): string {
   return parsed.kind === "Restricted" ? `Restricted:${parsed.path ?? ""}` : parsed.kind;
 }
 
-function visibilityParts(visibility: Visibility): { kind: string; path?: string } {
-  const raw = visibility as unknown;
-  if (typeof raw === "string") return normalizeVisibilityKind(raw);
-  if (!raw || typeof raw !== "object") return { kind: "Unknown" };
+type VisibilityParts = {
+  kind: Visibility["kind"];
+  path?: string;
+};
 
-  const record = raw as {
-    kind?: unknown;
-    path?: unknown;
-    restricted?: { path?: unknown } | unknown;
-  };
-
-  if (record.restricted && typeof record.restricted === "object") {
-    return {
-      kind: "Restricted",
-      path: primitiveText((record.restricted as { path?: unknown }).path),
-    };
+function visibilityParts(visibility: Visibility): VisibilityParts {
+  if (visibility.kind === "Restricted") {
+    return { kind: "Restricted", path: visibility.path };
   }
-
-  const kind = primitiveText(record.kind);
-  return {
-    ...normalizeVisibilityKind(kind ?? "Unknown"),
-    path: primitiveText(record.path),
-  };
-}
-
-function normalizeVisibilityKind(kind: string): { kind: string; path?: string } {
-  switch (kind) {
-    case "Public":
-    case "public":
-      return { kind: "Public" };
-    case "Crate":
-    case "crate":
-      return { kind: "Crate" };
-    case "Restricted":
-    case "restricted":
-      return { kind: "Restricted" };
-    case "Inherited":
-    case "default":
-      return { kind: "Inherited" };
-    case "Unknown":
-      return { kind: "Unknown" };
-    default:
-      return { kind: "Unknown" };
-  }
-}
-
-function primitiveText(value: unknown): string | undefined {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return String(value);
-  }
-  if (typeof value === "symbol") return value.description;
-  return undefined;
+  return { kind: visibility.kind };
 }
 
 /**
@@ -149,7 +106,7 @@ export function parseVisibilityKey(key: string): Visibility {
   return { kind: "Unknown" };
 }
 
-export const edgeLabels: Record<EdgeKind, string> = {
+export const edgeLabels = {
   Contains: "Contains",
   Defines: "Defines",
   UsesType: "Uses type",
@@ -158,7 +115,7 @@ export const edgeLabels: Record<EdgeKind, string> = {
   CallsRuntime: "Runtime calls",
   Derives: "Derives",
   ReExports: "Re-exports",
-};
+} as const satisfies { [K in EdgeKind]: string };
 
 export const nodeKindOrder: NodeKind[] = [
   "Crate",

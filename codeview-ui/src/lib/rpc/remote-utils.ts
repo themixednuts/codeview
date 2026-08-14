@@ -1,6 +1,6 @@
 import { error } from "@sveltejs/kit";
 import type { Result } from "better-result";
-import { isValidCrateName, isValidVersion } from "#lib/server/validation";
+import { isValidCrateName, isValidVersion } from "#lib/server/validation.js";
 
 const VERSION_ALIASES = new Set(["latest"]);
 

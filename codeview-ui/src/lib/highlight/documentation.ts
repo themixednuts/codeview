@@ -75,10 +75,12 @@ function isRustdocAttr(part: string): boolean {
  *   "text"                    → { lang: 'text',      isRust: false }
  *   "ignore"                  → { lang: 'rust',      isRust: true }
  */
-function parseRustdocFenceInfo(
-  infoStr: string,
-  defaultLang: SupportedLanguage,
-): { lang: SupportedLanguage; isRust: boolean } {
+type FenceLanguage = {
+  lang: SupportedLanguage;
+  isRust: boolean;
+};
+
+function parseRustdocFenceInfo(infoStr: string, defaultLang: SupportedLanguage): FenceLanguage {
   const raw = infoStr.trim();
   if (!raw) return { lang: defaultLang, isRust: defaultLang === "rust" };
 

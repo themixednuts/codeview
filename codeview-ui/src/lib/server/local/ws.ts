@@ -6,8 +6,16 @@
  * subscriptions by tag, same as the old SSE approach but without needing a Web Worker
  * or POST /subscribe endpoint.
  */
-import type { CrateStatus } from "#lib/schema";
-import { getLogger } from "#lib/log";
+import type { CrateStatus } from "#lib/schema.js";
+import { getLogger } from "#lib/log.js";
+import * as Predicate from "effect/Predicate";
+
+type ParseProgressData = {
+  type: string;
+  nodeCount?: number;
+  edgeCount?: number;
+  totalItems?: number;
+};
 
 const log = getLogger("local-ws");
 
@@ -31,7 +39,7 @@ export const connections = new Map<string, WsConnection>();
 /**
  * Broadcast a tagged message to all WebSocket clients subscribed to `tag`.
  */
-function broadcastToTag<T = unknown>(tag: string, data: T): void {
+function broadcastToTag<T>(tag: string, data: T): void {
   const payload = JSON.stringify({ tag, data });
   const dead: string[] = [];
 
@@ -56,7 +64,7 @@ export const emit = {
   status(name: string, version: string, data: CrateStatus) {
     broadcastToTag(`rust:${name}:${version}`, data);
   },
-  progress(name: string, version: string, data: unknown) {
+  progress(name: string, version: string, data: ParseProgressData) {
     broadcastToTag(`progress:rust:${name}:${version}`, data);
   },
   processing(
@@ -131,7 +139,7 @@ export function createHandlers(internals: LocalProviderInternals) {
     },
 
     message(ws: LocalSocket, msg: string | Buffer) {
-      const raw = typeof msg === "string" ? msg : msg.toString();
+      const raw = Predicate.isString(msg) ? msg : msg.toString();
       let parsed: { action?: string; tags?: string[] };
       try {
         parsed = JSON.parse(raw);

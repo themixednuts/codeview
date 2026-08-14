@@ -1,5 +1,5 @@
 import { Result } from "better-result";
-import type { NodeKind, Visibility } from "#lib/graph";
+import type { NodeKind, Visibility } from "#lib/graph.js";
 
 export type CrossEdgeNodeSummary = {
   id: string;
@@ -22,8 +22,8 @@ export function summarizeCrossEdgeNode(
       name,
       kind,
       visibility: { kind: "Unknown" },
-      ...(isExternal ? { is_external: true } : {}),
     };
+    if (isExternal) summary.is_external = true;
     return summary;
   });
 }

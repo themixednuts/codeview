@@ -4,10 +4,11 @@
 	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
-	import { ProcessingStatusConnection } from '#lib/realtime';
+	import { ProcessingStatusConnection } from '#lib/realtime/index.js';
 	import { onDestroy, onMount, untrack } from 'svelte';
-	import { perf } from '#lib/perf';
-	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
+	import * as Predicate from 'effect/Predicate';
+	import { perf } from '#lib/perf.js';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
 	import {
 		ACCENT_KEY,
 		ACCENT_VALUES,
@@ -36,7 +37,7 @@
 		readStoredPref,
 		writeClientPref,
 		writePref,
-	} from '#lib/preferences';
+	} from '#lib/preferences.js';
 	import {
 		themeCtx,
 		resolvedThemeCtx,
@@ -63,16 +64,16 @@
 		type ExternalLinkMode,
 		type SourceProviderMode,
 		type VcsMode,
-	} from '#lib/context';
+	} from '#lib/context.js';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { LayoutProps } from './$types';
 	import Icon from '#lib/components/design/Icon.svelte';
-	import { Toaster } from '#lib/components/ui/sonner';
-	import { Button } from '#lib/components/ui/button';
-	import { Input } from '#lib/components/ui/input';
+	import { Toaster } from '#lib/components/ui/sonner/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
 	import { toast } from 'svelte-sonner';
-	import { forceRefreshClient } from '#lib/client/invalidation';
+	import { forceRefreshClient } from '#lib/client/invalidation.js';
 
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
@@ -164,15 +165,17 @@
 		);
 	}
 
-	function isChunkLoadFailure(value: unknown): boolean {
+	type ChunkFailureSource = Error | string | { readonly message?: string } | null | undefined;
+
+	function isChunkLoadFailure(value: ChunkFailureSource): boolean {
 		const message =
 			value instanceof Error
 				? value.message
-				: typeof value === 'string'
+				: Predicate.isString(value)
 					? value
-					: typeof value === 'object' && value !== null && 'message' in value
-						? String((value as { message?: unknown }).message ?? '')
-						: '';
+					: Predicate.isObject(value) && "message" in value
+						? String(value.message ?? "")
+						: "";
 		return (
 			message.includes('Failed to fetch dynamically imported module') ||
 			message.includes('Importing a module script failed') ||

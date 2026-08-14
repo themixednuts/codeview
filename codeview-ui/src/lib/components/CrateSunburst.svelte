@@ -1,13 +1,13 @@
 <script lang="ts">
-	import type { CrateMapData, CrateMapModuleNode } from '#lib/graph/crate-map';
-	import { resolveAppPath } from '#lib/app-paths';
+	import type { CrateMapData, CrateMapModuleNode } from '#lib/graph/crate-map.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
 	import {
 		computeSunburstArcs,
 		arcPath,
 		findContainingModule,
 		moduleDepthColor,
 		type SunburstArc,
-	} from '#lib/graph/crate-map';
+	} from '#lib/graph/crate-map.js';
 
 	let {
 		data,

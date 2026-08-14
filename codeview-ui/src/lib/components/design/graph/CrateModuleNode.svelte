@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
-	import type { CrateMapModuleNode, CrateMapSemanticKind } from '#lib/graph/crate-map';
-	import { edgeLabels } from '#lib/display-names';
+	import type { CrateMapModuleNode, CrateMapSemanticKind } from '#lib/graph/crate-map.js';
+	import { edgeLabels } from '#lib/display-names.js';
 	import KindBadge from '#lib/components/design/KindBadge.svelte';
 
 	type CrateModuleNodeData = {
@@ -17,10 +17,10 @@
 		sizePercent: number;
 	};
 
-	let { data } = $props<{ data: CrateModuleNodeData }>();
+	let { data }: { data: CrateModuleNodeData } = $props();
 
 	const topKindBadges = $derived(
-		(data.topKinds.slice(0, 2) as Array<[CrateMapSemanticKind, number]>).map((entry) => {
+		data.topKinds.slice(0, 2).map((entry) => {
 			const [kind, count] = entry;
 			return {
 				kind,

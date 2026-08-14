@@ -5,26 +5,45 @@ import {
   labelToExcalidraw,
   excalidrawRenderer,
   renderExcalidraw,
-  nodeShapeId,
+  nodeGlyphId,
   edgeArrowId,
   edgeLabelId,
   arrowheadForEdgeKind,
 } from "./excalidraw";
-import type { VisNode, VisEdge } from "#lib/graph/layout";
-import type { Node } from "#lib/graph";
-import type { GraphScene, SceneGroup } from "#lib/renderers/graph";
-import type { LabelPosition } from "#lib/graph/labels";
+import type { VisNode, VisEdge } from "#lib/graph/layout/index.js";
+import type { Node } from "#lib/graph.js";
+import type { GraphScene, SceneGroup } from "#lib/renderers/graph.js";
+import type { LabelPosition } from "#lib/graph/labels/index.js";
 import type {
+  ExcalidrawElement,
   ExcalidrawTextElement,
   ExcalidrawArrowElement,
 } from "@excalidraw/excalidraw/element/types";
+
+function isTextElement(element: ExcalidrawElement): element is ExcalidrawTextElement {
+  return element.type === "text";
+}
+
+function isArrowElement(element: ExcalidrawElement): element is ExcalidrawArrowElement {
+  return element.type === "arrow";
+}
+
+function requireText(element: ExcalidrawElement): ExcalidrawTextElement {
+  if (!isTextElement(element)) throw new Error(`expected text element, got ${element.type}`);
+  return element;
+}
+
+function requireArrow(element: ExcalidrawElement): ExcalidrawArrowElement {
+  if (!isArrowElement(element)) throw new Error(`expected arrow element, got ${element.type}`);
+  return element;
+}
 
 // ---------------------------------------------------------------------------
 // Test fixtures
 // ---------------------------------------------------------------------------
 
 function makeRawNode(id: string, name: string, kind: Node["kind"] = "Function"): Node {
-  return { id, name, kind, visibility: { kind: "Public" } } as Node;
+  return { id, name, kind, visibility: { kind: "Public" }, attrs: [] };
 }
 
 function makeVisNode(
@@ -70,36 +89,36 @@ describe("nodeToExcalidraw", () => {
     const elements = nodeToExcalidraw(vis);
 
     expect(elements).toHaveLength(2);
-    const [shape, text] = elements;
+    const [glyph, text] = elements;
 
-    expect(shape.type).toBe("rectangle");
-    expect(shape.fillStyle).toBe("solid");
-    expect(shape.backgroundColor).not.toBe("transparent");
-    expect(shape.strokeWidth).toBe(3); // center node
-    expect(shape.roundness).toEqual({ type: 3, value: 2 });
+    expect(glyph.type).toBe("rectangle");
+    expect(glyph.fillStyle).toBe("solid");
+    expect(glyph.backgroundColor).not.toBe("transparent");
+    expect(glyph.strokeWidth).toBe(3); // center node
+    expect(glyph.roundness).toEqual({ type: 3, value: 2 });
 
     expect(text.type).toBe("text");
-    const txt = text as ExcalidrawTextElement;
+    const txt = requireText(text);
     expect(txt.text).toBe("MyStruct");
-    expect(txt.containerId).toBe(shape.id);
+    expect(txt.containerId).toBe(glyph.id);
   });
 
   it("returns a pill (rectangle) for a Function node", () => {
     const vis = makeVisNode("crate::do_thing", "do_thing", "Function");
     const elements = nodeToExcalidraw(vis);
 
-    const [shape] = elements;
-    expect(shape.type).toBe("rectangle");
-    expect(shape.strokeWidth).toBe(2); // non-center
-    expect(shape.roundness).toEqual({ type: 3, value: 22 });
+    const [glyph] = elements;
+    expect(glyph.type).toBe("rectangle");
+    expect(glyph.strokeWidth).toBe(2); // non-center
+    expect(glyph.roundness).toEqual({ type: 3, value: 22 });
   });
 
   it("binds the text element back to the shape", () => {
     const vis = makeVisNode("crate::X", "X", "Enum");
-    const [shape, text] = nodeToExcalidraw(vis);
+    const [glyph, text] = nodeToExcalidraw(vis);
 
-    expect(shape.boundElements).toContainEqual({ id: text.id, type: "text" });
-    expect((text as ExcalidrawTextElement).containerId).toBe(shape.id);
+    expect(glyph.boundElements).toContainEqual({ id: text.id, type: "text" });
+    expect(requireText(text).containerId).toBe(glyph.id);
   });
 
   it("produces deterministic IDs from node identity", () => {
@@ -113,41 +132,41 @@ describe("nodeToExcalidraw", () => {
   it("propagates groupIds to both shape and text", () => {
     const vis = makeVisNode("crate::A", "A", "Struct");
     const gids = ["group_1", "group_2"];
-    const [shape, text] = nodeToExcalidraw(vis, gids);
+    const [glyph, text] = nodeToExcalidraw(vis, gids);
 
-    expect(shape.groupIds).toEqual(gids);
+    expect(glyph.groupIds).toEqual(gids);
     expect(text.groupIds).toEqual(gids);
   });
 
   it("defaults to empty groupIds when none provided", () => {
     const vis = makeVisNode("crate::A", "A", "Struct");
-    const [shape, text] = nodeToExcalidraw(vis);
-    expect(shape.groupIds).toEqual([]);
+    const [glyph, text] = nodeToExcalidraw(vis);
+    expect(glyph.groupIds).toEqual([]);
     expect(text.groupIds).toEqual([]);
   });
 
   it("returns a diamond for a Trait node", () => {
     const vis = makeVisNode("crate::T", "T", "Trait");
-    const [shape] = nodeToExcalidraw(vis);
-    expect(shape.type).toBe("diamond");
+    const [glyph] = nodeToExcalidraw(vis);
+    expect(glyph.type).toBe("diamond");
   });
 
   it("returns dashed strokeStyle for a Union node", () => {
     const vis = makeVisNode("crate::U", "U", "Union");
-    const [shape] = nodeToExcalidraw(vis);
-    expect((shape as Record<string, unknown>).strokeStyle).toBe("dashed");
+    const [glyph] = nodeToExcalidraw(vis);
+    expect(glyph.strokeStyle).toBe("dashed");
   });
 
   it("returns solid strokeStyle for non-Union nodes", () => {
     const vis = makeVisNode("crate::S", "S", "Struct");
-    const [shape] = nodeToExcalidraw(vis);
-    expect((shape as Record<string, unknown>).strokeStyle).toBe("solid");
+    const [glyph] = nodeToExcalidraw(vis);
+    expect(glyph.strokeStyle).toBe("solid");
   });
 
   it("includes customData on shape element", () => {
     const vis = makeVisNode("crate::MyStruct", "MyStruct", "Struct");
-    const [shape] = nodeToExcalidraw(vis);
-    const cd = (shape as Record<string, unknown>).customData as Record<string, unknown>;
+    const [glyph] = nodeToExcalidraw(vis);
+    const cd = glyph.customData;
     expect(cd).toMatchObject({
       nodeId: "crate::MyStruct",
       kind: "Struct",
@@ -158,7 +177,7 @@ describe("nodeToExcalidraw", () => {
   it("includes customData on text element", () => {
     const vis = makeVisNode("crate::MyStruct", "MyStruct", "Struct");
     const [, text] = nodeToExcalidraw(vis);
-    const cd = (text as Record<string, unknown>).customData as Record<string, unknown>;
+    const cd = text.customData;
     expect(cd).toMatchObject({
       nodeId: "crate::MyStruct",
       elementRole: "label",
@@ -167,25 +186,25 @@ describe("nodeToExcalidraw", () => {
 
   it("sets link when baseUrl option is provided", () => {
     const vis = makeVisNode("crate::MyStruct", "MyStruct", "Struct");
-    const [shape] = nodeToExcalidraw(vis, [], {
+    const [glyph] = nodeToExcalidraw(vis, [], {
       baseUrl: "https://codeview.codes",
       crateVersions: { crate: "0.1.0" },
     });
-    expect(shape.link).toBe("https://codeview.codes/crate/0.1.0/MyStruct");
+    expect(glyph.link).toBe("https://codeview.codes/crate/0.1.0/MyStruct");
   });
 
   it("sets link to null when no options provided", () => {
     const vis = makeVisNode("crate::MyStruct", "MyStruct", "Struct");
-    const [shape] = nodeToExcalidraw(vis);
-    expect(shape.link).toBeNull();
+    const [glyph] = nodeToExcalidraw(vis);
+    expect(glyph.link).toBeNull();
   });
 
   it("text element has correct text fields", () => {
     const vis = makeVisNode("crate::Foo", "Foo", "Struct");
     const [, text] = nodeToExcalidraw(vis);
-    const txt = text as ExcalidrawTextElement;
+    const txt = requireText(text);
     expect(txt.originalText).toBe(txt.text);
-    expect((txt as Record<string, unknown>).autoResize).toBe(true);
+    expect(txt.autoResize).toBe(true);
     expect(txt.lineHeight).toBe(1.25);
   });
 });
@@ -204,7 +223,7 @@ describe("edgeToExcalidraw", () => {
 
   it("produces an arrow element", () => {
     const edge = makeVisEdge(from, to, "UsesType", "out");
-    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    const el = requireArrow(edgeToExcalidraw(edge, nodeMap));
 
     expect(el.type).toBe("arrow");
     expect(el.endArrowhead).toBe("arrow");
@@ -222,10 +241,10 @@ describe("edgeToExcalidraw", () => {
 
   it("has start/end bindings referencing source and target node shape IDs", () => {
     const edge = makeVisEdge(from, to, "UsesType", "out");
-    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    const el = requireArrow(edgeToExcalidraw(edge, nodeMap));
 
-    expect(el.startBinding?.elementId).toBe(nodeShapeId("crate::A"));
-    expect(el.endBinding?.elementId).toBe(nodeShapeId("crate::B"));
+    expect(el.startBinding?.elementId).toBe(nodeGlyphId("crate::A"));
+    expect(el.endBinding?.elementId).toBe(nodeGlyphId("crate::B"));
   });
 
   it("propagates groupIds", () => {
@@ -238,7 +257,7 @@ describe("edgeToExcalidraw", () => {
   it("includes customData on arrow element", () => {
     const edge = makeVisEdge(from, to, "UsesType", "out");
     const el = edgeToExcalidraw(edge, nodeMap);
-    const cd = (el as Record<string, unknown>).customData as Record<string, unknown>;
+    const cd = el.customData;
     expect(cd).toMatchObject({
       fromId: "crate::A",
       toId: "crate::B",
@@ -255,25 +274,25 @@ describe("edgeToExcalidraw", () => {
 
   it("uses triangle arrowhead for Implements edge", () => {
     const edge = makeVisEdge(from, to, "Implements", "out");
-    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    const el = requireArrow(edgeToExcalidraw(edge, nodeMap));
     expect(el.endArrowhead).toBe("triangle");
   });
 
   it("uses diamond arrowhead for Contains edge", () => {
     const edge = makeVisEdge(from, to, "Contains", "out");
-    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    const el = requireArrow(edgeToExcalidraw(edge, nodeMap));
     expect(el.endArrowhead).toBe("diamond");
   });
 
   it("uses dot arrowhead for CallsRuntime edge", () => {
     const edge = makeVisEdge(from, to, "CallsRuntime", "out");
-    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    const el = requireArrow(edgeToExcalidraw(edge, nodeMap));
     expect(el.endArrowhead).toBe("dot");
   });
 
   it("uses arrow arrowhead for UsesType edge (default)", () => {
     const edge = makeVisEdge(from, to, "UsesType", "out");
-    const el = edgeToExcalidraw(edge, nodeMap) as ExcalidrawArrowElement;
+    const el = requireArrow(edgeToExcalidraw(edge, nodeMap));
     expect(el.endArrowhead).toBe("arrow");
   });
 });
@@ -309,7 +328,7 @@ describe("labelToExcalidraw", () => {
     const edge = makeVisEdge(from, to, "Implements", "out");
     const label: LabelPosition = { x: 350, y: 250, anchor: "middle" };
 
-    const el = labelToExcalidraw(edge, label) as ExcalidrawTextElement;
+    const el = requireText(labelToExcalidraw(edge, label));
 
     expect(el.type).toBe("text");
     expect(el.text).toBe("Implements");
@@ -335,7 +354,7 @@ describe("labelToExcalidraw", () => {
     const label: LabelPosition = { x: 350, y: 250, anchor: "middle" };
 
     const el = labelToExcalidraw(edge, label);
-    const cd = (el as Record<string, unknown>).customData as Record<string, unknown>;
+    const cd = el.customData;
     expect(cd).toMatchObject({
       fromId: "crate::A",
       toId: "crate::B",
@@ -350,7 +369,7 @@ describe("labelToExcalidraw", () => {
     const edge = makeVisEdge(from, to, "Implements", "out");
     const label: LabelPosition = { x: 350, y: 250, anchor: "middle" };
 
-    const el = labelToExcalidraw(edge, label) as ExcalidrawTextElement;
+    const el = requireText(labelToExcalidraw(edge, label));
     const arrowId = edgeArrowId("crate::A", "crate::B", "Implements");
     expect(el.containerId).toBe(arrowId);
   });
@@ -376,8 +395,8 @@ describe("renderExcalidraw", () => {
       crateVersions: { crate: "0.1.0" },
     });
 
-    const shape = file.elements.find((e) => e.id === nodeShapeId("crate::MyStruct"))!;
-    expect(shape.link).toBe("https://codeview.codes/crate/0.1.0/MyStruct");
+    const glyph = file.elements.find((e) => e.id === nodeGlyphId("crate::MyStruct"))!;
+    expect(glyph.link).toBe("https://codeview.codes/crate/0.1.0/MyStruct");
   });
 
   it("does not set links when no options provided", () => {
@@ -391,8 +410,8 @@ describe("renderExcalidraw", () => {
     };
 
     const file = renderExcalidraw(scene);
-    const shape = file.elements.find((e) => e.id === nodeShapeId("crate::MyStruct"))!;
-    expect(shape.link).toBeNull();
+    const glyph = file.elements.find((e) => e.id === nodeGlyphId("crate::MyStruct"))!;
+    expect(glyph.link).toBeNull();
   });
 });
 
@@ -442,13 +461,13 @@ describe("excalidrawRenderer", () => {
     const file = excalidrawRenderer.render(buildTestScene());
 
     // Node elements (shape + text) should share a group
-    const centerShapeId = nodeShapeId("crate::Center");
-    const centerShape = file.elements.find((e) => e.id === centerShapeId)!;
+    const centerGlyphId = nodeGlyphId("crate::Center");
+    const centerGlyph = file.elements.find((e) => e.id === centerGlyphId)!;
     const centerText = file.elements.find(
-      (e) => e.type === "text" && (e as ExcalidrawTextElement).containerId === centerShapeId,
+      (e) => isTextElement(e) && e.containerId === centerGlyphId,
     )!;
-    expect(centerShape.groupIds).toHaveLength(1);
-    expect(centerShape.groupIds).toEqual(centerText.groupIds);
+    expect(centerGlyph.groupIds).toHaveLength(1);
+    expect(centerGlyph.groupIds).toEqual(centerText.groupIds);
 
     // Edge arrow + label should share a group
     const arrowId = edgeArrowId("crate::Center", "crate::Dep", "UsesType");
@@ -456,28 +475,26 @@ describe("excalidrawRenderer", () => {
     expect(arrow.groupIds).toHaveLength(1);
 
     // Edge label shares same group as arrow
-    const edgeLabel = file.elements.find(
-      (e) => e.type === "text" && (e as ExcalidrawTextElement).text === "UsesType",
-    )!;
+    const edgeLabel = file.elements.find((e) => isTextElement(e) && e.text === "UsesType")!;
     expect(edgeLabel.groupIds).toEqual(arrow.groupIds);
   });
 
   it("registers arrows as boundElements on endpoint node shapes", () => {
     const file = excalidrawRenderer.render(buildTestScene());
 
-    const centerShape = file.elements.find((e) => e.id === nodeShapeId("crate::Center"))!;
-    const depShape = file.elements.find((e) => e.id === nodeShapeId("crate::Dep"))!;
+    const centerGlyph = file.elements.find((e) => e.id === nodeGlyphId("crate::Center"))!;
+    const depGlyph = file.elements.find((e) => e.id === nodeGlyphId("crate::Dep"))!;
     const arrowId = edgeArrowId("crate::Center", "crate::Dep", "UsesType");
 
     // Both shapes should list the arrow in their boundElements
-    expect(centerShape.boundElements).toContainEqual({ id: arrowId, type: "arrow" });
-    expect(depShape.boundElements).toContainEqual({ id: arrowId, type: "arrow" });
+    expect(centerGlyph.boundElements).toContainEqual({ id: arrowId, type: "arrow" });
+    expect(depGlyph.boundElements).toContainEqual({ id: arrowId, type: "arrow" });
 
     // Shape should also have its text binding
     const centerTextId = file.elements.find(
-      (e) => e.type === "text" && (e as ExcalidrawTextElement).containerId === centerShape.id,
+      (e) => isTextElement(e) && e.containerId === centerGlyph.id,
     )!.id;
-    expect(centerShape.boundElements).toContainEqual({ id: centerTextId, type: "text" });
+    expect(centerGlyph.boundElements).toContainEqual({ id: centerTextId, type: "text" });
   });
 
   it("produces no elements for an empty scene", () => {
@@ -500,10 +517,10 @@ describe("excalidrawRenderer", () => {
 
     for (const el of file.elements) {
       expect(el.id).toBeTruthy();
-      expect(typeof el.x).toBe("number");
-      expect(typeof el.y).toBe("number");
-      expect(typeof el.width).toBe("number");
-      expect(typeof el.height).toBe("number");
+      expect(el.x).toEqual(expect.any(Number));
+      expect(el.y).toEqual(expect.any(Number));
+      expect(el.width).toEqual(expect.any(Number));
+      expect(el.height).toEqual(expect.any(Number));
       expect(el.isDeleted).toBe(false);
       expect(el.locked).toBe(false);
       expect(Array.isArray(el.groupIds)).toBe(true);

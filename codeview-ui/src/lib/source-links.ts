@@ -1,5 +1,5 @@
-import type { VcsMode } from "#lib/context";
-import { hyphenateCrateName } from "#lib/crate-names";
+import type { VcsMode } from "#lib/context.js";
+import { hyphenateCrateName } from "#lib/crate-names.js";
 
 export function repoBaseUrl(url: string): string {
   const blobIdx = url.indexOf("/blob/");

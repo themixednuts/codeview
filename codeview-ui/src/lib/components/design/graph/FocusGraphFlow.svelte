@@ -1,15 +1,15 @@
 <script lang="ts">
 	import { SvelteFlow } from '@xyflow/svelte';
 	import { onMount } from 'svelte';
-	import type { Edge, Node, NodeDetail, NodeSummary } from '#lib/schema';
-	import { resolveAppPath } from '#lib/app-paths';
+	import type { Edge, Node, NodeDetail, NodeSummary } from '#lib/schema.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
 	import {
 		edgeKindToRelation,
 		REL,
 		REL_ORDER,
 		toDesignNode,
 		type DesignRelation,
-	} from '#lib/design/live-node';
+	} from '#lib/design/live-node.js';
 	import KindBadge from '#lib/components/design/KindBadge.svelte';
 	import Icon from '#lib/components/design/Icon.svelte';
 	import GraphNodePillFlow from './GraphNodePillFlow.svelte';

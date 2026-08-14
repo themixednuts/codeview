@@ -1,7 +1,9 @@
-export type RealtimeCallback<T = unknown> = (data: T) => void;
+import type { Json } from "effect/Schema";
+
+export type RealtimeCallback = (data: Json) => void;
 
 export interface RealtimeClient {
-  subscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): void | Promise<void>;
-  unsubscribe<T = unknown>(tag: string, callback: RealtimeCallback<T>): void | Promise<void>;
+  subscribe(tag: string, callback: RealtimeCallback): void | Promise<void>;
+  unsubscribe(tag: string, callback: RealtimeCallback): void | Promise<void>;
   isSubscribed(tag: string): boolean;
 }

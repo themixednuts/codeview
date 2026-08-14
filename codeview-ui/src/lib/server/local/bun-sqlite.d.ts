@@ -1,6 +1,6 @@
 declare module "bun:sqlite" {
   export class Database {
     constructor(path: string);
-    exec(sql: string): unknown;
+    exec(sql: string): void;
   }
 }

@@ -3,9 +3,10 @@ import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { RequestEvent } from "@sveltejs/kit";
-import type { CrateGraph, Edge, Node, NodeKind } from "#lib/graph";
+import type { CrateGraph, Edge, Node, NodeKind } from "#lib/graph.js";
 import type {
   CrateIndex,
   CrateTree,
@@ -16,13 +17,13 @@ import type {
   StaticSearchManifest,
   StaticSearchShard,
   TreeNodeDTO,
-} from "#lib/schema";
-import { STATIC_ARTIFACT_SCHEMA_VERSION } from "#lib/schema";
+} from "#lib/schema.js";
+import { STATIC_ARTIFACT_SCHEMA_VERSION } from "#lib/schema.js";
 import {
   HOSTED_ARTIFACT_CACHE_NAMESPACE,
   isCurrentHostedArtifactMetadata,
-} from "#lib/hosted-contract";
-import type { CrateMapData, CrateMapOptions } from "#lib/graph/crate-map";
+} from "#lib/hosted-contract.js";
+import type { CrateMapData, CrateMapOptions } from "#lib/graph/crate-map.js";
 import {
   DEFAULT_RUST_CHANNEL,
   RUST_CHANNEL_ORDER,
@@ -30,7 +31,7 @@ import {
   isStdCrate,
   isStdJsonCrate,
   searchToolchainCrates,
-} from "#lib/std";
+} from "#lib/std.js";
 import type {
   CrateSummaryResult,
   CrossEdgeData,
@@ -56,7 +57,7 @@ import {
   isValidVersion,
   normalizeCrateName,
 } from "../validation";
-import { getLogger } from "#lib/log";
+import { getLogger } from "#lib/log.js";
 import { actorFromUser, getAuthStateFromRequest } from "../auth";
 import {
   makeParseRequest,
@@ -77,7 +78,7 @@ import {
 } from "../provider-utils";
 import type { PackageMetadata } from "../registry/types";
 import { orderCatalogSummaries } from "./catalog";
-import { mergeTraitMemberDocumentation } from "#lib/trait-member-hydration";
+import { mergeTraitMemberDocumentation } from "#lib/trait-member-hydration.js";
 
 const log = getLogger("cloudflare");
 
@@ -112,6 +113,13 @@ const DEFAULT_PLAN_DRAIN_ACTIVE_TARGET = 4;
 const DEFAULT_PLAN_DRAIN_BATCH_SIZE = 0;
 const DEFAULT_GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT = 35;
 const GITHUB_API_VERSION = "2026-03-10";
+
+type GithubApiHeaders = {
+  accept: string;
+  "user-agent": string;
+  "x-github-api-version": string;
+  authorization?: string;
+};
 const ACTIVE_GITHUB_RUN_STATUSES = [
   "queued",
   "pending",
@@ -162,6 +170,86 @@ type GitHubBillingUsageSummaryResponse = {
   usageItems?: GitHubBillingUsageItem[];
 };
 
+function isJsonObject(value: Schema.Json): value is Schema.JsonObject {
+  return Predicate.isObject(value);
+}
+
+const ACTIVE_GITHUB_RUN_STATUS_SET: ReadonlySet<string> = new Set(ACTIVE_GITHUB_RUN_STATUSES);
+
+function isActiveGitHubRunStatus(status: string | undefined): boolean {
+  return status !== undefined && ACTIVE_GITHUB_RUN_STATUS_SET.has(status);
+}
+
+function parseGitHubWorkflowRun(value: Schema.Json): GitHubWorkflowRun | null {
+  if (!isJsonObject(value)) return null;
+  return {
+    id: Predicate.isNumber(value.id) ? value.id : undefined,
+    name: Predicate.isString(value.name) ? value.name : undefined,
+    display_title: Predicate.isString(value.display_title) ? value.display_title : undefined,
+    status: Predicate.isString(value.status) ? value.status : undefined,
+    event: Predicate.isString(value.event) ? value.event : undefined,
+    head_branch: Predicate.isString(value.head_branch) ? value.head_branch : undefined,
+    html_url: Predicate.isString(value.html_url) ? value.html_url : undefined,
+    created_at: Predicate.isString(value.created_at) ? value.created_at : undefined,
+    updated_at: Predicate.isString(value.updated_at) ? value.updated_at : undefined,
+  };
+}
+
+function parseGitHubWorkflowRunsResponse(value: Schema.Json): GitHubWorkflowRunsResponse {
+  if (!isJsonObject(value) || !Array.isArray(value.workflow_runs)) return {};
+  return {
+    workflow_runs: value.workflow_runs.flatMap((run) => {
+      const parsed = parseGitHubWorkflowRun(run);
+      return parsed ? [parsed] : [];
+    }),
+  };
+}
+
+function parseGitHubRepositoryResponse(value: Schema.Json): GitHubRepositoryResponse {
+  if (!isJsonObject(value)) return {};
+  const owner = isJsonObject(value.owner) ? value.owner : undefined;
+  return {
+    full_name: Predicate.isString(value.full_name) ? value.full_name : undefined,
+    private: Predicate.isBoolean(value.private) ? value.private : undefined,
+    owner: owner
+      ? {
+          login: Predicate.isString(owner.login) ? owner.login : undefined,
+          type: Predicate.isString(owner.type) ? owner.type : undefined,
+        }
+      : undefined,
+  };
+}
+
+function parseGitHubBillingUsageItem(value: Schema.Json): GitHubBillingUsageItem | null {
+  if (!isJsonObject(value)) return null;
+  return {
+    product: Predicate.isString(value.product) ? value.product : undefined,
+    sku: Predicate.isString(value.sku) ? value.sku : undefined,
+    unitType: Predicate.isString(value.unitType) ? value.unitType : undefined,
+    grossQuantity: Predicate.isNumber(value.grossQuantity) ? value.grossQuantity : undefined,
+    discountQuantity: Predicate.isNumber(value.discountQuantity)
+      ? value.discountQuantity
+      : undefined,
+    quantity: Predicate.isNumber(value.quantity) ? value.quantity : undefined,
+    netQuantity: Predicate.isNumber(value.netQuantity) ? value.netQuantity : undefined,
+    grossAmount: Predicate.isNumber(value.grossAmount) ? value.grossAmount : undefined,
+    discountAmount: Predicate.isNumber(value.discountAmount) ? value.discountAmount : undefined,
+    netAmount: Predicate.isNumber(value.netAmount) ? value.netAmount : undefined,
+  };
+}
+
+function parseGitHubBillingUsageSummaryResponse(
+  value: Schema.Json,
+): GitHubBillingUsageSummaryResponse {
+  if (!isJsonObject(value) || !Array.isArray(value.usageItems)) return {};
+  return {
+    usageItems: value.usageItems.flatMap((item) => {
+      const parsed = parseGitHubBillingUsageItem(item);
+      return parsed ? [parsed] : [];
+    }),
+  };
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   if (value === undefined || value.trim() === "") return fallback;
   const parsed = Number(value);
@@ -185,8 +273,8 @@ function monthStartIso(now = new Date()): string {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
 
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function finiteNumber(value: number | undefined): number | null {
+  return Predicate.isNumber(value) && Number.isFinite(value) ? value : null;
 }
 
 function githubGrossUsageQuantity(item: GitHubBillingUsageItem): number {
@@ -267,6 +355,15 @@ function buildGitHubFileUrl(metadata: PackageMetadata, filePath: string): string
 const VERSION_ALIAS_VALUES = ["latest", "stable", "beta", "nightly"] as const;
 type VersionAlias = (typeof VERSION_ALIAS_VALUES)[number];
 const VERSION_ALIASES = new Set<string>(VERSION_ALIAS_VALUES);
+
+function isVersionAlias(value: string): value is VersionAlias {
+  return VERSION_ALIASES.has(value);
+}
+
+function decodeTrustedJson<T>(value: Schema.Json | null): T {
+  // SAFETY: this JSON was written by our R2/Cache/PARSE_STATUS pipeline for the object the caller requested; JSON.parse and Response.json are unknown.
+  return value as T;
+}
 const REF_TTL_MS = 5_000;
 const MUTABLE_JSON_TTL_MS = 30_000;
 const REF_CACHE_MAX = 512;
@@ -355,25 +452,21 @@ function refsKey(storageName: string): string {
   return `rust/_refs/${storageName}.json`;
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parseCrateRefTarget(value: unknown): CrateRefTarget | null {
-  if (!isObject(value)) return null;
+function parseCrateRefTarget(value: Schema.Json): CrateRefTarget | null {
+  if (!isJsonObject(value)) return null;
   const { version, graphHash } = value;
-  if (typeof version !== "string" || version.length === 0) return null;
-  if (typeof graphHash !== "string" || graphHash.length === 0) return null;
+  if (!Predicate.isString(version) || version.length === 0) return null;
+  if (!Predicate.isString(graphHash) || graphHash.length === 0) return null;
   return { version, graphHash };
 }
 
-function parseCrateRefs(value: unknown): CrateRefFile | null {
-  if (!isObject(value)) return null;
+function parseCrateRefs(value: Schema.Json): CrateRefFile | null {
+  if (!isJsonObject(value)) return null;
   const storageName = value.storageName;
   const aliases = value.aliases;
   const versions = value.versions;
-  if (typeof storageName !== "string" || storageName.length === 0) return null;
-  if (!isObject(aliases) || !Array.isArray(versions)) return null;
+  if (!Predicate.isString(storageName) || storageName.length === 0) return null;
+  if (!isJsonObject(aliases) || !Array.isArray(versions)) return null;
 
   const parsedAliases: CrateRefFile["aliases"] = {};
   for (const alias of VERSION_ALIAS_VALUES) {
@@ -385,12 +478,12 @@ function parseCrateRefs(value: unknown): CrateRefFile | null {
     .map((entry): CrateRefVersion | null => {
       const target = parseCrateRefTarget(entry);
       if (!target) return null;
-      return isObject(entry)
+      return isJsonObject(entry)
         ? {
             ...target,
-            parsedAt: typeof entry.parsedAt === "string" ? entry.parsedAt : undefined,
-            nodes: typeof entry.nodes === "number" ? entry.nodes : undefined,
-            edges: typeof entry.edges === "number" ? entry.edges : undefined,
+            parsedAt: Predicate.isString(entry.parsedAt) ? entry.parsedAt : undefined,
+            nodes: Predicate.isNumber(entry.nodes) ? entry.nodes : undefined,
+            edges: Predicate.isNumber(entry.edges) ? entry.edges : undefined,
           }
         : target;
     })
@@ -398,17 +491,17 @@ function parseCrateRefs(value: unknown): CrateRefFile | null {
 
   if (parsedVersions.length === 0) return null;
   return {
-    schemaVersion: typeof value.schemaVersion === "number" ? value.schemaVersion : undefined,
+    schemaVersion: Predicate.isNumber(value.schemaVersion) ? value.schemaVersion : undefined,
     storageName,
-    displayName: typeof value.displayName === "string" ? value.displayName : undefined,
+    displayName: Predicate.isString(value.displayName) ? value.displayName : undefined,
     aliases: parsedAliases,
     versions: parsedVersions,
   };
 }
 
 function resolveRefFromRefs(refs: CrateRefFile, versionOrAlias: string): ArtifactRef | null {
-  const target = VERSION_ALIASES.has(versionOrAlias)
-    ? refs.aliases[versionOrAlias as VersionAlias]
+  const target = isVersionAlias(versionOrAlias)
+    ? refs.aliases[versionOrAlias]
     : refs.versions.find((entry) => entry.version === versionOrAlias);
   if (!target) return null;
   return {
@@ -617,7 +710,7 @@ const readR2JsonEffect = Effect.fn("CloudflareProvider.readR2Json")(function* <T
         message: `R2 read failed for ${key}: ${errorMessage(cause)}`,
       }),
   });
-  if (!obj) return null as T | null;
+  if (!obj) return null;
 
   const bytes = yield* Effect.tryPromise({
     try: async () => new Uint8Array(await obj.arrayBuffer()),
@@ -633,7 +726,8 @@ const readR2JsonEffect = Effect.fn("CloudflareProvider.readR2Json")(function* <T
     return yield* Effect.tryPromise({
       try: async () => {
         const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
-        return (await new Response(stream).json()) as T;
+        const parsed: Schema.Json = await new Response(stream).json();
+        return decodeTrustedJson<T>(parsed);
       },
       catch: (cause) =>
         new R2ParseError({
@@ -645,7 +739,7 @@ const readR2JsonEffect = Effect.fn("CloudflareProvider.readR2Json")(function* <T
   }
 
   return yield* Effect.try({
-    try: () => JSON.parse(new TextDecoder().decode(bytes)) as T,
+    try: () => decodeTrustedJson<T>(JSON.parse(new TextDecoder().decode(bytes))),
     catch: (cause) =>
       new R2ParseError({
         key,
@@ -655,8 +749,8 @@ const readR2JsonEffect = Effect.fn("CloudflareProvider.readR2Json")(function* <T
   });
 });
 
-const artifactJsonCache = new Map<string, Promise<unknown | null>>();
-const artifactJsonInflight = new Map<string, Promise<unknown | null>>();
+const artifactJsonCache = new Map<string, Promise<Schema.Json | null>>();
+const artifactJsonInflight = new Map<string, Promise<Schema.Json | null>>();
 const sourceFileCache = new Map<string, string>();
 const SOURCE_FILE_CACHE_MAX = 512;
 
@@ -676,8 +770,10 @@ function artifactCacheUrl(ref: ArtifactRef, path: string): string | null {
 }
 
 function getDefaultWorkerCache(): Cache | null {
-  if (typeof caches === "undefined") return null;
-  return (caches as CacheStorage & { default?: Cache }).default ?? null;
+  if (globalThis.caches === undefined) return null;
+  // SAFETY: Cloudflare Workers CacheStorage exposes `caches.default`; TypeScript's DOM CacheStorage only has open/match/has.
+  const workerCaches = caches as CacheStorage & { default?: Cache };
+  return workerCaches.default ?? null;
 }
 
 async function decodeR2ObjectText(_key: string, obj: R2ObjectBody): Promise<string> {
@@ -689,7 +785,7 @@ async function decodeR2ObjectText(_key: string, obj: R2ObjectBody): Promise<stri
   return new TextDecoder().decode(bytes);
 }
 
-function setArtifactJsonCache(key: string, value: Promise<unknown | null>): void {
+function setArtifactJsonCache(key: string, value: Promise<Schema.Json | null>): void {
   artifactJsonCache.set(key, value);
   while (artifactJsonCache.size > ARTIFACT_JSON_CACHE_MAX) {
     const oldestKey = artifactJsonCache.keys().next().value;
@@ -698,17 +794,20 @@ function setArtifactJsonCache(key: string, value: Promise<unknown | null>): void
   }
 }
 
-async function readArtifactJsonWithCache<T>(
+async function readArtifactJsonWithCache(
   r2: R2Bucket,
   r2Key: string,
   cacheUrl: string,
-): Promise<T | null> {
+): Promise<Schema.Json | null> {
   const request = new Request(cacheUrl, { method: "GET" });
   const cache = getDefaultWorkerCache();
   if (cache) {
     try {
       const cached = await cache.match(request);
-      if (cached) return (await cached.json()) as T;
+      if (cached) {
+        // SAFETY: Cache API returns JSON we previously stored for this artifact URL.
+        return (await cached.json()) as Schema.Json;
+      }
     } catch (err) {
       log.warn`Cache API match failed for ${cacheUrl}: ${String(err)}`;
     }
@@ -716,7 +815,7 @@ async function readArtifactJsonWithCache<T>(
 
   let inflight = artifactJsonInflight.get(cacheUrl);
   if (!inflight) {
-    inflight = (async (): Promise<T | null> => {
+    inflight = (async (): Promise<Schema.Json | null> => {
       const obj = await r2.get(r2Key);
       if (!obj) return null;
       const text = await decodeR2ObjectText(r2Key, obj);
@@ -733,20 +832,21 @@ async function readArtifactJsonWithCache<T>(
           log.warn`Cache API put failed for ${cacheUrl}: ${String(err)}`;
         }
       }
-      return JSON.parse(text) as T;
+      // SAFETY: R2 artifact bodies are JSON text written by the parse pipeline.
+      return JSON.parse(text) as Schema.Json;
     })().finally(() => {
       artifactJsonInflight.delete(cacheUrl);
     });
     artifactJsonInflight.set(cacheUrl, inflight);
   }
-  return (await inflight) as T | null;
+  return decodeTrustedJson<Schema.Json | null>(await inflight);
 }
 
 export function createCloudflareProvider(env: AppEnv, request?: Request): DataProvider {
   const mutableJsonCache = Effect.runSync(
     Cache.makeWith(
       (key: string) =>
-        readR2JsonEffect<unknown>(env.CRATE_GRAPHS, key).pipe(
+        readR2JsonEffect<Schema.Json>(env.CRATE_GRAPHS, key).pipe(
           Effect.catch((err: R2JsonError) =>
             Effect.sync(() => {
               log.warn`${err.message}`;
@@ -836,7 +936,9 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
   }
 
   function readJson<T>(key: string, _ttlMs = MUTABLE_JSON_TTL_MS): Promise<T | null> {
-    return Effect.runPromise(Cache.get(mutableJsonCache, key)) as Promise<T | null>;
+    return Effect.runPromise(Cache.get(mutableJsonCache, key)).then((value) =>
+      decodeTrustedJson<T | null>(value),
+    );
   }
 
   async function readArtifactJson<T>(ref: ArtifactRef, path: string): Promise<T | null> {
@@ -846,18 +948,18 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
 
     let cached = artifactJsonCache.get(cacheUrl);
     if (!cached) {
-      cached = readArtifactJsonWithCache<T>(env.CRATE_GRAPHS, r2Key, cacheUrl).catch((err) => {
+      cached = readArtifactJsonWithCache(env.CRATE_GRAPHS, r2Key, cacheUrl).catch((err) => {
         artifactJsonCache.delete(cacheUrl);
         log.warn`R2 artifact read failed for ${r2Key}: ${String(err)}`;
         return null;
       });
       setArtifactJsonCache(cacheUrl, cached);
     }
-    return cached as Promise<T | null>;
+    return cached.then((value) => decodeTrustedJson<T | null>(value));
   }
 
   async function readCrateRefs(storageName: string): Promise<CrateRefFile | null> {
-    const raw = await readJson<unknown>(refsKey(storageName), REF_TTL_MS);
+    const raw = await readJson<Schema.Json>(refsKey(storageName), REF_TTL_MS);
     if (!raw) return null;
     const refs = parseCrateRefs(raw);
     if (!refs) {
@@ -1049,10 +1151,13 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
       new Set(
         view.detail.relatedNodes
           .filter(
-            (node) =>
-              node.kind === "Impl" && node.impl_category === "Trait" && Boolean(node.impl_trait),
+            (node): node is typeof node & { impl_trait: string } =>
+              node.kind === "Impl" &&
+              node.impl_category === "Trait" &&
+              Predicate.isString(node.impl_trait) &&
+              node.impl_trait.length > 0,
           )
-          .map((node) => node.impl_trait as string),
+          .map((node) => node.impl_trait),
       ),
     );
     if (traitIds.length === 0) return view;
@@ -1165,7 +1270,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     url.searchParams.set("version", version);
     const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
     if (!response.ok) return null;
-    return (await response.json()) as StoredParseStatus | null;
+    return decodeTrustedJson<StoredParseStatus | null>(await response.json());
   }
 
   async function listHostedProcessing(limit: number): Promise<StoredParseStatus[]> {
@@ -1174,7 +1279,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     url.searchParams.set("limit", String(limit));
     const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
     if (!response.ok) return [];
-    return (await response.json()) as StoredParseStatus[];
+    return decodeTrustedJson<StoredParseStatus[]>(await response.json());
   }
 
   async function readHostedQueue(limit: number): Promise<StoredParseQueueSnapshot> {
@@ -1183,11 +1288,11 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     url.searchParams.set("limit", String(limit));
     const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
     if (!response.ok) return { active: [], recent: [] };
-    return (await response.json()) as StoredParseQueueSnapshot;
+    return decodeTrustedJson<StoredParseQueueSnapshot>(await response.json());
   }
 
   function githubHeaders(): HeadersInit {
-    const headers: Record<string, string> = {
+    const headers: GithubApiHeaders = {
       accept: "application/vnd.github+json",
       "user-agent": USER_AGENT,
       "x-github-api-version": GITHUB_API_VERSION,
@@ -1226,7 +1331,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
           log.warn`GitHub workflow run lookup failed status=${status} code=${String(response.status)}`;
           return [];
         }
-        const body = (await response.json()) as GitHubWorkflowRunsResponse;
+        const body = parseGitHubWorkflowRunsResponse(await response.json());
         return (body.workflow_runs ?? [])
           .map(workflowRunToActiveRun)
           .filter((run): run is ActiveParseRun => run !== null);
@@ -1249,7 +1354,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
       log.warn`GitHub repository lookup failed code=${String(response.status)}`;
       return null;
     }
-    return (await response.json()) as GitHubRepositoryResponse;
+    return parseGitHubRepositoryResponse(await response.json());
   }
 
   function emptyBillingSummary(
@@ -1318,7 +1423,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
         `GitHub billing usage unavailable: ${response.status} ${response.statusText}`,
       );
     }
-    const body = (await response.json()) as GitHubBillingUsageSummaryResponse;
+    const body = parseGitHubBillingUsageSummaryResponse(await response.json());
     return {
       available: true,
       owner,
@@ -1331,9 +1436,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
   function workflowRunDurationMinutes(run: GitHubWorkflowRun, nowMs: number): number {
     const start = run.created_at ? Date.parse(run.created_at) : NaN;
     if (!Number.isFinite(start)) return 0;
-    const isActive = run.status
-      ? (ACTIVE_GITHUB_RUN_STATUSES as readonly string[]).includes(run.status)
-      : false;
+    const isActive = isActiveGitHubRunStatus(run.status);
     const updated = run.updated_at ? Date.parse(run.updated_at) : NaN;
     const end = isActive ? nowMs : Number.isFinite(updated) ? updated : nowMs;
     return Math.max(0, (end - start) / 60_000);
@@ -1359,7 +1462,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
         log.warn`GitHub monthly workflow usage lookup failed code=${String(response.status)}`;
         return null;
       }
-      const body = (await response.json()) as GitHubWorkflowRunsResponse;
+      const body = parseGitHubWorkflowRunsResponse(await response.json());
       const runs = body.workflow_runs ?? [];
       loaded += runs.length;
       for (const run of runs) total += workflowRunDurationMinutes(run, nowMs);
@@ -1393,7 +1496,8 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
               Effect.catch((err) =>
                 Effect.sync(() => {
                   log.warn`${err.message}`;
-                  return [] as ActiveParseRun[];
+                  const empty: ActiveParseRun[] = [];
+                  return empty;
                 }),
               ),
             ),
@@ -1462,7 +1566,7 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
       loadGitHubRepository().catch(() => null),
       estimateParseWorkflowMinutesThisMonth().catch(() => null),
     ]);
-    const repoPrivate = typeof repository?.private === "boolean" ? repository.private : null;
+    const repoPrivate = Predicate.isBoolean(repository?.private) ? repository.private : null;
     const standardRunnerMinutesMetered = repoPrivate === null ? null : repoPrivate;
     const loadedBilling = await loadGitHubActionsBilling(repository).catch((err) =>
       emptyBillingSummary(
@@ -2167,17 +2271,26 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
   };
 }
 
+function hostedAppEnv<T>(env: T): AppEnv {
+  // SAFETY: Alchemy WebsiteEnv is this Worker's binding map; AppEnv requires CRATE_GRAPHS from that same map.
+  return env as AppEnv;
+}
+
 /** Build-time entry point imported through the `$provider` alias. */
 export function createProvider(event: RequestEvent): DataProvider {
-  const env = (event.platform as { env: AppEnv }).env;
-  return createCloudflareProvider(env, event.request);
+  const env = event.platform?.env;
+  if (!env) {
+    throw new Error("Hosted Cloudflare provider requires platform.env");
+  }
+  return createCloudflareProvider(hostedAppEnv(env), event.request);
 }
 
 /** Hosted mode uses the parser status Durable Object for realtime parse/status events. */
 export function handleWsUpgrade(event?: RequestEvent): Response | Promise<Response> {
-  if (!event)
+  if (!event) {
     return new Response("Hosted realtime status requires a request event", { status: 500 });
-  const env = (event?.platform as { env?: AppEnv } | undefined)?.env;
+  }
+  const env = event.platform?.env;
   if (!env?.PARSE_STATUS) {
     return new Response("Hosted realtime status is not configured", { status: 503 });
   }

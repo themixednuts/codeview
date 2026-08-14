@@ -1,16 +1,20 @@
+import * as Predicate from "effect/Predicate";
 import { getPerfLogger } from "./log";
+
+type PerfTimer = {
+  end: () => void;
+};
 
 type DetailFn<T> = string | ((result: T) => string);
 
 const perfNow = () => (globalThis.performance?.now ? globalThis.performance.now() : Date.now());
-const raf =
-  typeof requestAnimationFrame === "function"
-    ? requestAnimationFrame
-    : (cb: (time: number) => void) => setTimeout(() => cb(perfNow()), 16);
+const raf = Predicate.isFunction(globalThis.requestAnimationFrame)
+  ? globalThis.requestAnimationFrame.bind(globalThis)
+  : (cb: (time: number) => void) => setTimeout(() => cb(perfNow()), 16);
 
 function resolveDetail<T>(detail: DetailFn<T> | undefined, result: T): string {
   if (!detail) return "";
-  if (typeof detail === "string") return detail;
+  if (Predicate.isString(detail)) return detail;
   return detail(result);
 }
 
@@ -60,7 +64,7 @@ export const perf = {
     return result;
   },
 
-  begin(cat: string, label: string): { end: () => void } {
+  begin(cat: string, label: string): PerfTimer {
     const t0 = perfNow();
     const logger = getPerfLogger(cat);
     logger.debug(`${label} start`);

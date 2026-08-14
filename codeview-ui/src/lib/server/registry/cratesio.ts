@@ -1,4 +1,6 @@
 import { Result } from "better-result";
+import * as Predicate from "effect/Predicate";
+import type { Json, JsonObject } from "effect/Schema";
 import type { RegistryAdapter, PackageMetadata } from "./types";
 import { FetchError, JsonParseError } from "../errors";
 
@@ -21,16 +23,7 @@ interface CratesIoCrate {
   max_version: string;
 }
 
-interface CratesIoCrateDetailResponse {
-  crate: CratesIoCrate;
-}
-
-interface SparseIndexVersionEntry {
-  vers: string;
-  yanked?: boolean;
-}
-
-async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonParseError>> {
+async function fetchJson(url: string): Promise<Result<Json, FetchError | JsonParseError>> {
   let res: Response;
   try {
     res = await fetch(url, {
@@ -43,7 +36,7 @@ async function fetchJson<T>(url: string): Promise<Result<T, FetchError | JsonPar
     return Result.err(new FetchError({ url, status: res.status, statusText: res.statusText }));
   }
   try {
-    const data = (await res.json()) as T;
+    const data: Json = await res.json();
     return Result.ok(data);
   } catch (err) {
     return Result.err(
@@ -86,6 +79,61 @@ function sparseIndexPath(name: string): string {
   return `${crateName.slice(0, 2)}/${crateName.slice(2, 4)}/${crateName}`;
 }
 
+function isJsonObject(value: Json): value is JsonObject {
+  return Predicate.isObject(value);
+}
+
+function parseCratesIoCrate(value: Json): CratesIoCrate | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const { id, name, description, repository, max_version } = value;
+  if (
+    !Predicate.isString(id) ||
+    !Predicate.isString(name) ||
+    !Predicate.isString(description) ||
+    !Predicate.isString(max_version)
+  ) {
+    return undefined;
+  }
+  if (repository !== null && repository !== undefined && !Predicate.isString(repository)) {
+    return undefined;
+  }
+  return {
+    id,
+    name,
+    description,
+    repository: Predicate.isString(repository) ? repository : null,
+    max_version,
+  };
+}
+
+function parseCratesIoVersion(value: Json): CratesIoVersion | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const { num, dl_path, crate: crateName } = value;
+  if (!Predicate.isString(num) || !Predicate.isString(dl_path) || !Predicate.isString(crateName)) {
+    return undefined;
+  }
+  return { num, dl_path, crate: crateName };
+}
+
+function parseCrateList(value: Json): CratesIoCrate[] {
+  if (!isJsonObject(value) || !Array.isArray(value.crates)) return [];
+  return value.crates.flatMap((entry) => {
+    const crate = parseCratesIoCrate(entry);
+    return crate ? [crate] : [];
+  });
+}
+
+function crateToPackage(crate: CratesIoCrate): PackageMetadata {
+  return {
+    ecosystem: "rust",
+    name: crate.name,
+    version: crate.max_version,
+    description: crate.description,
+    repository: extractGitHubRepo(crate.repository),
+    repositoryUrl: crate.repository ?? undefined,
+  };
+}
+
 async function listSparseIndexVersions(name: string, limit: number): Promise<string[]> {
   const result = await fetchText(`${CRATES_IO_INDEX}/${sparseIndexPath(name)}`);
   if (result.isErr()) return [];
@@ -93,10 +141,11 @@ async function listSparseIndexVersions(name: string, limit: number): Promise<str
   for (const line of result.value.split("\n")) {
     if (!line) continue;
     try {
-      const entry = JSON.parse(line) as Partial<SparseIndexVersionEntry>;
-      if (typeof entry.vers === "string" && entry.yanked !== true) {
-        versions.push(entry.vers);
+      const parsed: Json = JSON.parse(line);
+      if (!isJsonObject(parsed) || !Predicate.isString(parsed.vers) || parsed.yanked === true) {
+        continue;
       }
+      versions.push(parsed.vers);
     } catch {
       continue;
     }
@@ -115,61 +164,45 @@ export function createCratesIoAdapter(): RegistryAdapter {
         resolvedVersion = latest;
       }
 
-      const result = await fetchJson<{ version: CratesIoVersion; crate?: CratesIoCrate }>(
-        `${CRATES_IO_API}/crates/${name}/${resolvedVersion}`,
-      );
+      const result = await fetchJson(`${CRATES_IO_API}/crates/${name}/${resolvedVersion}`);
       if (result.isErr()) return null;
-      const data = result.value;
-      if (!data.version) return null;
+      if (!isJsonObject(result.value)) return null;
+      const dataVersion = parseCratesIoVersion(result.value.version);
+      if (!dataVersion) return null;
+      const dataCrate = parseCratesIoCrate(result.value.crate);
 
       // Build docs.rs rustdoc JSON URL (gzip)
       // Use canonical name from crates.io (e.g. rand_core) — docs.rs 404s on hyphenated variants (rand-core)
-      const docsName = data.version.crate ?? name;
+      const docsName = dataVersion.crate ?? name;
       const artifactUrl = `https://docs.rs/crate/${docsName}/${resolvedVersion}/json.gz`;
 
       // crates.io download URL for source archive
-      const sourceArchiveUrl = `https://crates.io${data.version.dl_path}`;
+      const sourceArchiveUrl = `https://crates.io${dataVersion.dl_path}`;
 
       return {
         ecosystem: "rust",
-        name: canonicalCrateName(data.crate, data.version.crate ?? name),
-        version: data.version.num,
-        description: data.crate?.description,
-        repository: extractGitHubRepo(data.crate?.repository),
-        repositoryUrl: data.crate?.repository ?? undefined,
+        name: canonicalCrateName(dataCrate, dataVersion.crate ?? name),
+        version: dataVersion.num,
+        description: dataCrate?.description,
+        repository: extractGitHubRepo(dataCrate?.repository),
+        repositoryUrl: dataCrate?.repository ?? undefined,
         artifactUrl,
         sourceArchiveUrl,
       };
     },
 
     async search(query, limit = 20) {
-      const result = await fetchJson<{ crates: CratesIoCrate[] }>(
+      const result = await fetchJson(
         `${CRATES_IO_API}/crates?q=${encodeURIComponent(query)}&per_page=${limit}`,
       );
       if (result.isErr()) return [];
-      return result.value.crates.map((c) => ({
-        ecosystem: "rust" as const,
-        name: c.name,
-        version: c.max_version,
-        description: c.description,
-        repository: extractGitHubRepo(c.repository),
-        repositoryUrl: c.repository ?? undefined,
-      }));
+      return parseCrateList(result.value).map(crateToPackage);
     },
 
     async listTop(limit = 10) {
-      const result = await fetchJson<{ crates: CratesIoCrate[] }>(
-        `${CRATES_IO_API}/crates?sort=downloads&per_page=${limit}`,
-      );
+      const result = await fetchJson(`${CRATES_IO_API}/crates?sort=downloads&per_page=${limit}`);
       if (result.isErr()) return [];
-      return result.value.crates.map((c) => ({
-        ecosystem: "rust" as const,
-        name: c.name,
-        version: c.max_version,
-        description: c.description,
-        repository: extractGitHubRepo(c.repository),
-        repositoryUrl: c.repository ?? undefined,
-      }));
+      return parseCrateList(result.value).map(crateToPackage);
     },
 
     async listVersions(name, limit = DEFAULT_VERSION_LIMIT) {
@@ -179,11 +212,10 @@ export function createCratesIoAdapter(): RegistryAdapter {
     },
 
     async getLatestVersion(name) {
-      const result = await fetchJson<CratesIoCrateDetailResponse>(
-        `${CRATES_IO_API}/crates/${name}`,
-      );
+      const result = await fetchJson(`${CRATES_IO_API}/crates/${name}`);
       if (result.isErr()) return null;
-      return result.value.crate?.max_version ?? null;
+      if (!isJsonObject(result.value)) return null;
+      return parseCratesIoCrate(result.value.crate)?.max_version ?? null;
     },
   };
   return adapter;

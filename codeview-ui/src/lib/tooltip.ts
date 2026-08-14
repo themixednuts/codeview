@@ -31,13 +31,12 @@ function injectStyles() {
   document.head.appendChild(style);
 }
 
-export function tooltip(text: string): Attachment {
+export function tooltip(text: string): Attachment<HTMLElement> {
   return (element) => {
     injectStyles();
 
     const anchorName = `--tt-${nextId++}`;
-    const el = element as HTMLElement;
-    el.style.setProperty("anchor-name", anchorName);
+    element.style.setProperty("anchor-name", anchorName);
 
     const popover = document.createElement("div");
     popover.setAttribute("popover", "manual");

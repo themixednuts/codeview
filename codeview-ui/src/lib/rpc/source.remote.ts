@@ -1,8 +1,8 @@
 import { getRequestEvent, query } from "$app/server";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { initProvider } from "#lib/server/provider";
-import type { SourceResult } from "#lib/schema";
+import { initProvider } from "#lib/server/provider.js";
+import type { SourceResult } from "#lib/schema.js";
 import { assertCrateName, assertCrateRef } from "./remote-utils";
 import { GetSourceInputSchema } from "./schemas";
 

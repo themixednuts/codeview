@@ -1,27 +1,28 @@
 <script lang="ts">
-	import type { Node, NodeKind, Visibility } from '#lib/graph';
-	import { isPublic, visibilityLabel } from '#lib/display-names';
-	import type { GenericBound, GenericParam, TypeRef, WherePredicate } from '#lib/schema';
+	import type { Node, NodeKind, Visibility } from '#lib/graph.js';
+	import { isPublic, visibilityLabel } from '#lib/display-names.js';
+	import type { GenericBound, GenericParam, TypeRef, WherePredicate } from '#lib/schema.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import { kindColors } from '#lib/tree.js';
+	import { externalDocsUrl } from '#lib/docs.js';
+	import { formatItemDeclaration } from '#lib/signature-format.js';
+	import { renderTypeText } from '#lib/type-render.js';
+	import Documentation from './Documentation.svelte';
+	import CodeBlock from '#lib/components/design/CodeBlock.svelte';
+	import Signature from '#lib/components/design/Signature.svelte';
+	import CollapsibleSection from './CollapsibleSection.svelte';
+	import SourceViewer from './SourceViewer.svelte';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import { hyphenateCrateName, normalizeCrateName } from '#lib/crate-names.js';
+	import { extLinkModeCtx } from '#lib/context.js';
+	import * as Predicate from 'effect/Predicate';
+	import type { Snippet } from 'svelte';
 
 	/** Final segment of a `::`-separated path. `std::vec::Vec` → `Vec`. */
 	function pathTail(path: string): string {
 		const idx = path.lastIndexOf('::');
 		return idx >= 0 ? path.slice(idx + 2) : path;
 	}
-
-	import { resolveAppPath } from '#lib/app-paths';
-	import { kindColors } from '#lib/tree';
-	import { externalDocsUrl } from '#lib/docs';
-	import { formatItemDeclaration } from '#lib/signature-format';
-	import { renderTypeText } from '#lib/type-render';
-	import Documentation from './Documentation.svelte';
-	import CodeBlock from './CodeBlock.svelte';
-	import CollapsibleSection from './CollapsibleSection.svelte';
-	import SignatureBlock from './SignatureBlock.svelte';
-	import SourceViewer from './SourceViewer.svelte';
-	import Icon from '#lib/components/design/Icon.svelte';
-	import { hyphenateCrateName, normalizeCrateName } from '#lib/crate-names';
-	import { extLinkModeCtx } from '#lib/context';
 
 	const extLinkMode = $derived(extLinkModeCtx.get());
 
@@ -35,28 +36,7 @@
 		items: Node[];
 	};
 
-	let {
-		selected,
-		sourceImpls,
-		blanketImpls,
-		methodGroups,
-		traitImplGroups,
-		requiredTraitMethods = [],
-		providedTraitMethods = [],
-		traitAssocItems = [],
-		directItems = [],
-		kindLabels,
-		displayNode,
-		implementers = [],
-		theme = 'light',
-		getNodeUrl,
-		nodeExists,
-		nodeMeta,
-		crateName,
-		crateVersion,
-		crateVersions,
-		belowTitle,
-	} = $props<{
+	type NodeDetailsProps = {
 		selected: Node | null;
 		sourceImpls: Node[];
 		blanketImpls: Node[];
@@ -83,10 +63,33 @@
 		 *  h1 + path + source) and before the Documentation / Methods / etc.
 		 *  sections. The DetailView hoists the relationship graph card into
 		 *  this slot so the visual context appears before the doc prose. */
-		belowTitle?: import('svelte').Snippet;
-	}>();
+		belowTitle?: Snippet;
+	};
 
-	const selectedKind = $derived(selected?.kind as NodeKind);
+	let {
+		selected,
+		sourceImpls,
+		blanketImpls,
+		methodGroups,
+		traitImplGroups,
+		requiredTraitMethods = [],
+		providedTraitMethods = [],
+		traitAssocItems = [],
+		directItems = [],
+		kindLabels,
+		displayNode,
+		implementers = [],
+		theme = 'light',
+		getNodeUrl,
+		nodeExists,
+		nodeMeta,
+		crateName,
+		crateVersion,
+		crateVersions,
+		belowTitle,
+	}: NodeDetailsProps = $props();
+
+	const selectedKind = $derived(selected?.kind);
 	const unknownVisibility: Visibility = { kind: 'Unknown' };
 	const selectedVisibility = $derived(safeVisibility(selected));
 	const selectedIsPublic = $derived(isPublic(selectedVisibility));
@@ -118,20 +121,21 @@
 	});
 
 	function safeVisibility(node: Node | null): Visibility {
-		const raw = node as unknown;
-		if (!raw || typeof raw !== 'object') return unknownVisibility;
-		return ((raw as { visibility?: Visibility }).visibility ?? unknownVisibility) as Visibility;
+		if (node === null) return unknownVisibility;
+		return node.visibility;
 	}
 
-	function safeNodeId(value: unknown): string | null {
-		return typeof value === 'string' && value.length > 0 ? value : null;
+	type NodeIdInput = string | number | boolean | bigint | symbol | null | undefined;
+
+	function safeNodeId(value: NodeIdInput): string | null {
+		return Predicate.isString(value) && value.length > 0 ? value : null;
 	}
 
-	function crateFromId(id?: unknown) {
+	function crateFromId(id?: string | null) {
 		return safeNodeId(id)?.split('::')[0];
 	}
 
-	function resolveVersionForCrate(id?: unknown) {
+	function resolveVersionForCrate(id?: string | null) {
 		const idCrate = crateFromId(id);
 		if (!idCrate) return crateVersion;
 		if (crateName && normalizeCrateName(idCrate) === normalizeCrateName(crateName)) {
@@ -144,7 +148,7 @@
 		);
 	}
 
-	function displayNodeSafe(value: unknown): string {
+	function displayNodeSafe(value: NodeIdInput): string {
 		const nodeId = safeNodeId(value);
 		if (!nodeId) return '';
 		try {
@@ -154,7 +158,7 @@
 		}
 	}
 
-	function hasInternalNode(value: unknown): boolean {
+	function hasInternalNode(value: NodeIdInput): boolean {
 		const nodeId = safeNodeId(value);
 		return (
 			!!nodeId &&
@@ -165,34 +169,34 @@
 		);
 	}
 
-	function hasExternalNode(value: unknown): boolean {
+	function hasExternalNode(value: NodeIdInput): boolean {
 		const nodeId = safeNodeId(value);
 		return !!nodeId && !!getNodeUrl && isRoutableNode(nodeId) && isExternalNode(nodeId);
 	}
 
-	function isRoutableNode(value: unknown): boolean {
+	function isRoutableNode(value: NodeIdInput): boolean {
 		const nodeId = safeNodeId(value);
 		return !!nodeId && nodeMeta?.(nodeId)?.kind !== 'Impl';
 	}
 
-	function nodeHref(value: unknown): string {
+	function nodeHref(value: NodeIdInput): string {
 		const nodeId = safeNodeId(value);
 		if (!nodeId || !getNodeUrl) return '#';
 		const href = getNodeUrl(nodeId);
-		return typeof href === 'string' && href.length > 0 ? resolveAppPath(href) : '#';
+		return Predicate.isString(href) && href.length > 0 ? resolveAppPath(href) : '#';
 	}
 
-	function isExternalNode(value: unknown): boolean {
+	function isExternalNode(value: NodeIdInput): boolean {
 		const nodeId = safeNodeId(value);
 		return nodeId ? (nodeMeta?.(nodeId)?.is_external ?? false) : false;
 	}
 
-	function externalNodeKind(value: unknown): NodeKind | undefined {
+	function externalNodeKind(value: NodeIdInput): NodeKind | undefined {
 		const nodeId = safeNodeId(value);
 		return nodeId ? nodeMeta?.(nodeId)?.kind : undefined;
 	}
 
-	function externalLinkHandler(value: unknown): (e: MouseEvent) => void {
+	function externalLinkHandler(value: NodeIdInput): (e: MouseEvent) => void {
 		const nodeId = safeNodeId(value);
 		const kind = externalNodeKind(nodeId);
 		const crate = crateFromId(nodeId);
@@ -281,16 +285,21 @@
 
 	/** Visibility keyword prefix for a field (`pub ` / `pub(crate) ` / ``). */
 	function fieldVisPrefix(vis: Visibility | undefined): string {
-		const raw = vis as { kind?: string; path?: string } | undefined;
-		switch (raw?.kind) {
+		if (!vis) return '';
+		switch (vis.kind) {
 			case 'Public':
 				return 'pub ';
 			case 'Crate':
 				return 'pub(crate) ';
 			case 'Restricted':
-				return `pub(in ${raw.path ?? 'crate'}) `;
-			default:
+				return `pub(in ${vis.path ?? 'crate'}) `;
+			case 'Inherited':
+			case 'Unknown':
 				return '';
+			default: {
+				const _exhaustive: never = vis;
+				return _exhaustive;
+			}
 		}
 	}
 
@@ -328,9 +337,8 @@
 		return traitImplGroupById.get(implId);
 	}
 
-	// fn signatures are now formatted by SignatureBlock, which measures the
-	// real container width via ResizeObserver and picks inline-vs-multiline
-	// dynamically — see SignatureBlock.svelte for the rustfmt-style break
+	// fn signatures are formatted by Signature, which measures the
+	// available width and swaps between inline and multiline forms.
 	// shape (header `(`, one arg per line, closing `)` before `->`).
 	const TYPE_WRAP_COLUMN = 80;
 
@@ -469,7 +477,7 @@
 	{/if}
 {/snippet}
 
-{#snippet genericArgs(args: import('#lib/schema').GenericArgs)}
+{#snippet genericArgs(args: import('#lib/schema.js').GenericArgs)}
 	{#if args.kind === 'AngleBracketed'}
 		{@const allParts: number = args.args.length + (args.constraints?.length ?? 0)}
 		{#if allParts > 0}
@@ -667,7 +675,7 @@
 			</div>
 		{/if}
 		{#if member.signature}
-			<SignatureBlock node={member} {theme} variant="flat" />
+			<Signature node={member} {theme} variant="flat" />
 		{:else if member.type}
 			<div class="flex flex-wrap items-baseline gap-2 text-sm font-(--font-code)">
 				{#if member.kind === 'AssocConst' || member.kind === 'Constant'}
@@ -749,7 +757,7 @@
 					style="color: var(--ink-soft)"
 					aria-label={kindLabels[selected.kind]}
 				>
-					<span class="kind-label-bar" style="background: {kindColors[selectedKind]}"></span>
+					<span class="kind-label-bar" style="background: {kindColors[selected.kind]}"></span>
 					{kindLabels[selected.kind]}
 				</span>
 				<h1
@@ -842,7 +850,7 @@
 		{#if itemDeclaration}
 			<div class="declaration-block mb-5">
 				{#if selected.signature}
-					<SignatureBlock node={selected} {theme} />
+					<Signature node={selected} {theme} />
 				{:else}
 					<CodeBlock code={itemDeclaration.multiline} lang="rust" {theme} variant="flat" />
 				{/if}
@@ -1247,7 +1255,7 @@
 											</div>
 										{/if}
 										{#if method.signature}
-											<SignatureBlock node={method} {theme} variant="flat" />
+											<Signature node={method} {theme} variant="flat" />
 										{/if}
 										{#if method.docs}
 											<div

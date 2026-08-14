@@ -1,14 +1,14 @@
 import { query, command, form } from "$app/server";
-import { isHosted } from "#lib/platform";
-import { sanitizeSearchQuery } from "#lib/server/validation";
+import { isHosted } from "#lib/platform.js";
+import { sanitizeSearchQuery } from "#lib/server/validation.js";
 import {
   type CrateSummary,
   type CrateIndex,
   type CrateTree,
   type CrateStatus,
   type CrateSearchResult,
-} from "#lib/schema";
-import { summarizeNode } from "#lib/node-summary";
+} from "#lib/schema.js";
+import { summarizeNode } from "#lib/node-summary.js";
 import { loader } from "./helpers";
 import { assertCrateName, assertCrateRef, throwIfProviderErr } from "./remote-utils";
 import {

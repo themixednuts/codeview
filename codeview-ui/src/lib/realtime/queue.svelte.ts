@@ -1,14 +1,10 @@
-import { getLogger } from "#lib/log";
+import { getLogger } from "#lib/log.js";
 import { connect } from "$realtime";
-import type { ParseQueueEntry } from "#lib/server/provider";
-import type { StoredParseStatus } from "#lib/server/cloudflare/parse-contract";
+import type { ParseQueueEntry } from "#lib/server/provider.js";
 import type { RealtimeClient } from "./types";
-
-interface QueueMessage {
-  type?: string;
-  active?: unknown;
-  recent?: unknown;
-}
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 export class QueueStatusConnection implements Disposable {
   active = $state.raw<ParseQueueEntry[]>([]);
@@ -18,7 +14,7 @@ export class QueueStatusConnection implements Disposable {
   #client: RealtimeClient = connect();
   #log = getLogger("queue-status");
   #tag: string | null = null;
-  #callback = (data: unknown) => this.#onData(data as QueueMessage);
+  #callback = (data: Schema.Json) => this.#onData(data);
 
   connect(ecosystem = "rust") {
     const tag = `queue:${ecosystem}`;
@@ -34,12 +30,21 @@ export class QueueStatusConnection implements Disposable {
     this.#tag = null;
   }
 
-  #onData(message: QueueMessage) {
-    if (message.type && message.type !== "queue") return;
-    if (!Array.isArray(message.active) || !Array.isArray(message.recent)) return;
+  #onData(data: Schema.Json) {
+    if (!Predicate.isObject(data)) return;
+    const type = "type" in data && Predicate.isString(data.type) ? data.type : undefined;
+    if (type && type !== "queue") return;
+    if (!("active" in data) || !("recent" in data)) return;
+    if (!Array.isArray(data.active) || !Array.isArray(data.recent)) return;
 
-    const active = message.active.filter(isStoredParseStatus);
-    const recent = message.recent.filter(isStoredParseStatus);
+    const active =
+      Option.getOrUndefined(
+        Schema.decodeUnknownOption(Schema.Array(QueueStatusSnapshotSchema))(data.active),
+      ) ?? [];
+    const recent =
+      Option.getOrUndefined(
+        Schema.decodeUnknownOption(Schema.Array(QueueStatusSnapshotSchema))(data.recent),
+      ) ?? [];
     this.active = active.map((entry, index) => toQueueEntry(entry, index + 1));
     this.recent = recent.map((entry) => toQueueEntry(entry));
     this.received = true;
@@ -55,23 +60,32 @@ export class QueueStatusConnection implements Disposable {
   }
 }
 
-function isStoredParseStatus(value: unknown): value is StoredParseStatus {
-  if (!value || typeof value !== "object") return false;
-  const status = value as Partial<StoredParseStatus>;
-  return (
-    (status.kind === "crate" || status.kind === "sysroot") &&
-    typeof status.name === "string" &&
-    typeof status.version === "string" &&
-    (status.status === "unknown" ||
-      status.status === "processing" ||
-      status.status === "ready" ||
-      status.status === "failed") &&
-    typeof status.createdAt === "string" &&
-    typeof status.updatedAt === "string"
-  );
-}
+const QueueStatusSnapshotSchema = Schema.Struct({
+  kind: Schema.Literals(["crate", "sysroot"]),
+  name: Schema.String,
+  version: Schema.String,
+  status: Schema.Literals(["unknown", "processing", "ready", "failed"]),
+  createdAt: Schema.String,
+  updatedAt: Schema.String,
+  step: Schema.optionalKey(Schema.String),
+  error: Schema.optionalKey(Schema.String),
+  requestId: Schema.optionalKey(Schema.String),
+  workflowId: Schema.optionalKey(Schema.String),
+  githubRunId: Schema.optionalKey(Schema.String),
+  githubRunUrl: Schema.optionalKey(Schema.String),
+  requestedBy: Schema.optionalKey(
+    Schema.Struct({
+      provider: Schema.Literal("github"),
+      id: Schema.String,
+      login: Schema.String,
+      avatarUrl: Schema.optionalKey(Schema.String),
+    }),
+  ),
+});
 
-function toQueueEntry(status: StoredParseStatus, position?: number): ParseQueueEntry {
+type QueueStatusSnapshot = typeof QueueStatusSnapshotSchema.Type;
+
+function toQueueEntry(status: QueueStatusSnapshot, position?: number): ParseQueueEntry {
   return {
     kind: status.kind,
     name: status.name,

@@ -1,4 +1,5 @@
 import { Result } from "better-result";
+import * as Predicate from "effect/Predicate";
 import { WorkflowStepError } from "../errors";
 
 /** Mirrors Cloudflare's retry config shape */
@@ -61,10 +62,12 @@ export async function runWorkflow<TParams>(
       configOrCallback: WorkflowStepConfig | (() => Promise<T>),
       maybeCallback?: () => Promise<T>,
     ): Promise<T> {
-      const config: WorkflowStepConfig | undefined =
-        typeof configOrCallback === "function" ? undefined : configOrCallback;
-      const callback: () => Promise<T> =
-        typeof configOrCallback === "function" ? configOrCallback : maybeCallback!;
+      const config: WorkflowStepConfig | undefined = Predicate.isFunction(configOrCallback)
+        ? undefined
+        : configOrCallback;
+      const callback: () => Promise<T> = Predicate.isFunction(configOrCallback)
+        ? configOrCallback
+        : maybeCallback!;
 
       currentStep = name;
       options?.onStepStart?.(name);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { Node, NodeDetail, NodeKind } from "#lib/schema";
+import type { Node, NodeDetail, NodeKind } from "#lib/schema.js";
 import { buildDetailDocModel, materializeDetailDocModel } from "./detail-model";
 
 const visibility = { kind: "Public" } as const;

@@ -17,14 +17,19 @@ export type SourceFileArchiveOutcome =
 
 const TEXT_DECODER = new TextDecoder();
 
+function archiveHeaders(options: SourceArchiveOptions): Headers {
+  const headers = new Headers(options.headers);
+  if (options.userAgent && !headers.has("User-Agent")) {
+    headers.set("User-Agent", options.userAgent);
+  }
+  return headers;
+}
+
 export async function fetchSourceArchive(
   url: string,
   options: SourceArchiveOptions,
 ): Promise<SourceArchiveOutcome> {
-  const headers: Record<string, string> = { ...options.headers };
-  if (options.userAgent && !headers["User-Agent"]) {
-    headers["User-Agent"] = options.userAgent;
-  }
+  const headers = archiveHeaders(options);
 
   let response: Response;
   try {
@@ -48,10 +53,7 @@ export async function fetchSourceFileFromArchive(
   targetFile: string,
   options: SourceArchiveOptions,
 ): Promise<SourceFileArchiveOutcome> {
-  const headers: Record<string, string> = { ...options.headers };
-  if (options.userAgent && !headers["User-Agent"]) {
-    headers["User-Agent"] = options.userAgent;
-  }
+  const headers = archiveHeaders(options);
 
   let response: Response;
   try {
@@ -303,12 +305,14 @@ function isZeroBlock(block: Uint8Array): boolean {
   return true;
 }
 
-function parseTarHeader(block: Uint8Array): {
+type TarHeader = {
   name: string;
   size: number;
   typeflag: string;
   prefix: string;
-} {
+};
+
+function parseTarHeader(block: Uint8Array): TarHeader {
   const name = decodeNullTerminated(block.subarray(0, 100));
   const sizeRaw = decodeNullTerminated(block.subarray(124, 136));
   const typeflag = decodeNullTerminated(block.subarray(156, 157)) || "\0";

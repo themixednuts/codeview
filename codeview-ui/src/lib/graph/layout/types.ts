@@ -1,4 +1,4 @@
-import type { Confidence, Edge, Node } from "#lib/graph";
+import type { Confidence, Edge, Node } from "#lib/graph.js";
 
 export type LayoutMode = "ego" | "force" | "hierarchical" | "radial";
 
@@ -25,6 +25,16 @@ export type VisEdge = {
   confidence: Confidence;
   is_glob?: boolean;
   direction: "in" | "out";
+};
+
+export type VisLayout = {
+  nodes: VisNode[];
+  edges: VisEdge[];
+};
+
+export type NodeBox = {
+  width: number;
+  height: number;
 };
 
 export const LAYOUT_WIDTH = 700;

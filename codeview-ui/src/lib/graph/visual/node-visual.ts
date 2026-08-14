@@ -1,7 +1,7 @@
-import type { NodeKind } from "#lib/graph";
+import type { NodeKind } from "#lib/graph.js";
 import type { NodeVisual } from "./types";
 import { kindVisuals } from "./palette";
-import { BASE_SPECS, nodeSvgPath, buildHeaderPath } from "./shapes";
+import { BASE_SPECS, nodeSvgPath, buildHeaderPath } from "./glyphs";
 
 const CENTER_SCALE = 1.15;
 const visualCache = new Map<string, NodeVisual>();
@@ -13,18 +13,18 @@ function buildNodeVisual(kind: NodeKind, isCenter: boolean): NodeVisual {
   const h = Math.round(spec.height * scale);
   const cr = spec.cornerRadius;
   const colors = kindVisuals[kind];
-  const { headerPath, headerHeight } = buildHeaderPath(spec.shape, w, h, cr, isCenter);
+  const { headerPath, headerHeight } = buildHeaderPath(spec.glyph, w, h, cr, isCenter);
 
   return {
-    shape: spec.shape,
+    glyph: spec.glyph,
     width: w,
     height: h,
     fill: colors.fill,
     stroke: colors.stroke,
     strokeWidth: isCenter ? 3 : 2,
-    strokeDasharray: spec.strokeDasharray,
+    strokeDasharray: "strokeDasharray" in spec ? spec.strokeDasharray : undefined,
     cornerRadius: cr,
-    svgPath: nodeSvgPath(spec.shape, w, h, cr),
+    svgPath: nodeSvgPath(spec.glyph, w, h, cr),
     headerPath,
     headerHeight,
     labelFontSize: isCenter ? 14 : 11,

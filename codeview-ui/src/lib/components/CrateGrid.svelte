@@ -3,10 +3,14 @@
 		CrateMapData,
 		CrateMapModuleNode,
 		CrateMapSemanticKind,
-	} from '#lib/graph/crate-map';
-	import { resolveAppPath } from '#lib/app-paths';
-	import { findContainingModule, moduleDepthColor } from '#lib/graph/crate-map';
-	import { edgeLabels } from '#lib/display-names';
+	} from '#lib/graph/crate-map.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import {
+		CRATE_MAP_SEMANTIC_KINDS,
+		findContainingModule,
+		moduleDepthColor,
+	} from '#lib/graph/crate-map.js';
+	import { edgeLabels } from '#lib/display-names.js';
 
 	let {
 		data,
@@ -36,12 +40,10 @@
 				byKind = new Map();
 				outgoing.set(edge.from, byKind);
 			}
-			for (const [kind, count] of Object.entries(edge.kindCounts) as [string, number][]) {
-				if (count > 0) {
-					byKind.set(
-						kind as CrateMapSemanticKind,
-						(byKind.get(kind as CrateMapSemanticKind) ?? 0) + count,
-					);
+			for (const kind of CRATE_MAP_SEMANTIC_KINDS) {
+				const count = edge.kindCounts[kind];
+				if (count !== undefined && count > 0) {
+					byKind.set(kind, (byKind.get(kind) ?? 0) + count);
 				}
 			}
 		}

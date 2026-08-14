@@ -26,10 +26,10 @@ export interface SubscriptionMessage {
   tags?: string[];
 }
 
-export interface BroadcastMessage {
-  tag: string;
-  data: unknown;
-}
+export type StreamStats = {
+  clients: number;
+  subscriptions: number;
+};
 
 export class SharedEventStream {
   private clients = new Map<string, ClientSubscription>();
@@ -171,7 +171,7 @@ export class SharedEventStream {
   /**
    * Broadcast a message to all clients subscribed to a tag
    */
-  async broadcast(tag: string, data: unknown): Promise<void> {
+  async broadcast<T>(tag: string, data: T): Promise<void> {
     const clientsForTag = this.tagToClients.get(tag);
     if (!clientsForTag || clientsForTag.size === 0) return;
 
@@ -206,7 +206,7 @@ export class SharedEventStream {
   /**
    * Send a direct message to a specific client
    */
-  async sendToClient(clientId: string, data: unknown): Promise<boolean> {
+  async sendToClient<T>(clientId: string, data: T): Promise<boolean> {
     const client = this.clients.get(clientId);
     if (!client) return false;
 
@@ -225,7 +225,7 @@ export class SharedEventStream {
   /**
    * Get stats for debugging
    */
-  getStats(): { clients: number; subscriptions: number } {
+  getStats(): StreamStats {
     let totalSubscriptions = 0;
     for (const client of this.clients.values()) {
       totalSubscriptions += client.tags.size;

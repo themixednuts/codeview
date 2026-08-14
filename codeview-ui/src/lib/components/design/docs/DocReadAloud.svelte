@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { browser } from '$app/env';
-	import type { Node } from '#lib/schema';
-	import { kindLabels } from '#lib/display-names';
-	import { parseDocumentation } from '#lib/highlight/documentation';
+	import type { Node } from '#lib/schema.js';
+	import { kindLabels } from '#lib/display-names.js';
+	import { parseDocumentation } from '#lib/highlight/documentation.js';
 	import PlayIcon from '@lucide/svelte/icons/play';
 	import PauseIcon from '@lucide/svelte/icons/pause';
 	import SquareIcon from '@lucide/svelte/icons/square';
@@ -10,10 +10,11 @@
 	import GaugeIcon from '@lucide/svelte/icons/gauge';
 	import Volume2Icon from '@lucide/svelte/icons/volume-2';
 	import RotateCcwIcon from '@lucide/svelte/icons/rotate-ccw';
+	import * as Predicate from 'effect/Predicate';
 
 	type SpeechState = 'idle' | 'speaking' | 'paused';
 
-	let { node } = $props<{ node: Node }>();
+	let { node }: { node: Node } = $props();
 
 	let includeCode = $state(false);
 	let rate = $state(1);
@@ -29,7 +30,7 @@
 		browser &&
 			'speechSynthesis' in window &&
 			'SpeechSynthesisUtterance' in window &&
-			typeof window.speechSynthesis?.speak === 'function',
+			Predicate.isFunction(window.speechSynthesis?.speak),
 	);
 	const transcript = $derived(buildTranscript());
 	const canRead = $derived(supported && transcript.length > 0);
@@ -47,7 +48,7 @@
 	function buildTranscript(): string {
 		if (!docs.trim()) return '';
 
-		const kindLabel = kindLabels[node.kind as keyof typeof kindLabels] ?? String(node.kind);
+		const kindLabel = kindLabels[node.kind];
 		const parts = [`${kindLabel} ${node.name}.`];
 		for (const segment of segments) {
 			if (segment.type === 'text') {
@@ -65,7 +66,7 @@
 	}
 
 	function htmlToText(html: string): string {
-		if (browser && typeof DOMParser !== 'undefined') {
+		if (browser && globalThis.DOMParser !== undefined) {
 			const doc = new DOMParser().parseFromString(html, 'text/html');
 			doc.querySelectorAll('script, style, svg').forEach((el) => el.remove());
 			doc.querySelectorAll('code').forEach((el) => {
@@ -186,7 +187,9 @@
 	}
 
 	function updateRate(event: Event) {
-		const nextRate = Number((event.currentTarget as HTMLInputElement).value);
+		const target = event.currentTarget;
+		if (!(target instanceof HTMLInputElement)) return;
+		const nextRate = Number(target.value);
 		if (Number.isFinite(nextRate)) rate = nextRate;
 	}
 </script>

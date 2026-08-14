@@ -35,10 +35,7 @@ function tarGz(entries: Array<[string, string]>): ArrayBuffer {
       Buffer.alloc(1024),
     ]),
   );
-  return compressed.buffer.slice(
-    compressed.byteOffset,
-    compressed.byteOffset + compressed.byteLength,
-  ) as ArrayBuffer;
+  return Uint8Array.from(compressed).buffer;
 }
 
 function responseFor(entries: Array<[string, string]>): Response {

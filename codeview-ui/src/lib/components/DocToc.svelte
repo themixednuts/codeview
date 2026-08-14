@@ -24,7 +24,8 @@
 					.filter((r) => r.isIntersecting)
 					.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
 				if (visible.length > 0) {
-					activeAnchor = (visible[0].target as HTMLElement).id;
+					const target = visible[0].target;
+					if (target instanceof HTMLElement) activeAnchor = target.id;
 				}
 			},
 			{ rootMargin: '-80px 0px -60% 0px', threshold: 0 },

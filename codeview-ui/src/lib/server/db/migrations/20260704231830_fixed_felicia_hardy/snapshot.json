@@ -2,9 +2,7 @@
   "version": "7",
   "dialect": "sqlite",
   "id": "e4b1462e-bbc4-4113-bf98-4efdfc4fdbce",
-  "prevIds": [
-    "691479b9-5c76-4e7c-8bd7-638ab0888fee"
-  ],
+  "prevIds": ["691479b9-5c76-4e7c-8bd7-638ab0888fee"],
   "ddl": [
     {
       "name": "crate_graphs",
@@ -529,22 +527,14 @@
       "table": "source_cache"
     },
     {
-      "columns": [
-        "ecosystem",
-        "name",
-        "version"
-      ],
+      "columns": ["ecosystem", "name", "version"],
       "nameExplicit": false,
       "name": "crate_graphs_pk",
       "entityType": "pks",
       "table": "crate_graphs"
     },
     {
-      "columns": [
-        "ecosystem",
-        "name",
-        "version"
-      ],
+      "columns": ["ecosystem", "name", "version"],
       "nameExplicit": false,
       "name": "crate_status_pk",
       "entityType": "pks",
@@ -566,53 +556,35 @@
       "table": "cross_edges"
     },
     {
-      "columns": [
-        "ecosystem",
-        "crate_name",
-        "crate_version",
-        "from_id",
-        "to_id",
-        "kind"
-      ],
+      "columns": ["ecosystem", "crate_name", "crate_version", "from_id", "to_id", "kind"],
       "nameExplicit": false,
       "name": "edges_pk",
       "entityType": "pks",
       "table": "edges"
     },
     {
-      "columns": [
-        "ecosystem",
-        "crate_name",
-        "crate_version",
-        "node_id"
-      ],
+      "columns": ["ecosystem", "crate_name", "crate_version", "node_id"],
       "nameExplicit": false,
       "name": "node_details_pk",
       "entityType": "pks",
       "table": "node_details"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "graph_data_pk",
       "table": "graph_data",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "node_id"
-      ],
+      "columns": ["node_id"],
       "nameExplicit": false,
       "name": "node_index_pk",
       "table": "node_index",
       "entityType": "pks"
     },
     {
-      "columns": [
-        "path"
-      ],
+      "columns": ["path"],
       "nameExplicit": false,
       "name": "source_cache_pk",
       "table": "source_cache",

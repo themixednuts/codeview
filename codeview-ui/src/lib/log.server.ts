@@ -1,9 +1,10 @@
 import { Result } from "better-result";
 import { getStreamSink, type Sink } from "@logtape/logtape";
+import * as Predicate from "effect/Predicate";
 import { setupLogging as setupBaseLogging } from "./log";
 
 async function createFileSink(): Promise<Sink | null> {
-  if (typeof globalThis.caches !== "undefined") return null;
+  if (globalThis.caches !== undefined) return null;
   const logFile = process.env.LOG_FILE;
   if (!logFile) return null;
 
@@ -24,7 +25,7 @@ async function createFileSink(): Promise<Sink | null> {
       const level = record.level.toUpperCase();
       const category = record.category.slice(1).join(":");
       const message = record.message
-        .map((part) => (typeof part === "function" ? part() : part))
+        .map((part) => (Predicate.isFunction(part) ? part() : part))
         .join("");
       const properties =
         record.properties && Object.keys(record.properties).length > 0

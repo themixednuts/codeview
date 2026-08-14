@@ -8,6 +8,9 @@
  * representation of Rust enums (e.g. `{"resolved_path": {...}}`).
  */
 
+import * as Predicate from "effect/Predicate";
+import type { Json, JsonObject } from "effect/Schema";
+
 // ---------------------------------------------------------------------------
 // Root
 // ---------------------------------------------------------------------------
@@ -431,10 +434,14 @@ export type Term = { type: Type } | { constant: Constant };
 // Helpers for discriminated union access
 // ---------------------------------------------------------------------------
 
+function isJsonObject(value: Json): value is JsonObject {
+  return Predicate.isObject(value);
+}
+
 /** Get the tag key of a tagged object union (the first own key). */
-export function tagOf(obj: unknown): string | undefined {
-  if (typeof obj === "string") return obj;
-  if (obj && typeof obj === "object") {
+export function tagOf(obj: Json): string | undefined {
+  if (Predicate.isString(obj)) return obj;
+  if (isJsonObject(obj)) {
     const keys = Object.keys(obj);
     return keys.length > 0 ? keys[0] : undefined;
   }
@@ -442,11 +449,12 @@ export function tagOf(obj: unknown): string | undefined {
 }
 
 /** Get the value of a tagged object union. */
-export function valueOf<T>(obj: unknown): T {
-  if (typeof obj === "string") return obj as T;
-  if (obj && typeof obj === "object") {
+export function valueOf(obj: Json): Json | undefined {
+  if (Predicate.isString(obj)) return obj;
+  if (isJsonObject(obj)) {
     const keys = Object.keys(obj);
-    return (obj as Record<string, T>)[keys[0]];
+    const key = keys[0];
+    return key === undefined ? undefined : obj[key];
   }
-  return obj as T;
+  return obj;
 }

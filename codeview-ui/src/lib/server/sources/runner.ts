@@ -107,16 +107,16 @@ async function raceFallbacks(
   try {
     return await Promise.any(attempts);
   } catch (err) {
-    if (isOverLimitError(err)) return null;
+    if (err instanceof Error && isOverLimitError(err)) return null;
     return null;
   }
 }
 
-function isOverLimitError(err: unknown): boolean {
+function isOverLimitError(err: Error): boolean {
   if (SourceOverLimitError.is(err)) return true;
   if (err instanceof AggregateError) {
     for (const inner of err.errors) {
-      if (SourceOverLimitError.is(inner)) return true;
+      if (inner instanceof Error && SourceOverLimitError.is(inner)) return true;
     }
   }
   return false;

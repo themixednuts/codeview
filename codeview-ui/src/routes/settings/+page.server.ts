@@ -17,8 +17,8 @@ import {
   VOICE_KEY,
   VOICE_VALUES,
   readAllowedPreference,
-} from "#lib/preferences";
-import { safeReturnPath } from "#lib/server/safe-return";
+} from "#lib/preferences.js";
+import { safeReturnPath } from "#lib/server/safe-return.js";
 import { redirect } from "@sveltejs/kit";
 import type { Actions, PageServerLoad, RequestEvent } from "./$types";
 

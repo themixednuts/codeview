@@ -10,28 +10,29 @@
 		NodeView,
 		RelationshipGroup,
 		TreeNodeDTO,
-	} from '#lib/schema';
-	import type { CrateStatusValue } from '#lib/context';
+	} from '#lib/schema.js';
+	import type { CrateStatusValue } from '#lib/context.js';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { onDestroy, onMount } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
-	import { resolveAppPath } from '#lib/app-paths';
-	import { crateVersionsCtx, docLayoutCtx, expandPathCtx, resolvedThemeCtx } from '#lib/context';
-	import { nodeKindOrder, visibilityLabel } from '#lib/display-names';
-	import { toDesignNode } from '#lib/design/live-node';
-	import { buildNodeRelationshipGroups } from '#lib/design/relationship-groups';
-	import { materializeDetailDocModel } from '#lib/detail-model';
-	import { getStaticTreeChildren, getTreeChildren } from '#lib/rpc/children.remote';
-	import { searchNodes } from '#lib/rpc/search.remote';
-	import { isHosted } from '#lib/platform';
-	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '#lib/tree';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import { crateVersionsCtx, docLayoutCtx, expandPathCtx, resolvedThemeCtx } from '#lib/context.js';
+	import { nodeKindOrder, visibilityLabel } from '#lib/display-names.js';
+	import { toDesignNode } from '#lib/design/live-node.js';
+	import { buildNodeRelationshipGroups } from '#lib/design/relationship-groups.js';
+	import { materializeDetailDocModel } from '#lib/detail-model.js';
+	import { getStaticTreeChildren, getTreeChildren } from '#lib/rpc/children.remote.js';
+	import { searchNodes } from '#lib/rpc/search.remote.js';
+	import { isHosted } from '#lib/platform.js';
+	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '#lib/tree.js';
+	import * as Predicate from 'effect/Predicate';
 	import {
 		parseExplorerState,
 		serializeExplorerState,
 		type ExplorerDocLayout,
 		type ExplorerViewState,
 		type ExplorerViewMode,
-	} from '#lib/url-state';
+	} from '#lib/url-state.js';
 	import SkeletonTree from '#lib/components/SkeletonTree.svelte';
 	import * as Resizable from '#lib/components/ui/resizable/index.js';
 	import Icon from './Icon.svelte';
@@ -129,11 +130,15 @@
 		};
 	};
 
+	function isExplorerDocLayout(value: string): value is ExplorerDocLayout {
+		return value === 'classic' || value === 'reading' || value === 'split';
+	}
+
 	function handleDocLayoutPreferenceEvent(event: Event) {
-		const nextLayout = (event as CustomEvent<ExplorerDocLayout>).detail;
-		if (!nextLayout) return;
+		if (!(event instanceof CustomEvent) || !Predicate.isString(event.detail)) return;
+		if (!isExplorerDocLayout(event.detail)) return;
 		localViewOverride = 'docs';
-		localDocLayoutOverride = nextLayout;
+		localDocLayoutOverride = event.detail;
 	}
 
 	// A real navigation has authoritative URL state. replaceState updates stay
@@ -248,36 +253,20 @@
 		return isHosted ? getStaticTreeChildren(input) : getTreeChildren(input);
 	}
 
-	type TreeChildrenResource =
-		| Promise<unknown>
-		| {
-				run?: () => Promise<unknown>;
-				current?: unknown;
-		  };
-
-	function isTreeNodeDto(value: unknown): value is TreeNodeDTO {
-		if (!value || typeof value !== 'object') return false;
-		const node = (value as { node?: unknown }).node;
-		return Boolean(
-			node && typeof node === 'object' && typeof (node as { id?: unknown }).id === 'string',
-		);
-	}
-
-	function treeNodeDtos(value: unknown): TreeNodeDTO[] {
-		return Array.isArray(value) ? value.filter(isTreeNodeDto) : [];
-	}
-
 	async function resolveTreeChildren(input: {
 		name: string;
 		version?: string;
 		nodeId: string;
 	}): Promise<TreeNodeDTO[]> {
-		const resource = loadTreeChildren(input) as TreeChildrenResource;
-		const value =
-			resource && typeof (resource as { run?: unknown }).run === 'function'
-				? await (resource as { run: () => Promise<unknown> }).run()
-				: await resource;
-		return treeNodeDtos(value);
+		const resource = loadTreeChildren(input);
+		if (Predicate.isObject(resource) && 'run' in resource && Predicate.isFunction(resource.run)) {
+			return await resource.run();
+		}
+		return await resource;
+	}
+
+	function treeNodeDtos(value: TreeNodeDTO[] | null | undefined): TreeNodeDTO[] {
+		return value ?? [];
 	}
 
 	async function loadChildrenBatch(
@@ -339,7 +328,7 @@
 		seedServerChildren(true);
 	});
 
-	function isBlanketImplNode(node: { kind: NodeKind; [key: string]: unknown }): boolean {
+	function isBlanketImplNode(node: NodeSummary): boolean {
 		if (node.kind !== 'Impl') return false;
 		const category = node.impl_category;
 		return category === 'Blanket' || category === 'Synthetic';
@@ -352,7 +341,7 @@
 		return !isBlanketImplNode(node);
 	}
 
-	function visibleTreeDtos(items: unknown): TreeNodeDTO[] {
+	function visibleTreeDtos(items: TreeNodeDTO[] | null | undefined): TreeNodeDTO[] {
 		const dtos = treeNodeDtos(items);
 		if (showGraphBlanketImpls) return dtos;
 		return dtos.filter((dto) => shouldIncludeTreeNode(dto.node));
@@ -364,6 +353,7 @@
 			? visibleTreeDtos(cachedChildren).length > 0
 			: dto.hasChildren;
 		return {
+			// SAFETY: TreeNodeDTO.node is NodeSummary, a structural Pick of Node; the explorer tree only reads id/name/kind/visibility.
 			node: dto.node as Node,
 			children: hasChildren ? CHILDREN_PLACEHOLDER : [],
 			selectable: true,
@@ -389,13 +379,13 @@
 		treeRoots?.length ? visibleTreeDtos(treeRoots).map(dtoToTreeNode).sort(compareTreeNodes) : [],
 	);
 	const normalizedFilter = $derived(activeFilter.trim().toLowerCase());
-	const tree = $derived.by(() => {
-		if (!baseTree.length) return [] as TreeNode[];
+	const tree = $derived.by((): TreeNode[] => {
+		if (!baseTree.length) return [];
 		if (!normalizedFilter && kindFilter.size === 0) return baseTree;
 		return filterTree(baseTree, normalizedFilter, kindFilter);
 	});
-	const selectedAncestorIds = $derived.by(() => {
-		if (!selectedNodeId) return [] as string[];
+	const selectedAncestorIds = $derived.by((): string[] => {
+		if (!selectedNodeId) return [];
 		const ids = new Set(ancestors.map((ancestor) => ancestor.id));
 		let current = selectedNodeId;
 		while (parentMap.has(current)) {
@@ -729,7 +719,7 @@
 		const form = event.currentTarget;
 		if (!(form instanceof HTMLFormElement)) return;
 		const raw = new FormData(form).get('q');
-		const nextFilter = typeof raw === 'string' ? raw : '';
+		const nextFilter = Predicate.isString(raw) ? raw : '';
 		filterDraftOverride = nextFilter;
 		commitFilter(nextFilter);
 	}

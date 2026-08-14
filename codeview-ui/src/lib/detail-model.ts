@@ -6,15 +6,15 @@ import type {
   NodeDetail,
   TocEntry,
   WhereUsedRef,
-} from "#lib/schema";
-import { isPublic } from "#lib/display-names";
+} from "#lib/schema.js";
+import { isPublic } from "#lib/display-names.js";
 
 export type SelectedEdges = {
   incoming: Edge[];
   outgoing: Edge[];
 };
 
-export type { DetailDocModel, DetailMethodGroup, TocEntry, WhereUsedRef } from "#lib/schema";
+export type { DetailDocModel, DetailMethodGroup, TocEntry, WhereUsedRef } from "#lib/schema.js";
 
 export type MaterializedMethodGroup = {
   impl: Node;
@@ -144,14 +144,13 @@ function isWhereUsedEdge(edge: Edge, selected: Node): boolean {
  * provided/default (everything else, including names listed under
  * `default_trait_methods`). Assoc types/consts land in their own bucket.
  */
-function collectTraitItems(
-  detail: NodeDetail,
-  relatedNodeMap: Map<string, Node>,
-): {
+type TraitItems = {
   required: Node[];
   provided: Node[];
   assoc: Node[];
-} {
+};
+
+function collectTraitItems(detail: NodeDetail, relatedNodeMap: Map<string, Node>): TraitItems {
   const selected = detail.node;
   if (selected.kind !== "Trait") {
     return { required: [], provided: [], assoc: [] };

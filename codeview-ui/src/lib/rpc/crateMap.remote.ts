@@ -1,7 +1,7 @@
 import { prerender, query } from "$app/server";
-import { getLogger } from "#lib/log";
-import { perf } from "#lib/perf";
-import type { CrateMapData } from "#lib/graph/crate-map";
+import { getLogger } from "#lib/log.js";
+import { perf } from "#lib/perf.js";
+import type { CrateMapData } from "#lib/graph/crate-map.js";
 import { loader } from "./helpers";
 import { assertCrateRef } from "./remote-utils";
 import { CrateRefSchema } from "./schemas";

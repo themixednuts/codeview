@@ -1,7 +1,9 @@
-import type { EdgeKind, Node, NodeKind, NodeSummary, Visibility } from "#lib/schema";
-import { edgeLabels, isPublic, kindLabels } from "#lib/display-names";
-import { formatSignature, type FormattedSignature } from "#lib/signature-format";
-import { nodeUrl } from "#lib/url";
+import type { EdgeKind, Node, NodeKind, NodeSummary, Visibility } from "#lib/schema.js";
+import { NodeKindSchema } from "#lib/schema.js";
+import { edgeLabels, isPublic, kindLabels } from "#lib/display-names.js";
+import { formatSignature, type FormattedSignature } from "#lib/signature-format.js";
+import { nodeUrl } from "#lib/url.js";
+import * as v from "valibot";
 
 export type DesignKindToken =
   | "crate"
@@ -209,15 +211,16 @@ export interface DesignRelationInfo {
   in: string;
 }
 
+const DESIGN_KIND_LOOKUP = new Map<string, NodeKind>(Object.entries(DESIGN_KIND_TO_NODE_KIND));
+
 export function nodeKindToDesignKind(kind: NodeKind): DesignKindToken {
   return NODE_KIND_TO_DESIGN_KIND[kind];
 }
 
 export function designKindToNodeKind(kind: string): NodeKind | undefined {
-  if ((NODE_KIND_TO_DESIGN_KIND as Record<string, DesignKindToken | undefined>)[kind]) {
-    return kind as NodeKind;
-  }
-  return (DESIGN_KIND_TO_NODE_KIND as Record<string, NodeKind | undefined>)[kind];
+  const parsed = v.safeParse(NodeKindSchema, kind);
+  if (parsed.success) return parsed.output;
+  return DESIGN_KIND_LOOKUP.get(kind);
 }
 
 export function edgeKindToRelation(kind: EdgeKind): DesignRelationInfo {
@@ -240,14 +243,11 @@ export function toDesignNode<TNode extends Node | NodeSummary>(
   const path = ctx.path ?? pathFromAncestors(node, ctx.ancestors) ?? node.id;
   const blurb = ctx.blurb ?? docsBlurb(node);
 
-  return {
+  const designNode: DesignNode<TNode> = {
     id: node.id,
     kind: nodeKindToDesignKind(node.kind),
     path,
     external: Boolean(node.is_external),
-    ...(blurb ? { blurb } : {}),
-    ...(sig ? { sig } : {}),
-    ...(href ? { href } : {}),
     label: node.name,
     kindLabel: kindLabels[node.kind] ?? node.kind,
     public: isPublic(node.visibility),
@@ -255,6 +255,10 @@ export function toDesignNode<TNode extends Node | NodeSummary>(
     visibility: node.visibility,
     real: node,
   };
+  if (blurb) designNode.blurb = blurb;
+  if (sig) designNode.sig = sig;
+  if (href) designNode.href = href;
+  return designNode;
 }
 
 function buildNodeHref(nodeId: string, crateVersions?: Record<string, string>): string | undefined {

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { NodeKind } from '#lib/schema';
-	import { kindColors } from '#lib/tree';
-	import type { DesignNode } from '#lib/design/live-node';
-	import { designKindToNodeKind } from '#lib/design/live-node';
+	import type { NodeKind } from '#lib/schema.js';
+	import { kindColors } from '#lib/tree.js';
+	import type { DesignNode } from '#lib/design/live-node.js';
+	import { designKindToNodeKind } from '#lib/design/live-node.js';
 	import KindBadge from './KindBadge.svelte';
 
 	type PillNode = Pick<DesignNode, 'id' | 'kind' | 'path' | 'external'> &

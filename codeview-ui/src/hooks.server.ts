@@ -1,8 +1,8 @@
 import type { Cookies } from "@sveltejs/kit";
 import type { Handle } from "@sveltejs/kit/hooks";
-import { setupLogging } from "#lib/log.server";
+import { setupLogging } from "#lib/log.server.js";
 import { handleWsUpgrade } from "$provider";
-import { getAuthState, handleAuthRequest } from "#lib/server/auth";
+import { getAuthState, handleAuthRequest } from "#lib/server/auth.js";
 import {
   ACCENT_KEY,
   ACCENT_VALUES,
@@ -21,11 +21,21 @@ import {
   VOICE_KEY,
   VOICE_VALUES,
   readAllowedPreference,
-} from "#lib/preferences";
+} from "#lib/preferences.js";
 
 await setupLogging();
 
-type HtmlDataAttributes = Record<`data-${string}`, string>;
+type HtmlDataAttributes = {
+  "data-theme": string;
+  "data-accent": string;
+  "data-density": string;
+  "data-text-size": string;
+  "data-voice": string;
+  "data-doc-layout": string;
+  "data-code-theme": string;
+  "data-code-theme-light": string;
+  "data-code-theme-dark": string;
+};
 
 export const handle: Handle = async ({ event, resolve }) => {
   if (event.url.pathname === "/api/events/ws") {

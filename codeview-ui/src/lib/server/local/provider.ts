@@ -13,15 +13,20 @@ import type {
   Visibility,
   Node,
   Edge,
-} from "#lib/graph";
-import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from "#lib/schema";
-import { buildCrateMapData, type CrateMapData, type CrateMapOptions } from "#lib/graph/crate-map";
-import { parseWorkspace } from "#lib/schema";
-import { RUST_CHANNEL_ORDER, isStdJsonCrate, isStdCrate, searchToolchainCrates } from "#lib/std";
-import { getLogger } from "#lib/log";
-import { perf } from "#lib/perf";
-import { decodeGzipStream } from "#lib/server/gzip";
-import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from "#lib/server/cross-edges";
+} from "#lib/graph.js";
+import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from "#lib/schema.js";
+import {
+  buildCrateMapData,
+  type CrateMapData,
+  type CrateMapOptions,
+} from "#lib/graph/crate-map.js";
+import { parseWorkspace, ConfidenceSchema, EdgeKindSchema, NodeKindSchema } from "#lib/schema.js";
+import * as v from "valibot";
+import { RUST_CHANNEL_ORDER, isStdJsonCrate, isStdCrate, searchToolchainCrates } from "#lib/std.js";
+import { getLogger } from "#lib/log.js";
+import { perf } from "#lib/perf.js";
+import { decodeGzipStream } from "#lib/server/gzip.js";
+import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from "#lib/server/cross-edges.js";
 import { createCratesIoAdapter } from "../registry/cratesio";
 import { getRegistry } from "../registry/index";
 import { parseWithRustBinary, type ParseProgress } from "../parsing/parse-rustdoc";
@@ -63,21 +68,20 @@ const VERSION_LOOKUP_CONCURRENCY = 6;
 
 /** Convert a full Node to a NodeSummary (drop heavy fields like docs/source). */
 function nodeToSummary(n: Node): NodeSummary {
-  return {
+  const summary: NodeSummary = {
     id: n.id,
     name: n.name,
     kind: n.kind,
     visibility: n.visibility,
     is_external: n.is_external,
     is_deprecated: n.is_deprecated,
-    ...(n.kind === "Impl"
-      ? {
-          impl_trait: n.impl_trait,
-          impl_category: n.impl_category,
-          generics: n.generics,
-        }
-      : {}),
   };
+  if (n.kind === "Impl") {
+    summary.impl_trait = n.impl_trait;
+    summary.impl_category = n.impl_category;
+    summary.generics = n.generics;
+  }
+  return summary;
 }
 
 /** Build a GitHub file URL from a repository URL, version, and file path. */
@@ -236,19 +240,10 @@ export function createLocalProvider(): DataProvider {
     step?: string,
   ): Promise<void> {
     const lc = await getCache();
-    lc.setStatus(
-      "rust",
-      name,
-      version,
-      status.status as "unknown" | "processing" | "ready" | "failed",
-      status.error,
-      step,
-    );
+    lc.setStatus("rust", name, version, status.status, status.error, step);
 
-    const fullStatus: CrateStatus = {
-      ...status,
-      ...(step ? { step } : {}),
-    };
+    const fullStatus: CrateStatus = { ...status };
+    if (step) fullStatus.step = step;
 
     emit.status(name, version, fullStatus);
 
@@ -488,7 +483,7 @@ export function createLocalProvider(): DataProvider {
             externalCrates: result.externalCrates.map((ec) => ({
               ...ec,
               version: null,
-              nodes: [] as Node[],
+              nodes: [],
             })),
             nodeCount: result.nodeCount,
             edgeCount: result.edgeCount,
@@ -640,12 +635,9 @@ export function createLocalProvider(): DataProvider {
         err.failedStep === "fetch-artifact" && /\b404\b/.test(err.message)
           ? ("docs_unavailable" as const)
           : undefined;
-      await emitStatus(
-        name,
-        version,
-        { status: "failed", error: err.message, ...(action ? { action } : {}) },
-        err.failedStep,
-      );
+      const failedStatus: CrateStatus = { status: "failed", error: err.message };
+      if (action) failedStatus.action = action;
+      await emitStatus(name, version, failedStatus, err.failedStep);
     }
   }
 
@@ -719,6 +711,7 @@ export function createLocalProvider(): DataProvider {
         const stats = statSync(jsonPath);
         const sizeLabel = `${(stats.size / 1024 / 1024).toFixed(1)} MB`;
         const contentId = `${stats.size}:${Math.trunc(stats.mtimeMs)}`;
+        // SAFETY: @types/node types Readable.toWeb as an unparameterized web stream; createReadStream chunks are Uint8Array/Buffer bytes.
         const stream = Readable.toWeb(createReadStream(jsonPath)) as ReadableStream<Uint8Array>;
         return { stream, sizeLabel, contentId };
       });
@@ -911,7 +904,7 @@ export function createLocalProvider(): DataProvider {
         log.error`Failed to parse workspace JSON`;
         return null;
       }
-      cached = parseWorkspace(parseResult.value) as Workspace;
+      cached = parseWorkspace(parseResult.value);
       return cached;
     })().finally(() => {
       loadingPromise = null;
@@ -1238,18 +1231,17 @@ export function createLocalProvider(): DataProvider {
       const lc = await getCache();
       const result = lc.getCrossEdgeData("rust", nodeId);
       return {
-        edges: result.edges.map((edge) => ({
-          ...edge,
-          kind: edge.kind as EdgeKind,
-          confidence: edge.confidence as Confidence,
-        })),
-        nodes: result.nodes.map((node) => ({
-          ...node,
-          kind: node.kind as NodeKind,
-          // node.visibility is already a typed Visibility (cache
-          // parses the canonical key form back on read), so no
-          // cast needed.
-        })),
+        edges: result.edges.flatMap((edge) => {
+          const kind = v.safeParse(EdgeKindSchema, edge.kind);
+          const confidence = v.safeParse(ConfidenceSchema, edge.confidence);
+          if (!kind.success || !confidence.success) return [];
+          return [{ ...edge, kind: kind.output, confidence: confidence.output }];
+        }),
+        nodes: result.nodes.flatMap((node) => {
+          const kind = v.safeParse(NodeKindSchema, node.kind);
+          if (!kind.success) return [];
+          return [{ ...node, kind: kind.output }];
+        }),
       };
     },
 
@@ -1520,7 +1512,7 @@ export function createProvider(_event: RequestEvent): DataProvider {
  * Called from the /api/events/ws route.
  */
 export function handleWsUpgrade(event: RequestEvent): Response {
-  log.info`handleWsUpgrade called platform=${String(typeof event.platform)} keys=${event.platform ? Object.keys(event.platform).join(",") : "none"}`;
+  log.info`handleWsUpgrade called platform=${Object.prototype.toString.call(event.platform)} keys=${event.platform ? Object.keys(event.platform).join(",") : "none"}`;
   const server = event.platform?.server;
   if (!server) {
     log.warn`handleWsUpgrade: no server on platform`;

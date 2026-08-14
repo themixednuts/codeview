@@ -7,6 +7,9 @@ import {
   type WorkflowStepContext,
 } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 import { isCurrentHostedArtifactMetadata } from "./lib/hosted-contract";
 import {
   crateStatusTag,
@@ -185,7 +188,94 @@ type GitHubBillingUsageSummaryResponse = {
   usageItems?: GitHubBillingUsageItem[];
 };
 
-function json(value: unknown, init?: ResponseInit): Response {
+const ACTIVE_GITHUB_RUN_STATUS_SET: ReadonlySet<string> = new Set(ACTIVE_GITHUB_RUN_STATUSES);
+
+function isActiveGitHubRunStatus(status: string | undefined): boolean {
+  return status !== undefined && ACTIVE_GITHUB_RUN_STATUS_SET.has(status);
+}
+
+function decodeTrustedJson<T>(value: Schema.Json | null): T {
+  // SAFETY: this JSON was written by PARSE_STATUS, our R2 artifacts, or GitHub's documented REST payload for the endpoint we called; JSON.parse/Response.json are unknown.
+  return value as T;
+}
+
+function isCrateStatusValue(
+  value: string | number | null | undefined,
+): value is StoredParseStatus["status"] {
+  return value === "unknown" || value === "processing" || value === "ready" || value === "failed";
+}
+
+function isJsonObject(value: Schema.Json): value is Schema.JsonObject {
+  return Predicate.isObject(value);
+}
+
+function parseGitHubWorkflowRun(value: Schema.Json): GitHubWorkflowRun | null {
+  if (!isJsonObject(value)) return null;
+  return {
+    id: Predicate.isNumber(value.id) ? value.id : undefined,
+    status: Predicate.isString(value.status) ? value.status : undefined,
+    conclusion: Predicate.isString(value.conclusion) ? value.conclusion : undefined,
+    html_url: Predicate.isString(value.html_url) ? value.html_url : undefined,
+    created_at: Predicate.isString(value.created_at) ? value.created_at : undefined,
+    updated_at: Predicate.isString(value.updated_at) ? value.updated_at : undefined,
+  };
+}
+
+function parseGitHubWorkflowRunsResponse(value: Schema.Json): GitHubWorkflowRunsResponse {
+  if (!isJsonObject(value) || !Array.isArray(value.workflow_runs)) return {};
+  return {
+    workflow_runs: value.workflow_runs.flatMap((run) => {
+      const parsed = parseGitHubWorkflowRun(run);
+      return parsed ? [parsed] : [];
+    }),
+  };
+}
+
+function parseGitHubRepositoryResponse(value: Schema.Json): GitHubRepositoryResponse {
+  if (!isJsonObject(value)) return {};
+  const owner = isJsonObject(value.owner) ? value.owner : undefined;
+  return {
+    private: Predicate.isBoolean(value.private) ? value.private : undefined,
+    owner: owner
+      ? {
+          login: Predicate.isString(owner.login) ? owner.login : undefined,
+          type: Predicate.isString(owner.type) ? owner.type : undefined,
+        }
+      : undefined,
+  };
+}
+
+function parseGitHubBillingUsageItem(value: Schema.Json): GitHubBillingUsageItem | null {
+  if (!isJsonObject(value)) return null;
+  return {
+    product: Predicate.isString(value.product) ? value.product : undefined,
+    sku: Predicate.isString(value.sku) ? value.sku : undefined,
+    unitType: Predicate.isString(value.unitType) ? value.unitType : undefined,
+    grossQuantity: Predicate.isNumber(value.grossQuantity) ? value.grossQuantity : undefined,
+    discountQuantity: Predicate.isNumber(value.discountQuantity)
+      ? value.discountQuantity
+      : undefined,
+    quantity: Predicate.isNumber(value.quantity) ? value.quantity : undefined,
+    netQuantity: Predicate.isNumber(value.netQuantity) ? value.netQuantity : undefined,
+    grossAmount: Predicate.isNumber(value.grossAmount) ? value.grossAmount : undefined,
+    discountAmount: Predicate.isNumber(value.discountAmount) ? value.discountAmount : undefined,
+    netAmount: Predicate.isNumber(value.netAmount) ? value.netAmount : undefined,
+  };
+}
+
+function parseGitHubBillingUsageSummaryResponse(
+  value: Schema.Json,
+): GitHubBillingUsageSummaryResponse {
+  if (!isJsonObject(value) || !Array.isArray(value.usageItems)) return {};
+  return {
+    usageItems: value.usageItems.flatMap((item) => {
+      const parsed = parseGitHubBillingUsageItem(item);
+      return parsed ? [parsed] : [];
+    }),
+  };
+}
+
+function json<T>(value: T, init?: ResponseInit): Response {
   const headers = new Headers(init?.headers);
   headers.set("content-type", JSON_HEADERS["content-type"]);
   return new Response(JSON.stringify(value), {
@@ -194,40 +284,71 @@ function json(value: unknown, init?: ResponseInit): Response {
   });
 }
 
-async function readJson<T = unknown>(request: Request): Promise<T> {
-  return (await request.json()) as T;
+async function readJson(request: Request): Promise<Schema.Json> {
+  // SAFETY: request.json() is untyped wire JSON; callers decode with named schemas.
+  return (await request.json()) as Schema.Json;
 }
 
-function statusRowToObject(row: Record<string, unknown>): StoredParseStatus {
-  const action = typeof row.action === "string" && row.action ? row.action : undefined;
+type WsClientMessage = {
+  action?: string;
+  tags?: string[];
+};
+
+type ParseStatusRow = {
+  name?: string | number | null;
+  version?: string | number | null;
+  status?: string | number | null;
+  kind?: string | number | null;
+  step?: string | number | null;
+  error?: string | number | null;
+  action?: string | number | null;
+  request_id?: string | number | null;
+  workflow_id?: string | number | null;
+  github_run_id?: string | number | null;
+  github_run_url?: string | number | null;
+  requested_by_id?: string | number | null;
+  requested_by_login?: string | number | null;
+  requested_by_avatar_url?: string | number | null;
+  created_at?: string | number | null;
+  updated_at?: string | number | null;
+  sequence?: string | number | null;
+};
+
+function statusRowToObject(row: ParseStatusRow): StoredParseStatus {
+  const action = Predicate.isString(row.action) && row.action ? row.action : undefined;
+  const requestedById =
+    Predicate.isString(row.requested_by_id) && row.requested_by_id
+      ? row.requested_by_id
+      : undefined;
+  const requestedByLogin =
+    Predicate.isString(row.requested_by_login) && row.requested_by_login
+      ? row.requested_by_login
+      : undefined;
   const kind = row.kind === "sysroot" ? "sysroot" : "crate";
   return {
     ecosystem: "rust",
     kind,
     name: String(row.name),
     version: String(row.version),
-    status: row.status as StoredParseStatus["status"],
-    step: typeof row.step === "string" && row.step ? row.step : undefined,
-    error: typeof row.error === "string" && row.error ? row.error : undefined,
+    status: isCrateStatusValue(row.status) ? row.status : "unknown",
+    step: Predicate.isString(row.step) && row.step ? row.step : undefined,
+    error: Predicate.isString(row.error) && row.error ? row.error : undefined,
     action: action === "install_std_docs" || action === "docs_unavailable" ? action : undefined,
-    requestId: typeof row.request_id === "string" && row.request_id ? row.request_id : undefined,
+    requestId: Predicate.isString(row.request_id) && row.request_id ? row.request_id : undefined,
     workflowId:
-      typeof row.workflow_id === "string" && row.workflow_id ? row.workflow_id : undefined,
+      Predicate.isString(row.workflow_id) && row.workflow_id ? row.workflow_id : undefined,
     githubRunId:
-      typeof row.github_run_id === "string" && row.github_run_id ? row.github_run_id : undefined,
+      Predicate.isString(row.github_run_id) && row.github_run_id ? row.github_run_id : undefined,
     githubRunUrl:
-      typeof row.github_run_url === "string" && row.github_run_url ? row.github_run_url : undefined,
+      Predicate.isString(row.github_run_url) && row.github_run_url ? row.github_run_url : undefined,
     requestedBy:
-      typeof row.requested_by_id === "string" &&
-      row.requested_by_id &&
-      typeof row.requested_by_login === "string" &&
-      row.requested_by_login
+      requestedById && requestedByLogin
         ? {
             provider: "github",
-            id: row.requested_by_id,
-            login: row.requested_by_login,
+            id: requestedById,
+            login: requestedByLogin,
             avatarUrl:
-              typeof row.requested_by_avatar_url === "string" && row.requested_by_avatar_url
+              Predicate.isString(row.requested_by_avatar_url) && row.requested_by_avatar_url
                 ? row.requested_by_avatar_url
                 : undefined,
           }
@@ -257,13 +378,10 @@ function logWorkflowRetry(
   );
 }
 
-function workflowOutputOk(output: unknown): boolean | null {
-  return output &&
-    typeof output === "object" &&
-    "ok" in output &&
-    typeof (output as { ok?: unknown }).ok === "boolean"
-    ? (output as { ok: boolean }).ok
-    : null;
+function workflowOutputOk(output: Schema.Json | undefined): boolean | null {
+  if (!Predicate.isObject(output)) return null;
+  const ok = output.ok;
+  return Predicate.isBoolean(ok) ? ok : null;
 }
 
 function normalizeCrateName(name: string): string {
@@ -295,8 +413,8 @@ function parseNonNegativeInteger(value: string | undefined, fallback: number): n
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+function finiteNumber(value: number | undefined): number | null {
+  return Predicate.isNumber(value) && Number.isFinite(value) ? value : null;
 }
 
 function githubNetUsageQuantity(item: GitHubBillingUsageItem): number {
@@ -323,9 +441,7 @@ function monthStartIso(now = new Date()): string {
 function workflowRunDurationMinutes(run: GitHubWorkflowRun, nowMs: number): number {
   const start = run.created_at ? Date.parse(run.created_at) : NaN;
   if (!Number.isFinite(start)) return 0;
-  const isActive = run.status
-    ? (ACTIVE_GITHUB_RUN_STATUSES as readonly string[]).includes(run.status)
-    : false;
+  const isActive = isActiveGitHubRunStatus(run.status);
   const updated = run.updated_at ? Date.parse(run.updated_at) : NaN;
   const end = isActive ? nowMs : Number.isFinite(updated) ? updated : nowMs;
   return Math.max(0, (end - start) / 60_000);
@@ -354,16 +470,9 @@ function isValidSubscriptionTag(tag: string): boolean {
   );
 }
 
-function normalizeSubscriptionTags(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [
-    ...new Set(
-      value
-        .filter((tag): tag is string => typeof tag === "string")
-        .filter(isValidSubscriptionTag)
-        .slice(0, MAX_WS_TAGS_PER_MESSAGE),
-    ),
-  ];
+function normalizeSubscriptionTags(value: readonly string[] | undefined): string[] {
+  if (value === undefined) return [];
+  return [...new Set(value.filter(isValidSubscriptionTag).slice(0, MAX_WS_TAGS_PER_MESSAGE))];
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -385,28 +494,37 @@ function callbackSecretsFromRequest(request: Request): string[] {
   return [bearer, headerSecret].filter((value) => value.length > 0);
 }
 
-function parseCompletionPayload(value: unknown): ParseCompletionPayload | null {
-  if (typeof value !== "object" || value === null) return null;
-  const raw = value as Record<string, unknown>;
+const ParseCompletionPayloadSchema = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  kind: Schema.optionalKey(Schema.Unknown),
+  workflowId: Schema.String,
+  requestId: Schema.String,
+  name: Schema.String,
+  version: Schema.String,
+  ok: Schema.Boolean,
+  runId: Schema.optionalKey(Schema.Unknown),
+  runUrl: Schema.optionalKey(Schema.Unknown),
+  error: Schema.optionalKey(Schema.Unknown),
+  completedAt: Schema.String,
+});
+
+function parseCompletionPayload(value: Schema.Json): ParseCompletionPayload | null {
+  const raw = Option.getOrUndefined(
+    Schema.decodeUnknownOption(ParseCompletionPayloadSchema)(value),
+  );
   if (
-    raw.schemaVersion !== 1 ||
-    typeof raw.workflowId !== "string" ||
+    !raw ||
     !isSafeId(raw.workflowId) ||
-    typeof raw.requestId !== "string" ||
     !isSafeId(raw.requestId) ||
-    typeof raw.name !== "string" ||
     !isSafeCrateName(raw.name) ||
-    typeof raw.version !== "string" ||
-    !isSafeVersion(raw.version) ||
-    typeof raw.ok !== "boolean" ||
-    typeof raw.completedAt !== "string"
+    !isSafeVersion(raw.version)
   ) {
     return null;
   }
   const kind = raw.kind === "sysroot" || raw.kind === "crate" ? raw.kind : undefined;
-  const runId = typeof raw.runId === "string" && isSafeId(raw.runId) ? raw.runId : undefined;
-  const runUrl = typeof raw.runUrl === "string" ? raw.runUrl : undefined;
-  const error = typeof raw.error === "string" ? raw.error.slice(0, 4000) : undefined;
+  const runId = Predicate.isString(raw.runId) && isSafeId(raw.runId) ? raw.runId : undefined;
+  const runUrl = Predicate.isString(raw.runUrl) ? raw.runUrl : undefined;
+  const error = Predicate.isString(raw.error) ? raw.error.slice(0, 4000) : undefined;
   return {
     schemaVersion: 1,
     kind,
@@ -516,7 +634,7 @@ async function updateStatus(
     body: JSON.stringify(event),
   });
   if (!response.ok) throw new Error(`status update failed: ${response.status}`);
-  return (await response.json()) as StoredParseStatus;
+  return decodeTrustedJson<StoredParseStatus>(await response.json());
 }
 
 async function readStatus(
@@ -529,7 +647,7 @@ async function readStatus(
   url.searchParams.set("version", version);
   const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
   if (!response.ok) return null;
-  return (await response.json()) as StoredParseStatus | null;
+  return decodeTrustedJson<StoredParseStatus | null>(await response.json());
 }
 
 function consumesDispatchCapacity(status: StoredParseStatus): boolean {
@@ -549,15 +667,22 @@ async function readProcessingCount(
   url.searchParams.set("limit", "100");
   const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
   if (!response.ok) return 0;
-  const snapshot = (await response.json()) as ParseQueueSnapshot;
+  const snapshot = decodeTrustedJson<ParseQueueSnapshot>(await response.json());
   return snapshot.active.filter((status) => {
     if (options.excludeRequestId && status.requestId === options.excludeRequestId) return false;
     return options.dispatchCapacityOnly ? consumesDispatchCapacity(status) : true;
   }).length;
 }
 
+type GithubApiHeaders = {
+  accept: string;
+  "user-agent": string;
+  "x-github-api-version": string;
+  authorization?: string;
+};
+
 function githubReadHeaders(env: ParseWorkerEnv): HeadersInit {
-  const headers: Record<string, string> = {
+  const headers: GithubApiHeaders = {
     accept: "application/vnd.github+json",
     "user-agent": "codeview-parse-worker",
     "x-github-api-version": GITHUB_API_VERSION,
@@ -587,9 +712,9 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
         failedStatuses.push(`${status}:${response.status}`);
         return;
       }
-      const body = (await response.json()) as GitHubWorkflowRunsResponse;
+      const body = parseGitHubWorkflowRunsResponse(await response.json());
       for (const run of body.workflow_runs ?? []) {
-        if (typeof run.id === "number") ids.add(run.id);
+        if (Predicate.isNumber(run.id)) ids.add(run.id);
       }
     }),
   );
@@ -600,9 +725,7 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
 }
 
 function isGitHubRunActive(run: GitHubWorkflowRun | null | undefined): boolean {
-  return ACTIVE_GITHUB_RUN_STATUSES.includes(
-    run?.status as (typeof ACTIVE_GITHUB_RUN_STATUSES)[number],
-  );
+  return isActiveGitHubRunStatus(run?.status);
 }
 
 async function loadGitHubWorkflowRun(
@@ -616,7 +739,8 @@ async function loadGitHubWorkflowRun(
   });
   if (response.status === 404 || response.status === 410) return null;
   if (!response.ok) throw new Error(`GitHub run ${runId} lookup failed: ${response.status}`);
-  return (await response.json()) as GitHubWorkflowRun;
+  const parsed = parseGitHubWorkflowRun(await response.json());
+  return parsed;
 }
 
 async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubRepositoryResponse | null> {
@@ -626,7 +750,7 @@ async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubReposito
     headers: githubReadHeaders(env),
   });
   if (!response.ok) return null;
-  return (await response.json()) as GitHubRepositoryResponse;
+  return parseGitHubRepositoryResponse(await response.json());
 }
 
 async function loadGitHubRepoBillableActionsMinutes(
@@ -647,7 +771,7 @@ async function loadGitHubRepoBillableActionsMinutes(
     headers: githubReadHeaders(env),
   });
   if (!response.ok) return null;
-  const body = (await response.json()) as GitHubBillingUsageSummaryResponse;
+  const body = parseGitHubBillingUsageSummaryResponse(await response.json());
   return totalBillableActionsMinutes(body);
 }
 
@@ -668,7 +792,7 @@ async function estimateParseWorkflowMinutesThisMonth(env: ParseWorkerEnv): Promi
     url.searchParams.set("page", String(page));
     const response = await fetch(url, { headers: githubReadHeaders(env) });
     if (!response.ok) return null;
-    const body = (await response.json()) as GitHubWorkflowRunsResponse;
+    const body = parseGitHubWorkflowRunsResponse(await response.json());
     const runs = body.workflow_runs ?? [];
     loaded += runs.length;
     for (const run of runs) total += workflowRunDurationMinutes(run, nowMs);
@@ -797,7 +921,7 @@ async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 2000): Promise<PlanCa
 async function readPlan(env: ParseWorkerEnv, key: string): Promise<WorkPlanArtifact | null> {
   const object = await env.CRATE_GRAPHS.get(key);
   if (!object) return null;
-  return (await object.json()) as WorkPlanArtifact;
+  return decodeTrustedJson<WorkPlanArtifact>(await object.json());
 }
 
 function generatedAt(plan: WorkPlanArtifact): string {
@@ -885,7 +1009,7 @@ async function readFreshnessEntry(
     const entry = await env.CRATE_GRAPHS.get(
       `rust/_index/by-version/${normalizeCrateName(variant)}/${item.version}.json`,
     );
-    if (entry) return (await entry.json()) as FreshnessEntry;
+    if (entry) return decodeTrustedJson<FreshnessEntry>(await entry.json());
   }
   return null;
 }
@@ -1126,7 +1250,7 @@ async function readCrateRefs(env: ParseWorkerEnv, name: string): Promise<CrateRe
     const key = `rust/_refs/${variant}.json`;
     tried.push(key);
     const refs = await env.CRATE_GRAPHS.get(key);
-    if (refs) return (await refs.json()) as CrateRefs;
+    if (refs) return decodeTrustedJson<CrateRefs>(await refs.json());
   }
   throw new Error(`missing R2 refs for ${name} (tried ${tried.join(", ")})`);
 }
@@ -1141,8 +1265,11 @@ async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: strin
   const storageName = parsed.storageName || hyphenateCrateName(name);
   const meta = await env.CRATE_GRAPHS.get(`rust/${storageName}/${target.version}/site/meta.json`);
   if (!meta) throw new Error(`missing hosted metadata for ${name}@${version}`);
-  const metadata = await meta.json<unknown>();
+  const metadata = Option.getOrUndefined(
+    Schema.decodeUnknownOption(Schema.Json)(await meta.json()),
+  );
   if (
+    metadata === undefined ||
     !isCurrentHostedArtifactMetadata(metadata, {
       name: storageName,
       version: target.version,
@@ -1159,7 +1286,7 @@ async function reconcileFinalizingParses(
   url.searchParams.set("limit", "100");
   const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
   if (!response.ok) return { ready: 0, failed: 0 };
-  const snapshot = (await response.json()) as ParseQueueSnapshot;
+  const snapshot = decodeTrustedJson<ParseQueueSnapshot>(await response.json());
   let ready = 0;
   let failed = 0;
   for (const status of snapshot.active) {
@@ -1250,7 +1377,7 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
   url.searchParams.set("limit", "100");
   const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
   if (!response.ok) return { ready: 0, failed: 0, kept: 0 };
-  const snapshot = (await response.json()) as ParseQueueSnapshot;
+  const snapshot = decodeTrustedJson<ParseQueueSnapshot>(await response.json());
   const githubActive = await countActiveGitHubParseRuns(env).catch((err) => {
     console.warn(`stale parse reconciliation cannot read active GitHub runs: ${errorMessage(err)}`);
     return null;
@@ -1401,13 +1528,13 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
       return this.handleWebSocket(request);
     }
     if (url.pathname === "/begin" && request.method === "POST") {
-      return json(await this.beginParse(await readJson<ParseRequestMessage>(request)));
+      return json(await this.beginParse(await readJson(request)));
     }
     if (url.pathname === "/queued" && request.method === "POST") {
-      return json(this.registerQueuedParse(await readJson<ParseRequestMessage>(request)));
+      return json(this.registerQueuedParse(await readJson(request)));
     }
     if (url.pathname === "/event" && request.method === "POST") {
-      return json(await this.recordEvent(await readJson<ParseStatusEvent>(request)));
+      return json(this.recordEvent(decodeTrustedJson<ParseStatusEvent>(await readJson(request))));
     }
     if (url.pathname === "/status" && request.method === "GET") {
       const name = url.searchParams.get("name") ?? "";
@@ -1426,14 +1553,23 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
   }
 
   override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void | Promise<void> {
-    const raw = typeof message === "string" ? message : new TextDecoder().decode(message);
+    const raw = Predicate.isString(message) ? message : new TextDecoder().decode(message);
     if (raw.length > MAX_WS_MESSAGE_CHARS) {
       ws.close(1009, "Message too large");
       return;
     }
-    let parsed: { action?: string; tags?: string[] };
+    let parsed: WsClientMessage;
     try {
-      parsed = JSON.parse(raw) as { action?: string; tags?: string[] };
+      const rawParsed = Option.getOrUndefined(
+        Schema.decodeUnknownOption(Schema.Json)(JSON.parse(raw)),
+      );
+      if (rawParsed === undefined || !Predicate.isObject(rawParsed)) return;
+      parsed = {
+        action: Predicate.isString(rawParsed.action) ? rawParsed.action : undefined,
+        tags: Array.isArray(rawParsed.tags)
+          ? rawParsed.tags.filter((tag): tag is string => Predicate.isString(tag))
+          : undefined,
+      };
     } catch {
       return;
     }
@@ -1481,11 +1617,15 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
   }
 
   private attachmentFor(ws: WebSocket): WebSocketAttachment {
-    const attachment = ws.deserializeAttachment() as Partial<WebSocketAttachment> | null;
+    const attachment: unknown = ws.deserializeAttachment();
+    if (!Predicate.isObject(attachment)) {
+      return { id: crypto.randomUUID(), tags: [] };
+    }
+    const attachmentId = attachment.id;
     return {
-      id: typeof attachment?.id === "string" ? attachment.id : crypto.randomUUID(),
-      tags: Array.isArray(attachment?.tags)
-        ? attachment.tags.filter((tag): tag is string => typeof tag === "string")
+      id: Predicate.isString(attachmentId) ? attachmentId : crypto.randomUUID(),
+      tags: Array.isArray(attachment.tags)
+        ? attachment.tags.filter((tag): tag is string => Predicate.isString(tag))
         : [],
     };
   }
@@ -1512,7 +1652,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
     }
   }
 
-  private broadcast(tag: string, data: unknown): void {
+  private broadcast<T>(tag: string, data: T): void {
     for (const ws of this.ctx.getWebSockets()) {
       const attachment = this.attachmentFor(ws);
       if (attachment.tags.includes(tag)) {
@@ -1537,8 +1677,11 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
         name,
         version,
       )
-      .toArray()[0] as Record<string, unknown> | undefined;
-    return row ? statusRowToObject(row) : null;
+      .toArray()[0];
+    return Predicate.isObject(row)
+      ? // SAFETY: statuses SELECT * columns match ParseStatusRow.
+        statusRowToObject(row as ParseStatusRow)
+      : null;
   }
 
   private processing(limit: number): StoredParseStatus[] {
@@ -1553,7 +1696,12 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
         Math.max(1, Math.min(limit, 100)),
       )
       .toArray()
-      .map((row) => statusRowToObject(row as Record<string, unknown>));
+      .flatMap((row) =>
+        Predicate.isObject(row)
+          ? // SAFETY: statuses SELECT * columns match ParseStatusRow.
+            [statusRowToObject(row as ParseStatusRow)]
+          : [],
+      );
   }
 
   private recent(limit: number): StoredParseStatus[] {
@@ -1568,7 +1716,12 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
         Math.max(1, Math.min(limit, 100)),
       )
       .toArray()
-      .map((row) => statusRowToObject(row as Record<string, unknown>));
+      .flatMap((row) =>
+        Predicate.isObject(row)
+          ? // SAFETY: statuses SELECT * columns match ParseStatusRow.
+            [statusRowToObject(row as ParseStatusRow)]
+          : [],
+      );
   }
 
   private queueSnapshot(limit: number): ParseQueueSnapshot {
@@ -1607,8 +1760,8 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
   private readBucket(config: RateBucketConfig, nowMs: number): RateBucketState {
     const row = this.ctx.storage.sql
       .exec(`SELECT * FROM rate_buckets WHERE name = ? LIMIT 1`, config.name)
-      .toArray()[0] as Record<string, unknown> | undefined;
-    if (!row) return { ...config, tokens: config.capacity };
+      .toArray()[0];
+    if (!Predicate.isObject(row)) return { ...config, tokens: config.capacity };
 
     const previousTokens = Number(row.tokens);
     const previousUpdatedAt = Number(row.updated_at_ms);
@@ -1713,7 +1866,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
     return status;
   }
 
-  private registerQueuedParse(message: ParseRequestMessage): QueueParseResponse {
+  private registerQueuedParse(message: Schema.Json): QueueParseResponse {
     if (!isParseRequestMessage(message)) throw new Error("invalid parse request");
     const existing = this.getStatus(message.name, message.version);
     if (!shouldAcceptQueuedParseRequest(existing, message)) {
@@ -1723,7 +1876,7 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
     return { accepted: true, status: this.writeQueuedStatus(message) };
   }
 
-  private beginParse(message: ParseRequestMessage): BeginParseResponse {
+  private beginParse(message: Schema.Json): BeginParseResponse {
     if (!isParseRequestMessage(message)) throw new Error("invalid parse request");
     const existing = this.getStatus(message.name, message.version);
     if (!message.force && existing?.status === "ready") {
@@ -1846,11 +1999,16 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
   }
 }
 
+type ParseWorkflowResult = {
+  ok: boolean;
+  recovered?: string;
+};
+
 export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, ParseWorkflowParams> {
   override async run(
     event: WorkflowEvent<ParseWorkflowParams>,
     step: WorkflowStep,
-  ): Promise<unknown> {
+  ): Promise<ParseWorkflowResult> {
     const params = event.payload;
     if (!params) throw new NonRetryableError("missing parse workflow payload");
     const workflowId = parseWorkflowId(params.requestId);
@@ -2019,11 +2177,7 @@ async function reconcileExistingWorkflowInstance(
   request: ParseRequestMessage,
   workflowId: string,
 ): Promise<void> {
-  let status: {
-    status: string;
-    error?: { name?: string; message?: string };
-    output?: unknown;
-  } | null = null;
+  let status;
   try {
     const instance = await env.PARSE_WORKFLOW.get(workflowId);
     status = await instance.status();
@@ -2034,7 +2188,8 @@ async function reconcileExistingWorkflowInstance(
     return;
   }
 
-  const outputOk = workflowOutputOk(status.output);
+  const output = Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Json)(status.output));
+  const outputOk = workflowOutputOk(output);
   if (status.status === "complete" && outputOk !== false) {
     try {
       await verifyArtifacts(env, request.name, request.version);
@@ -2081,13 +2236,14 @@ async function reconcileExistingWorkflowInstance(
 }
 
 async function deferQueueMessage(
-  message: Message<ParseRequestMessage>,
+  message: Message<unknown>,
+  body: ParseRequestMessage,
   env: ParseWorkerEnv,
   delaySeconds: number,
 ): Promise<void> {
   const boundedDelay = Math.min(900, Math.max(1, delaySeconds) + Math.floor(Math.random() * 5));
   if (env.PARSE_REQUESTS) {
-    await env.PARSE_REQUESTS.send(message.body, { delaySeconds: boundedDelay });
+    await env.PARSE_REQUESTS.send(body, { delaySeconds: boundedDelay });
     message.ack();
     return;
   }
@@ -2095,97 +2251,94 @@ async function deferQueueMessage(
 }
 
 async function waitForDispatchCapacity(
-  message: Message<ParseRequestMessage>,
+  message: Message<unknown>,
+  body: ParseRequestMessage,
   env: ParseWorkerEnv,
 ): Promise<boolean> {
   const activeTarget = parsePositiveInteger(env.PLAN_DRAIN_ACTIVE_TARGET, 4);
-  const pressure = await readDispatchPressure(env, message.body.requestId);
+  const pressure = await readDispatchPressure(env, body.requestId);
   if (pressure.capacityReliable && pressure.actionsInUse < activeTarget) return true;
 
   await updateStatus(env, {
-    name: message.body.name,
-    version: message.body.version,
-    kind: message.body.kind,
+    name: body.name,
+    version: body.version,
+    kind: body.kind,
     status: "processing",
     step: pressure.capacityReliable ? "waiting-capacity" : "waiting-github-capacity",
     error: pressure.capacityReliable ? undefined : pressure.capacityReason,
-    requestId: message.body.requestId,
-    workflowId: parseWorkflowId(message.body.requestId),
-    requestedBy: message.body.requestedBy,
+    requestId: body.requestId,
+    workflowId: parseWorkflowId(body.requestId),
+    requestedBy: body.requestedBy,
   });
-  await deferQueueMessage(message, env, pressure.capacityReliable ? 60 : 180);
+  await deferQueueMessage(message, body, env, pressure.capacityReliable ? 60 : 180);
   return false;
 }
 
-async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv): Promise<void> {
-  if (!isParseRequestMessage(message.body)) {
-    message.ack();
-    return;
-  }
-  if (message.body.kind === "sysroot" && !isSupportedSysrootCrate(message.body.name)) {
+async function handleQueueMessage(
+  message: Message<unknown>,
+  body: ParseRequestMessage,
+  env: ParseWorkerEnv,
+): Promise<void> {
+  if (body.kind === "sysroot" && !isSupportedSysrootCrate(body.name)) {
     await updateStatus(env, {
-      name: message.body.name,
-      version: message.body.version,
-      kind: message.body.kind,
+      name: body.name,
+      version: body.version,
+      kind: body.kind,
       status: "failed",
       step: "unsupported",
       error: HOSTED_SYSROOT_CRATE_UNAVAILABLE_MESSAGE,
-      requestId: message.body.requestId,
-      workflowId: parseWorkflowId(message.body.requestId),
-      requestedBy: message.body.requestedBy,
+      requestId: body.requestId,
+      workflowId: parseWorkflowId(body.requestId),
+      requestedBy: body.requestedBy,
     });
     message.ack();
     return;
   }
-  if (message.body.kind === "sysroot" && !SYSROOT_CHANNELS.has(message.body.version)) {
+  if (body.kind === "sysroot" && !SYSROOT_CHANNELS.has(body.version)) {
     await updateStatus(env, {
-      name: message.body.name,
-      version: message.body.version,
-      kind: message.body.kind,
+      name: body.name,
+      version: body.version,
+      kind: body.kind,
       status: "failed",
       step: "unsupported",
       error: HOSTED_SYSROOT_UNAVAILABLE_MESSAGE,
-      requestId: message.body.requestId,
-      workflowId: parseWorkflowId(message.body.requestId),
-      requestedBy: message.body.requestedBy,
+      requestId: body.requestId,
+      workflowId: parseWorkflowId(body.requestId),
+      requestedBy: body.requestedBy,
     });
     message.ack();
     return;
   }
-  if (!(await plannedQueueMessageStillNeeded(env, message.body))) {
+  if (!(await plannedQueueMessageStillNeeded(env, body))) {
     message.ack();
     return;
   }
-  if (!(await waitForDispatchCapacity(message as Message<ParseRequestMessage>, env))) {
+  if (!(await waitForDispatchCapacity(message, body, env))) {
     return;
   }
   const beginResponse = await parseStatusObject(env.PARSE_STATUS).fetch("https://status/begin", {
     method: "POST",
     headers: JSON_HEADERS,
-    body: JSON.stringify(message.body),
+    body: JSON.stringify(body),
   });
   if (!beginResponse.ok) {
     message.retry({ delaySeconds: 30 });
     return;
   }
-  const begin = (await beginResponse.json()) as BeginParseResponse;
+  const begin = decodeTrustedJson<BeginParseResponse>(await beginResponse.json());
   if (!begin.accepted) {
     message.ack();
     return;
   }
   if (!begin.leased) {
-    await deferQueueMessage(
-      message as Message<ParseRequestMessage>,
-      env,
-      begin.retryAfterSeconds ?? 30,
-    );
+    await deferQueueMessage(message, body, env, begin.retryAfterSeconds ?? 30);
     return;
   }
   try {
     await env.PARSE_WORKFLOW.create({
       id: begin.workflowId,
       params: {
-        ...message.body,
+        ...body,
         callbackBaseUrl: env.PARSE_CALLBACK_BASE_URL,
       },
       retention: {
@@ -2197,18 +2350,18 @@ async function handleQueueMessage(message: Message<unknown>, env: ParseWorkerEnv
   } catch (err) {
     const text = err instanceof Error ? err.message : String(err);
     if (text.includes("already exists")) {
-      await reconcileExistingWorkflowInstance(env, message.body, begin.workflowId);
+      await reconcileExistingWorkflowInstance(env, body, begin.workflowId);
       message.ack();
       return;
     }
     await updateStatus(env, {
-      name: message.body.name,
-      version: message.body.version,
-      kind: message.body.kind,
+      name: body.name,
+      version: body.version,
+      kind: body.kind,
       status: "failed",
       step: "workflow-create",
       error: text,
-      requestId: message.body.requestId,
+      requestId: body.requestId,
       workflowId: begin.workflowId,
     });
     message.retry({ delaySeconds: 60 });
@@ -2225,7 +2378,7 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
   if (!authorized) {
     return json({ error: "unauthorized" }, { status: 401 });
   }
-  const payload = parseCompletionPayload(await readJson<unknown>(request));
+  const payload = parseCompletionPayload(await readJson(request));
   if (!payload) {
     return json({ error: "invalid callback payload" }, { status: 400 });
   }
@@ -2284,7 +2437,12 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 export default {
   async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
     for (const message of batch.messages) {
-      await handleQueueMessage(message, env);
+      const body = Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Json)(message.body));
+      if (body === undefined || !isParseRequestMessage(body)) {
+        message.ack();
+        continue;
+      }
+      await handleQueueMessage(message, body, env);
     }
   },
 

@@ -31,19 +31,19 @@ export type {
   Visibility,
   WherePredicate,
   Workspace,
-} from "#lib/schema";
+} from "#lib/schema.js";
 
 // Visual
-export type { NodeShape, NodeVisual, ShapeSpec } from "./visual";
+export type { NodeGlyph, NodeVisual, GlyphSpec } from "./visual";
 export {
   kindVisuals,
   BASE_SPECS,
   nodeSvgPath,
   buildHeaderPath,
   isRectLike,
-  isHeaderShape,
+  isHeaderGlyph,
   getNodeVisual,
-  shapeEdgeAnchor,
+  glyphEdgeAnchor,
   getVisNodeEdgeAnchor,
 } from "./visual";
 

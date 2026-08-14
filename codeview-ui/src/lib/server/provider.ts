@@ -1,5 +1,6 @@
 import type { Result } from "better-result";
-import type { Edge, Node, NodeKind, Workspace, CrateGraph } from "#lib/graph";
+import * as Predicate from "effect/Predicate";
+import type { Edge, Node, NodeKind, Workspace, CrateGraph } from "#lib/graph.js";
 import type {
   CrateIndex,
   CrateTree,
@@ -7,8 +8,8 @@ import type {
   NodeDetail,
   NodeViewBase,
   TreeNodeDTO,
-} from "#lib/schema";
-import type { CrateMapData, CrateMapOptions } from "#lib/graph/crate-map";
+} from "#lib/schema.js";
+import type { CrateMapData, CrateMapOptions } from "#lib/graph/crate-map.js";
 import type { ValidationError, NotAvailableError, RateLimitError } from "./errors";
 import type { SourceProviderMode } from "./provider-utils";
 
@@ -218,7 +219,7 @@ export interface LocalWorkspaceProvider {
 export function hasLocalWorkspace(
   provider: DataProvider,
 ): provider is DataProvider & LocalWorkspaceProvider {
-  return typeof (provider as Partial<LocalWorkspaceProvider>).loadWorkspace === "function";
+  return "loadWorkspace" in provider && Predicate.isFunction(provider.loadWorkspace);
 }
 
 /**

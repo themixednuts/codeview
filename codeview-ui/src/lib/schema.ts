@@ -1,4 +1,5 @@
 import * as v from "valibot";
+import type { Json } from "effect/Schema";
 import type {
   ArgumentInfo,
   AssocItemConstraint,
@@ -854,6 +855,6 @@ export type StaticNodeDetailShard = v.InferOutput<typeof StaticNodeDetailShardSc
  * Parse and validate a raw JSON object as a Workspace.
  * Throws a ValiError if validation fails.
  */
-export function parseWorkspace(data: unknown): WorkspaceOutput {
+export function parseWorkspace(data: Json): WorkspaceOutput {
   return v.parse(WorkspaceSchema, data);
 }

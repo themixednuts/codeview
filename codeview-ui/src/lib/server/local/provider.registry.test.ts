@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vite-plus/test";
 import { createLocalProvider } from "./provider";
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse<T>(body: T): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
     headers: { "content-type": "application/json" },

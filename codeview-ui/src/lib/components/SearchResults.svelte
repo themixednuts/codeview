@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { NodeSummary } from '#lib/schema';
-	import type { NodeKind } from '#lib/graph';
-	import { resolveAppPath } from '#lib/app-paths';
-	import { kindColors, kindIcons } from '#lib/tree';
+	import type { NodeSummary } from '#lib/schema.js';
+	import type { NodeKind } from '#lib/graph.js';
+	import { resolveAppPath } from '#lib/app-paths.js';
+	import { kindColors, kindIcons } from '#lib/tree.js';
 	import Skeleton from '#lib/components/Skeleton.svelte';
 
 	let {

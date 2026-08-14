@@ -5,7 +5,8 @@
 
 import { build, files, version } from "$service-worker";
 
-const sw = self as unknown as ServiceWorkerGlobalScope;
+// SAFETY: this file is the service-worker entry; TypeScript's lib mix types `self` as Window | WorkerGlobalScope.
+const sw = self as ServiceWorkerGlobalScope;
 const CACHE_NAME = `cache-${version}`;
 const PRECACHE_ASSETS = [...build, ...files];
 const PRECACHE_ASSET_PATHS = new Set(PRECACHE_ASSETS);
@@ -49,6 +50,7 @@ sw.addEventListener("activate", (event) => {
 });
 
 sw.addEventListener("message", (event) => {
+  // SAFETY: service-worker postMessage payloads are untyped; this app only posts `{ type: "codeview:force-refresh" }`.
   const data = event.data as { type?: string } | null;
   if (data?.type !== "codeview:force-refresh") return;
   void clearCodeviewCaches().then(() => sw.skipWaiting());

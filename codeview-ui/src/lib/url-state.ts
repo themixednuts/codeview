@@ -1,5 +1,5 @@
-import type { NodeKind } from "#lib/schema";
-import { nodeKindOrder } from "#lib/display-names";
+import type { NodeKind } from "#lib/schema.js";
+import { nodeKindOrder } from "#lib/display-names.js";
 
 export const EXPLORER_EX_LIMIT = 64;
 
@@ -95,7 +95,10 @@ function readEnum<T extends string>(
 ): T | null {
   const raw = params.get(key);
   if (!raw) return fallback;
-  return (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
+  for (const candidate of allowed) {
+    if (candidate === raw) return candidate;
+  }
+  return fallback;
 }
 
 function readText(params: AppSearchParams, key: string): string {
@@ -134,11 +137,11 @@ function readExpandedIds(params: AppSearchParams): string[] {
 }
 
 function applyPatch<T extends object>(base: T, patch: Partial<T>): T {
-  const next = { ...base };
-  for (const [key, value] of Object.entries(patch) as Array<[keyof T, T[keyof T] | undefined]>) {
-    if (value !== undefined) next[key] = value as T[keyof T];
-  }
-  return next;
+  const defined = Object.fromEntries(
+    Object.entries(patch).filter(([, value]) => value !== undefined),
+  );
+  // SAFETY: defined is the enumerable own keys of Partial<T> whose values are present; spreading them onto T only overwrites those keys.
+  return { ...base, ...defined } as T;
 }
 
 function resetParams(url: URL, keys: readonly string[]) {

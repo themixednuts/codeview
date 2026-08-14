@@ -1,5 +1,5 @@
-import type { LayoutMode } from "#lib/graph/layout/types";
-import type { VisEdge, VisNode } from "#lib/graph/layout/types";
+import type { LayoutMode } from "#lib/graph/layout/types.js";
+import type { VisEdge, VisNode } from "#lib/graph/layout/types.js";
 import type { LabelPositionProvider, LabelPosition, LabelContext, SimilarityInfo } from "./types";
 import {
   egoLabelProvider,

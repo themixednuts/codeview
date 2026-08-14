@@ -1,5 +1,7 @@
 import type { WebsiteEnv } from "../alchemy.run.ts";
-import type { AuthSession, AuthState, AuthUser } from "#lib/server/auth";
+import type { AuthSession, AuthState, AuthUser } from "#lib/server/auth.js";
+import type { CrateMapData } from "#lib/graph/crate-map.js";
+import type { NodeView } from "#lib/schema.js";
 
 declare global {
   namespace App {
@@ -7,6 +9,12 @@ declare global {
       auth: AuthState;
       user: AuthUser | null;
       session: AuthSession | null;
+    }
+
+    interface PageData {
+      nodeView?: NodeView | null;
+      crateMap?: CrateMapData | null;
+      nodeId?: string;
     }
 
     interface Platform {

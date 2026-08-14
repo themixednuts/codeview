@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { Edge, Graph, Node } from "#lib/graph";
+import type { Edge, Graph, Node } from "#lib/graph.js";
 import { isSyntheticProjectionNodeId, projectGraphForRendering } from "./projection";
 
 function makeNode(id: string, name: string, kind: Node["kind"] = "Function"): Node {

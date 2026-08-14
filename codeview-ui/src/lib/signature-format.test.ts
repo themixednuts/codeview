@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { Node, TypeRef, Visibility } from "#lib/schema";
+import type { Node, TypeRef, Visibility } from "#lib/schema.js";
 import { formatItemDeclaration, formatSignature } from "./signature-format";
 
 type Sig = NonNullable<Node["signature"]>;
@@ -140,7 +140,7 @@ describe("formatItemDeclaration", () => {
       id: partial.id ?? partial.name,
       attrs: partial.attrs ?? [],
       visibility: partial.visibility ?? pub,
-    } as Node;
+    };
   }
 
   it("returns null for kinds without a declaration", () => {

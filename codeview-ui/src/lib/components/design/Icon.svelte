@@ -35,9 +35,8 @@
 		class?: string;
 	}>();
 
-	function iconName(): IconName | null {
-		const value = name as unknown;
-		return typeof value === 'string' ? (value as IconName) : null;
+	function iconName(): IconName {
+		return name;
 	}
 
 </script>

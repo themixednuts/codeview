@@ -22,13 +22,13 @@ export type RustChannel = (typeof RUST_CHANNEL_ORDER)[number];
 export const DEFAULT_RUST_CHANNEL: RustChannel = "stable";
 export const RUST_CHANNELS: ReadonlySet<RustChannel> = new Set(RUST_CHANNEL_ORDER);
 
-const TOOLCHAIN_CRATE_DESCRIPTIONS: Record<(typeof STD_JSON_CRATES)[number], string> = {
+const TOOLCHAIN_CRATE_DESCRIPTIONS = {
   std: "Rust standard library",
   core: "Rust core library",
   alloc: "Rust allocation library",
   proc_macro: "Rust procedural macro API",
   test: "Rust test harness library",
-};
+} as const satisfies { [K in (typeof STD_JSON_CRATES)[number]]: string };
 
 export type ToolchainCrateSearchResult = {
   id: string;
@@ -42,17 +42,28 @@ export function isStdCrate(name: string): boolean {
 }
 
 export function isStdJsonCrate(name: string): name is (typeof STD_JSON_CRATES)[number] {
-  return (STD_JSON_CRATES as readonly string[]).includes(name);
+  switch (name) {
+    case "std":
+    case "core":
+    case "alloc":
+    case "proc_macro":
+    case "test":
+      return true;
+    default:
+      return false;
+  }
 }
 
-export function isRustChannel(version: string): boolean {
-  return RUST_CHANNELS.has(version as RustChannel);
+export function isRustChannel(version: string): version is RustChannel {
+  return version === "stable" || version === "beta" || version === "nightly";
 }
 
-function normalizedToolchainQuery(query: string): {
+type ToolchainQuery = {
   needle: string;
   channel?: RustChannel;
-} {
+};
+
+function normalizedToolchainQuery(query: string): ToolchainQuery {
   let value = query
     .trim()
     .toLowerCase()
@@ -60,8 +71,11 @@ function normalizedToolchainQuery(query: string): {
   let channel: RustChannel | undefined;
   const channelMatch = value.match(/(?:^|[@:\s])(stable|beta|nightly)$/);
   if (channelMatch) {
-    channel = channelMatch[1] as RustChannel;
-    value = value.slice(0, channelMatch.index).trim();
+    const captured = channelMatch[1];
+    if (captured === "stable" || captured === "beta" || captured === "nightly") {
+      channel = captured;
+      value = value.slice(0, channelMatch.index).trim();
+    }
   }
   return {
     needle: value.replace(/[\s-]+/g, "_"),

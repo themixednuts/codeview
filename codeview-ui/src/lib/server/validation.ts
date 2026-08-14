@@ -1,8 +1,8 @@
-import { isRustChannel } from "#lib/std";
-import { isValidCrateNameParam, isValidVersionParam } from "#lib/crate-ref";
+import { isRustChannel } from "#lib/std.js";
+import { isValidCrateNameParam, isValidVersionParam } from "#lib/crate-ref.js";
 
 const ALLOWED_ECOSYSTEMS = new Set(["rust"]);
-export { normalizeCrateName, hyphenateCrateName, crateNameVariants } from "#lib/crate-names";
+export { normalizeCrateName, hyphenateCrateName, crateNameVariants } from "#lib/crate-names.js";
 const EDGE_NODE_ID_MAX = 512;
 
 export function isValidCrateName(name: string): boolean {

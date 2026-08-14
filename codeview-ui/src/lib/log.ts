@@ -7,11 +7,17 @@ import {
   type Sink,
   isLogLevel,
 } from "@logtape/logtape";
+import * as Predicate from "effect/Predicate";
+import type { Json } from "effect/Schema";
+
+type LogContext = {
+  readonly [key: string]: Json;
+};
 
 let configured = false;
 
-const isBrowser = typeof globalThis.document !== "undefined";
-const isCloudflare = typeof globalThis.caches !== "undefined" && !isBrowser;
+const isBrowser = globalThis.document !== undefined;
+const isCloudflare = globalThis.caches !== undefined && !isBrowser;
 
 function isPerfEnabled(): boolean {
   if (!isBrowser) return false;
@@ -32,13 +38,13 @@ function resolveLogLevel(): LogLevel {
     } catch {}
     try {
       const stored = localStorage.getItem("codeview-log-level");
-      if (stored && isLogLevel(stored)) return stored as LogLevel;
+      if (stored && isLogLevel(stored)) return stored;
     } catch {}
   } else if (!isCloudflare) {
     // Node / Bun server
     try {
       const envLevel = process.env.LOG_LEVEL;
-      if (envLevel && isLogLevel(envLevel)) return envLevel as LogLevel;
+      if (envLevel && isLogLevel(envLevel)) return envLevel;
     } catch {}
   }
   // Default: debug in dev-like, info otherwise
@@ -69,7 +75,7 @@ export async function setupLogging(extraSinks: Record<string, Sink> = {}): Promi
         formatter: (record) => {
           const cat = record.category.slice(1).join(":");
           const prefix = `[${cat}]`;
-          const msg = record.message.map((p) => (typeof p === "function" ? p() : p)).join("");
+          const msg = record.message.map((p) => (Predicate.isFunction(p) ? p() : p)).join("");
           const props =
             record.properties && Object.keys(record.properties).length > 0
               ? " " +
@@ -108,6 +114,6 @@ export function getPerfLogger(category: string) {
   return _getLogger(["codeview", "perf", category]);
 }
 
-export function getLoggerWith(category: string, context: Record<string, unknown>) {
+export function getLoggerWith(category: string, context: LogContext) {
   return _getLogger(["codeview", category]).with(context);
 }
