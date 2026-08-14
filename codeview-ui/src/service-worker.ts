@@ -19,13 +19,6 @@ function resolveAssetPath(path: string): string {
   return resolve(path.startsWith("/") ? path : `/${path}`);
 }
 
-async function clearCodeviewCaches(): Promise<void> {
-  const keys = await caches.keys();
-  await Promise.all(
-    keys.filter((key) => key.startsWith("cache-")).map((key) => caches.delete(key)),
-  );
-}
-
 async function precacheAssets(): Promise<void> {
   const cache = await caches.open(CACHE_NAME);
   await Promise.all(
@@ -43,7 +36,8 @@ async function precacheAssets(): Promise<void> {
 }
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(precacheAssets().then(() => self.skipWaiting()));
+  event.waitUntil(self.skipWaiting());
+  void precacheAssets();
 });
 
 self.addEventListener("activate", (event) => {
@@ -61,7 +55,7 @@ self.addEventListener("message", (event) => {
   // SAFETY: service-worker postMessage payloads are untyped; this app only posts `{ type: "codeview:force-refresh" }`.
   const data = event.data as { type?: string } | null;
   if (data?.type !== "codeview:force-refresh") return;
-  void clearCodeviewCaches().then(() => self.skipWaiting());
+  event.waitUntil(self.skipWaiting().then(() => self.clients.claim()));
 });
 
 self.addEventListener("fetch", (event) => {
