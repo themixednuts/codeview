@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import * as RadioGroup from '$lib/shadcn/ui/radio-group';
-	import { cn } from '$lib/shadcn/utils';
+	import * as RadioGroup from '#lib/components/ui/radio-group';
+	import { cn } from '#lib/utils';
 
 	let {
 		id,

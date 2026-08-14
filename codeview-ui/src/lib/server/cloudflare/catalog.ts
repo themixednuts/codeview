@@ -1,5 +1,5 @@
-import type { StaticCrateCatalogEntry } from '$lib/schema';
-import { isStdCrate } from '$lib/std';
+import type { StaticCrateCatalogEntry } from '#lib/schema';
+import { isStdCrate } from '#lib/std';
 import { crateNameVariants, normalizeCrateName } from '../validation';
 
 export type CatalogCrateSummary = {

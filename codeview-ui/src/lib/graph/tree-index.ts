@@ -1,6 +1,6 @@
-import type { Graph, Node } from '$lib/graph';
-import { compareNodeLike, kindOrder } from '$lib/node-order';
-import { getLogger } from '$lib/log';
+import type { Graph, Node } from '#lib/graph';
+import { compareNodeLike, kindOrder } from '#lib/node-order';
+import { getLogger } from '#lib/log';
 
 const log = getLogger('tree-index');
 

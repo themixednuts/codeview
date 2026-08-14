@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
 	import type { GraphNodePillFlowData } from './flow-types';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
+	import KindBadge from '#lib/components/design/KindBadge.svelte';
 
 	let { data } = $props<{ data: GraphNodePillFlowData }>();
 
@@ -57,7 +57,7 @@
 		{data.node.label || data.node.id}
 	</span>
 	{#if data.isFocus}
-		<span class="mono ml-auto shrink-0 text-2xs tracking-wider uppercase opacity-70">
+		<span class="mono ml-auto shrink-0 text-2xs opacity-70">
 			{data.node.kindLabel ?? data.node.kind}
 		</span>
 	{/if}

@@ -1,10 +1,10 @@
 <script lang="ts">
-	import type { NodeDetail, NodeSummary, SourceResult } from '$lib/schema';
-	import type { MaterializedDetailDocModel } from '$lib/detail-model';
-	import { getSource } from '$lib/rpc/source.remote';
-	import { sourceProviderModeCtx } from '$lib/context';
-	import CodeBlock from '$lib/components/design/CodeBlock.svelte';
-	import SourceActions from '$lib/components/SourceActions.svelte';
+	import type { NodeDetail, NodeSummary, SourceResult } from '#lib/schema';
+	import type { MaterializedDetailDocModel } from '#lib/detail-model';
+	import { getSource } from '#lib/rpc/source.remote';
+	import { sourceProviderModeCtx } from '#lib/context';
+	import CodeBlock from '#lib/components/design/CodeBlock.svelte';
+	import SourceActions from '#lib/components/SourceActions.svelte';
 	import DocArticle from './DocArticle.svelte';
 	import DocClassic from './DocClassic.svelte';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';

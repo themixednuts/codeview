@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Handle, Position } from '@xyflow/svelte';
-	import type { CrateMapModuleNode, CrateMapSemanticKind } from '$lib/graph/crate-map';
-	import { edgeLabels } from '$lib/display-names';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
+	import type { CrateMapModuleNode, CrateMapSemanticKind } from '#lib/graph/crate-map';
+	import { edgeLabels } from '#lib/display-names';
+	import KindBadge from '#lib/components/design/KindBadge.svelte';
 
 	type CrateModuleNodeData = {
 		module: CrateMapModuleNode;

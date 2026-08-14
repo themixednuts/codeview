@@ -1,8 +1,8 @@
-import type { Node } from '$lib/graph';
+import type { Node } from '#lib/graph';
 import type { VisNode } from './types';
 import { MIN_NODE_SPACING } from './types';
-import { getNodeVisual } from '$lib/graph/visual/node-visual';
-import { isRectLike } from '$lib/graph/visual/shapes';
+import { getNodeVisual } from '#lib/graph/visual/node-visual';
+import { isRectLike } from '#lib/graph/visual/shapes';
 import { LABEL_CHAR_WIDTH, ARROWHEAD_LENGTH } from './types';
 
 export function getNodeBoundingBox(

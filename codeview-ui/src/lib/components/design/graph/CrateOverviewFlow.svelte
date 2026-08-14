@@ -7,10 +7,10 @@
 		CrateMapModuleEdge,
 		CrateMapModuleNode,
 		CrateMapSemanticKind,
-	} from '$lib/graph/crate-map';
-	import { findContainingModule, moduleDepthColor } from '$lib/graph/crate-map';
-	import { resolveAppPath } from '$lib/app-paths';
-	import { edgeKindToRelation, REL, REL_ORDER, type DesignRelation } from '$lib/design/live-node';
+	} from '#lib/graph/crate-map';
+	import { findContainingModule, moduleDepthColor } from '#lib/graph/crate-map';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { edgeKindToRelation, REL, REL_ORDER, type DesignRelation } from '#lib/design/live-node';
 	import CrateModuleNode from './CrateModuleNode.svelte';
 	import { DISABLED_FLOW_SHORTCUTS } from './flow-shortcuts';
 

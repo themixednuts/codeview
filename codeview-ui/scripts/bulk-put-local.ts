@@ -3,7 +3,7 @@
  *
  * Speaks a tiny JSON-Lines RPC over stdio so the Rust
  * `LocalMiniflareBackend` can keep one miniflare process alive across
- * hundreds of puts.  Replaces the per-put `bunx wrangler r2 object
+ * hundreds of puts.  Replaces the per-put `pnpm exec wrangler r2 object
  * put` spawn (which paid ~3s of node startup per artifact) with a
  * persistent process that pays the startup cost once.
  *
@@ -25,7 +25,7 @@
  *   path, surfaces it when stdin closes with an unexpected exit code.
  *
  * Run as:
- *   bun scripts/bulk-put-local.ts \
+ *   node --experimental-strip-types scripts/bulk-put-local.ts \
  *     --binding CRATE_GRAPHS \
  *     --bucket crate-graphs \
  *     --persist-to .wrangler/state

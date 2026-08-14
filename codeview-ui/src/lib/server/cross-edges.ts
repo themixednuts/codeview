@@ -1,5 +1,5 @@
 import { Result } from 'better-result';
-import type { NodeKind, Visibility } from '$lib/graph';
+import type { NodeKind, Visibility } from '#lib/graph';
 
 export type CrossEdgeNodeSummary = {
 	id: string;

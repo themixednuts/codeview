@@ -1,6 +1,6 @@
-import type { Edge, EdgeKind, Graph, Node, NodeKind } from '$lib/graph';
-import type { LayoutMode } from '$lib/graph/layout';
-import { filterEdges } from '$lib/renderers/graph';
+import type { Edge, EdgeKind, Graph, Node, NodeKind } from '#lib/graph';
+import type { LayoutMode } from '#lib/graph/layout';
+import { filterEdges } from '#lib/renderers/graph';
 
 export const GRAPH_PROJECTION_NODE_CAP = 180;
 export const GRAPH_PROJECTION_EDGE_CAP = 360;

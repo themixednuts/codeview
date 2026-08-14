@@ -1,8 +1,9 @@
 import { prerender, query } from '$app/server';
-import { Effect, Schema } from 'effect';
-import { getLogger } from '$lib/log';
-import { perf } from '$lib/perf';
-import type { TreeNodeDTO } from '$lib/schema';
+import * as Effect from 'effect/Effect';
+import * as Schema from 'effect/Schema';
+import { getLogger } from '#lib/log';
+import { perf } from '#lib/perf';
+import type { TreeNodeDTO } from '#lib/schema';
 import { resolve } from './helpers';
 import { assertCrateRef } from './remote-utils';
 import { TreeNodeInputSchema } from './schemas';

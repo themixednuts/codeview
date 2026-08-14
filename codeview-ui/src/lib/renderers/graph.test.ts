@@ -9,8 +9,8 @@ import {
 	structuralEdgeKinds,
 	semanticEdgeKinds,
 } from './graph';
-import type { Graph, Node, Edge } from '$lib/graph';
-import { isSyntheticProjectionNodeId, projectGraphForRendering } from '$lib/graph/projection';
+import type { Graph, Node, Edge } from '#lib/graph';
+import { isSyntheticProjectionNodeId, projectGraphForRendering } from '#lib/graph/projection';
 
 // ---------------------------------------------------------------------------
 // Test fixtures

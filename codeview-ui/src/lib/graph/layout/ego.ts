@@ -1,7 +1,7 @@
-import type { Confidence, Graph, Node } from '$lib/graph';
+import type { Confidence, Graph, Node } from '#lib/graph';
 import type { VisNode, VisEdge } from './types';
 import { CENTER_X, CENTER_Y, FLOW_COLUMN_GAP, FLOW_ROW_GAP, MAX_NODES_PER_COLUMN } from './types';
-import { getNodeVisual } from '$lib/graph/visual/node-visual';
+import { getNodeVisual } from '#lib/graph/visual/node-visual';
 
 function formatEdgeKinds(kinds: string[]): string {
 	return Array.from(new Set(kinds)).join(', ');

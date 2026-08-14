@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vite-plus/test';
-import type { Node, TypeRef, Visibility } from '$lib/schema';
+import type { Node, TypeRef, Visibility } from '#lib/schema';
 import { formatItemDeclaration, formatSignature } from './signature-format';
 
 type Sig = NonNullable<Node['signature']>;

@@ -19,11 +19,11 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { Edge, Node } from '$lib/graph';
-import type { CrateTree } from '$lib/schema';
-import { getLogger } from '$lib/log';
-import { normalizeCrateName } from '$lib/crate-names';
-import { buildCrateTree } from '$lib/node-summary';
+import type { Edge, Node } from '#lib/graph';
+import type { CrateTree } from '#lib/schema';
+import { getLogger } from '#lib/log';
+import { normalizeCrateName } from '#lib/crate-names';
+import { buildCrateTree } from '#lib/node-summary';
 
 const log = getLogger('parse-rustdoc');
 

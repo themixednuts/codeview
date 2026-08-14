@@ -1,11 +1,11 @@
 import { getRequestEvent } from '$app/server';
-import { Effect } from 'effect';
-import { hasLocalWorkspace, initProvider } from '$lib/server/provider';
-import { perf } from '$lib/perf';
-import { isHosted } from '$lib/platform';
-import { normalizeCrateName, hyphenateCrateName } from '$lib/crate-names';
-import { TreeIndex } from '$lib/graph/tree-index';
-import type { Node, Edge, Workspace } from '$lib/graph';
+import * as Effect from 'effect/Effect';
+import { hasLocalWorkspace, initProvider } from '#lib/server/provider';
+import { perf } from '#lib/perf';
+import { isHosted } from '#lib/platform';
+import { normalizeCrateName, hyphenateCrateName } from '#lib/crate-names';
+import { TreeIndex } from '#lib/graph/tree-index';
+import type { Node, Edge, Workspace } from '#lib/graph';
 import type {
 	NodeSummary,
 	CrateTree,
@@ -14,10 +14,10 @@ import type {
 	KindFacet,
 	TreeNodeDTO,
 	NodeView,
-} from '$lib/schema';
-import { kindLabels, nodeKindOrder } from '$lib/display-names';
-import { getLogger } from '$lib/log';
-import { summarizeNode } from '$lib/node-summary';
+} from '#lib/schema';
+import { kindLabels, nodeKindOrder } from '#lib/display-names';
+import { getLogger } from '#lib/log';
+import { summarizeNode } from '#lib/node-summary';
 import type { NodeViewInput } from './schemas';
 
 const log = getLogger('rpc.helpers');
@@ -186,7 +186,7 @@ export class Loader {
 		name: string,
 		version?: string,
 		p?: Provider,
-	): Promise<import('$lib/graph').CrateGraph | null> {
+	): Promise<import('#lib/graph').CrateGraph | null> {
 		const resolved = await this.provider(p);
 		return resolved.loadCrateGraph(name, version ?? 'latest');
 	}

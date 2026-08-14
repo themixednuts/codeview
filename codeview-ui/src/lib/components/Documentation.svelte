@@ -1,11 +1,11 @@
 <script lang="ts">
-	import { parseDocumentation } from '$lib/highlight/documentation';
-	import type { SupportedLanguage } from '$lib/highlight/languages';
-	import type { DocLinks } from '$lib/highlight/markdown';
-	import { resolveAppPath } from '$lib/app-paths';
-	import { externalDocsUrl } from '$lib/docs';
+	import { parseDocumentation } from '#lib/highlight/documentation';
+	import type { SupportedLanguage } from '#lib/highlight/languages';
+	import type { DocLinks } from '#lib/highlight/markdown';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { externalDocsUrl } from '#lib/docs';
 	import CodeBlock from './CodeBlock.svelte';
-	import { extLinkModeCtx } from '$lib/context';
+	import { extLinkModeCtx } from '#lib/context';
 
 	const extLinkMode = $derived(extLinkModeCtx.get());
 
@@ -84,7 +84,6 @@
 		max-inline-size: var(--doc-prose-measure, 70ch);
 		font-family: var(--font-prose);
 		font-size: var(--doc-fs, 1.0625rem);
-		font-size-adjust: 0.52;
 		line-height: var(--doc-leading, 1.65);
 	}
 

@@ -1,5 +1,5 @@
-import type { Edge, EdgeKind, Node } from '$lib/schema';
-import type { DesignNode, DesignRelation } from '$lib/design/live-node';
+import type { Edge, EdgeKind, Node } from '#lib/schema';
+import type { DesignNode, DesignRelation } from '#lib/design/live-node';
 
 export type FocusDirection = 'incoming' | 'outgoing';
 

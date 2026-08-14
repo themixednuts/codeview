@@ -1,4 +1,4 @@
-import { STATIC_ARTIFACT_SCHEMA_VERSION } from '$lib/schema';
+import { STATIC_ARTIFACT_SCHEMA_VERSION } from '#lib/schema';
 
 export const HOSTED_ARTIFACT_CACHE_NAMESPACE = `hosted-artifact-v${STATIC_ARTIFACT_SCHEMA_VERSION}`;
 

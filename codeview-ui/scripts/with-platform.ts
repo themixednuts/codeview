@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 const [platform, command, ...args] = process.argv.slice(2);
 
 if (platform !== 'local' && platform !== 'cloudflare') {
-	console.error('usage: bun scripts/with-platform.ts <local|cloudflare> <command> [...args]');
+	console.error('usage: node scripts/with-platform.ts <local|cloudflare> <command> [...args]');
 	process.exit(2);
 }
 

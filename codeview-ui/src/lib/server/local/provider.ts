@@ -1,7 +1,9 @@
 import { Result } from 'better-result';
+import { createReadStream, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
-import type { RequestEvent } from '@sveltejs/kit';
+import type { RequestEvent } from '$app/server';
 import type {
 	Workspace,
 	CrateGraph,
@@ -11,15 +13,15 @@ import type {
 	Visibility,
 	Node,
 	Edge,
-} from '$lib/graph';
-import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from '$lib/schema';
-import { buildCrateMapData, type CrateMapData, type CrateMapOptions } from '$lib/graph/crate-map';
-import { parseWorkspace } from '$lib/schema';
-import { RUST_CHANNEL_ORDER, isStdJsonCrate, isStdCrate, searchToolchainCrates } from '$lib/std';
-import { getLogger } from '$lib/log';
-import { perf } from '$lib/perf';
-import { decodeGzipStream } from '$lib/server/gzip';
-import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from '$lib/server/cross-edges';
+} from '#lib/graph';
+import type { CrateIndex, CrateTree, NodeDetail, NodeSummary, TreeNodeDTO } from '#lib/schema';
+import { buildCrateMapData, type CrateMapData, type CrateMapOptions } from '#lib/graph/crate-map';
+import { parseWorkspace } from '#lib/schema';
+import { RUST_CHANNEL_ORDER, isStdJsonCrate, isStdCrate, searchToolchainCrates } from '#lib/std';
+import { getLogger } from '#lib/log';
+import { perf } from '#lib/perf';
+import { decodeGzipStream } from '#lib/server/gzip';
+import { summarizeCrossEdgeNode, type CrossEdgeNodeSummary } from '#lib/server/cross-edges';
 import { createCratesIoAdapter } from '../registry/cratesio';
 import { getRegistry } from '../registry/index';
 import { parseWithRustBinary, type ParseProgress } from '../parsing/parse-rustdoc';
@@ -713,10 +715,12 @@ export function createLocalProvider(): DataProvider {
 			// read-json
 			const artifactInfo = await step.do('read-json', async () => {
 				await emitStatus(name, version, { status: 'processing' }, 'fetching');
-				const file = Bun.file(stdInfo.jsonPath!);
-				const sizeLabel = `${(file.size / 1024 / 1024).toFixed(1)} MB`;
-				const contentId = `${file.size}:${file.lastModified ?? 0}`;
-				return { stream: file.stream(), sizeLabel, contentId };
+				const jsonPath = stdInfo.jsonPath!;
+				const stats = statSync(jsonPath);
+				const sizeLabel = `${(stats.size / 1024 / 1024).toFixed(1)} MB`;
+				const contentId = `${stats.size}:${Math.trunc(stats.mtimeMs)}`;
+				const stream = Readable.toWeb(createReadStream(jsonPath)) as ReadableStream<Uint8Array>;
+				return { stream, sizeLabel, contentId };
 			});
 			log.info`Read std JSON for ${name}@${version}: ${artifactInfo.sizeLabel}`;
 
@@ -1520,7 +1524,7 @@ export function handleWsUpgrade(event: RequestEvent): Response {
 	const server = event.platform?.server;
 	if (!server) {
 		log.warn`handleWsUpgrade: no server on platform`;
-		return new Response('No Bun server available for WebSocket upgrade', { status: 500 });
+		return new Response('No local server available for WebSocket upgrade', { status: 500 });
 	}
 
 	if (!providerInternals) {
@@ -1536,6 +1540,5 @@ export function handleWsUpgrade(event: RequestEvent): Response {
 		return new Response('WebSocket upgrade failed', { status: 400 });
 	}
 	log.info`handleWsUpgrade: upgrade success`;
-	// Bun handles the 101 response internally
 	return new Response(null, { status: 101 });
 }

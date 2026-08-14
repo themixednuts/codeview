@@ -1,4 +1,4 @@
-import type { NodeKind } from '$lib/graph';
+import type { NodeKind } from '#lib/graph';
 
 export const kindOrder: Record<NodeKind, number> = {
 	Crate: 0,

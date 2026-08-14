@@ -1,4 +1,4 @@
-import type { CrateGraph, CrateTree, Edge, Node, NodeSummary } from '$lib/schema';
+import type { CrateGraph, CrateTree, Edge, Node, NodeSummary } from '#lib/schema';
 
 export function summarizeNode(node: Node): NodeSummary {
 	return {

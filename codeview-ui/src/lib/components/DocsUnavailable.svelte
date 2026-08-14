@@ -1,12 +1,12 @@
 <script lang="ts">
-	import { requestCrateParse } from '$lib/rpc/crate.remote';
+	import { requestCrateParse } from '#lib/rpc/crate.remote';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import { isHosted } from '$lib/platform';
-	import { isStdCrate } from '$lib/std';
-	import { normalizeCrateName } from '$lib/crate-names';
-	import { Button } from '$lib/shadcn/ui/button';
-	import * as NativeSelect from '$lib/shadcn/ui/native-select';
+	import { isHosted } from '#lib/platform';
+	import { isStdCrate } from '#lib/std';
+	import { normalizeCrateName } from '#lib/crate-names';
+	import { Button } from '#lib/components/ui/button';
+	import * as NativeSelect from '#lib/components/ui/native-select';
 
 	let {
 		crateName,
@@ -42,7 +42,7 @@
 
 <div class="flex flex-1 items-center justify-center">
 	<div
-		class="corner-squircle mx-3 w-full max-w-md animate-[float-in_0.5s_ease-out] rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-5 text-center shadow-(--shadow-soft) sm:p-8"
+		class="mx-3 w-full max-w-md rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-5 text-center shadow-(--shadow-soft) sm:p-8"
 	>
 		<div class="mb-2 text-lg font-semibold text-(--ink)">Documentation not available yet</div>
 		<div class="mb-4 text-sm text-(--muted)">

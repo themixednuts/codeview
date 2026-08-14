@@ -1,4 +1,4 @@
-import type { NodeKind } from '$lib/graph';
+import type { NodeKind } from '#lib/graph';
 import type { NodeShape, ShapeSpec } from './types';
 
 export const BASE_SPECS: Record<NodeKind, ShapeSpec> = {

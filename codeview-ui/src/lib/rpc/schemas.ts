@@ -1,76 +1,111 @@
-import * as v from 'valibot';
-import { NodeKindSchema } from '$lib/schema';
+import * as Schema from 'effect/Schema';
 
-export const SearchNodesInputSchema = v.object({
-	crate: v.optional(v.string()),
-	version: v.optional(v.string()),
-	q: v.optional(v.string()),
-	kinds: v.optional(v.array(NodeKindSchema)),
+const NodeKind = Schema.Literal(
+	'Crate',
+	'Module',
+	'Struct',
+	'StructField',
+	'Union',
+	'Enum',
+	'Variant',
+	'Trait',
+	'TraitAlias',
+	'Impl',
+	'Function',
+	'TypeAlias',
+	'AssocType',
+	'Constant',
+	'AssocConst',
+	'Static',
+	'Macro',
+	'Primitive',
+	'ExternCrate',
+	'Import',
+	'ProcMacro',
+);
+
+const SearchNodesInput = Schema.Struct({
+	crate: Schema.optional(Schema.String),
+	version: Schema.optional(Schema.String),
+	q: Schema.optional(Schema.String),
+	kinds: Schema.optional(Schema.Array(NodeKind)),
 });
 
-export type SearchNodesInput = v.InferOutput<typeof SearchNodesInputSchema>;
-
-export const GetSourceInputSchema = v.object({
-	file: v.string(),
-	crateName: v.optional(v.string()),
-	crateVersion: v.optional(v.string()),
-	sourceProvider: v.optional(v.picklist(['auto', 'crates-io', 'github'])),
+const GetSourceInput = Schema.Struct({
+	file: Schema.String,
+	crateName: Schema.optional(Schema.String),
+	crateVersion: Schema.optional(Schema.String),
+	sourceProvider: Schema.optional(Schema.Literal('auto', 'crates-io', 'github')),
 });
 
-export const CrateNameInputSchema = v.object({
-	name: v.string(),
+const CrateNameInput = Schema.Struct({
+	name: Schema.String,
 });
 
-export const CrateVersionInputSchema = v.object({
-	name: v.string(),
-	version: v.string(),
+const CrateVersionInput = Schema.Struct({
+	name: Schema.String,
+	version: Schema.String,
 });
 
-export const TriggerParseInputSchema = v.object({
-	name: v.string(),
-	version: v.string(),
-	force: v.optional(v.boolean()),
+const TriggerParseInput = Schema.Struct({
+	name: Schema.String,
+	version: Schema.String,
+	force: Schema.optional(Schema.Boolean),
 });
 
-export const InstallStdDocsInputSchema = v.object({
-	name: v.string(),
-	version: v.string(),
+const InstallStdDocsInput = Schema.Struct({
+	name: Schema.String,
+	version: Schema.String,
 });
 
-export const RegistrySearchInputSchema = v.object({
-	q: v.string(),
+const RegistrySearchInput = Schema.Struct({
+	q: Schema.String,
 });
 
-export const NodeIdSchema = v.string();
-export const NodeIdsSchema = v.array(v.string());
-
-export const CrateRefSchema = v.object({
-	name: v.string(),
-	version: v.optional(v.string()),
-	mode: v.optional(v.picklist(['structural', 'complete'])),
-	includeExternal: v.optional(v.boolean()),
+const CrateRef = Schema.Struct({
+	name: Schema.String,
+	version: Schema.optional(Schema.String),
+	mode: Schema.optional(Schema.Literal('structural', 'complete')),
+	includeExternal: Schema.optional(Schema.Boolean),
 });
 
-export const NodeDetailInputSchema = v.object({
-	nodeId: v.string(),
-	version: v.optional(v.string()),
-	refresh: v.optional(v.number()),
+const NodeDetailInput = Schema.Struct({
+	nodeId: Schema.String,
+	version: Schema.optional(Schema.String),
+	refresh: Schema.optional(Schema.Number),
 });
 
-export const ProcessingInputSchema = v.object({
-	refresh: v.optional(v.number()),
+const ProcessingInput = Schema.Struct({
+	refresh: Schema.optional(Schema.Number),
 });
 
-export const TreeNodeInputSchema = v.object({
-	name: v.string(),
-	version: v.optional(v.string()),
-	nodeId: v.string(),
+const TreeNodeInput = Schema.Struct({
+	name: Schema.String,
+	version: Schema.optional(Schema.String),
+	nodeId: Schema.String,
 });
 
-export const NodeViewInputSchema = v.object({
-	name: v.string(),
-	version: v.optional(v.string()),
-	nodeId: v.string(),
+const NodeViewInput = Schema.Struct({
+	name: Schema.String,
+	version: Schema.optional(Schema.String),
+	nodeId: Schema.String,
 });
 
-export type NodeViewInput = v.InferOutput<typeof NodeViewInputSchema>;
+const NodeIds = Schema.Array(Schema.String);
+
+export const SearchNodesInputSchema = Schema.toStandardSchemaV1(SearchNodesInput);
+export const GetSourceInputSchema = Schema.toStandardSchemaV1(GetSourceInput);
+export const CrateNameInputSchema = Schema.toStandardSchemaV1(CrateNameInput);
+export const CrateVersionInputSchema = Schema.toStandardSchemaV1(CrateVersionInput);
+export const TriggerParseInputSchema = Schema.toStandardSchemaV1(TriggerParseInput);
+export const InstallStdDocsInputSchema = Schema.toStandardSchemaV1(InstallStdDocsInput);
+export const RegistrySearchInputSchema = Schema.toStandardSchemaV1(RegistrySearchInput);
+export const CrateRefSchema = Schema.toStandardSchemaV1(CrateRef);
+export const NodeDetailInputSchema = Schema.toStandardSchemaV1(NodeDetailInput);
+export const ProcessingInputSchema = Schema.toStandardSchemaV1(ProcessingInput);
+export const TreeNodeInputSchema = Schema.toStandardSchemaV1(TreeNodeInput);
+export const NodeViewInputSchema = Schema.toStandardSchemaV1(NodeViewInput);
+export const NodeIdsSchema = Schema.toStandardSchemaV1(NodeIds);
+
+export type SearchNodesInput = typeof SearchNodesInput.Type;
+export type NodeViewInput = typeof NodeViewInput.Type;

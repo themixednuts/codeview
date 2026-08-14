@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { CrateGraph, Node } from '$lib/schema';
+import type { CrateGraph, Node } from '#lib/schema';
 import { buildCrateTree } from './node-summary';
 
 const publicVisibility = { kind: 'Public' } as const;

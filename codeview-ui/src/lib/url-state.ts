@@ -1,5 +1,5 @@
-import type { NodeKind } from '$lib/schema';
-import { nodeKindOrder } from '$lib/display-names';
+import type { NodeKind } from '#lib/schema';
+import { nodeKindOrder } from '#lib/display-names';
 
 export const EXPLORER_EX_LIMIT = 64;
 

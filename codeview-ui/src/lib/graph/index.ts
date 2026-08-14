@@ -31,7 +31,7 @@ export type {
 	Visibility,
 	WherePredicate,
 	Workspace,
-} from '$lib/schema';
+} from '#lib/schema';
 
 // Visual
 export type { NodeShape, NodeVisual, ShapeSpec } from './visual';

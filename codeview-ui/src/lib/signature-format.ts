@@ -1,4 +1,4 @@
-import type { Node, NodeKind, Visibility } from '$lib/graph';
+import type { Node, NodeKind, Visibility } from '#lib/graph';
 import {
 	renderGenericBound,
 	renderGenericParams,

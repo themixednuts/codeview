@@ -1,4 +1,4 @@
-import { normalizeCrateName } from '$lib/crate-names';
+import { normalizeCrateName } from '#lib/crate-names';
 import {
 	forceCenter,
 	forceCollide,
@@ -10,7 +10,7 @@ import {
 	type SimulationLinkDatum,
 	type SimulationNodeDatum,
 } from 'd3-force';
-import type { EdgeKind, Graph, NodeKind } from '$lib/graph';
+import type { EdgeKind, Graph, NodeKind } from '#lib/graph';
 
 const STRUCTURAL_EDGE_KINDS = new Set<EdgeKind>(['Contains', 'Defines']);
 

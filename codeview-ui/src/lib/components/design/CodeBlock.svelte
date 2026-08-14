@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { normalizeLanguage, type SupportedLanguage } from '$lib/highlight/languages';
+	import { normalizeLanguage, type SupportedLanguage } from '#lib/highlight/languages';
 
 	let {
 		code,
@@ -55,7 +55,7 @@
 		let cancelled = false;
 		highlightedHtml = '';
 
-		void import('$lib/highlight/shiki')
+		void import('#lib/highlight/shiki')
 			.then(({ highlightCode }) => highlightCode(nextCode, nextLang, nextTheme, options))
 			.then((html) => {
 				if (!cancelled) highlightedHtml = html;
@@ -71,7 +71,7 @@
 </script>
 
 <div
-	class="design-codeblock codeblock corner-squircle animate-[fadeIn_.12s_ease] overflow-hidden"
+	class="design-codeblock codeblock corner-squircle overflow-hidden"
 	class:design-codeblock--flat={variant === 'flat'}
 >
 	{#if label}

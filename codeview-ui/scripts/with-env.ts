@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 const args = process.argv.slice(2);
 const separator = args.indexOf('--');
 if (separator < 0 || separator === args.length - 1) {
-	console.error('usage: bun scripts/with-env.ts KEY=value KEY?=default -- command [...args]');
+	console.error('usage: node scripts/with-env.ts KEY=value KEY?=default -- command [...args]');
 	process.exit(2);
 }
 

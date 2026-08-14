@@ -7,6 +7,9 @@ Cargo.lock
 /codeview-ui/.svelte-kit
 /codeview-ui/build
 /codeview-ui/.vite
+/codeview-ui/.vite-plus
+/codeview-ui/.alchemy
+/codeview-ui/coverage
 /codeview-ui/.env
 
 # Local/IDE
@@ -29,7 +32,6 @@ opencode.json
 /design-input/
 /design-input-v2/
 /.codemogger/
-AGENTS.md
 
 # Playwright
 /codeview-ui/test-results/

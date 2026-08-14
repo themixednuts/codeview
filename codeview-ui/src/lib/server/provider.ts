@@ -1,5 +1,5 @@
 import type { Result } from 'better-result';
-import type { Edge, Node, NodeKind, Workspace, CrateGraph } from '$lib/graph';
+import type { Edge, Node, NodeKind, Workspace, CrateGraph } from '#lib/graph';
 import type {
 	CrateIndex,
 	CrateTree,
@@ -7,8 +7,8 @@ import type {
 	NodeDetail,
 	NodeViewBase,
 	TreeNodeDTO,
-} from '$lib/schema';
-import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
+} from '#lib/schema';
+import type { CrateMapData, CrateMapOptions } from '#lib/graph/crate-map';
 import type { ValidationError, NotAvailableError, RateLimitError } from './errors';
 import type { SourceProviderMode } from './provider-utils';
 

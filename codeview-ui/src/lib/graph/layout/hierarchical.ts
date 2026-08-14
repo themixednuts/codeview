@@ -1,7 +1,7 @@
-import type { Graph, Node } from '$lib/graph';
+import type { Graph, Node } from '#lib/graph';
 import type { VisNode, VisEdge } from './types';
 import { CENTER_X, CENTER_Y, LAYOUT_HEIGHT, MIN_NODE_SPACING } from './types';
-import { getNodeVisual } from '$lib/graph/visual/node-visual';
+import { getNodeVisual } from '#lib/graph/visual/node-visual';
 import { resolveCollisions } from './collision';
 
 export function computeHierarchicalLayout(

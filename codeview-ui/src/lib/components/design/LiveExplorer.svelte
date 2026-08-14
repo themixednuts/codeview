@@ -10,30 +10,30 @@
 		NodeView,
 		RelationshipGroup,
 		TreeNodeDTO,
-	} from '$lib/schema';
-	import type { CrateStatusValue } from '$lib/context';
+	} from '#lib/schema';
+	import type { CrateStatusValue } from '#lib/context';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { onDestroy, onMount } from 'svelte';
 	import type { Attachment } from 'svelte/attachments';
-	import { resolveAppPath } from '$lib/app-paths';
-	import { crateVersionsCtx, docLayoutCtx, expandPathCtx, resolvedThemeCtx } from '$lib/context';
-	import { nodeKindOrder, visibilityLabel } from '$lib/display-names';
-	import { toDesignNode } from '$lib/design/live-node';
-	import { buildNodeRelationshipGroups } from '$lib/design/relationship-groups';
-	import { materializeDetailDocModel } from '$lib/detail-model';
-	import { getStaticTreeChildren, getTreeChildren } from '$lib/rpc/children.remote';
-	import { searchNodes } from '$lib/rpc/search.remote';
-	import { isHosted } from '$lib/platform';
-	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '$lib/tree';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { crateVersionsCtx, docLayoutCtx, expandPathCtx, resolvedThemeCtx } from '#lib/context';
+	import { nodeKindOrder, visibilityLabel } from '#lib/display-names';
+	import { toDesignNode } from '#lib/design/live-node';
+	import { buildNodeRelationshipGroups } from '#lib/design/relationship-groups';
+	import { materializeDetailDocModel } from '#lib/detail-model';
+	import { getStaticTreeChildren, getTreeChildren } from '#lib/rpc/children.remote';
+	import { searchNodes } from '#lib/rpc/search.remote';
+	import { isHosted } from '#lib/platform';
+	import { CHILDREN_PLACEHOLDER, compareTreeNodes, matchesFilter, type TreeNode } from '#lib/tree';
 	import {
 		parseExplorerState,
 		serializeExplorerState,
 		type ExplorerDocLayout,
 		type ExplorerViewState,
 		type ExplorerViewMode,
-	} from '$lib/url-state';
-	import SkeletonTree from '$lib/components/SkeletonTree.svelte';
-	import * as Resizable from '$lib/shadcn/ui/resizable/index.js';
+	} from '#lib/url-state';
+	import SkeletonTree from '#lib/components/SkeletonTree.svelte';
+	import * as Resizable from '#lib/components/ui/resizable/index.js';
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import Signature from './Signature.svelte';
@@ -965,7 +965,7 @@
 {#snippet relationshipList(title: string, count: number, groups: RelationshipGroup[])}
 	<div>
 		<div class="mb-2 flex items-center justify-between px-1.5">
-			<span class="text-xs font-semibold tracking-[0.16em] text-(--muted-soft) uppercase">
+			<span class="text-xs font-medium text-(--muted-soft)">
 				{title}
 			</span>
 			<span class="mono text-xs text-(--muted-soft)">{count}</span>
@@ -976,7 +976,7 @@
 					<div>
 						<div class="mb-1 flex items-center gap-2 px-1.5">
 							<span
-								class="mono text-2xs font-semibold tracking-[0.16em] uppercase"
+								class="mono text-2xs font-medium"
 								style={`color: ${group.color}`}
 							>
 								{group.label}
@@ -1022,7 +1022,7 @@
 		aria-label="Module tree"
 	>
 		<div class="border-b border-(--panel-border-soft) px-4 pt-4 pb-3">
-			<div class="mb-1 text-2xs font-semibold tracking-[0.22em] text-(--muted-soft) uppercase">
+			<div class="mb-1 text-xs font-medium text-(--muted-soft)">
 				Module tree
 			</div>
 			<div class="flex min-w-0 items-center gap-2">
@@ -1243,7 +1243,7 @@
 		{#if crateList.length > 0 || loadingCrateSwitcher}
 			<div class="border-t border-(--panel-border-soft) px-4 py-3">
 				<div class="mb-2 flex items-center gap-2">
-					<span class="text-2xs font-semibold tracking-[0.18em] text-(--muted-soft) uppercase">
+					<span class="text-2xs font-medium text-(--muted-soft)">
 						{crateSwitcherLabel}
 					</span>
 					<span class="h-px flex-1 bg-(--panel-border-soft)"></span>
@@ -1273,7 +1273,7 @@
 		aria-label="Node content"
 	>
 		{#if mode === 'graph' && detail}
-			{@const FocusGraphFlow = (await import('$lib/components/design/graph/FocusGraphFlow.svelte'))
+			{@const FocusGraphFlow = (await import('#lib/components/design/graph/FocusGraphFlow.svelte'))
 				.default}
 			<div class="js-only h-full">
 				<FocusGraphFlow
@@ -1295,7 +1295,7 @@
 			</div>
 		{:else if detail && selected && selected.kind !== 'Crate'}
 			{#if docLayout === 'reading'}
-				{@const DocReading = (await import('$lib/components/design/docs/DocReading.svelte'))
+				{@const DocReading = (await import('#lib/components/design/docs/DocReading.svelte'))
 					.default}
 				<DocReading
 					{detail}
@@ -1308,7 +1308,7 @@
 					{crateVersions}
 				/>
 			{:else if docLayout === 'split'}
-				{@const DocSplit = (await import('$lib/components/design/docs/DocSplit.svelte')).default}
+				{@const DocSplit = (await import('#lib/components/design/docs/DocSplit.svelte')).default}
 				<DocSplit
 					{detail}
 					{ancestors}
@@ -1322,7 +1322,7 @@
 					{crateVersions}
 				/>
 			{:else}
-				{@const DocClassic = (await import('$lib/components/design/docs/DocClassic.svelte'))
+				{@const DocClassic = (await import('#lib/components/design/docs/DocClassic.svelte'))
 					.default}
 				<DocClassic
 					{detail}
@@ -1338,7 +1338,7 @@
 				/>
 			{/if}
 		{:else}
-			{@const DetailView = (await import('$lib/components/DetailView.svelte')).default}
+			{@const DetailView = (await import('#lib/components/DetailView.svelte')).default}
 			<DetailView {nodeId} embedded />
 		{/if}
 	</section>
@@ -1353,7 +1353,7 @@
 			<div class="border-b border-(--panel-border-soft) px-5 pt-5 pb-4">
 				<div class="mb-2 flex items-center gap-2">
 					<span
-						class="mono rounded px-1.5 py-0.5 text-2xs font-semibold tracking-[0.14em] uppercase"
+						class="mono rounded px-1.5 py-0.5 text-2xs font-medium"
 						style="background: var(--accent-soft); color: var(--accent-strong)"
 					>
 						{selectedDesign.kindLabel}

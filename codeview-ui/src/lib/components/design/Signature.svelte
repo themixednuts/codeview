@@ -1,6 +1,6 @@
 <script lang="ts">
-	import type { Node } from '$lib/schema';
-	import { formatSignature } from '$lib/signature-format';
+	import type { Node } from '#lib/schema';
+	import { formatSignature } from '#lib/signature-format';
 	import CodeBlock from './CodeBlock.svelte';
 
 	let {

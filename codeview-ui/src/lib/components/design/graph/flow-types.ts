@@ -1,6 +1,6 @@
 import type { Edge as FlowEdge, Node as FlowNode } from '@xyflow/svelte';
-import type { EdgeKind, Node } from '$lib/schema';
-import type { DesignNode, DesignRelation } from '$lib/design/live-node';
+import type { EdgeKind, Node } from '#lib/schema';
+import type { DesignNode, DesignRelation } from '#lib/design/live-node';
 import type { FocusDirection } from './focus-layout';
 
 export type GraphNodePillFlowData = {

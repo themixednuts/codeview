@@ -1,7 +1,7 @@
-import type { EdgeKind, Node, NodeKind, NodeSummary, Visibility } from '$lib/schema';
-import { edgeLabels, isPublic, kindLabels } from '$lib/display-names';
-import { formatSignature, type FormattedSignature } from '$lib/signature-format';
-import { nodeUrl } from '$lib/url';
+import type { EdgeKind, Node, NodeKind, NodeSummary, Visibility } from '#lib/schema';
+import { edgeLabels, isPublic, kindLabels } from '#lib/display-names';
+import { formatSignature, type FormattedSignature } from '#lib/signature-format';
+import { nodeUrl } from '#lib/url';
 
 export type DesignKindToken =
 	| 'crate'

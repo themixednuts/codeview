@@ -9,7 +9,7 @@ import {
 	type SimulationLinkDatum,
 	type SimulationNodeDatum,
 } from 'd3-force';
-import type { Edge, Graph, Node } from '$lib/graph';
+import type { Edge, Graph, Node } from '#lib/graph';
 import type { VisNode, VisEdge } from './types';
 import {
 	CENTER_X,

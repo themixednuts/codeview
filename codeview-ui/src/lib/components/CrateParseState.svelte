@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { CrateStatusValue } from '$lib/context';
+	import type { CrateStatusValue } from '#lib/context';
 	import type { Snippet } from 'svelte';
 	import DocsUnavailable from './DocsUnavailable.svelte';
 	import ParseError from './ParseError.svelte';

@@ -4,8 +4,8 @@
 	import TerminalSquare from '@lucide/svelte/icons/terminal-square';
 	import ClipboardCopy from '@lucide/svelte/icons/clipboard-copy';
 	import Check from '@lucide/svelte/icons/check';
-	import { editorSchemeCtx, sourceRootCtx, vcsModeCtx } from '$lib/context';
-	import { cloneCommand, editorUri, resolveEditorPath } from '$lib/source-links';
+	import { editorSchemeCtx, sourceRootCtx, vcsModeCtx } from '#lib/context';
+	import { cloneCommand, editorUri, resolveEditorPath } from '#lib/source-links';
 
 	let {
 		repoUrl = null,

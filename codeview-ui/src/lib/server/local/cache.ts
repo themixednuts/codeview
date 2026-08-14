@@ -1,4 +1,3 @@
-/// <reference types="@types/bun" />
 import { Result } from 'better-result';
 import type { MigrationMeta } from 'drizzle-orm/migrator';
 import { formatToMillis } from 'drizzle-orm/migrator.utils';
@@ -10,37 +9,48 @@ import { mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { crateGraphs, crateStatus, crossEdges, nodeIndex, nodeDetails, edges } from '../db/schema';
 import { normalizeCrateName } from '../validation';
-import type { CrateGraph, Node, Edge, Visibility } from '$lib/graph';
-import type { CrateIndex, CrateTree } from '$lib/schema';
-import { getLogger } from '$lib/log';
-import { visibilityKey, parseVisibilityKey } from '$lib/display-names';
-import { buildCrateTree } from '$lib/node-summary';
-import type { drizzle as bunSqliteDrizzle } from 'drizzle-orm/bun-sqlite';
+import type { CrateGraph, Node, Edge, Visibility } from '#lib/graph';
+import type { CrateIndex, CrateTree } from '#lib/schema';
+import { getLogger } from '#lib/log';
+import { visibilityKey, parseVisibilityKey } from '#lib/display-names';
+import { buildCrateTree } from '#lib/node-summary';
+import type { drizzle as nodeSqliteDrizzle } from 'drizzle-orm/node-sqlite';
 
 const log = getLogger('cache');
 
-type LocalSqliteDatabase = ReturnType<typeof bunSqliteDrizzle>;
+type LocalSqliteDatabase = ReturnType<typeof nodeSqliteDrizzle>;
+
+type SqliteDatabaseCtor = new (path: string) => {
+	exec(sql: string): unknown;
+};
 
 type SqliteModules = {
-	Database: new (path: string) => any;
-	drizzle: (config: { client: any }) => LocalSqliteDatabase;
+	Database: SqliteDatabaseCtor;
+	drizzle: (config: { client: InstanceType<SqliteDatabaseCtor> }) => LocalSqliteDatabase;
 };
 
 /**
  * Keep SQLite runtime modules lazy and local-only. Cloudflare hosted mode must
- * never load native SQLite; Vite+ dev currently runs SSR under Node, while the
- * compiled local app can still run under Bun.
+ * never load SQLite. Vite+ SSR and the Node sidecar use `node:sqlite`. A Bun
+ * compile of `@jesterkit/exe-sveltekit` still uses `bun:sqlite`.
  */
 async function loadSqliteModules(): Promise<SqliteModules> {
-	if (typeof Bun !== 'undefined') {
+	const bunRuntime = (globalThis as { Bun?: unknown }).Bun;
+	if (bunRuntime !== undefined) {
 		const { Database } = await import('bun:sqlite');
 		const { drizzle } = await import('drizzle-orm/bun-sqlite');
-		return { Database, drizzle };
+		return {
+			Database,
+			drizzle: drizzle as unknown as SqliteModules['drizzle'],
+		};
 	}
 
-	const { default: Database } = await import('better-sqlite3');
-	const { drizzle } = await import('drizzle-orm/better-sqlite3');
-	return { Database, drizzle: drizzle as unknown as SqliteModules['drizzle'] };
+	const { DatabaseSync } = await import('node:sqlite');
+	const { drizzle } = await import('drizzle-orm/node-sqlite');
+	return {
+		Database: DatabaseSync,
+		drizzle: drizzle as unknown as SqliteModules['drizzle'],
+	};
 }
 
 const sqlModules = import.meta.glob('../db/migrations/*/migration.sql', {

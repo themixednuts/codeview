@@ -1,7 +1,7 @@
 import { prerender, query } from '$app/server';
-import { getLogger } from '$lib/log';
-import { perf } from '$lib/perf';
-import type { TreeNodeDTO } from '$lib/schema';
+import { getLogger } from '#lib/log';
+import { perf } from '#lib/perf';
+import type { TreeNodeDTO } from '#lib/schema';
 import { resolve } from './helpers';
 import { assertCrateRef } from './remote-utils';
 import { CrateRefSchema } from './schemas';

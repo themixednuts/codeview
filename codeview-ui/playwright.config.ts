@@ -22,7 +22,7 @@ export default defineConfig({
 		},
 	],
 	webServer: {
-		command: 'bun run e2e/run-cf-dev-supervisor.mjs',
+		command: 'node e2e/run-cf-dev-supervisor.mjs',
 		port: PORT,
 		timeout: 120_000,
 		reuseExistingServer: !process.env.CI,

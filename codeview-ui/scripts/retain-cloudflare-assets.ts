@@ -20,7 +20,7 @@ const RETENTION_DAYS = parsePositiveInt(process.env.CODEVIEW_RETAINED_ASSET_DAYS
 const command = process.argv[2];
 
 if (command !== 'capture' && command !== 'restore') {
-	console.error('Usage: bun scripts/retain-cloudflare-assets.ts <capture|restore>');
+	console.error('Usage: node scripts/retain-cloudflare-assets.ts <capture|restore>');
 	process.exit(1);
 }
 

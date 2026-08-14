@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import Icon from '$lib/components/design/Icon.svelte';
-	import StablePagination from '$lib/components/StablePagination.svelte';
-	import { readPageParam } from '$lib/pagination';
-	import { QueueStatusConnection } from '$lib/realtime';
-	import { stepLabels } from '$lib/realtime/constants';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import StablePagination from '#lib/components/StablePagination.svelte';
+	import { readPageParam } from '#lib/pagination';
+	import { QueueStatusConnection } from '#lib/realtime';
+	import { stepLabels } from '#lib/realtime/constants';
 	import { onMount } from 'svelte';
 	import type { PageProps } from './$types';
 
@@ -104,7 +104,7 @@
 				<div class="flex flex-wrap items-end justify-between gap-4">
 					<div class="min-w-0">
 						<div
-							class="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.22em] text-(--ink-soft) uppercase"
+							class="mb-2 flex items-center gap-2 text-sm font-medium text-(--ink-soft)"
 						>
 							<Icon name="clock" size={12} />
 							<span>Parse Queue</span>

@@ -42,23 +42,21 @@ cargo run -p codeview-cli -- analyze --manifest-path {path/Cargo.toml} --out {ou
 
 ## Package Manager
 
-Use **bun** for all package management operations:
-- Install: `bun add <package>` or `bun add -D <package>` for dev dependencies
-- Run scripts: `bun run <script>`
-- Execute: `bunx <command>`
+Use **pnpm** for all package management operations:
+- Install: `pnpm add --save-exact <package>` or `pnpm add -D --save-exact <package>`
+- Run scripts: `pnpm <script>` or `vp <script>`
+- Execute: `pnpm dlx <command>` or `vp dlx <command>`
 
-Do not use npm, yarn, or pnpm.
+Do not use bun, npm, or yarn.
 
 ## Cloudflare Dev Server
 
 Run the hosted/Cloudflare mode dev server with:
 ```
-cd /e/Projects/codeview/codeview-ui && bun run cf:dev
+cd codeview-ui && pnpm infra:dev
 ```
 
-This runs `cf:build` first (builds the SvelteKit app), then starts wrangler dev. Use `/e/...` Unix-style paths in Bash (not `E:\...` Windows paths — Git Bash doesn't handle them).
-
-Run this as a **background task**. When you need to restart (e.g. after changing server code or config), stop the existing task first, then re-run. After restarting, a hard refresh in the browser is sufficient — no need to stop/start manually between builds for client-only changes.
+Alchemy owns Cloudflare resources (`alchemy.run.ts`). `alchemy dev` runs Kit's Vite server with live bindings. After changing server or infra code, stop the existing task and re-run. Client-only changes only need a hard refresh.
 
 After starting the server, wait for it to be ready before navigating:
 ```bash
@@ -69,9 +67,9 @@ for i in $(seq 1 30); do
 done
 ```
 
-To clear all wrangler persisted state (Durable Objects, R2, KV) and start fresh:
+To clear Alchemy/Wrangler persisted state and start fresh:
 ```
-cd /e/Projects/codeview/codeview-ui && bun run cf:dev:clear
+cd codeview-ui && pnpm cf:dev:clear
 ```
 
 ## Build Lock Issues

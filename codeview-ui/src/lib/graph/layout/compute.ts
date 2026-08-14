@@ -1,10 +1,10 @@
-import type { Graph, Node } from '$lib/graph';
+import type { Graph, Node } from '#lib/graph';
 import type { LayoutMode, VisNode, VisEdge } from './types';
 import { computeEgoLayout } from './ego';
 import { computeForceLayout } from './force';
 import { computeHierarchicalLayout } from './hierarchical';
 import { computeRadialLayout } from './radial';
-import { getPerfLogger } from '$lib/log';
+import { getPerfLogger } from '#lib/log';
 
 export function computeLayout(
 	graph: Graph,

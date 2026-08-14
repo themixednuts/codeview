@@ -1,4 +1,4 @@
-import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
+import { isValidCrateNameParam, isValidVersionParam } from '#lib/crate-ref';
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 

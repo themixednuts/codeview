@@ -1,6 +1,6 @@
-import type { CrateStatus } from '$lib/schema';
-import { triggerCrateParse } from '$lib/rpc/crate.remote';
-import { getLogger } from '$lib/log';
+import type { CrateStatus } from '#lib/schema';
+import { triggerCrateParse } from '#lib/rpc/crate.remote';
+import { getLogger } from '#lib/log';
 import { connect } from '$realtime';
 import { STEP_ORDER, stepLabels, stepPercents } from './constants';
 import type { RealtimeClient } from './types';

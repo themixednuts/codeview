@@ -1,7 +1,8 @@
-import type { Cookies, Handle } from '@sveltejs/kit';
-import { setupLogging } from '$lib/log.server';
+import type { Cookies } from '$app/server';
+import type { Handle } from '@sveltejs/kit/hooks';
+import { setupLogging } from '#lib/log.server';
 import { handleWsUpgrade } from '$provider';
-import { getAuthState, handleAuthRequest } from '$lib/server/auth';
+import { getAuthState, handleAuthRequest } from '#lib/server/auth';
 import {
 	ACCENT_KEY,
 	ACCENT_VALUES,
@@ -20,7 +21,7 @@ import {
 	VOICE_KEY,
 	VOICE_VALUES,
 	readAllowedPreference,
-} from '$lib/preferences';
+} from '#lib/preferences';
 
 await setupLogging();
 

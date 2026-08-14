@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { installStdDocs } from '$lib/rpc/crate.remote';
+	import { installStdDocs } from '#lib/rpc/crate.remote';
 	import { resolve } from '$app/paths';
-	import { Button } from '$lib/shadcn/ui/button';
+	import { Button } from '#lib/components/ui/button';
 
 	let {
 		crateName,

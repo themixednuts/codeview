@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { requestCrateParse } from '$lib/rpc/crate.remote';
-	import { Button } from '$lib/shadcn/ui/button';
+	import { requestCrateParse } from '#lib/rpc/crate.remote';
+	import { Button } from '#lib/components/ui/button';
 
 	let {
 		crateName,
@@ -24,7 +24,7 @@
 
 <div class="flex flex-1 items-center justify-center">
 	<div
-		class="corner-squircle max-w-md animate-[float-in_0.5s_ease-out] rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-8 text-center shadow-(--shadow-soft)"
+		class="max-w-md rounded-(--radius-panel) border border-(--panel-border) bg-(--panel) p-8 text-center shadow-(--shadow-soft)"
 	>
 		<div class="mb-2 text-lg font-semibold text-(--danger)">
 			Failed to parse {crateName}

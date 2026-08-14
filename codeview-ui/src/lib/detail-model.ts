@@ -6,15 +6,15 @@ import type {
 	NodeDetail,
 	TocEntry,
 	WhereUsedRef,
-} from '$lib/schema';
-import { isPublic } from '$lib/display-names';
+} from '#lib/schema';
+import { isPublic } from '#lib/display-names';
 
 export type SelectedEdges = {
 	incoming: Edge[];
 	outgoing: Edge[];
 };
 
-export type { DetailDocModel, DetailMethodGroup, TocEntry, WhereUsedRef } from '$lib/schema';
+export type { DetailDocModel, DetailMethodGroup, TocEntry, WhereUsedRef } from '#lib/schema';
 
 export type MaterializedMethodGroup = {
 	impl: Node;

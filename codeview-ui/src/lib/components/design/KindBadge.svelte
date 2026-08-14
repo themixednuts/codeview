@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { NodeKind } from '$lib/schema';
-	import { kindLabels } from '$lib/display-names';
-	import { kindColors } from '$lib/tree';
-	import { designKindToNodeKind } from '$lib/design/live-node';
+	import type { NodeKind } from '#lib/schema';
+	import { kindLabels } from '#lib/display-names';
+	import { kindColors } from '#lib/tree';
+	import { designKindToNodeKind } from '#lib/design/live-node';
 
 	let {
 		kind,

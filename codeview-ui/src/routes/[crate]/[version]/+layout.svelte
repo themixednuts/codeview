@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { KindFacet, TreeNodeDTO } from '$lib/schema';
+	import type { KindFacet, TreeNodeDTO } from '#lib/schema';
 	import {
 		getNodeUrlCtx,
 		crateVersionsCtx,
@@ -9,28 +9,28 @@
 		setExpandPathCtx,
 		type CrateStatusValue,
 		type ExpandPath,
-	} from '$lib/context';
+	} from '#lib/context';
 	import { page } from '$app/state';
 	import { afterNavigate, beforeNavigate, goto, invalidate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { browser } from '$app/environment';
 	import type { Snippet } from 'svelte';
-	import { getLocalCrates } from '$lib/rpc/crate.remote';
-	import { getCrateMeta, getStaticCrateMeta } from '$lib/rpc/meta.remote';
-	import { getStaticTreeRoots, getTreeRoots } from '$lib/rpc/roots.remote';
-	import { nodeIdFromPath, nodeUrlForRoute } from '$lib/url';
-	import { hyphenateCrateName } from '$lib/crate-names';
-	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
+	import { getLocalCrates } from '#lib/rpc/crate.remote';
+	import { getCrateMeta, getStaticCrateMeta } from '#lib/rpc/meta.remote';
+	import { getStaticTreeRoots, getTreeRoots } from '#lib/rpc/roots.remote';
+	import { nodeIdFromPath, nodeUrlForRoute } from '#lib/url';
+	import { hyphenateCrateName } from '#lib/crate-names';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
 	import { onMount } from 'svelte';
-	import CrateParseState from '$lib/components/CrateParseState.svelte';
-	import LiveExplorer from '$lib/components/design/LiveExplorer.svelte';
-	import { CrateStatusConnection, ParseProgressConnection } from '$lib/realtime';
-	import { perf } from '$lib/perf';
-	import { perfTick } from '$lib/perf.svelte';
-	import { getLogger } from '$lib/log';
-	import { isValidCrateNameParam, isValidVersionParam } from '$lib/crate-ref';
-	import { isHosted } from '$lib/platform';
-	import { hasNonEmptyArray, preferNonEmptyArray } from '$lib/load-precedence';
+	import CrateParseState from '#lib/components/CrateParseState.svelte';
+	import LiveExplorer from '#lib/components/design/LiveExplorer.svelte';
+	import { CrateStatusConnection, ParseProgressConnection } from '#lib/realtime';
+	import { perf } from '#lib/perf';
+	import { perfTick } from '#lib/perf.svelte';
+	import { getLogger } from '#lib/log';
+	import { isValidCrateNameParam, isValidVersionParam } from '#lib/crate-ref';
+	import { isHosted } from '#lib/platform';
+	import { hasNonEmptyArray, preferNonEmptyArray } from '#lib/load-precedence';
 
 	const log = getLogger('layout');
 

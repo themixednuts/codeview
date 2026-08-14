@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 
-const bunCmd = 'bun';
+const pnpmCmd = 'pnpm';
 let child = null;
 let stopping = false;
 let firstRun = true;
@@ -13,7 +13,7 @@ function launch() {
 	firstRun = false;
 
 	console.log(`[cf-supervisor] starting ${script}`);
-	child = spawn(bunCmd, args, {
+	child = spawn(pnpmCmd, args, {
 		stdio: 'inherit',
 		env: process.env,
 	});

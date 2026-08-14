@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vite-plus/test';
-import type { Edge, Graph, Node } from '$lib/graph';
+import type { Edge, Graph, Node } from '#lib/graph';
 import { CENTER_X, CENTER_Y, LAYOUT_HEIGHT, LAYOUT_WIDTH } from './types';
 import { computeForceLayout } from './force';
 

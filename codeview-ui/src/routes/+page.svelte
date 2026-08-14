@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
-	import Icon from '$lib/components/design/Icon.svelte';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
-	import type { CrateSearchResult, CrateSummary } from '$lib/schema';
-	import { parseHomeState, serializeHomeState } from '$lib/url-state';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import KindBadge from '#lib/components/design/KindBadge.svelte';
+	import type { CrateSearchResult, CrateSummary } from '#lib/schema';
+	import { parseHomeState, serializeHomeState } from '#lib/url-state';
 	import type { PageProps } from './$types';
 
 	type CrateListItem = CrateSearchResult | CrateSummary;
@@ -89,9 +89,7 @@
 		>
 			<aside class="min-w-0">
 				<div class="mb-3 flex items-center justify-between">
-					<h1 class="text-xs font-semibold tracking-[0.22em] text-(--ink-soft) uppercase">
-						Browse
-					</h1>
+					<h1 class="text-sm font-medium text-(--ink-soft)">Browse</h1>
 				</div>
 				<ul class="space-y-0.5">
 					{#each sidebarSections as section (section.id)}

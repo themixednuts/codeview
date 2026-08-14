@@ -1,14 +1,13 @@
 /**
  * Local-mode WebSocket connection manager.
  *
- * Replaces SharedEventStream for real-time event delivery over Bun WebSockets.
+ * Replaces SharedEventStream for real-time event delivery over WebSockets.
  * Each browser tab opens one WebSocket to `/api/events/ws`; the server multiplexes
  * subscriptions by tag, same as the old SSE approach but without needing a Web Worker
  * or POST /subscribe endpoint.
  */
-import type { ServerWebSocket } from 'bun';
-import type { CrateStatus } from '$lib/schema';
-import { getLogger } from '$lib/log';
+import type { CrateStatus } from '#lib/schema';
+import { getLogger } from '#lib/log';
 
 const log = getLogger('local-ws');
 
@@ -19,12 +18,9 @@ export interface WsConnection {
 	tags: Set<string>;
 }
 
-interface WsData {
-	connectionId: string;
-	open?(ws: ServerWebSocket<WsData>): void;
-	message?(ws: ServerWebSocket<WsData>, msg: string | Buffer): void;
-	close?(ws: ServerWebSocket<WsData>, code: number, reason: string): void;
-	drain?(ws: ServerWebSocket<WsData>): void;
+interface LocalSocket {
+	data: { connectionId: string };
+	send(data: string): void;
 }
 
 /** Exported for the Vite dev plugin — dev-mode WS upgrades bypass SvelteKit routes. */
@@ -119,12 +115,12 @@ export interface LocalProviderInternals {
 // ── WebSocket lifecycle handlers ──
 
 /**
- * Create Bun WebSocket handler callbacks that delegate to per-connection logic.
+ * Create WebSocket handler callbacks that delegate to per-connection logic.
  * Pass the returned object as `ws.data` when calling `server.upgrade()`.
  */
 export function createHandlers(internals: LocalProviderInternals) {
 	return {
-		open(ws: ServerWebSocket<WsData>) {
+		open(ws: LocalSocket) {
 			const connectionId = crypto.randomUUID();
 			ws.data.connectionId = connectionId;
 			connections.set(connectionId, { ws, tags: new Set() });
@@ -134,7 +130,7 @@ export function createHandlers(internals: LocalProviderInternals) {
 			ws.send(JSON.stringify({ type: 'connected', connectionId }));
 		},
 
-		message(ws: ServerWebSocket<WsData>, msg: string | Buffer) {
+		message(ws: LocalSocket, msg: string | Buffer) {
 			const raw = typeof msg === 'string' ? msg : msg.toString();
 			let parsed: { action?: string; tags?: string[] };
 			try {
@@ -169,7 +165,7 @@ export function createHandlers(internals: LocalProviderInternals) {
 			}
 		},
 
-		close(ws: ServerWebSocket<WsData>) {
+		close(ws: LocalSocket) {
 			const connectionId = ws.data.connectionId;
 			log.debug`ws close connectionId=${connectionId}`;
 			connections.delete(connectionId);

@@ -1,5 +1,5 @@
-import { getLogger } from '$lib/log';
-import type { RealtimeCallback, RealtimeClient } from '$lib/realtime/types';
+import { getLogger } from '#lib/log';
+import type { RealtimeCallback, RealtimeClient } from '#lib/realtime/types';
 
 const log = getLogger('ws-client');
 

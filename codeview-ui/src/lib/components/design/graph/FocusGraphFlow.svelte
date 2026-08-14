@@ -1,17 +1,17 @@
 <script lang="ts">
 	import { SvelteFlow } from '@xyflow/svelte';
 	import { onMount } from 'svelte';
-	import type { Edge, Node, NodeDetail, NodeSummary } from '$lib/schema';
-	import { resolveAppPath } from '$lib/app-paths';
+	import type { Edge, Node, NodeDetail, NodeSummary } from '#lib/schema';
+	import { resolveAppPath } from '#lib/app-paths';
 	import {
 		edgeKindToRelation,
 		REL,
 		REL_ORDER,
 		toDesignNode,
 		type DesignRelation,
-	} from '$lib/design/live-node';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
-	import Icon from '$lib/components/design/Icon.svelte';
+	} from '#lib/design/live-node';
+	import KindBadge from '#lib/components/design/KindBadge.svelte';
+	import Icon from '#lib/components/design/Icon.svelte';
 	import GraphNodePillFlow from './GraphNodePillFlow.svelte';
 	import RelationshipLabelFlow from './RelationshipLabelFlow.svelte';
 	import RelationshipEdge from './RelationshipEdge.svelte';
@@ -414,11 +414,11 @@
 		class="pointer-events-none absolute left-0 right-0 flex items-center justify-between px-6"
 		style="top: 12px"
 	>
-		<div class="mono flex items-center gap-2 text-2xs tracking-[0.2em] text-(--muted-soft) uppercase">
+		<div class="mono flex items-center gap-2 text-2xs text-(--muted-soft)">
 			<span class="inline-block h-px w-6 bg-(--panel-border)"></span>
 			<span>points into {detail.node.name}</span>
 		</div>
-		<div class="mono flex items-center gap-2 text-2xs tracking-[0.2em] text-(--muted-soft) uppercase">
+		<div class="mono flex items-center gap-2 text-2xs text-(--muted-soft)">
 			<span>{detail.node.name} points to</span>
 			<span class="inline-block h-px w-6 bg-(--panel-border)"></span>
 		</div>
@@ -479,7 +479,7 @@
 		{@const pos = peekPosition(layout)}
 		{#if pos}
 			<div
-				class="pointer-events-none absolute z-40 animate-[fadeIn_.12s_ease] rounded-xl border border-(--panel-border) bg-(--panel-solid) p-3 shadow-(--shadow-glow)"
+				class="pointer-events-none absolute z-40 rounded-xl border border-(--panel-border) bg-(--panel-solid) p-3 shadow-(--shadow-glow)"
 				style={`left: ${pos.left}px; top: ${pos.top}px; width: ${pos.width}px`}
 			>
 				<div class="mb-1.5 flex items-center gap-2">

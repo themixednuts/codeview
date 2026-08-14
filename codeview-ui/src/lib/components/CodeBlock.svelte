@@ -1,5 +1,5 @@
 <script lang="ts">
-	import type { SupportedLanguage } from '$lib/highlight/languages';
+	import type { SupportedLanguage } from '#lib/highlight/languages';
 	import { tick } from 'svelte';
 
 	let {
@@ -85,7 +85,7 @@
 		void (async () => {
 			let html: string;
 			try {
-				const { highlightCode } = await import('$lib/highlight/shiki');
+				const { highlightCode } = await import('#lib/highlight/shiki');
 				html = await highlightCode(nextCode, nextLang, nextTheme, options);
 			} catch {
 				html = plainCodeHtml(nextCode, options);

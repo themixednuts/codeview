@@ -29,7 +29,7 @@ import type {
 	TraitBoundModifier,
 	TypeRef,
 	WherePredicate,
-} from '$lib/generated/codeview-schema';
+} from '#lib/generated/codeview-schema';
 
 /** Render a `TypeRef` as the Rust source text it represents. */
 export function renderTypeText(t: TypeRef): string {

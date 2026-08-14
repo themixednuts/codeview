@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { Node, NodeKind, Visibility } from '$lib/graph';
-	import { isPublic, visibilityLabel } from '$lib/display-names';
-	import type { GenericBound, GenericParam, TypeRef, WherePredicate } from '$lib/schema';
+	import type { Node, NodeKind, Visibility } from '#lib/graph';
+	import { isPublic, visibilityLabel } from '#lib/display-names';
+	import type { GenericBound, GenericParam, TypeRef, WherePredicate } from '#lib/schema';
 
 	/** Final segment of a `::`-separated path. `std::vec::Vec` → `Vec`. */
 	function pathTail(path: string): string {
@@ -9,19 +9,19 @@
 		return idx >= 0 ? path.slice(idx + 2) : path;
 	}
 
-	import { resolveAppPath } from '$lib/app-paths';
-	import { kindColors } from '$lib/tree';
-	import { externalDocsUrl } from '$lib/docs';
-	import { formatItemDeclaration } from '$lib/signature-format';
-	import { renderTypeText } from '$lib/type-render';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { kindColors } from '#lib/tree';
+	import { externalDocsUrl } from '#lib/docs';
+	import { formatItemDeclaration } from '#lib/signature-format';
+	import { renderTypeText } from '#lib/type-render';
 	import Documentation from './Documentation.svelte';
 	import CodeBlock from './CodeBlock.svelte';
 	import CollapsibleSection from './CollapsibleSection.svelte';
 	import SignatureBlock from './SignatureBlock.svelte';
 	import SourceViewer from './SourceViewer.svelte';
-	import Icon from '$lib/components/design/Icon.svelte';
-	import { hyphenateCrateName, normalizeCrateName } from '$lib/crate-names';
-	import { extLinkModeCtx } from '$lib/context';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import { hyphenateCrateName, normalizeCrateName } from '#lib/crate-names';
+	import { extLinkModeCtx } from '#lib/context';
 
 	const extLinkMode = $derived(extLinkModeCtx.get());
 
@@ -469,7 +469,7 @@
 	{/if}
 {/snippet}
 
-{#snippet genericArgs(args: import('$lib/schema').GenericArgs)}
+{#snippet genericArgs(args: import('#lib/schema').GenericArgs)}
 	{#if args.kind === 'AngleBracketed'}
 		{@const allParts: number = args.args.length + (args.constraints?.length ?? 0)}
 		{#if allParts > 0}

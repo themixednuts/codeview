@@ -1,4 +1,4 @@
-import type { NodeKind } from '$lib/graph';
+import type { NodeKind } from '#lib/graph';
 
 /**
  * Node fill/stroke colors — Solarized accent palette mapped to kinds.

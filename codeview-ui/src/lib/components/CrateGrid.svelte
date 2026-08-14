@@ -3,10 +3,10 @@
 		CrateMapData,
 		CrateMapModuleNode,
 		CrateMapSemanticKind,
-	} from '$lib/graph/crate-map';
-	import { resolveAppPath } from '$lib/app-paths';
-	import { findContainingModule, moduleDepthColor } from '$lib/graph/crate-map';
-	import { edgeLabels } from '$lib/display-names';
+	} from '#lib/graph/crate-map';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { findContainingModule, moduleDepthColor } from '#lib/graph/crate-map';
+	import { edgeLabels } from '#lib/display-names';
 
 	let {
 		data,

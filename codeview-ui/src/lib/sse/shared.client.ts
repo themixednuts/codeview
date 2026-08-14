@@ -1,5 +1,5 @@
-import type { RealtimeCallback, RealtimeClient } from '$lib/realtime/types';
-import { getLogger } from '$lib/log';
+import type { RealtimeCallback, RealtimeClient } from '#lib/realtime/types';
+import { getLogger } from '#lib/log';
 import { SSEConnection, type SSEEndReason } from './connection';
 
 interface SharedEventMessage {

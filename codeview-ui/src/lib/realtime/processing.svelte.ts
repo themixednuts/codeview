@@ -1,6 +1,6 @@
-import { getLogger } from '$lib/log';
+import { getLogger } from '#lib/log';
 import { connect } from '$realtime';
-import type { CrateSummaryResult } from '$lib/server/provider';
+import type { CrateSummaryResult } from '#lib/server/provider';
 import type { RealtimeClient } from './types';
 
 interface ProcessingMessage {

@@ -1,7 +1,7 @@
-import type { Node, NodeKind } from '$lib/graph';
+import type { Node, NodeKind } from '#lib/graph';
 import type { Component } from 'svelte';
-import { kindVisuals } from '$lib/graph/visual';
-import { compareNodeLike, kindOrder } from '$lib/node-order';
+import { kindVisuals } from '#lib/graph/visual';
+import { compareNodeLike, kindOrder } from '#lib/node-order';
 import Package from '@lucide/svelte/icons/package';
 import FolderCode from '@lucide/svelte/icons/folder-code';
 import Box from '@lucide/svelte/icons/box';

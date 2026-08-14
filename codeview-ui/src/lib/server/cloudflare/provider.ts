@@ -1,7 +1,11 @@
 import { Result } from 'better-result';
-import { Cache, Duration, Effect, Exit, Schema } from 'effect';
+import * as Cache from 'effect/Cache';
+import * as Duration from 'effect/Duration';
+import * as Effect from 'effect/Effect';
+import * as Exit from 'effect/Exit';
+import * as Schema from 'effect/Schema';
 import type { RequestEvent } from '@sveltejs/kit';
-import type { CrateGraph, Edge, Node, NodeKind } from '$lib/graph';
+import type { CrateGraph, Edge, Node, NodeKind } from '#lib/graph';
 import type {
 	CrateIndex,
 	CrateTree,
@@ -12,13 +16,13 @@ import type {
 	StaticSearchManifest,
 	StaticSearchShard,
 	TreeNodeDTO,
-} from '$lib/schema';
-import { STATIC_ARTIFACT_SCHEMA_VERSION } from '$lib/schema';
+} from '#lib/schema';
+import { STATIC_ARTIFACT_SCHEMA_VERSION } from '#lib/schema';
 import {
 	HOSTED_ARTIFACT_CACHE_NAMESPACE,
 	isCurrentHostedArtifactMetadata,
-} from '$lib/hosted-contract';
-import type { CrateMapData, CrateMapOptions } from '$lib/graph/crate-map';
+} from '#lib/hosted-contract';
+import type { CrateMapData, CrateMapOptions } from '#lib/graph/crate-map';
 import {
 	DEFAULT_RUST_CHANNEL,
 	RUST_CHANNEL_ORDER,
@@ -26,7 +30,7 @@ import {
 	isStdCrate,
 	isStdJsonCrate,
 	searchToolchainCrates,
-} from '$lib/std';
+} from '#lib/std';
 import type {
 	CrateSummaryResult,
 	CrossEdgeData,
@@ -52,7 +56,7 @@ import {
 	isValidVersion,
 	normalizeCrateName,
 } from '../validation';
-import { getLogger } from '$lib/log';
+import { getLogger } from '#lib/log';
 import { actorFromUser, getAuthStateFromRequest } from '../auth';
 import {
 	makeParseRequest,
@@ -73,7 +77,7 @@ import {
 } from '../provider-utils';
 import type { PackageMetadata } from '../registry/types';
 import { orderCatalogSummaries } from './catalog';
-import { mergeTraitMemberDocumentation } from '$lib/trait-member-hydration';
+import { mergeTraitMemberDocumentation } from '#lib/trait-member-hydration';
 
 const log = getLogger('cloudflare');
 

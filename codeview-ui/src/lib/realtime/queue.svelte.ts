@@ -1,7 +1,7 @@
-import { getLogger } from '$lib/log';
+import { getLogger } from '#lib/log';
 import { connect } from '$realtime';
-import type { ParseQueueEntry } from '$lib/server/provider';
-import type { StoredParseStatus } from '$lib/server/cloudflare/parse-contract';
+import type { ParseQueueEntry } from '#lib/server/provider';
+import type { StoredParseStatus } from '#lib/server/cloudflare/parse-contract';
 import type { RealtimeClient } from './types';
 
 interface QueueMessage {

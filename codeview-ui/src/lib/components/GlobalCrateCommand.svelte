@@ -1,10 +1,10 @@
 <script lang="ts">
 	import { resolve } from '$app/paths';
-	import Icon from '$lib/components/design/Icon.svelte';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
-	import * as Command from '$lib/shadcn/ui/command';
-	import { searchRegistry } from '$lib/rpc/crate.remote';
-	import type { CrateSearchResult } from '$lib/schema';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import KindBadge from '#lib/components/design/KindBadge.svelte';
+	import * as Command from '#lib/components/ui/command';
+	import { searchRegistry } from '#lib/rpc/crate.remote';
+	import type { CrateSearchResult } from '#lib/schema';
 
 	type RemoteResource<T> =
 		| Promise<T>

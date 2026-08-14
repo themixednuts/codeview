@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { NodeSummary } from '$lib/schema';
-	import type { NodeKind } from '$lib/graph';
-	import { resolveAppPath } from '$lib/app-paths';
-	import { kindColors, kindIcons } from '$lib/tree';
-	import Skeleton from '$lib/components/Skeleton.svelte';
+	import type { NodeSummary } from '#lib/schema';
+	import type { NodeKind } from '#lib/graph';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { kindColors, kindIcons } from '#lib/tree';
+	import Skeleton from '#lib/components/Skeleton.svelte';
 
 	let {
 		searchQuery,

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import type { NodeKind } from '$lib/schema';
-	import { kindColors } from '$lib/tree';
-	import type { DesignNode } from '$lib/design/live-node';
-	import { designKindToNodeKind } from '$lib/design/live-node';
+	import type { NodeKind } from '#lib/schema';
+	import { kindColors } from '#lib/tree';
+	import type { DesignNode } from '#lib/design/live-node';
+	import { designKindToNodeKind } from '#lib/design/live-node';
 	import KindBadge from './KindBadge.svelte';
 
 	type PillNode = Pick<DesignNode, 'id' | 'kind' | 'path' | 'external'> &
@@ -99,7 +99,7 @@
 {#if pillHref}
 	<a
 		href={pillHref}
-		class="graph-node-pill flex min-w-0 animate-[fadeIn_.12s_ease] items-center gap-2 rounded-lg transition-all"
+		class="graph-node-pill flex min-w-0 items-center gap-2 rounded-lg transition-all"
 		class:positioned
 		data-focus={isFocus}
 		data-active={active}
@@ -114,7 +114,7 @@
 			{label}
 		</span>
 		{#if isFocus}
-			<span class="mono ml-auto shrink-0 text-2xs tracking-wider uppercase opacity-70">
+			<span class="mono ml-auto shrink-0 text-2xs opacity-70">
 				{node.kindLabel ?? node.kind}
 			</span>
 		{/if}
@@ -122,7 +122,7 @@
 {:else}
 	<button
 		type="button"
-		class="graph-node-pill flex min-w-0 animate-[fadeIn_.12s_ease] items-center gap-2 rounded-lg transition-all"
+		class="graph-node-pill flex min-w-0 items-center gap-2 rounded-lg transition-all"
 		class:positioned
 		data-focus={isFocus}
 		data-active={active}
@@ -136,7 +136,7 @@
 			{label}
 		</span>
 		{#if isFocus}
-			<span class="mono ml-auto shrink-0 text-2xs tracking-wider uppercase opacity-70">
+			<span class="mono ml-auto shrink-0 text-2xs opacity-70">
 				{node.kindLabel ?? node.kind}
 			</span>
 		{/if}

@@ -1,7 +1,7 @@
 import { panic } from 'better-result';
 import { getContext, setContext, hasContext } from 'svelte';
-import type { ParseProgressConnection } from '$lib/realtime';
-import type { NodeSummary } from '$lib/schema';
+import type { ParseProgressConnection } from '#lib/realtime';
+import type { NodeSummary } from '#lib/schema';
 
 /**
  * Type-safe reactive context. Stores a getter function internally so

@@ -1,4 +1,4 @@
-import type { Confidence, Edge, Node } from '$lib/graph';
+import type { Confidence, Edge, Node } from '#lib/graph';
 
 export type LayoutMode = 'ego' | 'force' | 'hierarchical' | 'radial';
 

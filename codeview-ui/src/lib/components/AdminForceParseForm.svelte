@@ -1,14 +1,14 @@
 <script lang="ts">
-	import Icon from '$lib/components/design/Icon.svelte';
-	import KindBadge from '$lib/components/design/KindBadge.svelte';
-	import * as Command from '$lib/shadcn/ui/command';
-	import { Button } from '$lib/shadcn/ui/button';
-	import * as Field from '$lib/shadcn/ui/field';
-	import * as NativeSelect from '$lib/shadcn/ui/native-select';
-	import { getCrateVersions, searchRegistry } from '$lib/rpc/crate.remote';
-	import type { CrateSearchResult } from '$lib/schema';
-	import { normalizeCrateName } from '$lib/crate-names';
-	import { DEFAULT_RUST_CHANNEL, isRustChannel, isStdCrate, RUST_CHANNEL_ORDER } from '$lib/std';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import KindBadge from '#lib/components/design/KindBadge.svelte';
+	import * as Command from '#lib/components/ui/command';
+	import { Button } from '#lib/components/ui/button';
+	import * as Field from '#lib/components/ui/field';
+	import * as NativeSelect from '#lib/components/ui/native-select';
+	import { getCrateVersions, searchRegistry } from '#lib/rpc/crate.remote';
+	import type { CrateSearchResult } from '#lib/schema';
+	import { normalizeCrateName } from '#lib/crate-names';
+	import { DEFAULT_RUST_CHANNEL, isRustChannel, isStdCrate, RUST_CHANNEL_ORDER } from '#lib/std';
 
 	type RemoteResource<T> =
 		| Promise<T>

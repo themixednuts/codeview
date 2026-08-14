@@ -1,10 +1,10 @@
 import { getRequestEvent } from '$app/server';
 import { betterAuth, type DBFieldAttribute } from 'better-auth';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
-import { drizzleAdapter } from '@better-auth/drizzle-adapter';
+import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { drizzle } from 'drizzle-orm/d1';
-import type { RequestEvent } from '@sveltejs/kit';
-import { authRelations, authTables } from '$lib/server/db/auth-schema';
+import type { RequestEvent } from '$app/server';
+import { authRelations, authTables } from '#lib/server/db/auth-schema';
 
 type AuthEnv = {
 	AUTH_DB?: D1Database;

@@ -1,4 +1,4 @@
-import type { Graph, Node } from '$lib/graph';
+import type { Graph, Node } from '#lib/graph';
 import type { VisNode, VisEdge } from './types';
 import { CENTER_X, CENTER_Y, RADIAL_RADIUS, MIN_NODE_SPACING, ARROWHEAD_LENGTH } from './types';
 import { getNodeBoundingBox, resolveCollisions } from './collision';

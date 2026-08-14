@@ -1,6 +1,6 @@
 import type { PageServerLoad } from './$types';
-import { hasLocalWorkspace, initProvider } from '$lib/server/provider';
-import { isHosted } from '$lib/platform';
+import { hasLocalWorkspace, initProvider } from '#lib/server/provider';
+import { isHosted } from '#lib/platform';
 
 const TOP_CRATES_TTL_MS = 5 * 60 * 1000;
 

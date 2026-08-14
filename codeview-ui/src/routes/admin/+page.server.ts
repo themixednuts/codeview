@@ -1,9 +1,9 @@
 import { fail, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-import { getAuthState } from '$lib/server/auth';
-import { initProvider } from '$lib/server/provider';
-import { isValidCrateName, isValidVersion, normalizeCrateName } from '$lib/server/validation';
-import { DEFAULT_RUST_CHANNEL, isStdCrate } from '$lib/std';
+import { getAuthState } from '#lib/server/auth';
+import { initProvider } from '#lib/server/provider';
+import { isValidCrateName, isValidVersion, normalizeCrateName } from '#lib/server/validation';
+import { DEFAULT_RUST_CHANNEL, isStdCrate } from '#lib/std';
 
 export const load: PageServerLoad = async (event) => {
 	event.depends('codeview:admin-dashboard');

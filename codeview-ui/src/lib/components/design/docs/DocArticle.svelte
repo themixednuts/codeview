@@ -1,9 +1,9 @@
 <script lang="ts">
-	import type { Node, NodeDetail, NodeSummary } from '$lib/schema';
-	import type { MaterializedDetailDocModel } from '$lib/detail-model';
-	import { kindLabels } from '$lib/display-names';
-	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
-	import NodeDetails from '$lib/components/NodeDetails.svelte';
+	import type { Node, NodeDetail, NodeSummary } from '#lib/schema';
+	import type { MaterializedDetailDocModel } from '#lib/detail-model';
+	import { kindLabels } from '#lib/display-names';
+	import Breadcrumbs from '#lib/components/Breadcrumbs.svelte';
+	import NodeDetails from '#lib/components/NodeDetails.svelte';
 	import DocReadAloud from './DocReadAloud.svelte';
 	import type { Snippet } from 'svelte';
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Node, NodeDetail, NodeKind } from '$lib/schema';
+import type { Node, NodeDetail, NodeKind } from '#lib/schema';
 import { buildDetailDocModel, materializeDetailDocModel } from './detail-model';
 
 const visibility = { kind: 'Public' } as const;

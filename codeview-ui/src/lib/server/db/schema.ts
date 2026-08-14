@@ -1,4 +1,4 @@
-import type { WorkspaceOutput } from '$lib/schema';
+import type { WorkspaceOutput } from '#lib/schema';
 import { index, integer, primaryKey, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 export const graphData = sqliteTable('graph_data', {

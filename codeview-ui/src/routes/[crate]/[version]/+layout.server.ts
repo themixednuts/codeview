@@ -1,11 +1,11 @@
 import { redirect } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
-import { initProvider } from '$lib/server/provider';
-import { hyphenateCrateName, normalizeCrateName } from '$lib/crate-names';
-import { resolve } from '$lib/rpc/helpers';
-import { isHosted } from '$lib/platform';
-import { parseExplorerState } from '$lib/url-state';
-import { isStdCrate } from '$lib/std';
+import { initProvider } from '#lib/server/provider';
+import { hyphenateCrateName, normalizeCrateName } from '#lib/crate-names';
+import { resolve } from '#lib/rpc/helpers';
+import { isHosted } from '#lib/platform';
+import { parseExplorerState } from '#lib/url-state';
+import { isStdCrate } from '#lib/std';
 
 /** Version aliases that should be resolved to a concrete semver and redirected. */
 const VERSION_ALIASES = new Set(['latest', 'stable', 'beta', 'nightly']);

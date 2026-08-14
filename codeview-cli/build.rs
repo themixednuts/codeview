@@ -43,11 +43,11 @@ fn main() {
     );
     println!(
         "cargo:rerun-if-changed={}",
-        ui_dir.join("svelte.config.js").display()
+        ui_dir.join("vite.config.ts").display()
     );
     println!(
         "cargo:rerun-if-changed={}",
-        ui_dir.join("vite.config.ts").display()
+        ui_dir.join("alchemy.run.ts").display()
     );
 
     // Rebuild when the codeview-rustdoc Rust source changes (triggers wasm:build)
@@ -87,15 +87,15 @@ fn main() {
 
     // Build SvelteKit app with @jesterkit/exe-sveltekit adapter
     // This adapter builds directly to dist/codeview-server(.exe)
-    let status = Command::new("bun")
+    let status = Command::new("pnpm")
         .args(["run", "build"])
         .env("EXE_TARGET", exe_target)
         .current_dir(&ui_dir)
         .status()
-        .expect("failed to run `bun run build` - is bun installed?");
+        .expect("failed to run `pnpm run build` - is pnpm installed?");
 
     if !status.success() {
-        panic!("`bun run build` failed in {}", ui_dir.display());
+        panic!("`pnpm run build` failed in {}", ui_dir.display());
     }
 
     // Copy the built binary to sidecar dir

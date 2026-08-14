@@ -1,11 +1,11 @@
 <script lang="ts">
 	import { browser } from '$app/environment';
 	import { onMount } from 'svelte';
-	import { Input } from '$lib/shadcn/ui/input';
-	import * as NativeSelect from '$lib/shadcn/ui/native-select';
-	import * as RadioGroup from '$lib/shadcn/ui/radio-group';
-	import * as Sheet from '$lib/shadcn/ui/sheet';
-	import { Switch } from '$lib/shadcn/ui/switch';
+	import { Input } from '#lib/components/ui/input';
+	import * as NativeSelect from '#lib/components/ui/native-select';
+	import * as RadioGroup from '#lib/components/ui/radio-group';
+	import * as Sheet from '#lib/components/ui/sheet';
+	import { Switch } from '#lib/components/ui/switch';
 	import SettingsRadioOption from './SettingsRadioOption.svelte';
 	import BookOpenIcon from '@lucide/svelte/icons/book-open';
 	import Columns2Icon from '@lucide/svelte/icons/columns-2';
@@ -29,7 +29,7 @@
 		readStoredPref,
 		type EditorId,
 		writePref,
-	} from '$lib/preferences';
+	} from '#lib/preferences';
 	import type {
 		AccentMode,
 		CodeTheme,
@@ -41,7 +41,7 @@
 		TextSizeMode,
 		VcsMode,
 		VoiceMode,
-	} from '$lib/context';
+	} from '#lib/context';
 
 	interface Props {
 		open: boolean;

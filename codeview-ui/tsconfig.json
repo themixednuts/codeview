@@ -1,7 +1,11 @@
 {
-	"extends": "./.svelte-kit/tsconfig.json",
+	"extends": "$app/tsconfig",
 	"compilerOptions": {
-		"types": ["svelte"],
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+		"allowImportingTsExtensions": true,
 		"moduleResolution": "bundler",
 		"allowJs": true,
 		"checkJs": false,
@@ -9,15 +13,16 @@
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,
 		"sourceMap": true,
-		"strict": true,
-		"skipLibCheck": true
+		"skipLibCheck": true,
+		"types": ["svelte", "node"]
 	},
 	"include": [
-		".svelte-kit/ambient.d.ts",
-		".svelte-kit/non-ambient.d.ts",
-		".svelte-kit/types/**/$types.d.ts",
+		"$app/ambient.d.ts",
+		"$app/non-ambient.d.ts",
+		"$app/types/**/$types.d.ts",
 		"vite.config.js",
 		"vite.config.ts",
+		"alchemy.run.ts",
 		"src/**/*.js",
 		"src/**/*.ts",
 		"src/**/*.svelte",

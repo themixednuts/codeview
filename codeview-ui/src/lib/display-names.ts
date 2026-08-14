@@ -1,4 +1,4 @@
-import type { EdgeKind, NodeKind, Visibility } from '$lib/graph';
+import type { EdgeKind, NodeKind, Visibility } from '#lib/graph';
 
 export const kindLabels: Record<NodeKind, string> = {
 	Crate: 'Crate',

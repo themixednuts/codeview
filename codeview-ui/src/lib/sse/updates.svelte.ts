@@ -1,1 +1,1 @@
-export { CrossEdgeUpdatesConnection } from '$lib/realtime';
+export { CrossEdgeUpdatesConnection } from '#lib/realtime';

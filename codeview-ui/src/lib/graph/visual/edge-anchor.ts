@@ -1,6 +1,6 @@
-import type { NodeKind } from '$lib/graph';
-import type { Point } from '$lib/geo';
-import { rectangleIntersectLineSegment, ellipseSegmentInterceptPoints } from '$lib/geo';
+import type { NodeKind } from '#lib/graph';
+import type { Point } from '#lib/geo';
+import { rectangleIntersectLineSegment, ellipseSegmentInterceptPoints } from '#lib/geo';
 import type { NodeVisual } from './types';
 import { getNodeVisual } from './node-visual';
 

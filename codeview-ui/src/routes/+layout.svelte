@@ -4,10 +4,10 @@
 	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
-	import { ProcessingStatusConnection } from '$lib/realtime';
+	import { ProcessingStatusConnection } from '#lib/realtime';
 	import { onDestroy, onMount, untrack } from 'svelte';
-	import { perf } from '$lib/perf';
-	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
+	import { perf } from '#lib/perf';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
 	import {
 		ACCENT_KEY,
 		ACCENT_VALUES,
@@ -36,7 +36,7 @@
 		readStoredPref,
 		writeClientPref,
 		writePref,
-	} from '$lib/preferences';
+	} from '#lib/preferences';
 	import {
 		themeCtx,
 		resolvedThemeCtx,
@@ -63,16 +63,16 @@
 		type ExternalLinkMode,
 		type SourceProviderMode,
 		type VcsMode,
-	} from '$lib/context';
+	} from '#lib/context';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { LayoutProps } from './$types';
-	import Icon from '$lib/components/design/Icon.svelte';
-	import { Toaster } from '$lib/shadcn/ui/sonner';
-	import { Button } from '$lib/shadcn/ui/button';
-	import { Input } from '$lib/shadcn/ui/input';
+	import Icon from '#lib/components/design/Icon.svelte';
+	import { Toaster } from '#lib/components/ui/sonner';
+	import { Button } from '#lib/components/ui/button';
+	import { Input } from '#lib/components/ui/input';
 	import { toast } from 'svelte-sonner';
-	import { forceRefreshClient } from '$lib/client/invalidation';
+	import { forceRefreshClient } from '#lib/client/invalidation';
 
 	let navSpan: ReturnType<typeof perf.begin> | null = null;
 
@@ -562,14 +562,13 @@
 					fill="none"
 					aria-hidden="true"
 				>
-					<rect x="3" y="3" width="18" height="18" rx="4" fill="var(--accent)" />
+					<circle cx="7" cy="8" r="2.4" fill="var(--accent)" />
+					<circle cx="17" cy="16" r="2.4" fill="var(--accent)" />
 					<path
-						d="M8 12l3 3 5-6"
-						stroke="var(--on-accent)"
-						stroke-width="2.4"
+						d="M9.2 9.4L14.8 14.6"
+						stroke="var(--accent)"
+						stroke-width="1.8"
 						stroke-linecap="round"
-						stroke-linejoin="round"
-						fill="none"
 					/>
 				</svg>
 				<span class="font-brand hidden truncate text-base min-[420px]:inline">codeview</span>
@@ -767,13 +766,13 @@
 </div>
 
 {#if commandOpen}
-	{#await import('$lib/components/GlobalCrateCommand.svelte') then { default: GlobalCrateCommand }}
+	{#await import('#lib/components/GlobalCrateCommand.svelte') then { default: GlobalCrateCommand }}
 		<GlobalCrateCommand bind:open={commandOpen} />
 	{/await}
 {/if}
 
 {#if settingsMounted}
-	{#await import('$lib/components/SettingsDrawer.svelte') then { default: SettingsDrawer }}
+	{#await import('#lib/components/SettingsDrawer.svelte') then { default: SettingsDrawer }}
 		<SettingsDrawer
 			bind:open={settingsOpen}
 			{theme}

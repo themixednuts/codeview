@@ -354,7 +354,7 @@ pub struct LocalMiniflareBackend {
     /// `CODEVIEW_WRANGLER_CWD` when the cron CLI is invoked from a
     /// directory that doesn't have `node_modules/wrangler` resolvable.
     /// `None` means inherit the parent's cwd (matches the typical
-    /// `bun run cron:mimic` invocation from `codeview-ui/`).
+    /// `pnpm cron:mimic` invocation from `codeview-ui/`).
     wrangler_cwd: Option<PathBuf>,
     /// R2 binding name from `wrangler.toml` (`[[r2_buckets]] binding =
     /// "CRATE_GRAPHS"`).  Needed so the bulk-writer's miniflare config
@@ -367,7 +367,7 @@ pub struct LocalMiniflareBackend {
 }
 
 /// Long-running miniflare R2 writer.  Speaks JSON-Lines over stdio to
-/// `codeview-ui/scripts/bulk-put-local.ts` (Bun + miniflare 4).
+/// `codeview-ui/scripts/bulk-put-local.ts` (Node + miniflare).
 ///
 /// **Why a sidecar process at all:** every `wrangler r2 object put`
 /// invocation pays ~3s of Node startup before the actual ~10ms SQLite
@@ -466,8 +466,9 @@ impl LocalMiniflareBackend {
             .context("persist_to path is not valid UTF-8")?
             .to_string();
 
-        let mut cmd = tokio::process::Command::new("bun");
-        cmd.arg(&script_path)
+        let mut cmd = tokio::process::Command::new("node");
+        cmd.args(["--experimental-strip-types", "--no-warnings=ExperimentalWarning"])
+            .arg(&script_path)
             .args([
                 "--binding",
                 &self.binding,
@@ -483,7 +484,7 @@ impl LocalMiniflareBackend {
 
         let mut child = cmd
             .spawn()
-            .with_context(|| format!("spawn bun {}", script_path.display()))?;
+            .with_context(|| format!("spawn node {}", script_path.display()))?;
         let stdin = child
             .stdin
             .take()
@@ -573,12 +574,12 @@ impl LocalMiniflareBackend {
         }
     }
 
-    /// `bunx wrangler` invocation with the right cwd. We use `bunx`
-    /// instead of bare `wrangler` because the project's wrangler comes
-    /// from `codeview-ui/node_modules/.bin`, not a global install.
+    /// `pnpm exec wrangler` invocation with the right cwd. We use
+    /// `pnpm exec` because the project's wrangler comes from
+    /// `codeview-ui/node_modules/.bin`, not a global install.
     fn wrangler_cmd(&self) -> tokio::process::Command {
-        let mut cmd = tokio::process::Command::new("bunx");
-        cmd.arg("wrangler");
+        let mut cmd = tokio::process::Command::new("pnpm");
+        cmd.args(["exec", "wrangler"]);
         if let Some(cwd) = &self.wrangler_cwd {
             cmd.current_dir(cwd);
         }

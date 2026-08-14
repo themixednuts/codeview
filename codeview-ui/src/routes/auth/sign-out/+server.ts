@@ -1,5 +1,5 @@
-import { createAuth } from '$lib/server/auth';
-import { safeReturnPath } from '$lib/server/safe-return';
+import { createAuth } from '#lib/server/auth';
+import { safeReturnPath } from '#lib/server/safe-return';
 import { error, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 

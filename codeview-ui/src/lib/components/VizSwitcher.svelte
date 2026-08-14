@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tooltip } from '$lib/tooltip';
+	import { tooltip } from '#lib/tooltip';
 
 	export type VizMode = 'graph' | 'treemap' | 'sunburst' | 'grid';
 

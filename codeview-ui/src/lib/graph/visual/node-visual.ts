@@ -1,4 +1,4 @@
-import type { NodeKind } from '$lib/graph';
+import type { NodeKind } from '#lib/graph';
 import type { NodeVisual } from './types';
 import { kindVisuals } from './palette';
 import { BASE_SPECS, nodeSvgPath, buildHeaderPath } from './shapes';

@@ -1,5 +1,5 @@
-import { isStdCrate } from '$lib/std';
-import { normalizeCrateName, hyphenateCrateName } from '$lib/crate-names';
+import { isStdCrate } from '#lib/std';
+import { normalizeCrateName, hyphenateCrateName } from '#lib/crate-names';
 
 /**
  * Convert a node ID to a URL path using a version lookup map.

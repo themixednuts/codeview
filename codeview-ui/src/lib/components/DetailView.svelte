@@ -1,22 +1,22 @@
 <script lang="ts">
-	import type { Node, NodeKind } from '$lib/graph';
-	import type { VizMode } from '$lib/components/VizSwitcher.svelte';
-	import type { NodeView } from '$lib/schema';
-	import type { CrateMapData } from '$lib/graph/crate-map';
+	import type { Node, NodeKind } from '#lib/graph';
+	import type { VizMode } from '#lib/components/VizSwitcher.svelte';
+	import type { NodeView } from '#lib/schema';
+	import type { CrateMapData } from '#lib/graph/crate-map';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { resolveAppPath } from '$lib/app-paths';
-	import { getNodeView, getStaticNodeView } from '$lib/rpc/nodeView.remote';
-	import { kindLabels, isPublic } from '$lib/display-names';
-	import { materializeDetailDocModel } from '$lib/detail-model';
-	import { isHosted } from '$lib/platform';
-	import { parseExplorerState, serializeExplorerState } from '$lib/url-state';
-	import Breadcrumbs from '$lib/components/Breadcrumbs.svelte';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { getNodeView, getStaticNodeView } from '#lib/rpc/nodeView.remote';
+	import { kindLabels, isPublic } from '#lib/display-names';
+	import { materializeDetailDocModel } from '#lib/detail-model';
+	import { isHosted } from '#lib/platform';
+	import { parseExplorerState, serializeExplorerState } from '#lib/url-state';
+	import Breadcrumbs from '#lib/components/Breadcrumbs.svelte';
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
-	import VizSwitcher from '$lib/components/VizSwitcher.svelte';
-	import NodeDetails from '$lib/components/NodeDetails.svelte';
-	import DocToc from '$lib/components/DocToc.svelte';
-	import { getLogger } from '$lib/log';
+	import VizSwitcher from '#lib/components/VizSwitcher.svelte';
+	import NodeDetails from '#lib/components/NodeDetails.svelte';
+	import DocToc from '#lib/components/DocToc.svelte';
+	import { getLogger } from '#lib/log';
 
 	import {
 		resolvedThemeCtx,
@@ -26,7 +26,7 @@
 		parseProgressCtx,
 		setExpandPathCtx,
 		type ExpandPath,
-	} from '$lib/context';
+	} from '#lib/context';
 
 	const LARGE_CRATE_GRAPH_DEFAULT_MODULES = 96;
 	const LARGE_CRATE_GRAPH_DEFAULT_NODES = 5_000;
@@ -237,7 +237,7 @@
 				{/if}
 				{#if isPublic(selected.visibility)}
 					<span
-						class="badge badge-sm font-mono font-semibold tracking-wider uppercase"
+						class="badge badge-sm font-mono font-semibold"
 						style="background: var(--accent-soft); color: var(--accent-strong); border-color: transparent;"
 					>
 						pub
@@ -275,11 +275,11 @@
 					</div>
 					{#if vizMode === 'graph'}
 						{@const CrateOverviewFlow = (
-							await import('$lib/components/design/graph/CrateOverviewFlow.svelte')
+							await import('#lib/components/design/graph/CrateOverviewFlow.svelte')
 						).default}
 						<CrateOverviewFlow data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
 					{:else if vizMode === 'treemap'}
-						{@const CrateTreemap = (await import('$lib/components/CrateTreemap.svelte')).default}
+						{@const CrateTreemap = (await import('#lib/components/CrateTreemap.svelte')).default}
 						<CrateTreemap
 							data={crateMap}
 							selectedNodeId={nodeId}
@@ -288,7 +288,7 @@
 							onDrillChange={setTreemapDrill}
 						/>
 					{:else if vizMode === 'sunburst'}
-						{@const CrateSunburst = (await import('$lib/components/CrateSunburst.svelte')).default}
+						{@const CrateSunburst = (await import('#lib/components/CrateSunburst.svelte')).default}
 						<CrateSunburst
 							data={crateMap}
 							selectedNodeId={nodeId}
@@ -297,7 +297,7 @@
 							onDrillChange={setSunburstDrill}
 						/>
 					{:else if vizMode === 'grid'}
-						{@const CrateGrid = (await import('$lib/components/CrateGrid.svelte')).default}
+						{@const CrateGrid = (await import('#lib/components/CrateGrid.svelte')).default}
 						<CrateGrid data={crateMap} selectedNodeId={nodeId} {getNodeUrl} />
 					{/if}
 				</div>

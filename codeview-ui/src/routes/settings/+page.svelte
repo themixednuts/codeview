@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { Button } from '$lib/shadcn/ui/button';
-	import * as Field from '$lib/shadcn/ui/field';
-	import * as NativeSelect from '$lib/shadcn/ui/native-select';
+	import { Button } from '#lib/components/ui/button';
+	import * as Field from '#lib/components/ui/field';
+	import * as NativeSelect from '#lib/components/ui/native-select';
 	import {
 		ACCENT_KEY,
 		CODE_DARK_KEY,
@@ -11,7 +11,7 @@
 		THEME_KEY,
 		TEXT_SIZE_KEY,
 		VOICE_KEY,
-	} from '$lib/preferences';
+	} from '#lib/preferences';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -51,10 +51,7 @@
 <main id="main-content" class="min-h-0 flex-1 overflow-auto px-4 py-8 sm:px-6">
 	<div class="mx-auto max-w-2xl">
 		<div class="mb-6">
-			<p class="text-2xs font-semibold tracking-[0.2em] text-(--muted-soft) uppercase">
-				Codeview
-			</p>
-			<h1 class="font-display mt-1 text-2xl font-semibold text-(--ink)">Settings</h1>
+			<h1 class="font-display text-2xl font-semibold text-(--ink)">Settings</h1>
 		</div>
 
 		<form method="POST" class="space-y-6">
