@@ -44,7 +44,7 @@
 	const actionOk = $derived(form?.ok === true);
 
 	function itemHref(name: string, version: string): string {
-		return resolve(`/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
+		return resolve('/[crate]/[version]', { crate: name, version });
 	}
 
 	function statusLabel(status: string, step?: string): string {
@@ -132,7 +132,6 @@
 						<h1 class="font-display text-2xl font-semibold text-(--ink)">Parse operations</h1>
 					</div>
 					<div class="flex items-center gap-2">
-						<span class="badge badge-sm text-(--accent)">Live</span>
 						<a
 							href={resolve('/queue')}
 							class="corner-squircle inline-flex items-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-sm text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"
@@ -158,7 +157,7 @@
 				{:else if dashboard && allowance}
 					<div class="grid gap-2 md:grid-cols-4">
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-							<div class="text-2xs tracking-wider text-(--muted) uppercase">Actions slots</div>
+							<div class="text-xs text-(--muted)">Actions slots</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">
 								{allowance.actionsInUse}/{allowance.activeTarget}
 							</div>
@@ -169,7 +168,7 @@
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-							<div class="text-2xs tracking-wider text-(--muted) uppercase">Queue</div>
+							<div class="text-xs text-(--muted)">Queue</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">
 								{activeEntries.length} tracked · {queue?.activeRuns.length ?? 0} GitHub
 							</div>
@@ -180,7 +179,7 @@
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-							<div class="text-2xs tracking-wider text-(--muted) uppercase">Billing</div>
+							<div class="text-xs text-(--muted)">Billing</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">
 								{allowance.standardRunnerMinutesMetered === false
 									? 'Free'
@@ -193,7 +192,7 @@
 							</div>
 						</div>
 						<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-							<div class="text-2xs tracking-wider text-(--muted) uppercase">Recent failures</div>
+							<div class="text-xs text-(--muted)">Recent failures</div>
 							<div class="mt-1 font-mono text-lg text-(--ink)">{failedCount}</div>
 							<div class="mt-1 text-xs text-(--muted-soft)">
 								{meteringLabel(allowance.standardRunnerMinutesMetered)}
@@ -211,19 +210,19 @@
 							</div>
 							<div class="grid gap-3 sm:grid-cols-2">
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">Repo</div>
+									<div class="text-xs text-(--muted)">Repo</div>
 									<div class="mt-1 truncate font-mono text-sm text-(--ink)">
 										{allowance.repo ?? 'n/a'}
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">Workflow</div>
+									<div class="text-xs text-(--muted)">Workflow</div>
 									<div class="mt-1 truncate font-mono text-sm text-(--ink)">
 										{allowance.workflowFile}
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">
+									<div class="text-xs text-(--muted)">
 										Tracked active
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
@@ -231,7 +230,7 @@
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">
+									<div class="text-xs text-(--muted)">
 										GitHub active
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
@@ -239,7 +238,7 @@
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">
+									<div class="text-xs text-(--muted)">
 										Monthly target
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
@@ -247,7 +246,7 @@
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">
+									<div class="text-xs text-(--muted)">
 										Month starts
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
@@ -255,7 +254,7 @@
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">
+									<div class="text-xs text-(--muted)">
 										Gross Actions
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">
@@ -263,7 +262,7 @@
 									</div>
 								</div>
 								<div>
-									<div class="text-2xs tracking-wider text-(--muted) uppercase">
+									<div class="text-xs text-(--muted)">
 										Billable Actions
 									</div>
 									<div class="mt-1 font-mono text-sm text-(--ink)">

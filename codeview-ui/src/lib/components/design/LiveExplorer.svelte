@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
@@ -637,8 +637,7 @@
 		treeNavigationTimer = setTimeout(() => {
 			treeNavigationTimer = null;
 			void goto(href, {
-				noScroll: true,
-				keepFocus: true,
+				reset: false,
 			});
 		}, 120);
 	}
@@ -672,9 +671,8 @@
 			return;
 		}
 		return goto(nextUrl, {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			replace: true,
+			reset: false,
 		});
 	}
 

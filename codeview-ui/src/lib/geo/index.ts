@@ -6,103 +6,103 @@
 
 // Types
 export type {
-	Point,
-	Vec2,
-	Rect,
-	LineSegment,
-	Polygon,
-	Ellipse,
-	Curve,
-	Triangle,
-	InclusiveRange,
-} from './types';
+  Point,
+  Vec2,
+  Rect,
+  LineSegment,
+  Polygon,
+  Ellipse,
+  Curve,
+  Triangle,
+  InclusiveRange,
+} from "./types";
 
 // Utils
-export { PRECISION, clamp, round, isCloseTo, average } from './utils';
+export { PRECISION, clamp, round, isCloseTo, average } from "./utils";
 
 // Point
 export {
-	pointFrom,
-	pointDistance,
-	pointDistanceSq,
-	pointsEqual,
-	pointCenter,
-	pointRotateRads,
-	pointRotateDegs,
-	pointTranslate,
-	pointScaleFromOrigin,
-	isPointWithinBounds,
-} from './point';
+  pointFrom,
+  pointDistance,
+  pointDistanceSq,
+  pointsEqual,
+  pointCenter,
+  pointRotateRads,
+  pointRotateDegs,
+  pointTranslate,
+  pointScaleFromOrigin,
+  isPointWithinBounds,
+} from "./point";
 
 // Vector
 export {
-	vector,
-	vectorFromPoint,
-	vectorAdd,
-	vectorSubtract,
-	vectorScale,
-	vectorDot,
-	vectorCross,
-	vectorMagnitude,
-	vectorMagnitudeSq,
-	vectorNormalize,
-	vectorNormal,
-} from './vector';
+  vector,
+  vectorFromPoint,
+  vectorAdd,
+  vectorSubtract,
+  vectorScale,
+  vectorDot,
+  vectorCross,
+  vectorMagnitude,
+  vectorMagnitudeSq,
+  vectorNormalize,
+  vectorNormal,
+} from "./vector";
 
 // Angle
 export {
-	degreesToRadians,
-	radiansToDegrees,
-	cartesian2Polar,
-	normalizeRadians,
-	isRightAngleRads,
-	radiansBetweenAngles,
-	radiansDifference,
-} from './angle';
+  degreesToRadians,
+  radiansToDegrees,
+  cartesian2Polar,
+  normalizeRadians,
+  isRightAngleRads,
+  radiansBetweenAngles,
+  radiansDifference,
+} from "./angle";
 
 // Segment
 export {
-	linesIntersectAt,
-	segmentsIntersectAt,
-	distanceToLineSegment,
-	pointOnLineSegment,
-	lineSegmentIntersectionPoints,
-	lineSegmentsDistance,
-} from './segment';
+  linesIntersectAt,
+  segmentsIntersectAt,
+  distanceToLineSegment,
+  pointOnLineSegment,
+  lineSegmentIntersectionPoints,
+  lineSegmentsDistance,
+} from "./segment";
 
 // Polygon
 export {
-	polygonIncludesPoint,
-	polygonIncludesPointNonZero,
-	pointOnPolygon,
-	triangleIncludesPoint,
-} from './polygon';
+  polygonIncludesPoint,
+  polygonIncludesPointNonZero,
+  pointOnPolygon,
+  triangleIncludesPoint,
+} from "./polygon";
 
 // Rect
-export { rectangleIntersectLineSegment, rectangleIntersectRectangle } from './rect';
+export { rectangleIntersectLineSegment, rectangleIntersectRectangle } from "./rect";
 
 // Ellipse
 export {
-	ellipseIncludesPoint,
-	ellipseTouchesPoint,
-	ellipseDistanceFromPoint,
-	ellipseSegmentInterceptPoints,
-	ellipseLineIntersectionPoints,
-} from './ellipse';
+  ellipseIncludesPoint,
+  ellipseTouchesPoint,
+  ellipseDistanceFromPoint,
+  ellipseSegmentInterceptPoints,
+  ellipseLineIntersectionPoints,
+} from "./ellipse";
 
 // Curve
 export {
-	bezierEquation,
-	curveTangent,
-	curveLength,
-	curveLengthAtParameter,
-	curvePointAtLength,
-	curveIntersectLineSegment,
-	curveClosestPoint,
-	curvePointDistance,
-	curveCatmullRomCubicApproxPoints,
-	curveOffsetPoints,
-} from './curve';
+  bezierEquation,
+  curveTangent,
+  curveLength,
+  curveLengthAtParameter,
+  curvePointAtLength,
+  curveIntersectLineSegment,
+  curveClosestPoint,
+  curvePointDistance,
+  curveCatmullRomCubicApproxPoints,
+  curveOffsetPoints,
+} from "./curve";
 
 // Range
-export { rangeInclusive, rangesOverlap, rangeIncludesValue, rangeIntersection } from './range';
+export { rangeInclusive, rangesOverlap, rangeIncludesValue, rangeIntersection } from "./range";

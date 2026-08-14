@@ -38,9 +38,10 @@
 	}
 
 	function crateHref(crate: CrateSearchResult): string {
-		return resolve(
-			`/${encodeURIComponent(crate.id ?? crate.name)}/${encodeURIComponent(crate.version)}`,
-		);
+		return resolve('/[crate]/[version]', {
+			crate: crate.id ?? crate.name,
+			version: crate.version,
+		});
 	}
 
 	async function resolveResource<T>(resource: RemoteResource<T>): Promise<T> {

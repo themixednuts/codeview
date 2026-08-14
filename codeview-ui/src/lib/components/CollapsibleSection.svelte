@@ -36,7 +36,7 @@
 			<span class="text-(--muted) transition-transform duration-200 details-chevron">
 				<ChevronRight size={16} />
 			</span>
-			<h3 class="text-sm font-semibold tracking-wider text-(--muted) uppercase">{title}</h3>
+			<h3 class="text-sm font-semibold text-(--ink-soft)">{title}</h3>
 			{#if count !== null}
 				<span class="badge badge-strong badge-sm text-(--muted)">
 					{count}

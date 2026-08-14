@@ -1,1068 +1,1067 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
-import type { AuthState } from '../auth';
+import { afterEach, describe, expect, test, vi } from "vite-plus/test";
+import type { AuthState } from "../auth";
 
 const mockAuthState = vi.hoisted(() => ({
-	value: null as AuthState | null,
+  value: null as AuthState | null,
 }));
 
-vi.mock('../auth', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('../auth')>();
-	const unauthenticated = {
-		user: null,
-		session: null,
-		isAdmin: false,
-		authConfigured: false,
-		adminAllowlistConfigured: false,
-	} satisfies AuthState;
-	return {
-		...actual,
-		getAuthStateFromRequest: vi.fn(async () => mockAuthState.value ?? unauthenticated),
-	};
+vi.mock("../auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../auth")>();
+  const unauthenticated = {
+    user: null,
+    session: null,
+    isAdmin: false,
+    authConfigured: false,
+    adminAllowlistConfigured: false,
+  } satisfies AuthState;
+  return {
+    ...actual,
+    getAuthStateFromRequest: vi.fn(async () => mockAuthState.value ?? unauthenticated),
+  };
 });
 
-import { createCloudflareProvider } from './provider';
+import { createCloudflareProvider } from "./provider";
 
 function jsonObject(value: unknown): R2ObjectBody {
-	return new Response(
-		typeof value === 'string' ? value : JSON.stringify(value),
-	) as unknown as R2ObjectBody;
+  return new Response(
+    typeof value === "string" ? value : JSON.stringify(value),
+  ) as unknown as R2ObjectBody;
 }
 
 function fakeBucket(objects: Map<string, unknown>): R2Bucket {
-	return {
-		async get(key: string) {
-			const value = objects.get(key);
-			return value === undefined ? null : jsonObject(value);
-		},
-		async put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream) {
-			if (typeof value === 'string') {
-				objects.set(key, value);
-			} else if (value instanceof ReadableStream) {
-				objects.set(key, await new Response(value).text());
-			} else {
-				objects.set(
-					key,
-					new TextDecoder().decode(value instanceof ArrayBuffer ? value : value.buffer),
-				);
-			}
-			return null;
-		},
-		async head(key: string) {
-			return objects.has(key) ? ({} as R2Object) : null;
-		},
-		async list(options?: R2ListOptions) {
-			const prefix = options?.prefix ?? '';
-			const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
-			return {
-				objects: keys.map((key) => ({ key })),
-				delimitedPrefixes: [],
-				truncated: false,
-			} as unknown as R2Objects;
-		},
-	} as unknown as R2Bucket;
+  return {
+    async get(key: string) {
+      const value = objects.get(key);
+      return value === undefined ? null : jsonObject(value);
+    },
+    async put(key: string, value: string | ArrayBuffer | ArrayBufferView | ReadableStream) {
+      if (typeof value === "string") {
+        objects.set(key, value);
+      } else if (value instanceof ReadableStream) {
+        objects.set(key, await new Response(value).text());
+      } else {
+        objects.set(
+          key,
+          new TextDecoder().decode(value instanceof ArrayBuffer ? value : value.buffer),
+        );
+      }
+      return null;
+    },
+    async head(key: string) {
+      return objects.has(key) ? ({} as R2Object) : null;
+    },
+    async list(options?: R2ListOptions) {
+      const prefix = options?.prefix ?? "";
+      const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
+      return {
+        objects: keys.map((key) => ({ key })),
+        delimitedPrefixes: [],
+        truncated: false,
+      } as unknown as R2Objects;
+    },
+  } as unknown as R2Bucket;
 }
 
 function fakeQueue(sent: unknown[]): Queue {
-	return {
-		async send(body: unknown) {
-			sent.push(body);
-		},
-	} as unknown as Queue;
+  return {
+    async send(body: unknown) {
+      sent.push(body);
+    },
+  } as unknown as Queue;
 }
 
 function fakeRateLimit(success = true): RateLimit {
-	return {
-		async limit() {
-			return { success };
-		},
-	} as unknown as RateLimit;
+  return {
+    async limit() {
+      return { success };
+    },
+  } as unknown as RateLimit;
 }
 
 function fakeParseStatusNamespace(
-	initialStatus: unknown,
-	registrations: unknown[] = [],
-	queueSnapshot?: { active: unknown[]; recent: unknown[] },
+  initialStatus: unknown,
+  registrations: unknown[] = [],
+  queueSnapshot?: { active: unknown[]; recent: unknown[] },
 ): DurableObjectNamespace {
-	let status = initialStatus;
-	const stub = {
-		async fetch(input: RequestInfo | URL, init?: RequestInit) {
-			const url = new URL(input instanceof Request ? input.url : input.toString());
-			if (url.pathname === '/queued') {
-				const message = (
-					input instanceof Request
-						? await input.clone().json()
-						: JSON.parse(String(init?.body ?? '{}'))
-				) as Record<string, unknown>;
-				registrations.push(message);
-				status = {
-					ecosystem: 'rust',
-					kind: message.kind,
-					name: message.name,
-					version: message.version,
-					status: 'processing',
-					step: 'queued',
-					requestId: message.requestId,
-					workflowId: `parse-${message.requestId}`,
-					createdAt: message.requestedAt,
-					updatedAt: message.requestedAt,
-					sequence: 1,
-				};
-				return Response.json({ accepted: true, status });
-			}
-			if (url.pathname === '/status') return Response.json(status);
-			if (url.pathname === '/processing') {
-				return Response.json(
-					(status as { status?: string } | null)?.status === 'processing' ? [status] : [],
-				);
-			}
-			if (url.pathname === '/queue') {
-				return Response.json(
-					queueSnapshot ?? {
-						active:
-							(status as { status?: string } | null)?.status === 'processing' ? [status] : [],
-						recent:
-							(status as { status?: string } | null)?.status === 'processing' || !status
-								? []
-								: [status],
-					},
-				);
-			}
-			return new Response(null, { status: 404 });
-		},
-	};
-	return {
-		idFromName() {
-			return {};
-		},
-		get() {
-			return stub;
-		},
-	} as unknown as DurableObjectNamespace;
+  let status = initialStatus;
+  const stub = {
+    async fetch(input: RequestInfo | URL, init?: RequestInit) {
+      const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (url.pathname === "/queued") {
+        const message = (
+          input instanceof Request
+            ? await input.clone().json()
+            : JSON.parse(String(init?.body ?? "{}"))
+        ) as Record<string, unknown>;
+        registrations.push(message);
+        status = {
+          ecosystem: "rust",
+          kind: message.kind,
+          name: message.name,
+          version: message.version,
+          status: "processing",
+          step: "queued",
+          requestId: message.requestId,
+          workflowId: `parse-${message.requestId}`,
+          createdAt: message.requestedAt,
+          updatedAt: message.requestedAt,
+          sequence: 1,
+        };
+        return Response.json({ accepted: true, status });
+      }
+      if (url.pathname === "/status") return Response.json(status);
+      if (url.pathname === "/processing") {
+        return Response.json(
+          (status as { status?: string } | null)?.status === "processing" ? [status] : [],
+        );
+      }
+      if (url.pathname === "/queue") {
+        return Response.json(
+          queueSnapshot ?? {
+            active: (status as { status?: string } | null)?.status === "processing" ? [status] : [],
+            recent:
+              (status as { status?: string } | null)?.status === "processing" || !status
+                ? []
+                : [status],
+          },
+        );
+      }
+      return new Response(null, { status: 404 });
+    },
+  };
+  return {
+    idFromName() {
+      return {};
+    },
+    get() {
+      return stub;
+    },
+  } as unknown as DurableObjectNamespace;
 }
 
 function fnv1a32(value: string): number {
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < value.length; i += 1) {
-		hash ^= value.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	return hash >>> 0;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
 }
 
 function nodeViewBucket(nodeId: string, bucketCount = 128): string {
-	const bucket = fnv1a32(nodeId) % bucketCount;
-	const width = Math.max(3, (bucketCount - 1).toString(16).length);
-	return bucket.toString(16).padStart(width, '0');
+  const bucket = fnv1a32(nodeId) % bucketCount;
+  const width = Math.max(3, (bucketCount - 1).toString(16).length);
+  return bucket.toString(16).padStart(width, "0");
 }
 
 function hostedMeta(
-	nodeViewBucketCount: number,
-	version = '1.0.0',
-	artifacts: Record<string, unknown> = {},
-	name = 'demo',
+  nodeViewBucketCount: number,
+  version = "1.0.0",
+  artifacts: Record<string, unknown> = {},
+  name = "demo",
 ) {
-	return {
-		schema_version: 2,
-		name,
-		version,
-		index: {
-			name,
-			version,
-			crates: [],
-		},
-		nodeCount: 1,
-		edgeCount: 0,
-		kindCounts: {},
-		roots: [],
-		rootChildren: {},
-		artifacts: {
-			nodeViewBucketCount,
-			treeChildrenBucketCount: 128,
-			aliasBucketCount: 128,
-			targetRawShardBytes: 262_144,
-			searchPrefixLength: 2,
-			kindIndex: true,
-			...artifacts,
-		},
-	};
+  return {
+    schema_version: 2,
+    name,
+    version,
+    index: {
+      name,
+      version,
+      crates: [],
+    },
+    nodeCount: 1,
+    edgeCount: 0,
+    kindCounts: {},
+    roots: [],
+    rootChildren: {},
+    artifacts: {
+      nodeViewBucketCount,
+      treeChildrenBucketCount: 128,
+      aliasBucketCount: 128,
+      targetRawShardBytes: 262_144,
+      searchPrefixLength: 2,
+      kindIndex: true,
+      ...artifacts,
+    },
+  };
 }
 
-function crateRefs(version = '1.0.0', storageName = 'demo') {
-	const versions = [...new Set([version, '1.0.0', '1.0.1'])];
-	return {
-		schemaVersion: 1,
-		storageName,
-		displayName: storageName,
-		aliases: {
-			latest: {
-				version,
-				graphHash: `hash-${version}`,
-			},
-		},
-		versions: versions.map((entryVersion) => ({
-			version: entryVersion,
-			graphHash: `hash-${entryVersion}`,
-		})),
-	};
+function crateRefs(version = "1.0.0", storageName = "demo") {
+  const versions = [...new Set([version, "1.0.0", "1.0.1"])];
+  return {
+    schemaVersion: 1,
+    storageName,
+    displayName: storageName,
+    aliases: {
+      latest: {
+        version,
+        graphHash: `hash-${version}`,
+      },
+    },
+    versions: versions.map((entryVersion) => ({
+      version: entryVersion,
+      graphHash: `hash-${entryVersion}`,
+    })),
+  };
 }
 
 function hostedNodeViewArtifact(
-	prefix: string,
-	nodeId: string,
-	version = '1.0.0',
+  prefix: string,
+  nodeId: string,
+  version = "1.0.0",
 ): [string, unknown] {
-	const bucket = nodeViewBucket(nodeId);
-	return [
-		`${prefix}/site/node-views/${bucket}.json`,
-		{
-			schema_version: 2,
-			name: 'demo',
-			version,
-			bucket,
-			bucketCount: 128,
-			entries: {
-				[nodeId]: {
-					detail: {
-						node: {
-							id: nodeId,
-							name: 'demo',
-							kind: 'Crate',
-							visibility: { kind: 'Public' },
-							attrs: [],
-						},
-						edges: [],
-						relatedNodes: [],
-					},
-					ancestors: [],
-				},
-			},
-		},
-	];
+  const bucket = nodeViewBucket(nodeId);
+  return [
+    `${prefix}/site/node-views/${bucket}.json`,
+    {
+      schema_version: 2,
+      name: "demo",
+      version,
+      bucket,
+      bucketCount: 128,
+      entries: {
+        [nodeId]: {
+          detail: {
+            node: {
+              id: nodeId,
+              name: "demo",
+              kind: "Crate",
+              visibility: { kind: "Public" },
+              attrs: [],
+            },
+            edges: [],
+            relatedNodes: [],
+          },
+          ancestors: [],
+        },
+      },
+    },
+  ];
 }
 
-describe('createCloudflareProvider', () => {
-	afterEach(() => {
-		mockAuthState.value = null;
-		vi.useRealTimers();
-		vi.unstubAllGlobals();
-	});
+describe("createCloudflareProvider", () => {
+  afterEach(() => {
+    mockAuthState.value = null;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
-	test('resolves published crates through canonical refs', async () => {
-		const objects = new Map<string, unknown>([
-			[
-				'rust/_refs/proc_macro.json',
-				{
-					schemaVersion: 1,
-					storageName: 'proc_macro',
-					displayName: 'proc_macro',
-					aliases: {
-						latest: {
-							version: '1.98.0-nightly',
-							graphHash: 'hash',
-						},
-					},
-					versions: [
-						{
-							version: '1.98.0-nightly',
-							graphHash: 'hash',
-						},
-					],
-				},
-			],
-			[
-				'rust/proc_macro/1.98.0-nightly/site/meta.json',
-				hostedMeta(128, '1.98.0-nightly', {}, 'proc_macro'),
-			],
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+  test("resolves published crates through canonical refs", async () => {
+    const objects = new Map<string, unknown>([
+      [
+        "rust/_refs/proc_macro.json",
+        {
+          schemaVersion: 1,
+          storageName: "proc_macro",
+          displayName: "proc_macro",
+          aliases: {
+            latest: {
+              version: "1.98.0-nightly",
+              graphHash: "hash",
+            },
+          },
+          versions: [
+            {
+              version: "1.98.0-nightly",
+              graphHash: "hash",
+            },
+          ],
+        },
+      ],
+      [
+        "rust/proc_macro/1.98.0-nightly/site/meta.json",
+        hostedMeta(128, "1.98.0-nightly", {}, "proc_macro"),
+      ],
+    ]);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getCrateStatus('proc-macro', '1.98.0-nightly')).resolves.toEqual({
-			status: 'ready',
-		});
-	});
+    await expect(provider.getCrateStatus("proc-macro", "1.98.0-nightly")).resolves.toEqual({
+      status: "ready",
+    });
+  });
 
-	test('rejects stale ready status when no current artifact is published', async () => {
-		const objects = new Map<string, unknown>([
-			['rust/_refs/demo.json', crateRefs()],
-			[
-				'rust/demo/1.0.0/site/meta.json',
-				{
-					schema_version: 1,
-					name: 'demo',
-					version: '1.0.0',
-				},
-			],
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_STATUS: fakeParseStatusNamespace({
-				ecosystem: 'rust',
-				kind: 'crate',
-				name: 'demo',
-				version: '1.0.0',
-				status: 'ready',
-				createdAt: '2026-07-09T00:00:00.000Z',
-				updatedAt: '2026-07-09T00:00:00.000Z',
-				sequence: 1,
-			}),
-		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+  test("rejects stale ready status when no current artifact is published", async () => {
+    const objects = new Map<string, unknown>([
+      ["rust/_refs/demo.json", crateRefs()],
+      [
+        "rust/demo/1.0.0/site/meta.json",
+        {
+          schema_version: 1,
+          name: "demo",
+          version: "1.0.0",
+        },
+      ],
+    ]);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_STATUS: fakeParseStatusNamespace({
+        ecosystem: "rust",
+        kind: "crate",
+        name: "demo",
+        version: "1.0.0",
+        status: "ready",
+        createdAt: "2026-07-09T00:00:00.000Z",
+        updatedAt: "2026-07-09T00:00:00.000Z",
+        sequence: 1,
+      }),
+    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getCrateStatus('demo', '1.0.0')).resolves.toEqual({
-			status: 'failed',
-			error: 'No static graph is published for demo@1.0.0.',
-			action: 'docs_unavailable',
-		});
-	});
+    await expect(provider.getCrateStatus("demo", "1.0.0")).resolves.toEqual({
+      status: "failed",
+      error: "No static graph is published for demo@1.0.0.",
+      action: "docs_unavailable",
+    });
+  });
 
-	test('refreshes exact-version refs after a hosted artifact is replaced', async () => {
-		vi.useFakeTimers();
-		vi.setSystemTime(new Date('2026-07-09T00:00:00.000Z'));
-		const name = 'mutable-ref-demo';
-		const version = '1.0.0';
-		const refsKey = `rust/_refs/${name}.json`;
-		const metaKey = `rust/${name}/${version}/site/meta.json`;
-		const refs = (graphHash: string) => ({
-			schemaVersion: 1,
-			storageName: name,
-			displayName: name,
-			aliases: { latest: { version, graphHash } },
-			versions: [{ version, graphHash }],
-		});
-		const objects = new Map<string, unknown>([
-			[refsKey, refs('old-hash')],
-			[metaKey, { schema_version: 1, name, version }],
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("refreshes exact-version refs after a hosted artifact is replaced", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T00:00:00.000Z"));
+    const name = "mutable-ref-demo";
+    const version = "1.0.0";
+    const refsKey = `rust/_refs/${name}.json`;
+    const metaKey = `rust/${name}/${version}/site/meta.json`;
+    const refs = (graphHash: string) => ({
+      schemaVersion: 1,
+      storageName: name,
+      displayName: name,
+      aliases: { latest: { version, graphHash } },
+      versions: [{ version, graphHash }],
+    });
+    const objects = new Map<string, unknown>([
+      [refsKey, refs("old-hash")],
+      [metaKey, { schema_version: 1, name, version }],
+    ]);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getCrateStatus(name, version)).resolves.toMatchObject({
-			status: 'failed',
-		});
+    await expect(provider.getCrateStatus(name, version)).resolves.toMatchObject({
+      status: "failed",
+    });
 
-		objects.set(refsKey, refs('new-hash'));
-		objects.set(metaKey, hostedMeta(128, version, {}, name));
-		vi.advanceTimersByTime(5_001);
+    objects.set(refsKey, refs("new-hash"));
+    objects.set(metaKey, hostedMeta(128, version, {}, name));
+    vi.advanceTimersByTime(5_001);
 
-		await expect(provider.getCrateStatus(name, version)).resolves.toEqual({ status: 'ready' });
-	});
+    await expect(provider.getCrateStatus(name, version)).resolves.toEqual({ status: "ready" });
+  });
 
-	test('does not assemble node views from base shards', async () => {
-		const prefix = 'rust/demo/1.0.0';
-		const nodeId = 'demo';
-		const objects = new Map<string, unknown>([
-			['rust/_refs/demo.json', crateRefs()],
-			[`${prefix}/site/meta.json`, hostedMeta(128)],
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
-		const loadNodeViewDirect = provider.loadNodeViewDirect;
-		expect(loadNodeViewDirect).toBeDefined();
-		if (!loadNodeViewDirect) throw new Error('loadNodeViewDirect missing');
+  test("does not assemble node views from base shards", async () => {
+    const prefix = "rust/demo/1.0.0";
+    const nodeId = "demo";
+    const objects = new Map<string, unknown>([
+      ["rust/_refs/demo.json", crateRefs()],
+      [`${prefix}/site/meta.json`, hostedMeta(128)],
+    ]);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const loadNodeViewDirect = provider.loadNodeViewDirect;
+    expect(loadNodeViewDirect).toBeDefined();
+    if (!loadNodeViewDirect) throw new Error("loadNodeViewDirect missing");
 
-		await expect(loadNodeViewDirect('demo', '1.0.0', nodeId)).resolves.toBeNull();
-	});
+    await expect(loadNodeViewDirect("demo", "1.0.0", nodeId)).resolves.toBeNull();
+  });
 
-	test('loads the complete materialized node view', async () => {
-		const version = '1.0.1';
-		const prefix = `rust/demo/${version}`;
-		const nodeId = 'demo';
-		const objects = new Map<string, unknown>([
-			['rust/_refs/demo.json', crateRefs(version)],
-			[`${prefix}/site/meta.json`, hostedMeta(128, version)],
-			hostedNodeViewArtifact(prefix, nodeId, version),
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
-		const loadNodeViewDirect = provider.loadNodeViewDirect;
-		expect(loadNodeViewDirect).toBeDefined();
-		if (!loadNodeViewDirect) throw new Error('loadNodeViewDirect missing');
+  test("loads the complete materialized node view", async () => {
+    const version = "1.0.1";
+    const prefix = `rust/demo/${version}`;
+    const nodeId = "demo";
+    const objects = new Map<string, unknown>([
+      ["rust/_refs/demo.json", crateRefs(version)],
+      [`${prefix}/site/meta.json`, hostedMeta(128, version)],
+      hostedNodeViewArtifact(prefix, nodeId, version),
+    ]);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
+    const loadNodeViewDirect = provider.loadNodeViewDirect;
+    expect(loadNodeViewDirect).toBeDefined();
+    if (!loadNodeViewDirect) throw new Error("loadNodeViewDirect missing");
 
-		await expect(loadNodeViewDirect('demo', version, nodeId)).resolves.toMatchObject({
-			detail: {
-				node: {
-					id: nodeId,
-				},
-				edges: [],
-				relatedNodes: [],
-			},
-			ancestors: [],
-		});
-	});
+    await expect(loadNodeViewDirect("demo", version, nodeId)).resolves.toMatchObject({
+      detail: {
+        node: {
+          id: nodeId,
+        },
+        edges: [],
+        relatedNodes: [],
+      },
+      ancestors: [],
+    });
+  });
 
-	test('filters hosted nodes by kind from hosted kind index', async () => {
-		const crateName = 'kinddemo';
-		const version = '1.0.0';
-		const prefix = `rust/${crateName}/${version}`;
-		const nestedNodeId = `${crateName}::hidden::Widget`;
-		const objects = new Map<string, unknown>([
-			[`rust/_refs/${crateName}.json`, crateRefs(version, crateName)],
-			[`${prefix}/site/meta.json`, hostedMeta(128, version, { kindIndex: true }, crateName)],
-			[
-				`${prefix}/site/kinds/Struct.json`,
-				{
-					schema_version: 2,
-					name: crateName,
-					version,
-					kind: 'Struct',
-					entries: [
-						{
-							id: nestedNodeId,
-							name: 'Widget',
-							kind: 'Struct',
-							visibility: { kind: 'Public' },
-						},
-					],
-				},
-			],
-		]);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("filters hosted nodes by kind from hosted kind index", async () => {
+    const crateName = "kinddemo";
+    const version = "1.0.0";
+    const prefix = `rust/${crateName}/${version}`;
+    const nestedNodeId = `${crateName}::hidden::Widget`;
+    const objects = new Map<string, unknown>([
+      [`rust/_refs/${crateName}.json`, crateRefs(version, crateName)],
+      [`${prefix}/site/meta.json`, hostedMeta(128, version, { kindIndex: true }, crateName)],
+      [
+        `${prefix}/site/kinds/Struct.json`,
+        {
+          schema_version: 2,
+          name: crateName,
+          version,
+          kind: "Struct",
+          entries: [
+            {
+              id: nestedNodeId,
+              name: "Widget",
+              kind: "Struct",
+              visibility: { kind: "Public" },
+            },
+          ],
+        },
+      ],
+    ]);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(
-			provider.searchNodesDirect?.(crateName, version, '', 10, ['Struct']),
-		).resolves.toEqual([
-			{
-				id: nestedNodeId,
-				name: 'Widget',
-				kind: 'Struct',
-				visibility: { kind: 'Public' },
-			},
-		]);
-		await expect(
-			provider.searchNodesDirect?.(crateName, version, '', 10, ['Impl']),
-		).resolves.toEqual([]);
-	});
+    await expect(
+      provider.searchNodesDirect?.(crateName, version, "", 10, ["Struct"]),
+    ).resolves.toEqual([
+      {
+        id: nestedNodeId,
+        name: "Widget",
+        kind: "Struct",
+        visibility: { kind: "Public" },
+      },
+    ]);
+    await expect(
+      provider.searchNodesDirect?.(crateName, version, "", 10, ["Impl"]),
+    ).resolves.toEqual([]);
+  });
 
-	test('uses live crates.io metadata for top crates', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(
-				async () =>
-					new Response(
-						JSON.stringify({
-							crates: [
-								{
-									id: 'rand_core',
-									name: 'rand_core',
-									description: 'Core random number generator traits',
-									repository: 'https://github.com/rust-random/rand',
-									max_version: '0.9.3',
-								},
-							],
-						}),
-						{ status: 200, headers: { 'content-type': 'application/json' } },
-					),
-			),
-		);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("uses live crates.io metadata for top crates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              crates: [
+                {
+                  id: "rand_core",
+                  name: "rand_core",
+                  description: "Core random number generator traits",
+                  repository: "https://github.com/rust-random/rand",
+                  max_version: "0.9.3",
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getTopCrates(1)).resolves.toEqual([
-			{
-				id: 'rand-core',
-				name: 'rand_core',
-				version: '0.9.3',
-				description: 'Core random number generator traits',
-			},
-		]);
-	});
+    await expect(provider.getTopCrates(1)).resolves.toEqual([
+      {
+        id: "rand-core",
+        name: "rand_core",
+        version: "0.9.3",
+        description: "Core random number generator traits",
+      },
+    ]);
+  });
 
-	test('uses live crates.io versions beyond parsed artifact refs', async () => {
-		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-			expect(String(input)).toBe('https://index.crates.io/ha/sh/hashbrown');
-			return new Response(
-				[
-					JSON.stringify({ name: 'hashbrown', vers: '0.16.1', yanked: false }),
-					JSON.stringify({ name: 'hashbrown', vers: '0.17.0', yanked: false }),
-					JSON.stringify({ name: 'hashbrown', vers: '0.17.1', yanked: false }),
-					'',
-				].join('\n'),
-				{ status: 200 },
-			);
-		});
-		vi.stubGlobal('fetch', fetchMock);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(
-				new Map([
-					[
-						'rust/_refs/hashbrown.json',
-						{
-							schemaVersion: 1,
-							storageName: 'hashbrown',
-							displayName: 'hashbrown',
-							aliases: {
-								latest: {
-									version: '0.17.1',
-									graphHash: 'hash-0.17.1',
-								},
-							},
-							versions: [
-								{
-									version: '0.17.1',
-									graphHash: 'hash-0.17.1',
-								},
-							],
-						},
-					],
-				]),
-			),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("uses live crates.io versions beyond parsed artifact refs", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("https://index.crates.io/ha/sh/hashbrown");
+      return new Response(
+        [
+          JSON.stringify({ name: "hashbrown", vers: "0.16.1", yanked: false }),
+          JSON.stringify({ name: "hashbrown", vers: "0.17.0", yanked: false }),
+          JSON.stringify({ name: "hashbrown", vers: "0.17.1", yanked: false }),
+          "",
+        ].join("\n"),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(
+        new Map([
+          [
+            "rust/_refs/hashbrown.json",
+            {
+              schemaVersion: 1,
+              storageName: "hashbrown",
+              displayName: "hashbrown",
+              aliases: {
+                latest: {
+                  version: "0.17.1",
+                  graphHash: "hash-0.17.1",
+                },
+              },
+              versions: [
+                {
+                  version: "0.17.1",
+                  graphHash: "hash-0.17.1",
+                },
+              ],
+            },
+          ],
+        ]),
+      ),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getCrateVersions('hashbrown', 5)).resolves.toEqual([
-			'0.17.1',
-			'0.17.0',
-			'0.16.1',
-		]);
-		await expect(provider.resolveVersion('hashbrown', 'latest')).resolves.toBe('0.17.1');
-		expect(fetchMock).toHaveBeenCalledTimes(2);
-	});
+    await expect(provider.getCrateVersions("hashbrown", 5)).resolves.toEqual([
+      "0.17.1",
+      "0.17.0",
+      "0.16.1",
+    ]);
+    await expect(provider.resolveVersion("hashbrown", "latest")).resolves.toBe("0.17.1");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 
-	test('lists toolchain channels before concrete published versions', async () => {
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(
-				new Map([
-					[
-						'rust/_refs/std.json',
-						{
-							schemaVersion: 1,
-							storageName: 'std',
-							displayName: 'std',
-							aliases: {
-								nightly: { version: '1.98.0-nightly', graphHash: 'hash-nightly' },
-							},
-							versions: [{ version: '1.98.0-nightly', graphHash: 'hash-nightly' }],
-						},
-					],
-				]),
-			),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("lists toolchain channels before concrete published versions", async () => {
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(
+        new Map([
+          [
+            "rust/_refs/std.json",
+            {
+              schemaVersion: 1,
+              storageName: "std",
+              displayName: "std",
+              aliases: {
+                nightly: { version: "1.98.0-nightly", graphHash: "hash-nightly" },
+              },
+              versions: [{ version: "1.98.0-nightly", graphHash: "hash-nightly" }],
+            },
+          ],
+        ]),
+      ),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getCrateVersions('std')).resolves.toEqual([
-			'stable',
-			'beta',
-			'nightly',
-			'1.98.0-nightly',
-		]);
-	});
+    await expect(provider.getCrateVersions("std")).resolves.toEqual([
+      "stable",
+      "beta",
+      "nightly",
+      "1.98.0-nightly",
+    ]);
+  });
 
-	test('searches exact toolchain crate channels independently of crates.io', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async () => new Response(JSON.stringify({ crates: [] }), { status: 200 })),
-		);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("searches exact toolchain crate channels independently of crates.io", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ crates: [] }), { status: 200 })),
+    );
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.searchRegistry('std@nightly')).resolves.toMatchObject([
-			{ id: 'std', name: 'std', version: 'nightly' },
-		]);
-	});
+    await expect(provider.searchRegistry("std@nightly")).resolves.toMatchObject([
+      { id: "std", name: "std", version: "nightly" },
+    ]);
+  });
 
-	test('includes active GitHub parse workflow runs in queue snapshots', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async (input: RequestInfo | URL) => {
-				const url = new URL(String(input));
-				const status = url.searchParams.get('status');
-				return new Response(
-					JSON.stringify({
-						workflow_runs:
-							status === 'in_progress'
-								? [
-										{
-											id: 123,
-											name: 'parse',
-											display_title: 'parse hashbrown 0.17.1',
-											status: 'in_progress',
-											event: 'workflow_dispatch',
-											head_branch: 'main',
-											html_url: 'https://github.com/themixednuts/codeview/actions/runs/123',
-											created_at: '2026-07-07T12:00:00Z',
-											updated_at: '2026-07-07T12:05:00Z',
-										},
-									]
-								: [],
-					}),
-					{ status: 200, headers: { 'content-type': 'application/json' } },
-				);
-			}),
-		);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-			GITHUB_REPO: 'themixednuts/codeview',
-			GITHUB_WORKFLOW_FILE: 'parse.yml',
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("includes active GitHub parse workflow runs in queue snapshots", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        const status = url.searchParams.get("status");
+        return new Response(
+          JSON.stringify({
+            workflow_runs:
+              status === "in_progress"
+                ? [
+                    {
+                      id: 123,
+                      name: "parse",
+                      display_title: "parse hashbrown 0.17.1",
+                      status: "in_progress",
+                      event: "workflow_dispatch",
+                      head_branch: "main",
+                      html_url: "https://github.com/themixednuts/codeview/actions/runs/123",
+                      created_at: "2026-07-07T12:00:00Z",
+                      updated_at: "2026-07-07T12:05:00Z",
+                    },
+                  ]
+                : [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+      GITHUB_REPO: "themixednuts/codeview",
+      GITHUB_WORKFLOW_FILE: "parse.yml",
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		await expect(provider.getParseQueue?.(10)).resolves.toMatchObject({
-			active: [],
-			activeRuns: [
-				{
-					id: '123',
-					title: 'parse hashbrown 0.17.1',
-					status: 'in_progress',
-					event: 'workflow_dispatch',
-					branch: 'main',
-					url: 'https://github.com/themixednuts/codeview/actions/runs/123',
-				},
-			],
-			recent: [],
-			planned: null,
-		});
-	});
+    await expect(provider.getParseQueue?.(10)).resolves.toMatchObject({
+      active: [],
+      activeRuns: [
+        {
+          id: "123",
+          title: "parse hashbrown 0.17.1",
+          status: "in_progress",
+          event: "workflow_dispatch",
+          branch: "main",
+          url: "https://github.com/themixednuts/codeview/actions/runs/123",
+        },
+      ],
+      recent: [],
+      planned: null,
+    });
+  });
 
-	test('keeps current plan items visible when an older status row has the same crate version', async () => {
-		const objects = new Map<string, unknown>([
-			[
-				'rust/_runs/run-1/plan.json',
-				{
-					run_id: 'run-1',
-					generated_at: '2026-07-28T06:00:00Z',
-					mode: 'daily',
-					shard_count: 8,
-					work: [
-						{
-							work_id: 'crate:demo:1.0.0:default',
-							kind: 'crate',
-							name: 'demo',
-							version: '1.0.0',
-							channel: 'default',
-							priority_tier: 'top-download-stale',
-							reason: 'parser old0000 → target123',
-							download_rank: 1,
-						},
-					],
-				},
-			],
-			[
-				'rust/_index/by-version/demo/1.0.0.json',
-				{
-					name: 'demo',
-					version: '1.0.0',
-					parsedAt: '2026-07-28T06:10:00Z',
-					parserRevision: 'target1234567890',
-					schemaVersion: 1,
-				},
-			],
-		]);
-		const oldStatus = {
-			ecosystem: 'rust',
-			kind: 'crate',
-			name: 'demo',
-			version: '1.0.0',
-			status: 'ready',
-			createdAt: '2026-07-01T00:00:00Z',
-			updatedAt: '2026-07-01T00:05:00Z',
-			sequence: 1,
-		};
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_STATUS: fakeParseStatusNamespace(null, [], {
-				active: [],
-				recent: [oldStatus],
-			}),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("keeps current plan items visible when an older status row has the same crate version", async () => {
+    const objects = new Map<string, unknown>([
+      [
+        "rust/_runs/run-1/plan.json",
+        {
+          run_id: "run-1",
+          generated_at: "2026-07-28T06:00:00Z",
+          mode: "daily",
+          shard_count: 8,
+          work: [
+            {
+              work_id: "crate:demo:1.0.0:default",
+              kind: "crate",
+              name: "demo",
+              version: "1.0.0",
+              channel: "default",
+              priority_tier: "top-download-stale",
+              reason: "parser old0000 → target123",
+              download_rank: 1,
+            },
+          ],
+        },
+      ],
+      [
+        "rust/_index/by-version/demo/1.0.0.json",
+        {
+          name: "demo",
+          version: "1.0.0",
+          parsedAt: "2026-07-28T06:10:00Z",
+          parserRevision: "target1234567890",
+          schemaVersion: 1,
+        },
+      ],
+    ]);
+    const oldStatus = {
+      ecosystem: "rust",
+      kind: "crate",
+      name: "demo",
+      version: "1.0.0",
+      status: "ready",
+      createdAt: "2026-07-01T00:00:00Z",
+      updatedAt: "2026-07-01T00:05:00Z",
+      sequence: 1,
+    };
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_STATUS: fakeParseStatusNamespace(null, [], {
+        active: [],
+        recent: [oldStatus],
+      }),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const snapshot = await provider.getParseQueue?.(100);
+    const snapshot = await provider.getParseQueue?.(100);
 
-		expect(snapshot?.planned).toMatchObject({
-			runId: 'run-1',
-			pending: 0,
-			ready: 1,
-			items: [
-				{
-					name: 'demo',
-					version: '1.0.0',
-					state: 'ready',
-				},
-			],
-		});
-	});
+    expect(snapshot?.planned).toMatchObject({
+      runId: "run-1",
+      pending: 0,
+      ready: 1,
+      items: [
+        {
+          name: "demo",
+          version: "1.0.0",
+          state: "ready",
+        },
+      ],
+    });
+  });
 
-	test('builds admin dashboard allowance from GitHub active runs and billing', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async (input: RequestInfo | URL) => {
-				const url = new URL(String(input));
-				if (url.pathname === '/repos/themixednuts/codeview') {
-					return new Response(
-						JSON.stringify({
-							full_name: 'themixednuts/codeview',
-							private: true,
-							owner: { login: 'themixednuts', type: 'User' },
-						}),
-						{ status: 200, headers: { 'content-type': 'application/json' } },
-					);
-				}
-				if (url.pathname === '/users/themixednuts/settings/billing/usage/summary') {
-					expect(url.searchParams.get('product')).toBe('Actions');
-					expect(url.searchParams.get('repository')).toBe('themixednuts/codeview');
-					return new Response(
-						JSON.stringify({
-							usageItems: [
-								{
-									product: 'Actions',
-									sku: 'actions_linux',
-									unitType: 'minutes',
-									grossQuantity: 125,
-									netQuantity: 12,
-								},
-								{
-									product: 'Codespaces',
-									sku: 'codespaces_compute',
-									unitType: 'hours',
-									grossQuantity: 10,
-								},
-							],
-						}),
-						{ status: 200, headers: { 'content-type': 'application/json' } },
-					);
-				}
-				if (url.pathname === '/repos/themixednuts/codeview/actions/workflows/parse.yml/runs') {
-					if (url.searchParams.has('created')) {
-						return new Response(
-							JSON.stringify({
-								workflow_runs: [
-									{
-										id: 321,
-										status: 'completed',
-										created_at: '2026-07-07T12:00:00Z',
-										updated_at: '2026-07-07T12:30:00Z',
-									},
-								],
-							}),
-							{ status: 200, headers: { 'content-type': 'application/json' } },
-						);
-					}
-					return new Response(
-						JSON.stringify({
-							workflow_runs:
-								url.searchParams.get('status') === 'in_progress'
-									? [
-											{
-												id: 123,
-												name: 'parse',
-												display_title: 'parse bitflags 2.13.0',
-												status: 'in_progress',
-												event: 'workflow_dispatch',
-												head_branch: 'main',
-												html_url: 'https://github.com/themixednuts/codeview/actions/runs/123',
-												created_at: '2026-07-07T12:00:00Z',
-												updated_at: '2026-07-07T12:05:00Z',
-											},
-										]
-									: [],
-						}),
-						{ status: 200, headers: { 'content-type': 'application/json' } },
-					);
-				}
-				return new Response('{}', { status: 404 });
-			}),
-		);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-			GITHUB_REPO: 'themixednuts/codeview',
-			GITHUB_WORKFLOW_FILE: 'parse.yml',
-			GITHUB_TOKEN: 'token',
-			PLAN_DRAIN_ACTIVE_TARGET: '4',
-			PLAN_DRAIN_BATCH_SIZE: '2',
-			GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: '35',
-		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+  test("builds admin dashboard allowance from GitHub active runs and billing", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/themixednuts/codeview") {
+          return new Response(
+            JSON.stringify({
+              full_name: "themixednuts/codeview",
+              private: true,
+              owner: { login: "themixednuts", type: "User" },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/users/themixednuts/settings/billing/usage/summary") {
+          expect(url.searchParams.get("product")).toBe("Actions");
+          expect(url.searchParams.get("repository")).toBe("themixednuts/codeview");
+          return new Response(
+            JSON.stringify({
+              usageItems: [
+                {
+                  product: "Actions",
+                  sku: "actions_linux",
+                  unitType: "minutes",
+                  grossQuantity: 125,
+                  netQuantity: 12,
+                },
+                {
+                  product: "Codespaces",
+                  sku: "codespaces_compute",
+                  unitType: "hours",
+                  grossQuantity: 10,
+                },
+              ],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/repos/themixednuts/codeview/actions/workflows/parse.yml/runs") {
+          if (url.searchParams.has("created")) {
+            return new Response(
+              JSON.stringify({
+                workflow_runs: [
+                  {
+                    id: 321,
+                    status: "completed",
+                    created_at: "2026-07-07T12:00:00Z",
+                    updated_at: "2026-07-07T12:30:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              workflow_runs:
+                url.searchParams.get("status") === "in_progress"
+                  ? [
+                      {
+                        id: 123,
+                        name: "parse",
+                        display_title: "parse bitflags 2.13.0",
+                        status: "in_progress",
+                        event: "workflow_dispatch",
+                        head_branch: "main",
+                        html_url: "https://github.com/themixednuts/codeview/actions/runs/123",
+                        created_at: "2026-07-07T12:00:00Z",
+                        updated_at: "2026-07-07T12:05:00Z",
+                      },
+                    ]
+                  : [],
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        return new Response("{}", { status: 404 });
+      }),
+    );
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+      GITHUB_REPO: "themixednuts/codeview",
+      GITHUB_WORKFLOW_FILE: "parse.yml",
+      GITHUB_TOKEN: "token",
+      PLAN_DRAIN_ACTIVE_TARGET: "4",
+      PLAN_DRAIN_BATCH_SIZE: "2",
+      GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35",
+    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const dashboard = await provider.getAdminDashboard?.(10);
+    const dashboard = await provider.getAdminDashboard?.(10);
 
-		expect(dashboard?.allowance).toMatchObject({
-			repo: 'themixednuts/codeview',
-			activeTarget: 4,
-			batchSize: 2,
-			trackedActiveCount: 0,
-			githubActiveRunCount: 1,
-			actionsInUse: 1,
-			availableSlots: 3,
-			repoUsageTargetPercent: 35,
-			repoPrivate: true,
-			standardRunnerMinutesMetered: true,
-			estimatedRepoMinutesThisMonth: 30,
-			billing: {
-				available: true,
-				totalMinutesUsed: 125,
-				totalPaidMinutesUsed: 12,
-			},
-		});
-	});
+    expect(dashboard?.allowance).toMatchObject({
+      repo: "themixednuts/codeview",
+      activeTarget: 4,
+      batchSize: 2,
+      trackedActiveCount: 0,
+      githubActiveRunCount: 1,
+      actionsInUse: 1,
+      availableSlots: 3,
+      repoUsageTargetPercent: 35,
+      repoPrivate: true,
+      standardRunnerMinutesMetered: true,
+      estimatedRepoMinutesThisMonth: 30,
+      billing: {
+        available: true,
+        totalMinutesUsed: 125,
+        totalPaidMinutesUsed: 12,
+      },
+    });
+  });
 
-	test('treats PLAN_DRAIN_BATCH_SIZE=0 as planned siphon disabled', async () => {
-		vi.stubGlobal(
-			'fetch',
-			vi.fn(async (input: RequestInfo | URL) => {
-				const url = new URL(String(input));
-				if (url.pathname === '/repos/themixednuts/codeview') {
-					return new Response(
-						JSON.stringify({
-							full_name: 'themixednuts/codeview',
-							private: false,
-							owner: { login: 'themixednuts', type: 'User' },
-						}),
-						{ status: 200, headers: { 'content-type': 'application/json' } },
-					);
-				}
-				if (url.pathname === '/repos/themixednuts/codeview/actions/workflows/parse.yml/runs') {
-					return new Response(JSON.stringify({ workflow_runs: [], total_count: 0 }), {
-						status: 200,
-						headers: { 'content-type': 'application/json' },
-					});
-				}
-				return new Response('{}', { status: 404 });
-			}),
-		);
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-			GITHUB_REPO: 'themixednuts/codeview',
-			GITHUB_WORKFLOW_FILE: 'parse.yml',
-			GITHUB_TOKEN: 'token',
-			PLAN_DRAIN_ACTIVE_TARGET: '4',
-			PLAN_DRAIN_BATCH_SIZE: '0',
-		} as unknown as Env & { CRATE_GRAPHS: R2Bucket });
+  test("treats PLAN_DRAIN_BATCH_SIZE=0 as planned siphon disabled", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/repos/themixednuts/codeview") {
+          return new Response(
+            JSON.stringify({
+              full_name: "themixednuts/codeview",
+              private: false,
+              owner: { login: "themixednuts", type: "User" },
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          );
+        }
+        if (url.pathname === "/repos/themixednuts/codeview/actions/workflows/parse.yml/runs") {
+          return new Response(JSON.stringify({ workflow_runs: [], total_count: 0 }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response("{}", { status: 404 });
+      }),
+    );
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+      GITHUB_REPO: "themixednuts/codeview",
+      GITHUB_WORKFLOW_FILE: "parse.yml",
+      GITHUB_TOKEN: "token",
+      PLAN_DRAIN_ACTIVE_TARGET: "4",
+      PLAN_DRAIN_BATCH_SIZE: "0",
+    } as unknown as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const dashboard = await provider.getAdminDashboard?.(10);
+    const dashboard = await provider.getAdminDashboard?.(10);
 
-		expect(dashboard?.allowance).toMatchObject({
-			activeTarget: 4,
-			batchSize: 0,
-			availableSlots: 4,
-		});
-	});
+    expect(dashboard?.allowance).toMatchObject({
+      activeTarget: 4,
+      batchSize: 0,
+      availableSlots: 4,
+    });
+  });
 
-	test('enqueues hosted parse requests', async () => {
-		const objects = new Map<string, unknown>();
-		const sent: unknown[] = [];
-		const registrations: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_REQUESTS: fakeQueue(sent),
-			PARSE_STATUS: fakeParseStatusNamespace(null, registrations),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("enqueues hosted parse requests", async () => {
+    const objects = new Map<string, unknown>();
+    const sent: unknown[] = [];
+    const registrations: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_REQUESTS: fakeQueue(sent),
+      PARSE_STATUS: fakeParseStatusNamespace(null, registrations),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('serde', '1.0.228');
-		if (result.isErr()) throw result.error;
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toMatchObject({
-			schemaVersion: 1,
-			ecosystem: 'rust',
-			kind: 'crate',
-			name: 'serde',
-			version: '1.0.228',
-			force: false,
-			source: 'ui',
-		});
-		expect(registrations).toHaveLength(1);
-		expect(registrations[0]).toMatchObject({
-			kind: 'crate',
-			name: 'serde',
-			version: '1.0.228',
-		});
+    const result = await provider.triggerParse("serde", "1.0.228");
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      schemaVersion: 1,
+      ecosystem: "rust",
+      kind: "crate",
+      name: "serde",
+      version: "1.0.228",
+      force: false,
+      source: "ui",
+    });
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]).toMatchObject({
+      kind: "crate",
+      name: "serde",
+      version: "1.0.228",
+    });
 
-		await expect(provider.getCrateStatus('serde', '1.0.228')).resolves.toEqual({
-			status: 'processing',
-			step: 'queued',
-			error: undefined,
-			action: undefined,
-			installedVersion: undefined,
-		});
-		await expect(provider.getProcessingCrates(5)).resolves.toEqual([
-			{
-				id: 'serde',
-				name: 'serde',
-				version: '1.0.228',
-				description: 'queued',
-			},
-		]);
-	});
+    await expect(provider.getCrateStatus("serde", "1.0.228")).resolves.toEqual({
+      status: "processing",
+      step: "queued",
+      error: undefined,
+      action: undefined,
+      installedVersion: undefined,
+    });
+    await expect(provider.getProcessingCrates(5)).resolves.toEqual([
+      {
+        id: "serde",
+        name: "serde",
+        version: "1.0.228",
+        description: "queued",
+      },
+    ]);
+  });
 
-	test('fails closed when hosted parse rate limiting is missing', async () => {
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-			PARSE_REQUESTS: fakeQueue(sent),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("fails closed when hosted parse rate limiting is missing", async () => {
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+      PARSE_REQUESTS: fakeQueue(sent),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('serde', '1.0.228');
-		expect(result.isErr()).toBe(true);
-		if (!result.isErr()) throw new Error('expected parse request to fail');
-		expect(result.error._tag).toBe('NotAvailableError');
-		expect(result.error.message).toBe('Hosted parse rate limiting is not configured');
-		expect(sent).toHaveLength(0);
-	});
+    const result = await provider.triggerParse("serde", "1.0.228");
+    expect(result.isErr()).toBe(true);
+    if (!result.isErr()) throw new Error("expected parse request to fail");
+    expect(result.error._tag).toBe("NotAvailableError");
+    expect(result.error.message).toBe("Hosted parse rate limiting is not configured");
+    expect(sent).toHaveLength(0);
+  });
 
-	test('requires admin auth for forced hosted parses', async () => {
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-			PARSE_REQUESTS: fakeQueue(sent),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("requires admin auth for forced hosted parses", async () => {
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+      PARSE_REQUESTS: fakeQueue(sent),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('serde', '1.0.228', true);
-		expect(result.isErr()).toBe(true);
-		if (!result.isErr()) throw new Error('expected force parse request to fail');
-		expect(result.error._tag).toBe('NotAvailableError');
-		expect(result.error.message).toBe('Force parse requires admin access');
-		expect(sent).toHaveLength(0);
-	});
+    const result = await provider.triggerParse("serde", "1.0.228", true);
+    expect(result.isErr()).toBe(true);
+    if (!result.isErr()) throw new Error("expected force parse request to fail");
+    expect(result.error._tag).toBe("NotAvailableError");
+    expect(result.error.message).toBe("Force parse requires admin access");
+    expect(sent).toHaveLength(0);
+  });
 
-	test('lets admin force parses bypass parse rate limiting', async () => {
-		const sent: unknown[] = [];
-		mockAuthState.value = {
-			user: {
-				id: 'github-user-1',
-				name: 'Admin',
-				email: 'admin@example.com',
-				emailVerified: true,
-				githubLogin: 'themixednuts',
-				image: 'https://example.com/avatar.png',
-			},
-			session: {
-				id: 'session-1',
-				userId: 'github-user-1',
-				expiresAt: new Date('2030-01-01T00:00:00Z'),
-			},
-			isAdmin: true,
-			authConfigured: true,
-			adminAllowlistConfigured: true,
-		};
-		const provider = createCloudflareProvider(
-			{
-				CRATE_GRAPHS: fakeBucket(new Map()),
-				PARSE_REQUESTS: fakeQueue(sent),
-			} as Env & { CRATE_GRAPHS: R2Bucket },
-			new Request('https://codeview.codes/admin'),
-		);
+  test("lets admin force parses bypass parse rate limiting", async () => {
+    const sent: unknown[] = [];
+    mockAuthState.value = {
+      user: {
+        id: "github-user-1",
+        name: "Admin",
+        email: "admin@example.com",
+        emailVerified: true,
+        githubLogin: "themixednuts",
+        image: "https://example.com/avatar.png",
+      },
+      session: {
+        id: "session-1",
+        userId: "github-user-1",
+        expiresAt: new Date("2030-01-01T00:00:00Z"),
+      },
+      isAdmin: true,
+      authConfigured: true,
+      adminAllowlistConfigured: true,
+    };
+    const provider = createCloudflareProvider(
+      {
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+      } as Env & { CRATE_GRAPHS: R2Bucket },
+      new Request("https://codeview.codes/admin"),
+    );
 
-		const result = await provider.triggerParse('serde', '1.0.228', true);
-		if (result.isErr()) throw result.error;
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toMatchObject({
-			schemaVersion: 1,
-			ecosystem: 'rust',
-			kind: 'crate',
-			name: 'serde',
-			version: '1.0.228',
-			force: true,
-			source: 'ui',
-			requestedBy: {
-				provider: 'github',
-				id: 'github-user-1',
-				login: 'themixednuts',
-				avatarUrl: 'https://example.com/avatar.png',
-			},
-		});
-	});
+    const result = await provider.triggerParse("serde", "1.0.228", true);
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      schemaVersion: 1,
+      ecosystem: "rust",
+      kind: "crate",
+      name: "serde",
+      version: "1.0.228",
+      force: true,
+      source: "ui",
+      requestedBy: {
+        provider: "github",
+        id: "github-user-1",
+        login: "themixednuts",
+        avatarUrl: "https://example.com/avatar.png",
+      },
+    });
+  });
 
-	test('enqueues hosted sysroot parse requests for std crates', async () => {
-		const objects = new Map<string, unknown>();
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_REQUESTS: fakeQueue(sent),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("enqueues hosted sysroot parse requests for std crates", async () => {
+    const objects = new Map<string, unknown>();
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_REQUESTS: fakeQueue(sent),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('std', 'nightly');
-		if (result.isErr()) throw result.error;
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toMatchObject({
-			schemaVersion: 1,
-			ecosystem: 'rust',
-			kind: 'sysroot',
-			name: 'std',
-			version: 'nightly',
-			force: false,
-			source: 'ui',
-		});
-	});
+    const result = await provider.triggerParse("std", "nightly");
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      schemaVersion: 1,
+      ecosystem: "rust",
+      kind: "sysroot",
+      name: "std",
+      version: "nightly",
+      force: false,
+      source: "ui",
+    });
+  });
 
-	test('queues std latest as stable hosted parse request', async () => {
-		const objects = new Map<string, unknown>();
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_REQUESTS: fakeQueue(sent),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("queues std latest as stable hosted parse request", async () => {
+    const objects = new Map<string, unknown>();
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_REQUESTS: fakeQueue(sent),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('std', 'latest');
-		if (result.isErr()) throw result.error;
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toMatchObject({
-			schemaVersion: 1,
-			ecosystem: 'rust',
-			kind: 'sysroot',
-			name: 'std',
-			version: 'stable',
-			force: false,
-			source: 'ui',
-		});
-	});
+    const result = await provider.triggerParse("std", "latest");
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      schemaVersion: 1,
+      ecosystem: "rust",
+      kind: "sysroot",
+      name: "std",
+      version: "stable",
+      force: false,
+      source: "ui",
+    });
+  });
 
-	test.each(['stable', 'beta'])('queues the %s hosted sysroot channel', async (channel) => {
-		const objects = new Map<string, unknown>();
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_REQUESTS: fakeQueue(sent),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test.each(["stable", "beta"])("queues the %s hosted sysroot channel", async (channel) => {
+    const objects = new Map<string, unknown>();
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_REQUESTS: fakeQueue(sent),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('std', channel);
-		if (result.isErr()) throw result.error;
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toMatchObject({ kind: 'sysroot', name: 'std', version: channel });
-	});
+    const result = await provider.triggerParse("std", channel);
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ kind: "sysroot", name: "std", version: channel });
+  });
 
-	test('rejects concrete versions for hosted sysroot parse requests', async () => {
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(new Map()),
-			PARSE_REQUESTS: fakeQueue(sent),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("rejects concrete versions for hosted sysroot parse requests", async () => {
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(new Map()),
+      PARSE_REQUESTS: fakeQueue(sent),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('std', '1.96.0');
-		expect(result.isErr()).toBe(true);
-		if (!result.isErr()) throw new Error('expected concrete sysroot request to fail');
-		expect(result.error._tag).toBe('NotAvailableError');
-		expect(result.error.message).toContain('stable, beta, or nightly');
-		expect(sent).toHaveLength(0);
-	});
+    const result = await provider.triggerParse("std", "1.96.0");
+    expect(result.isErr()).toBe(true);
+    if (!result.isErr()) throw new Error("expected concrete sysroot request to fail");
+    expect(result.error._tag).toBe("NotAvailableError");
+    expect(result.error.message).toContain("stable, beta, or nightly");
+    expect(sent).toHaveLength(0);
+  });
 
-	test('queues hyphenated proc macro route as hosted std-library parse request', async () => {
-		const objects = new Map<string, unknown>();
-		const sent: unknown[] = [];
-		const provider = createCloudflareProvider({
-			CRATE_GRAPHS: fakeBucket(objects),
-			PARSE_REQUESTS: fakeQueue(sent),
-			RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
-		} as Env & { CRATE_GRAPHS: R2Bucket });
+  test("queues hyphenated proc macro route as hosted std-library parse request", async () => {
+    const objects = new Map<string, unknown>();
+    const sent: unknown[] = [];
+    const provider = createCloudflareProvider({
+      CRATE_GRAPHS: fakeBucket(objects),
+      PARSE_REQUESTS: fakeQueue(sent),
+      RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+    } as Env & { CRATE_GRAPHS: R2Bucket });
 
-		const result = await provider.triggerParse('proc-macro', 'nightly');
-		if (result.isErr()) throw result.error;
-		expect(sent).toHaveLength(1);
-		expect(sent[0]).toMatchObject({
-			schemaVersion: 1,
-			ecosystem: 'rust',
-			kind: 'sysroot',
-			name: 'proc-macro',
-			version: 'nightly',
-			force: false,
-			source: 'ui',
-		});
-	});
+    const result = await provider.triggerParse("proc-macro", "nightly");
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      schemaVersion: 1,
+      ecosystem: "rust",
+      kind: "sysroot",
+      name: "proc-macro",
+      version: "nightly",
+      force: false,
+      source: "ui",
+    });
+  });
 });

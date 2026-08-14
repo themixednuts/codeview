@@ -13,43 +13,42 @@ allowBuilds:
   esbuild: true
   workerd: true
   sharp: true
-  '@tailwindcss/oxide': true
+  "@tailwindcss/oxide": true
   msgpackr-extract: true
 
 patchedDependencies:
-  '@jesterkit/exe-sveltekit@0.1.7': patches/@jesterkit%2Fexe-sveltekit@0.1.7.patch
+  "@jesterkit/exe-sveltekit@0.1.7": patches/@jesterkit%2Fexe-sveltekit@0.1.7.patch
 
 overrides:
   clsx: 2.1.1
-  fast-xml-parser: '>=5.3.4'
-  dompurify: '>=3.2.4'
-  nanoid: '>=5.0.9'
-  mermaid: '>=10.9.4'
-  cookie: '>=0.7.0'
+  fast-xml-parser: ">=5.3.4"
+  dompurify: ">=3.2.4"
+  nanoid: ">=5.0.9"
+  mermaid: ">=10.9.4"
+  cookie: ">=0.7.0"
 
 minimumReleaseAgeExclude:
-  - '@sveltejs/kit'
+  - "@sveltejs/kit"
   - effect
-  - '@effect/sql-sqlite-do'
-  - '@effect/sql-d1'
-  - '@effect/vitest'
-  - '@effect/platform-node'
-  - '@effect/platform-node-shared'
+  - "@effect/sql-sqlite-do"
+  - "@effect/sql-d1"
+  - "@effect/vitest"
+  - "@effect/platform-node"
+  - "@effect/platform-node-shared"
   - drizzle-orm
   - drizzle-kit
   - alchemy
-  - '@alchemy.run/cloudflare-frameworks'
-  - '@alchemy.run/better-auth'
+  - "@alchemy.run/cloudflare-frameworks"
+  - "@alchemy.run/better-auth"
   - better-auth
-  - '@better-auth/passkey'
-  - '@cloudflare/workers-types'
+  - "@better-auth/passkey"
+  - "@cloudflare/workers-types"
   - hono
 
 peerDependencyRules:
   allowedVersions:
-    typescript: '7.0.2'
-    better-auth: '1.7.0-rc.5'
-    '@cloudflare/workers-types': '>=5'
-    vite: '0.2.9'
-    drizzle-orm: '1.0.0-rc.5-ab785fc'
-    '@sveltejs/kit': '3.0.0-next.23'
+    better-auth: "1.7.0-rc.5"
+    "@cloudflare/workers-types": ">=5"
+    vite: "0.2.9"
+    drizzle-orm: "1.0.0-rc.5-ab785fc"
+    "@sveltejs/kit": "3.0.0-next.23"

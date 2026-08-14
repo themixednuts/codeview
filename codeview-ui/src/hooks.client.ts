@@ -1,14 +1,27 @@
-import type { HandleClientError } from '@sveltejs/kit/hooks';
-import { getLogger, setupLogging } from '#lib/log';
+import type { HandleClientError } from "@sveltejs/kit/hooks";
+import { getLogger, setupLogging } from "#lib/log";
 
-const log = getLogger('client-hooks');
+const log = getLogger("client-hooks");
 
 export async function init() {
-	await setupLogging();
+  await setupLogging();
 }
 
-export const handleError: HandleClientError = ({ error, event, status, message }) => {
-	log.error`navigation error status=${String(status)} url=${event.url.toString()} message=${message} error=${String(error)}`;
-
-	return { message };
+export const handleError: HandleClientError = (input) => {
+  const { event, kind, error } = input;
+  switch (kind) {
+    case "framework":
+      log.error`navigation error status=${String(error.status)} url=${event.url.toString()} message=${error.message} error=${String(error)}`;
+      return { message: error.message };
+    case "app":
+      log.error`navigation error url=${event.url.toString()} error=${String(error)}`;
+      return error;
+    case "unknown":
+      log.error`navigation error url=${event.url.toString()} error=${String(error)}`;
+      return { message: "Internal Error" };
+    default: {
+      const _exhaustive: never = kind;
+      return _exhaustive;
+    }
+  }
 };

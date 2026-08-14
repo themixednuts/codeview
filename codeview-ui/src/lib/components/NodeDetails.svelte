@@ -1029,7 +1029,7 @@
 								></span>
 								<h3
 									id={`items-${group.kind}`}
-									class="text-xs font-semibold tracking-wide text-(--muted) uppercase"
+									class="text-xs font-medium text-(--muted)"
 								>
 									{group.label}
 								</h3>
@@ -1300,7 +1300,7 @@
 					{#if blanketImpls.length > 0}
 						<details class="group">
 							<summary
-								class="cursor-pointer text-xs font-semibold tracking-wider text-(--muted) uppercase transition-colors select-none hover:text-(--ink)"
+								class="cursor-pointer text-xs font-medium text-(--muted) transition-colors select-none hover:text-(--ink)"
 							>
 								Auto/blanket implementations ({blanketImpls.length})
 							</summary>
@@ -1388,8 +1388,8 @@
 		font-family: var(--font-code);
 		font-size: var(--text-xs);
 		font-weight: 600;
-		letter-spacing: 0.16em;
-		text-transform: uppercase;
+		letter-spacing: 0;
+		text-transform: none;
 	}
 	.kind-label-bar {
 		display: inline-block;

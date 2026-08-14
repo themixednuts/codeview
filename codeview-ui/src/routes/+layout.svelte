@@ -1,6 +1,6 @@
 <script lang="ts">
 	import '../app.css';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
@@ -703,9 +703,7 @@
 						role="tooltip"
 						aria-label="Background parses"
 					>
-						<div class="px-2 pb-1 text-2xs tracking-wider text-(--muted) uppercase">
-							Active parses
-						</div>
+						<div class="px-2 pb-1 text-xs text-(--muted)">Active parses</div>
 						{#if processingCrates.length > 0}
 							<div class="space-y-1">
 								{#each processingCrates as crate (`${processingCrateName(crate)}@${crate.version}`)}

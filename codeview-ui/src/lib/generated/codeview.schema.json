@@ -27,17 +27,11 @@
     },
     "ref": {
       "description": "Git ref (branch, tag, or commit SHA) for source fetching on Cloudflare",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
     "repo": {
       "description": "GitHub repository (e.g. \"owner/repo\") for source fetching on Cloudflare",
-      "type": [
-        "string",
-        "null"
-      ]
+      "type": ["string", "null"]
     },
     "version": {
       "type": "integer",
@@ -46,11 +40,7 @@
       "minimum": 0
     }
   },
-  "required": [
-    "crates",
-    "external_crates",
-    "cross_crate_edges"
-  ],
+  "required": ["crates", "external_crates", "cross_crate_edges"],
   "$defs": {
     "ArgumentInfo": {
       "type": "object",
@@ -62,10 +52,7 @@
           "$ref": "#/$defs/TypeRef"
         }
       },
-      "required": [
-        "name",
-        "type"
-      ]
+      "required": ["name", "type"]
     },
     "AssocItemConstraint": {
       "description": "`IntoIterator<Item = u32, IntoIter: Clone>` — the constraints inside `<…>`.",
@@ -88,10 +75,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "name",
-        "binding"
-      ]
+      "required": ["name", "binding"]
     },
     "AssocItemConstraintKind": {
       "oneOf": [
@@ -107,10 +91,7 @@
               "$ref": "#/$defs/Term"
             }
           },
-          "required": [
-            "kind",
-            "value"
-          ]
+          "required": ["kind", "value"]
         },
         {
           "description": "`Item: Clone` — bounds on the associated item.",
@@ -127,20 +108,13 @@
               "const": "Constraint"
             }
           },
-          "required": [
-            "kind",
-            "bounds"
-          ]
+          "required": ["kind", "bounds"]
         }
       ]
     },
     "Confidence": {
       "type": "string",
-      "enum": [
-        "Static",
-        "Runtime",
-        "Inferred"
-      ]
+      "enum": ["Static", "Runtime", "Inferred"]
     },
     "CrateGraph": {
       "description": "A single crate's graph data.",
@@ -180,28 +154,16 @@
           "type": "string"
         }
       },
-      "required": [
-        "id",
-        "name",
-        "version",
-        "nodes",
-        "edges"
-      ]
+      "required": ["id", "name", "version", "nodes", "edges"]
     },
     "Deprecation": {
       "type": "object",
       "properties": {
         "note": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "since": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       }
     },
@@ -231,12 +193,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "from",
-        "to",
-        "kind",
-        "confidence"
-      ]
+      "required": ["from", "to", "kind", "confidence"]
     },
     "EdgeKind": {
       "type": "string",
@@ -272,17 +229,10 @@
         },
         "version": {
           "description": "Pinned version from cargo metadata (None for std/core/alloc)",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         }
       },
-      "required": [
-        "id",
-        "name",
-        "nodes"
-      ]
+      "required": ["id", "name", "nodes"]
     },
     "FieldInfo": {
       "type": "object",
@@ -297,21 +247,14 @@
           "$ref": "#/$defs/Visibility"
         }
       },
-      "required": [
-        "name",
-        "type",
-        "visibility"
-      ]
+      "required": ["name", "type", "visibility"]
     },
     "FunctionPointerSig": {
       "description": "Function pointer signature (the `fn(...) -> ...` part of a fn-pointer type).",
       "type": "object",
       "properties": {
         "abi": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "hrtb_params": {
           "type": "array",
@@ -348,22 +291,13 @@
           ]
         }
       },
-      "required": [
-        "inputs",
-        "is_unsafe",
-        "is_const",
-        "is_async",
-        "is_c_variadic"
-      ]
+      "required": ["inputs", "is_unsafe", "is_const", "is_async", "is_c_variadic"]
     },
     "FunctionSignature": {
       "type": "object",
       "properties": {
         "abi": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "generics": {
           "description": "Generic params + where-clause specific to this function. Trait-method\nsignatures carry their own here (separate from the impl block's\ngenerics).",
@@ -398,12 +332,7 @@
           ]
         }
       },
-      "required": [
-        "inputs",
-        "is_async",
-        "is_unsafe",
-        "is_const"
-      ]
+      "required": ["inputs", "is_async", "is_unsafe", "is_const"]
     },
     "GenericArg": {
       "oneOf": [
@@ -418,10 +347,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "name"
-          ]
+          "required": ["kind", "name"]
         },
         {
           "type": "object",
@@ -434,10 +360,7 @@
               "$ref": "#/$defs/TypeRef"
             }
           },
-          "required": [
-            "kind",
-            "value"
-          ]
+          "required": ["kind", "value"]
         },
         {
           "description": "Const generic value, e.g. the `42` in `IntoIter<u32, 42>`.",
@@ -454,11 +377,7 @@
               "const": "Const"
             }
           },
-          "required": [
-            "kind",
-            "expr",
-            "is_literal"
-          ]
+          "required": ["kind", "expr", "is_literal"]
         },
         {
           "description": "`_` placeholder in generic arg position: `Vec::<_>`.",
@@ -469,9 +388,7 @@
               "const": "Infer"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         }
       ]
     },
@@ -499,10 +416,7 @@
               "const": "AngleBracketed"
             }
           },
-          "required": [
-            "kind",
-            "args"
-          ]
+          "required": ["kind", "args"]
         },
         {
           "description": "`Fn(A, B) -> C`",
@@ -529,10 +443,7 @@
               ]
             }
           },
-          "required": [
-            "kind",
-            "inputs"
-          ]
+          "required": ["kind", "inputs"]
         },
         {
           "description": "`T::method(..)` — rustdoc 1.83+ feature for return-type notation.",
@@ -543,9 +454,7 @@
               "const": "ReturnTypeNotation"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         }
       ]
     },
@@ -571,11 +480,7 @@
               "$ref": "#/$defs/TypeRef"
             }
           },
-          "required": [
-            "kind",
-            "trait",
-            "modifier"
-          ]
+          "required": ["kind", "trait", "modifier"]
         },
         {
           "description": "`: 'a` outlives bound.",
@@ -589,10 +494,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "lifetime"
-          ]
+          "required": ["kind", "lifetime"]
         },
         {
           "description": "`use<'a, T>` precise-capturing bound.",
@@ -609,10 +511,7 @@
               "const": "Use"
             }
           },
-          "required": [
-            "kind",
-            "captures"
-          ]
+          "required": ["kind", "captures"]
         }
       ]
     },
@@ -627,10 +526,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "name",
-        "kind"
-      ]
+      "required": ["name", "kind"]
     },
     "GenericParamKind": {
       "oneOf": [
@@ -648,9 +544,7 @@
               }
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         },
         {
           "type": "object",
@@ -680,18 +574,13 @@
               "type": "boolean"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         },
         {
           "type": "object",
           "properties": {
             "default": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": ["string", "null"]
             },
             "kind": {
               "type": "string",
@@ -701,10 +590,7 @@
               "$ref": "#/$defs/TypeRef"
             }
           },
-          "required": [
-            "kind",
-            "type"
-          ]
+          "required": ["kind", "type"]
         }
       ]
     },
@@ -728,20 +614,11 @@
     },
     "ImplCategory": {
       "type": "string",
-      "enum": [
-        "Inherent",
-        "Trait",
-        "Blanket",
-        "Negative",
-        "Synthetic"
-      ]
+      "enum": ["Inherent", "Trait", "Blanket", "Negative", "Synthetic"]
     },
     "ImplType": {
       "type": "string",
-      "enum": [
-        "Trait",
-        "Inherent"
-      ]
+      "enum": ["Trait", "Inherent"]
     },
     "NamedTypeRef": {
       "description": "`name: TypeRef` pair — used for function inputs (both fn signatures and\nfn-pointer types). For fn-pointer types the name may be empty.",
@@ -754,10 +631,7 @@
           "$ref": "#/$defs/TypeRef"
         }
       },
-      "required": [
-        "name",
-        "type"
-      ]
+      "required": ["name", "type"]
     },
     "Node": {
       "type": "object",
@@ -786,16 +660,10 @@
           ]
         },
         "const_value": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "default_trait_methods": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "type": "string"
           }
@@ -821,10 +689,7 @@
           ]
         },
         "discriminant": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "doc_links": {
           "description": "Resolved intra-doc links: maps link text (e.g., \"Vec\") to node ID (e.g., \"std::vec::Vec\")",
@@ -834,28 +699,16 @@
           }
         },
         "docs": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "extern_crate_name": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "extern_crate_rename": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "fields": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "$ref": "#/$defs/FieldInfo"
           }
@@ -885,10 +738,7 @@
         },
         "impl_trait": {
           "description": "For impl blocks: the ID of the trait being implemented (if trait impl)",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "impl_type": {
           "anyOf": [
@@ -901,16 +751,10 @@
           ]
         },
         "import_name": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "import_source": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "is_auto": {
           "type": "boolean"
@@ -919,10 +763,7 @@
           "type": "boolean"
         },
         "is_dyn_compatible": {
-          "type": [
-            "boolean",
-            "null"
-          ]
+          "type": ["boolean", "null"]
         },
         "is_external": {
           "type": "boolean"
@@ -943,28 +784,19 @@
           "$ref": "#/$defs/NodeKind"
         },
         "line_count": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint32",
           "minimum": 0
         },
         "macro_source": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "name": {
           "type": "string"
         },
         "parent_impl": {
           "description": "For methods: the ID of the parent impl block",
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "proc_macro_helpers": {
           "type": "array",
@@ -973,25 +805,16 @@
           }
         },
         "proc_macro_kind": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"]
         },
         "provided_trait_methods": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "type": "string"
           }
         },
         "required_trait_methods": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "type": "string"
           }
@@ -1048,10 +871,7 @@
           ]
         },
         "variants": {
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": ["array", "null"],
           "items": {
             "$ref": "#/$defs/VariantInfo"
           }
@@ -1060,13 +880,7 @@
           "$ref": "#/$defs/Visibility"
         }
       },
-      "required": [
-        "id",
-        "name",
-        "kind",
-        "visibility",
-        "attrs"
-      ]
+      "required": ["id", "name", "kind", "visibility", "attrs"]
     },
     "NodeKind": {
       "type": "string",
@@ -1108,9 +922,7 @@
           "$ref": "#/$defs/TypeRef"
         }
       },
-      "required": [
-        "trait"
-      ]
+      "required": ["trait"]
     },
     "PreciseCapture": {
       "oneOf": [
@@ -1125,10 +937,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "name"
-          ]
+          "required": ["kind", "name"]
         },
         {
           "type": "object",
@@ -1141,10 +950,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "name"
-          ]
+          "required": ["kind", "name"]
         }
       ]
     },
@@ -1155,9 +961,7 @@
           "type": "string"
         }
       },
-      "required": [
-        "feature"
-      ]
+      "required": ["feature"]
     },
     "Span": {
       "type": "object",
@@ -1168,18 +972,12 @@
           "minimum": 0
         },
         "end_column": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint32",
           "minimum": 0
         },
         "end_line": {
-          "type": [
-            "integer",
-            "null"
-          ],
+          "type": ["integer", "null"],
           "format": "uint32",
           "minimum": 0
         },
@@ -1192,11 +990,7 @@
           "minimum": 0
         }
       },
-      "required": [
-        "file",
-        "line",
-        "column"
-      ]
+      "required": ["file", "line", "column"]
     },
     "StabilityInfo": {
       "type": "object",
@@ -1214,15 +1008,10 @@
               "const": "stable"
             },
             "since": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": ["string", "null"]
             }
           },
-          "required": [
-            "level"
-          ]
+          "required": ["level"]
         },
         {
           "type": "object",
@@ -1232,14 +1021,10 @@
               "const": "unstable"
             }
           },
-          "required": [
-            "level"
-          ]
+          "required": ["level"]
         }
       ],
-      "required": [
-        "feature"
-      ]
+      "required": ["feature"]
     },
     "Term": {
       "description": "Either a type or a constant, as used in `=` constraints (`Item = T`).",
@@ -1255,10 +1040,7 @@
               "$ref": "#/$defs/TypeRef"
             }
           },
-          "required": [
-            "kind",
-            "value"
-          ]
+          "required": ["kind", "value"]
         },
         {
           "type": "object",
@@ -1274,11 +1056,7 @@
               "const": "Const"
             }
           },
-          "required": [
-            "kind",
-            "expr",
-            "is_literal"
-          ]
+          "required": ["kind", "expr", "is_literal"]
         }
       ]
     },
@@ -1286,9 +1064,7 @@
       "oneOf": [
         {
           "type": "string",
-          "enum": [
-            "none"
-          ]
+          "enum": ["none"]
         },
         {
           "description": "`?Sized` — relaxes the implicit Sized bound.",
@@ -1331,11 +1107,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "id",
-            "path"
-          ]
+          "required": ["kind", "id", "path"]
         },
         {
           "description": "`dyn Trait + 'a + Send`",
@@ -1346,10 +1118,7 @@
               "const": "DynTrait"
             },
             "lifetime": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": ["string", "null"]
             },
             "traits": {
               "type": "array",
@@ -1358,10 +1127,7 @@
               }
             }
           },
-          "required": [
-            "kind",
-            "traits"
-          ]
+          "required": ["kind", "traits"]
         },
         {
           "description": "Generic type parameter: the `T` in `fn f<T>(x: T)`.",
@@ -1375,10 +1141,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "name"
-          ]
+          "required": ["kind", "name"]
         },
         {
           "description": "Built-in: `i32`, `u8`, `bool`, `char`, `str`, `()`.",
@@ -1392,10 +1155,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "name"
-          ]
+          "required": ["kind", "name"]
         },
         {
           "description": "`&'a mut T`, `&T`, `&'static str`.",
@@ -1409,20 +1169,13 @@
               "const": "BorrowedRef"
             },
             "lifetime": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": ["string", "null"]
             },
             "mutable": {
               "type": "boolean"
             }
           },
-          "required": [
-            "kind",
-            "mutable",
-            "inner"
-          ]
+          "required": ["kind", "mutable", "inner"]
         },
         {
           "description": "`(A, B, C)`. Empty tuple `()` is `Primitive { name: \"()\" }` per rustdoc.",
@@ -1439,10 +1192,7 @@
               "const": "Tuple"
             }
           },
-          "required": [
-            "kind",
-            "elements"
-          ]
+          "required": ["kind", "elements"]
         },
         {
           "description": "`[T]`",
@@ -1456,10 +1206,7 @@
               "const": "Slice"
             }
           },
-          "required": [
-            "kind",
-            "element"
-          ]
+          "required": ["kind", "element"]
         },
         {
           "description": "`[T; N]`. `len` is the const expression as written; may be `\"N + 1\"`\nor a parameter name — not guaranteed to be a literal.",
@@ -1476,11 +1223,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "element",
-            "len"
-          ]
+          "required": ["kind", "element", "len"]
         },
         {
           "description": "`impl Iterator<Item=T>`, `impl Trait + 'a`.",
@@ -1497,10 +1240,7 @@
               "const": "ImplTrait"
             }
           },
-          "required": [
-            "kind",
-            "bounds"
-          ]
+          "required": ["kind", "bounds"]
         },
         {
           "description": "`*const T` / `*mut T`.",
@@ -1517,11 +1257,7 @@
               "type": "boolean"
             }
           },
-          "required": [
-            "kind",
-            "mutable",
-            "inner"
-          ]
+          "required": ["kind", "mutable", "inner"]
         },
         {
           "description": "`<T as Trait>::Item` or `T::Item` (inherent assoc when `trait_` is None).",
@@ -1558,11 +1294,7 @@
               ]
             }
           },
-          "required": [
-            "kind",
-            "name",
-            "self_type"
-          ]
+          "required": ["kind", "name", "self_type"]
         },
         {
           "description": "`fn(A, B) -> C`, `unsafe extern \"C\" fn() -> *const u8`.",
@@ -1576,10 +1308,7 @@
               "$ref": "#/$defs/FunctionPointerSig"
             }
           },
-          "required": [
-            "kind",
-            "sig"
-          ]
+          "required": ["kind", "sig"]
         },
         {
           "description": "`_` — type inference placeholder. Rare in published signatures.",
@@ -1590,9 +1319,7 @@
               "const": "Infer"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         },
         {
           "description": "Pattern type, e.g. `u32 is 1..` (unstable). `pat` is the stringified\npattern since rustdoc-types hides the inner pattern structure today.",
@@ -1609,11 +1336,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "base",
-            "pat"
-          ]
+          "required": ["kind", "base", "pat"]
         }
       ]
     },
@@ -1630,18 +1353,11 @@
           "type": "string"
         }
       },
-      "required": [
-        "name",
-        "fields"
-      ]
+      "required": ["name", "fields"]
     },
     "VariantKind": {
       "type": "string",
-      "enum": [
-        "unit",
-        "tuple",
-        "struct"
-      ]
+      "enum": ["unit", "tuple", "struct"]
     },
     "Visibility": {
       "description": "Visibility level. Carries the restriction path when the visibility is\n`pub(crate)` / `pub(super)` / `pub(in path::to::module)`.\n\nTagged enum (serde `tag = \"kind\"`) so JSON and TypeScript consumers get\na uniformly-shaped object regardless of variant. Adds an optional\n`path` only on the `Restricted` variant. Schema bump (v2 → v3): older\nflat-string artifacts won't deserialise as-is; the freshness registry\nre-parses everything when SCHEMA_VERSION changes.",
@@ -1654,9 +1370,7 @@
               "const": "Public"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         },
         {
           "type": "object",
@@ -1666,9 +1380,7 @@
               "const": "Crate"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         },
         {
           "type": "object",
@@ -1682,10 +1394,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "kind",
-            "path"
-          ]
+          "required": ["kind", "path"]
         },
         {
           "type": "object",
@@ -1695,9 +1404,7 @@
               "const": "Inherited"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         },
         {
           "type": "object",
@@ -1707,9 +1414,7 @@
               "const": "Unknown"
             }
           },
-          "required": [
-            "kind"
-          ]
+          "required": ["kind"]
         }
       ]
     },
@@ -1739,11 +1444,7 @@
               "$ref": "#/$defs/TypeRef"
             }
           },
-          "required": [
-            "kind",
-            "type",
-            "bounds"
-          ]
+          "required": ["kind", "type", "bounds"]
         },
         {
           "description": "`'a: 'b + 'c`",
@@ -1763,11 +1464,7 @@
               }
             }
           },
-          "required": [
-            "kind",
-            "lifetime",
-            "outlives"
-          ]
+          "required": ["kind", "lifetime", "outlives"]
         },
         {
           "description": "`T::Item = u32`",
@@ -1784,11 +1481,7 @@
               "$ref": "#/$defs/Term"
             }
           },
-          "required": [
-            "kind",
-            "lhs",
-            "rhs"
-          ]
+          "required": ["kind", "lhs", "rhs"]
         }
       ]
     }

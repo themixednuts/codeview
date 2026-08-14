@@ -1,13 +1,13 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
-const WORKER_PATH = join(process.cwd(), '.svelte-kit', 'cloudflare', '_worker.js');
-const HARDENING_MARKER = 'class CachedImmutableAsset extends WorkerEntrypoint';
+const WORKER_PATH = join(process.cwd(), ".svelte-kit", "cloudflare", "_worker.js");
+const HARDENING_MARKER = "class CachedImmutableAsset extends WorkerEntrypoint";
 
 const IMPORT_BEFORE = 'import { env } from "cloudflare:workers";';
 const IMPORT_AFTER = 'import { WorkerEntrypoint, env } from "cloudflare:workers";';
 
-const WORKER_DEFAULT_MARKER = 'var worker_default = {';
+const WORKER_DEFAULT_MARKER = "var worker_default = {";
 const HELPERS = `function withCacheControl(response, value) {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", value);
@@ -54,14 +54,14 @@ const ASSET_FETCH_AFTER = `if (pathname.startsWith(immutable)) {
       }
     }`;
 
-const CACHE_WRITE_BEFORE = 'return pragma && res.status < 400 ? c(req, res, ctx) : res;';
+const CACHE_WRITE_BEFORE = "return pragma && res.status < 400 ? c(req, res, ctx) : res;";
 const CACHE_WRITE_AFTER =
-	'return !credentialedRequest && pragma && res.status < 400 && !res.headers.has("Set-Cookie") ? c(req, res, ctx) : res;';
+  'return !credentialedRequest && pragma && res.status < 400 && !res.headers.has("Set-Cookie") ? c(req, res, ctx) : res;';
 
-let source = await readFile(WORKER_PATH, 'utf8');
+let source = await readFile(WORKER_PATH, "utf8");
 if (source.includes(HARDENING_MARKER)) {
-	console.log('Cloudflare worker hardening already applied');
-	process.exit(0);
+  console.log("Cloudflare worker hardening already applied");
+  process.exit(0);
 }
 
 source = replaceOnce(source, IMPORT_BEFORE, IMPORT_AFTER);
@@ -71,11 +71,11 @@ source = replaceOnce(source, ASSET_FETCH_BEFORE, ASSET_FETCH_AFTER);
 source = replaceOnce(source, CACHE_WRITE_BEFORE, CACHE_WRITE_AFTER);
 
 await writeFile(WORKER_PATH, source);
-console.log('Applied Cloudflare worker cache hardening');
+console.log("Applied Cloudflare worker cache hardening");
 
 function replaceOnce(source: string, before: string, after: string): string {
-	if (!source.includes(before)) {
-		throw new Error(`Cloudflare worker hardening failed: missing marker ${JSON.stringify(before)}`);
-	}
-	return source.replace(before, after);
+  if (!source.includes(before)) {
+    throw new Error(`Cloudflare worker hardening failed: missing marker ${JSON.stringify(before)}`);
+  }
+  return source.replace(before, after);
 }

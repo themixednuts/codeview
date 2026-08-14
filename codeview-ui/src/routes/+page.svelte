@@ -46,7 +46,10 @@
 	]);
 
 	function crateHref(crate: CrateListItem) {
-		return resolve(`/${crate.id ?? crate.name}/${crate.version || 'latest'}`);
+		return resolve('/[crate]/[version]', {
+			crate: crate.id ?? crate.name,
+			version: crate.version || 'latest',
+		});
 	}
 
 	function crateKey(crate: CrateListItem) {

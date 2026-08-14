@@ -7,3 +7,5 @@ App imports use `#lib`. Kit config lives in `codeview-ui/vite.config.ts`. The ho
 Local `codeview ui` still builds a sidecar with `@jesterkit/exe-sveltekit`. Alchemy injects the Cloudflare adapter for hosted builds.
 
 Follow the effect skill. Follow create-webapp conventions when adding packages or rewriting config.
+
+Anti-slop oxlint rules stay at error. Existing TypeScript still has hundreds of findings (object parameters, type assertions, known-value widening). New code should pass. Do not turn the rules off.

@@ -109,7 +109,7 @@
 		class="flex flex-wrap items-center justify-between gap-3 border-b border-(--panel-border) bg-(--panel) px-4 py-2"
 	>
 		<div>
-			<p class="text-sm font-medium text-(--ink)">Module Grid</p>
+			<p class="text-sm font-medium text-(--ink)">Module grid</p>
 			<p class="text-xs text-(--muted)">
 				{data.moduleNodes.length} modules · {data.totalNodeCount.toLocaleString()} items
 			</p>
@@ -119,7 +119,7 @@
 	<div class="space-y-4 p-4">
 		{#each groupedByDepth as [depth, modules] (depth)}
 			<div>
-				<h3 class="mb-2 text-xs font-semibold tracking-wide text-(--muted) uppercase">
+				<h3 class="mb-2 text-xs font-medium text-(--muted)">
 					{depth === 0 ? 'Root' : `Depth ${depth}`}
 					<span class="font-normal">({modules.length})</span>
 				</h3>

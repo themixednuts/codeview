@@ -15,54 +15,54 @@
  * freshness tracking, etc.) lives in `codeview-cli/src/cron/`.
  */
 
-import { spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
-import type { Edge, Node } from '#lib/graph';
-import type { CrateTree } from '#lib/schema';
-import { getLogger } from '#lib/log';
-import { normalizeCrateName } from '#lib/crate-names';
-import { buildCrateTree } from '#lib/node-summary';
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import type { Edge, Node } from "#lib/graph";
+import type { CrateTree } from "#lib/schema";
+import { getLogger } from "#lib/log";
+import { normalizeCrateName } from "#lib/crate-names";
+import { buildCrateTree } from "#lib/node-summary";
 
-const log = getLogger('parse-rustdoc');
+const log = getLogger("parse-rustdoc");
 
 export interface ProgressiveParseResult {
-	nodeCount: number;
-	edgeCount: number;
-	tree: CrateTree;
-	externalCrates: Array<{ id: string; name: string }>;
-	crateVersion: string | null;
+  nodeCount: number;
+  edgeCount: number;
+  tree: CrateTree;
+  externalCrates: Array<{ id: string; name: string }>;
+  crateVersion: string | null;
 }
 
 export interface ProgressiveStorageCallbacks {
-	storeNodes: (nodes: Node[]) => void;
-	storeEdges: (edges: Edge[]) => void;
+  storeNodes: (nodes: Node[]) => void;
+  storeEdges: (edges: Edge[]) => void;
 }
 
 export interface ParseProgress {
-	type: 'delta' | 'complete';
-	nodeCount: number;
-	edgeCount: number;
-	totalItems?: number;
+  type: "delta" | "complete";
+  nodeCount: number;
+  edgeCount: number;
+  totalItems?: number;
 }
 
 export interface ParseRustdocOptions {
-	manifestPath?: string;
-	rootFile?: string;
-	callMode?: 'strict' | 'ambiguous';
-	rustdocName?: string;
-	cargoWorkingDir?: string;
-	onProgress?: (progress: ParseProgress) => void;
-	onFinalizingStart?: () => void;
+  manifestPath?: string;
+  rootFile?: string;
+  callMode?: "strict" | "ambiguous";
+  rustdocName?: string;
+  cargoWorkingDir?: string;
+  onProgress?: (progress: ParseProgress) => void;
+  onFinalizingStart?: () => void;
 }
 
 interface CrateGraphJson {
-	id: string;
-	name: string;
-	version: string;
-	nodes: Node[];
-	edges: Edge[];
+  id: string;
+  name: string;
+  version: string;
+  nodes: Node[];
+  edges: Edge[];
 }
 
 /**
@@ -72,134 +72,136 @@ interface CrateGraphJson {
  * binary is fast enough that even windows-sys lands in well under 10s.
  */
 export async function parseWithRustBinary(
-	input: ReadableStream<Uint8Array> | Uint8Array | string,
-	crateName: string,
-	storageCallbacks: ProgressiveStorageCallbacks,
-	options: ParseRustdocOptions = {},
+  input: ReadableStream<Uint8Array> | Uint8Array | string,
+  crateName: string,
+  storageCallbacks: ProgressiveStorageCallbacks,
+  options: ParseRustdocOptions = {},
 ): Promise<ProgressiveParseResult> {
-	const normalizedName = normalizeCrateName(crateName);
-	const tmpDir = mkdtempSync(join(tmpdir(), `codeview-parse-${normalizedName}-`));
-	const jsonPath = join(tmpDir, 'rustdoc.json');
-	const graphPath = join(tmpDir, 'graph.json');
+  const normalizedName = normalizeCrateName(crateName);
+  const tmpDir = mkdtempSync(join(tmpdir(), `codeview-parse-${normalizedName}-`));
+  const jsonPath = join(tmpDir, "rustdoc.json");
+  const graphPath = join(tmpDir, "graph.json");
 
-	try {
-		if (typeof input === 'string') {
-			writeFileSync(jsonPath, input, 'utf-8');
-		} else if (input instanceof Uint8Array) {
-			writeFileSync(jsonPath, input);
-		} else {
-			const chunks: Uint8Array[] = [];
-			const reader = input.getReader();
-			let total = 0;
-			while (true) {
-				const { value, done } = await reader.read();
-				if (done) break;
-				if (value) {
-					chunks.push(value);
-					total += value.length;
-				}
-			}
-			const combined = new Uint8Array(total);
-			let offset = 0;
-			for (const chunk of chunks) {
-				combined.set(chunk, offset);
-				offset += chunk.length;
-			}
-			writeFileSync(jsonPath, combined);
-		}
+  try {
+    if (typeof input === "string") {
+      writeFileSync(jsonPath, input, "utf-8");
+    } else if (input instanceof Uint8Array) {
+      writeFileSync(jsonPath, input);
+    } else {
+      const chunks: Uint8Array[] = [];
+      const reader = input.getReader();
+      let total = 0;
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          chunks.push(value);
+          total += value.length;
+        }
+      }
+      const combined = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      writeFileSync(jsonPath, combined);
+    }
 
-		options.onProgress?.({ type: 'delta', nodeCount: 0, edgeCount: 0 });
+    options.onProgress?.({ type: "delta", nodeCount: 0, edgeCount: 0 });
 
-		const cargoWorkingDir = options.cargoWorkingDir ?? findCodeviewRepoRoot();
-		mkdirSync(dirname(graphPath), { recursive: true });
+    const cargoWorkingDir = options.cargoWorkingDir ?? findCodeviewRepoRoot();
+    mkdirSync(dirname(graphPath), { recursive: true });
 
-		const args = [
-			'run',
-			'--manifest-path',
-			join(cargoWorkingDir, 'Cargo.toml'),
-			'-p',
-			'codeview-cli',
-			'--',
-			'parse-json',
-			'--json',
-			jsonPath,
-			'--crate-name',
-			normalizedName,
-			'--version',
-			'0.0.0',
-			'--out',
-			graphPath,
-			'--call-mode',
-			options.callMode ?? 'strict',
-		];
-		if (options.manifestPath && options.rootFile) {
-			args.push('--manifest-path', options.manifestPath, '--root-file', options.rootFile);
-		}
-		if (options.rustdocName) {
-			args.push('--rustdoc-name', options.rustdocName);
-		}
+    const args = [
+      "run",
+      "--manifest-path",
+      join(cargoWorkingDir, "Cargo.toml"),
+      "-p",
+      "codeview-cli",
+      "--",
+      "parse-json",
+      "--json",
+      jsonPath,
+      "--crate-name",
+      normalizedName,
+      "--version",
+      "0.0.0",
+      "--out",
+      graphPath,
+      "--call-mode",
+      options.callMode ?? "strict",
+    ];
+    if (options.manifestPath && options.rootFile) {
+      args.push("--manifest-path", options.manifestPath, "--root-file", options.rootFile);
+    }
+    if (options.rustdocName) {
+      args.push("--rustdoc-name", options.rustdocName);
+    }
 
-		log.info`Invoking codeview-cli parse-json for ${crateName}`;
-		options.onFinalizingStart?.();
+    log.info`Invoking codeview-cli parse-json for ${crateName}`;
+    options.onFinalizingStart?.();
 
-		// Keep the dev SSR process responsive while Rust parses large crates.
-		await runCargo(args);
+    // Keep the dev SSR process responsive while Rust parses large crates.
+    await runCargo(args);
 
-		const graph = JSON.parse(readFileSync(graphPath, 'utf-8')) as CrateGraphJson;
-		storageCallbacks.storeNodes(graph.nodes);
-		storageCallbacks.storeEdges(graph.edges);
+    const graph = JSON.parse(readFileSync(graphPath, "utf-8")) as CrateGraphJson;
+    storageCallbacks.storeNodes(graph.nodes);
+    storageCallbacks.storeEdges(graph.edges);
 
-		options.onProgress?.({
-			type: 'complete',
-			nodeCount: graph.nodes.length,
-			edgeCount: graph.edges.length,
-			totalItems: graph.nodes.length,
-		});
+    options.onProgress?.({
+      type: "complete",
+      nodeCount: graph.nodes.length,
+      edgeCount: graph.edges.length,
+      totalItems: graph.nodes.length,
+    });
 
-		return {
-			nodeCount: graph.nodes.length,
-			edgeCount: graph.edges.length,
-			tree: buildCrateTree(graph),
-			externalCrates: [],
-			crateVersion: graph.version || null,
-		};
-	} finally {
-		rmSync(tmpDir, { recursive: true, force: true });
-	}
+    return {
+      nodeCount: graph.nodes.length,
+      edgeCount: graph.edges.length,
+      tree: buildCrateTree(graph),
+      externalCrates: [],
+      crateVersion: graph.version || null,
+    };
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 function runCargo(args: string[]): Promise<void> {
-	return new Promise((resolve, reject) => {
-		const child = spawn('cargo', args, {
-			env: { ...process.env, CODEVIEW_SKIP_SIDECAR: '1' },
-			stdio: 'inherit',
-		});
-		child.once('error', reject);
-		child.once('exit', (code, signal) => {
-			if (code === 0) {
-				resolve();
-				return;
-			}
-			reject(new Error(signal ? `cargo exited with signal ${signal}` : `cargo exited with ${code}`));
-		});
-	});
+  return new Promise((resolve, reject) => {
+    const child = spawn("cargo", args, {
+      env: { ...process.env, CODEVIEW_SKIP_SIDECAR: "1" },
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(signal ? `cargo exited with signal ${signal}` : `cargo exited with ${code}`),
+      );
+    });
+  });
 }
 
 let cachedRepoRoot: string | null = null;
 function findCodeviewRepoRoot(): string {
-	if (cachedRepoRoot) return cachedRepoRoot;
-	let dir = resolve(process.cwd());
-	while (dir !== resolve(dir, '..')) {
-		try {
-			const cargoToml = readFileSync(join(dir, 'Cargo.toml'), 'utf-8');
-			if (cargoToml.includes('codeview-cli') || cargoToml.includes('[workspace]')) {
-				cachedRepoRoot = dir;
-				return dir;
-			}
-		} catch {
-			/* keep walking */
-		}
-		dir = resolve(dir, '..');
-	}
-	throw new Error('Could not locate codeview workspace Cargo.toml');
+  if (cachedRepoRoot) return cachedRepoRoot;
+  let dir = resolve(process.cwd());
+  while (dir !== resolve(dir, "..")) {
+    try {
+      const cargoToml = readFileSync(join(dir, "Cargo.toml"), "utf-8");
+      if (cargoToml.includes("codeview-cli") || cargoToml.includes("[workspace]")) {
+        cachedRepoRoot = dir;
+        return dir;
+      }
+    } catch {
+      /* keep walking */
+    }
+    dir = resolve(dir, "..");
+  }
+  throw new Error("Could not locate codeview workspace Cargo.toml");
 }

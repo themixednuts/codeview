@@ -1,5 +1,5 @@
-import { isStdCrate } from '#lib/std';
-import { normalizeCrateName, hyphenateCrateName } from '#lib/crate-names';
+import { isStdCrate } from "#lib/std";
+import { normalizeCrateName, hyphenateCrateName } from "#lib/crate-names";
 
 /**
  * Convert a node ID to a URL path using a version lookup map.
@@ -7,36 +7,36 @@ import { normalizeCrateName, hyphenateCrateName } from '#lib/crate-names';
  *   → "/drizzle_core/0.1.4/builder/OrderByClause"
  */
 export function nodeUrl(nodeId: string, crateVersions: Record<string, string>): string {
-	const parts = nodeId.split('::');
-	const crate = parts[0];
-	const routeCrate = hyphenateCrateName(crate);
-	const version =
-		crateVersions[crate] ??
-		crateVersions[normalizeCrateName(crate)] ??
-		crateVersions[hyphenateCrateName(crate)] ??
-		(isStdCrate(crate) ? 'stable' : 'latest');
-	const path = parts.slice(1).join('/');
-	return path ? `/${routeCrate}/${version}/${path}` : `/${routeCrate}/${version}`;
+  const parts = nodeId.split("::");
+  const crate = parts[0];
+  const routeCrate = hyphenateCrateName(crate);
+  const version =
+    crateVersions[crate] ??
+    crateVersions[normalizeCrateName(crate)] ??
+    crateVersions[hyphenateCrateName(crate)] ??
+    (isStdCrate(crate) ? "stable" : "latest");
+  const path = parts.slice(1).join("/");
+  return path ? `/${routeCrate}/${version}/${path}` : `/${routeCrate}/${version}`;
 }
 
 export function nodeUrlForRoute(
-	nodeId: string,
-	crateVersions: Record<string, string>,
-	currentCrate?: string,
-	currentVersion?: string,
+  nodeId: string,
+  crateVersions: Record<string, string>,
+  currentCrate?: string,
+  currentVersion?: string,
 ): string {
-	const parts = nodeId.split('::');
-	const crate = parts[0];
-	const isCurrentCrate =
-		currentCrate && normalizeCrateName(crate) === normalizeCrateName(currentCrate);
-	if (!isCurrentCrate || !currentVersion) return nodeUrl(nodeId, crateVersions);
+  const parts = nodeId.split("::");
+  const crate = parts[0];
+  const isCurrentCrate =
+    currentCrate && normalizeCrateName(crate) === normalizeCrateName(currentCrate);
+  if (!isCurrentCrate || !currentVersion) return nodeUrl(nodeId, crateVersions);
 
-	return nodeUrl(nodeId, {
-		...crateVersions,
-		[crate]: currentVersion,
-		[normalizeCrateName(crate)]: currentVersion,
-		[hyphenateCrateName(crate)]: currentVersion,
-	});
+  return nodeUrl(nodeId, {
+    ...crateVersions,
+    [crate]: currentVersion,
+    [normalizeCrateName(crate)]: currentVersion,
+    [hyphenateCrateName(crate)]: currentVersion,
+  });
 }
 
 /**
@@ -44,7 +44,7 @@ export function nodeUrlForRoute(
  * e.g. nodeIdFromPath("drizzle_core", "builder/OrderByClause") → "drizzle_core::builder::OrderByClause"
  */
 export function nodeIdFromPath(crate: string, path?: string): string {
-	const normalizedCrate = normalizeCrateName(crate);
-	if (!path) return normalizedCrate;
-	return `${normalizedCrate}::${path.replace(/\//g, '::')}`;
+  const normalizedCrate = normalizeCrateName(crate);
+  if (!path) return normalizedCrate;
+  return `${normalizedCrate}::${path.replace(/\//g, "::")}`;
 }

@@ -130,9 +130,8 @@
 
 	function setVizMode(mode: VizMode) {
 		goto(serializeExplorerState(page.url, { viz: mode === defaultVizMode ? null : mode }), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			replace: true,
+			reset: false,
 		});
 	}
 
@@ -161,9 +160,8 @@
 	function updateSearchParam(key: 'td' | 'sd', value: string | null) {
 		const patch = key === 'td' ? { td: value } : { sd: value };
 		goto(serializeExplorerState(page.url, patch), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			replace: true,
+			reset: false,
 		});
 	}
 

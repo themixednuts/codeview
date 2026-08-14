@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { onMount } from 'svelte';
 	import { Input } from '#lib/components/ui/input';
 	import * as NativeSelect from '#lib/components/ui/native-select';
@@ -713,8 +713,7 @@
 		font-size: var(--text-sm);
 		font-weight: 600;
 		letter-spacing: 0;
-		text-transform: uppercase;
-		color: var(--muted);
+		color: var(--ink-soft);
 	}
 
 	:global(.settings-segmented) {
@@ -741,9 +740,8 @@
 	.settings-field-label {
 		display: block;
 		margin-bottom: 0.25rem;
-		font-size: var(--text-2xs);
+		font-size: var(--text-xs);
 		font-weight: 500;
-		text-transform: uppercase;
 		color: var(--muted);
 	}
 

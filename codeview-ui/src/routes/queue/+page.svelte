@@ -44,7 +44,7 @@
 	);
 
 	function itemHref(name: string, version: string): string {
-		return resolve(`/${encodeURIComponent(name)}/${encodeURIComponent(version)}`);
+		return resolve('/[crate]/[version]', { crate: name, version });
 	}
 
 	function statusLabel(status: string, step?: string): string {
@@ -107,14 +107,13 @@
 							class="mb-2 flex items-center gap-2 text-sm font-medium text-(--ink-soft)"
 						>
 							<Icon name="clock" size={12} />
-							<span>Parse Queue</span>
+							<span>Parse queue</span>
 						</div>
 						<h1 class="font-display text-2xl font-semibold text-(--ink)">
 							Builds and planned parses
 						</h1>
 					</div>
 					<div class="flex items-center gap-2">
-						<span class="badge badge-sm text-(--accent)">Live</span>
 						<a
 							href={resolve('/')}
 							class="corner-squircle inline-flex items-center gap-2 rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-3 py-2 text-sm text-(--ink) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong)"
@@ -126,16 +125,16 @@
 				</div>
 				<div class="grid gap-2 sm:grid-cols-3">
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-						<div class="text-2xs tracking-wider text-(--muted) uppercase">Active</div>
+						<div class="text-xs text-(--muted)">Active</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{activeCount}</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-						<div class="text-2xs tracking-wider text-(--muted) uppercase">Planned</div>
+						<div class="text-xs text-(--muted)">Planned</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{plannedCount}</div>
 						<div class="mt-1 text-xs text-(--muted-soft)">{plannedReadyCount} ready via shards</div>
 					</div>
 					<div class="rounded-md border border-(--panel-border-soft) bg-(--panel) px-3 py-2">
-						<div class="text-2xs tracking-wider text-(--muted) uppercase">Recent failures</div>
+						<div class="text-xs text-(--muted)">Recent failures</div>
 						<div class="mt-1 font-mono text-lg text-(--ink)">{failedCount}</div>
 					</div>
 				</div>

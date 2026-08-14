@@ -12,8 +12,8 @@
 	} from '#lib/context';
 	import { page } from '$app/state';
 	import { afterNavigate, beforeNavigate, goto, invalidate } from '$app/navigation';
-	import { resolve } from '$app/paths';
-	import { browser } from '$app/environment';
+	import { resolveAppPath } from '#lib/app-paths';
+	import { browser } from '$app/env';
 	import type { Snippet } from 'svelte';
 	import { getLocalCrates } from '#lib/rpc/crate.remote';
 	import { getCrateMeta, getStaticCrateMeta } from '#lib/rpc/meta.remote';
@@ -353,16 +353,14 @@
 		if (!canonicalCrateName || !nextVersion || nextVersion === version) return;
 		const nextPath = page.params.path ? `/${page.params.path}` : '';
 		const search = page.url.search;
-		goto(resolve(`/${canonicalCrateName}/${nextVersion}${nextPath}${search}`), {
-			replaceState: false,
-			noScroll: true,
-			keepFocus: true,
+		goto(resolveAppPath(`/${canonicalCrateName}/${nextVersion}${nextPath}${search}`), {
+			reset: false,
 		});
 	}
 
 	function getNodeUrl(id: string): string {
 		const base = nodeUrlForRoute(id, crateVersions, canonicalCrateName, version);
-		const target = new URL(base, page.url);
+		const target = new URL(base, page.url.href);
 		const currentCratePrefix = `/${canonicalCrateName}/${version}`;
 		const sameCrateRoute =
 			target.pathname === currentCratePrefix ||

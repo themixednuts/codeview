@@ -4,7 +4,7 @@
 	import LoaderCircleIcon from '@lucide/svelte/icons/loader-circle';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { getSource } from '#lib/rpc/source.remote';
 	import { sourceProviderModeCtx } from '#lib/context';
 	import type { SourceResult } from '#lib/schema';
@@ -112,9 +112,8 @@
 		// The serializer returns a concrete URL so query-only modal state never loses the current route.
 		// eslint-disable-next-line svelte/no-navigation-without-resolve
 		void goto(serializeExplorerState(page.url, { src }), {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+			replace: true,
+			reset: false,
 		});
 	}
 

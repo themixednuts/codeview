@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import type { Node } from '#lib/schema';
 	import { kindLabels } from '#lib/display-names';
 	import { parseDocumentation } from '#lib/highlight/documentation';

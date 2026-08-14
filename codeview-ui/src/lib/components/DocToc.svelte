@@ -50,7 +50,7 @@
 {#if entries.length >= 3 || (openGraphHref && nodeId)}
 	<aside class="doc-toc" {@attach observeSections}>
 		{#if entries.length >= 3}
-			<div class="mb-2 text-xs font-semibold text-(--muted) uppercase">On this page</div>
+			<div class="mb-2 text-xs font-medium text-(--muted)">On this page</div>
 			<nav class="doc-toc-list" aria-label="On this page">
 				{#each entries as entry (entry.anchor)}
 					{@const active = activeAnchor === entry.anchor}

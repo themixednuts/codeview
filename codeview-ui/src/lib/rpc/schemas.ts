@@ -1,94 +1,94 @@
-import * as Schema from 'effect/Schema';
+import * as Schema from "effect/Schema";
 
-const NodeKind = Schema.Literal(
-	'Crate',
-	'Module',
-	'Struct',
-	'StructField',
-	'Union',
-	'Enum',
-	'Variant',
-	'Trait',
-	'TraitAlias',
-	'Impl',
-	'Function',
-	'TypeAlias',
-	'AssocType',
-	'Constant',
-	'AssocConst',
-	'Static',
-	'Macro',
-	'Primitive',
-	'ExternCrate',
-	'Import',
-	'ProcMacro',
-);
+const NodeKind = Schema.Literals([
+  "Crate",
+  "Module",
+  "Struct",
+  "StructField",
+  "Union",
+  "Enum",
+  "Variant",
+  "Trait",
+  "TraitAlias",
+  "Impl",
+  "Function",
+  "TypeAlias",
+  "AssocType",
+  "Constant",
+  "AssocConst",
+  "Static",
+  "Macro",
+  "Primitive",
+  "ExternCrate",
+  "Import",
+  "ProcMacro",
+]);
 
 const SearchNodesInput = Schema.Struct({
-	crate: Schema.optional(Schema.String),
-	version: Schema.optional(Schema.String),
-	q: Schema.optional(Schema.String),
-	kinds: Schema.optional(Schema.Array(NodeKind)),
+  crate: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  q: Schema.optional(Schema.String),
+  kinds: Schema.optional(Schema.Array(NodeKind)),
 });
 
 const GetSourceInput = Schema.Struct({
-	file: Schema.String,
-	crateName: Schema.optional(Schema.String),
-	crateVersion: Schema.optional(Schema.String),
-	sourceProvider: Schema.optional(Schema.Literal('auto', 'crates-io', 'github')),
+  file: Schema.String,
+  crateName: Schema.optional(Schema.String),
+  crateVersion: Schema.optional(Schema.String),
+  sourceProvider: Schema.optional(Schema.Literals(["auto", "crates-io", "github"])),
 });
 
 const CrateNameInput = Schema.Struct({
-	name: Schema.String,
+  name: Schema.String,
 });
 
 const CrateVersionInput = Schema.Struct({
-	name: Schema.String,
-	version: Schema.String,
+  name: Schema.String,
+  version: Schema.String,
 });
 
 const TriggerParseInput = Schema.Struct({
-	name: Schema.String,
-	version: Schema.String,
-	force: Schema.optional(Schema.Boolean),
+  name: Schema.String,
+  version: Schema.String,
+  force: Schema.optional(Schema.Boolean),
 });
 
 const InstallStdDocsInput = Schema.Struct({
-	name: Schema.String,
-	version: Schema.String,
+  name: Schema.String,
+  version: Schema.String,
 });
 
 const RegistrySearchInput = Schema.Struct({
-	q: Schema.String,
+  q: Schema.String,
 });
 
 const CrateRef = Schema.Struct({
-	name: Schema.String,
-	version: Schema.optional(Schema.String),
-	mode: Schema.optional(Schema.Literal('structural', 'complete')),
-	includeExternal: Schema.optional(Schema.Boolean),
+  name: Schema.String,
+  version: Schema.optional(Schema.String),
+  mode: Schema.optional(Schema.Literals(["structural", "complete"])),
+  includeExternal: Schema.optional(Schema.Boolean),
 });
 
 const NodeDetailInput = Schema.Struct({
-	nodeId: Schema.String,
-	version: Schema.optional(Schema.String),
-	refresh: Schema.optional(Schema.Number),
+  nodeId: Schema.String,
+  version: Schema.optional(Schema.String),
+  refresh: Schema.optional(Schema.Number),
 });
 
 const ProcessingInput = Schema.Struct({
-	refresh: Schema.optional(Schema.Number),
+  refresh: Schema.optional(Schema.Number),
 });
 
 const TreeNodeInput = Schema.Struct({
-	name: Schema.String,
-	version: Schema.optional(Schema.String),
-	nodeId: Schema.String,
+  name: Schema.String,
+  version: Schema.optional(Schema.String),
+  nodeId: Schema.String,
 });
 
 const NodeViewInput = Schema.Struct({
-	name: Schema.String,
-	version: Schema.optional(Schema.String),
-	nodeId: Schema.String,
+  name: Schema.String,
+  version: Schema.optional(Schema.String),
+  nodeId: Schema.String,
 });
 
 const NodeIds = Schema.Array(Schema.String);

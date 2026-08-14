@@ -32,14 +32,14 @@ cross_version_cache = false
 [exports.default]
 type = "worker"
 
-	[exports.default.cache]
-	enabled = false
+[exports.default.cache]
+enabled = false
 
 [exports.CachedImmutableAsset]
 type = "worker"
 
-	[exports.CachedImmutableAsset.cache]
-	enabled = true
+[exports.CachedImmutableAsset.cache]
+enabled = true
 
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"

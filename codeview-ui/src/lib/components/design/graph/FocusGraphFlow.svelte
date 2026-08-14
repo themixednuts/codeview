@@ -488,7 +488,7 @@
 						{hoveredNode.node.label}
 					</span>
 					<span
-						class="mono ml-auto rounded bg-(--panel-muted) px-1.5 py-0.5 text-2xs tracking-wider text-(--muted) uppercase"
+						class="mono ml-auto rounded bg-(--panel-muted) px-1.5 py-0.5 text-2xs text-(--muted)"
 					>
 						{hoveredNode.node.kindLabel}
 					</span>

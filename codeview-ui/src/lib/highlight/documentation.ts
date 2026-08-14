@@ -1,12 +1,12 @@
-import type { SupportedLanguage } from './languages';
-import { normalizeLanguage } from './languages';
+import type { SupportedLanguage } from "./languages";
+import { normalizeLanguage } from "./languages";
 import {
-	CODE_BLOCK_SENTINEL_END,
-	CODE_BLOCK_SENTINEL_START,
-	renderMarkdownDocument,
-	type DocLinkResolver,
-	type DocLinks,
-} from './markdown';
+  CODE_BLOCK_SENTINEL_END,
+  CODE_BLOCK_SENTINEL_START,
+  renderMarkdownDocument,
+  type DocLinkResolver,
+  type DocLinks,
+} from "./markdown";
 
 /**
  * Rustdoc code-fence attributes that imply Rust code.
@@ -16,7 +16,7 @@ import {
  * These are NOT language names — they're compilation/display directives.
  * We need to recognize them so `processRustDocCode()` strips hidden `# ` lines.
  */
-const RUSTDOC_ATTRS = new Set(['no_run', 'ignore', 'compile_fail', 'should_panic', 'test_harness']);
+const RUSTDOC_ATTRS = new Set(["no_run", "ignore", "compile_fail", "should_panic", "test_harness"]);
 
 /** Token is a rustdoc edition flag like `edition2021`. */
 const EDITION_RE = /^edition\d{4}$/;
@@ -30,35 +30,35 @@ const ERROR_CODE_RE = /^e\d+$/;
  * incorrectly treated as a language name.
  */
 const KNOWN_NON_RUST_LANGS = new Set([
-	'typescript',
-	'ts',
-	'javascript',
-	'js',
-	'json',
-	'toml',
-	'bash',
-	'sh',
-	'shell',
-	'zsh',
-	'sql',
-	'text',
-	'plaintext',
-	'txt',
-	'c',
-	'cpp',
-	'python',
-	'py',
-	'html',
-	'css',
-	'xml',
-	'yaml',
-	'yml',
-	'markdown',
-	'md',
+  "typescript",
+  "ts",
+  "javascript",
+  "js",
+  "json",
+  "toml",
+  "bash",
+  "sh",
+  "shell",
+  "zsh",
+  "sql",
+  "text",
+  "plaintext",
+  "txt",
+  "c",
+  "cpp",
+  "python",
+  "py",
+  "html",
+  "css",
+  "xml",
+  "yaml",
+  "yml",
+  "markdown",
+  "md",
 ]);
 
 function isRustdocAttr(part: string): boolean {
-	return RUSTDOC_ATTRS.has(part) || EDITION_RE.test(part) || ERROR_CODE_RE.test(part);
+  return RUSTDOC_ATTRS.has(part) || EDITION_RE.test(part) || ERROR_CODE_RE.test(part);
 }
 
 /**
@@ -76,53 +76,53 @@ function isRustdocAttr(part: string): boolean {
  *   "ignore"                  → { lang: 'rust',      isRust: true }
  */
 function parseRustdocFenceInfo(
-	infoStr: string,
-	defaultLang: SupportedLanguage,
+  infoStr: string,
+  defaultLang: SupportedLanguage,
 ): { lang: SupportedLanguage; isRust: boolean } {
-	const raw = infoStr.trim();
-	if (!raw) return { lang: defaultLang, isRust: defaultLang === 'rust' };
+  const raw = infoStr.trim();
+  if (!raw) return { lang: defaultLang, isRust: defaultLang === "rust" };
 
-	// Split on commas — rustdoc uses `rust,no_run,edition2021` style
-	const parts = raw.split(',').map((p) => p.trim().toLowerCase());
+  // Split on commas — rustdoc uses `rust,no_run,edition2021` style
+  const parts = raw.split(",").map((p) => p.trim().toLowerCase());
 
-	let explicitLang: SupportedLanguage | null = null;
-	let hasRustdocAttr = false;
-	let hasExplicitRust = false;
+  let explicitLang: SupportedLanguage | null = null;
+  let hasRustdocAttr = false;
+  let hasExplicitRust = false;
 
-	for (const part of parts) {
-		if (!part) continue;
-		if (part === 'rust' || part === 'rs') {
-			hasExplicitRust = true;
-		} else if (isRustdocAttr(part)) {
-			hasRustdocAttr = true;
-		} else if (KNOWN_NON_RUST_LANGS.has(part)) {
-			explicitLang = normalizeLanguage(part);
-		}
-		// else: unknown token — silently ignored (not treated as a language)
-	}
+  for (const part of parts) {
+    if (!part) continue;
+    if (part === "rust" || part === "rs") {
+      hasExplicitRust = true;
+    } else if (isRustdocAttr(part)) {
+      hasRustdocAttr = true;
+    } else if (KNOWN_NON_RUST_LANGS.has(part)) {
+      explicitLang = normalizeLanguage(part);
+    }
+    // else: unknown token — silently ignored (not treated as a language)
+  }
 
-	// Explicitly "rust" or has rustdoc attrs with no other language → Rust
-	if (hasExplicitRust || (hasRustdocAttr && !explicitLang)) {
-		return { lang: 'rust', isRust: true };
-	}
+  // Explicitly "rust" or has rustdoc attrs with no other language → Rust
+  if (hasExplicitRust || (hasRustdocAttr && !explicitLang)) {
+    return { lang: "rust", isRust: true };
+  }
 
-	// Rustdoc attrs + explicit non-Rust language (unusual, e.g. `json,ignore`)
-	if (hasRustdocAttr && explicitLang) {
-		return { lang: explicitLang, isRust: false };
-	}
+  // Rustdoc attrs + explicit non-Rust language (unusual, e.g. `json,ignore`)
+  if (hasRustdocAttr && explicitLang) {
+    return { lang: explicitLang, isRust: false };
+  }
 
-	// Recognized non-Rust language
-	if (explicitLang) {
-		return { lang: explicitLang, isRust: false };
-	}
+  // Recognized non-Rust language
+  if (explicitLang) {
+    return { lang: explicitLang, isRust: false };
+  }
 
-	// Unrecognized single token — in a Rust project, default to Rust
-	if (defaultLang === 'rust') {
-		return { lang: 'rust', isRust: true };
-	}
+  // Unrecognized single token — in a Rust project, default to Rust
+  if (defaultLang === "rust") {
+    return { lang: "rust", isRust: true };
+  }
 
-	const lang = normalizeLanguage(raw);
-	return { lang, isRust: lang === 'rust' };
+  const lang = normalizeLanguage(raw);
+  return { lang, isRust: lang === "rust" };
 }
 
 /**
@@ -138,43 +138,43 @@ function parseRustdocFenceInfo(
  * @returns Processed code with hidden lines removed and escapes handled
  */
 export function processRustDocCode(code: string): string {
-	const lines = code.split('\n');
-	const processedLines: string[] = [];
+  const lines = code.split("\n");
+  const processedLines: string[] = [];
 
-	for (const line of lines) {
-		const trimmed = line.trimStart();
-		const leadingWhitespace = line.slice(0, line.length - trimmed.length);
+  for (const line of lines) {
+    const trimmed = line.trimStart();
+    const leadingWhitespace = line.slice(0, line.length - trimmed.length);
 
-		// Check for hidden line patterns
-		if (trimmed === '#') {
-			// Standalone `#` - hidden
-			continue;
-		}
+    // Check for hidden line patterns
+    if (trimmed === "#") {
+      // Standalone `#` - hidden
+      continue;
+    }
 
-		if (trimmed.startsWith('# ')) {
-			// `# ` prefix - hidden (but NOT `#!` or `#[`)
-			continue;
-		}
+    if (trimmed.startsWith("# ")) {
+      // `# ` prefix - hidden (but NOT `#!` or `#[`)
+      continue;
+    }
 
-		// Check for escape sequence `##` -> `#`
-		if (trimmed.startsWith('##')) {
-			// Remove one `#` to show literal hash
-			processedLines.push(leadingWhitespace + trimmed.slice(1));
-			continue;
-		}
+    // Check for escape sequence `##` -> `#`
+    if (trimmed.startsWith("##")) {
+      // Remove one `#` to show literal hash
+      processedLines.push(leadingWhitespace + trimmed.slice(1));
+      continue;
+    }
 
-		// Lines starting with `#!` or `#[` are attributes - keep them
-		// All other lines are kept as-is
-		processedLines.push(line);
-	}
+    // Lines starting with `#!` or `#[` are attributes - keep them
+    // All other lines are kept as-is
+    processedLines.push(line);
+  }
 
-	return processedLines.join('\n');
+  return processedLines.join("\n");
 }
 
 // Parsed documentation segment
 export type DocSegment =
-	| { type: 'text'; content: string; html: string }
-	| { type: 'code'; content: string; lang: SupportedLanguage };
+  | { type: "text"; content: string; html: string }
+  | { type: "code"; content: string; lang: SupportedLanguage };
 
 /**
  * Parse documentation into segments.
@@ -185,78 +185,78 @@ export type DocSegment =
  * rustdoc HTML remains escaped. The markers become separate Shiki segments.
  */
 export function parseDocumentation(
-	docs: string,
-	defaultLang: SupportedLanguage = 'rust',
-	docLinks?: DocLinks,
-	resolveDocLink?: DocLinkResolver,
+  docs: string,
+  defaultLang: SupportedLanguage = "rust",
+  docLinks?: DocLinks,
+  resolveDocLink?: DocLinkResolver,
 ): DocSegment[] {
-	const rendered = renderMarkdownDocument(docs, docLinks, resolveDocLink);
-	const fullHtml = rendered.html;
-	const codeBlocks = rendered.codeBlocks.map(({ info, content }) => {
-		const { lang, isRust } = parseRustdocFenceInfo(info, defaultLang);
-		let code = content.trim();
-		if (isRust) code = processRustDocCode(code);
-		return { lang, code };
-	});
+  const rendered = renderMarkdownDocument(docs, docLinks, resolveDocLink);
+  const fullHtml = rendered.html;
+  const codeBlocks = rendered.codeBlocks.map(({ info, content }) => {
+    const { lang, isRust } = parseRustdocFenceInfo(info, defaultLang);
+    let code = content.trim();
+    if (isRust) code = processRustDocCode(code);
+    return { lang, code };
+  });
 
-	// Split rendered HTML at private fenced-code boundaries. The sentinel cannot
-	// collide with author HTML or survive as an allowed element/attribute.
-	const segments: DocSegment[] = [];
-	const placeholderRegex = new RegExp(
-		`${CODE_BLOCK_SENTINEL_START}(\\d+)${CODE_BLOCK_SENTINEL_END}\\n?`,
-		'g',
-	);
-	let lastIndex = 0;
-	let match;
+  // Split rendered HTML at private fenced-code boundaries. The sentinel cannot
+  // collide with author HTML or survive as an allowed element/attribute.
+  const segments: DocSegment[] = [];
+  const placeholderRegex = new RegExp(
+    `${CODE_BLOCK_SENTINEL_START}(\\d+)${CODE_BLOCK_SENTINEL_END}\\n?`,
+    "g",
+  );
+  let lastIndex = 0;
+  let match;
 
-	while ((match = placeholderRegex.exec(fullHtml)) !== null) {
-		// Text segment before this code block
-		if (match.index > lastIndex) {
-			const html = fullHtml.slice(lastIndex, match.index).trim();
-			if (html) {
-				segments.push({ type: 'text', content: '', html });
-			}
-		}
+  while ((match = placeholderRegex.exec(fullHtml)) !== null) {
+    // Text segment before this code block
+    if (match.index > lastIndex) {
+      const html = fullHtml.slice(lastIndex, match.index).trim();
+      if (html) {
+        segments.push({ type: "text", content: "", html });
+      }
+    }
 
-		// Code segment
-		const block = codeBlocks[parseInt(match[1])];
-		if (block && block.code) {
-			segments.push({ type: 'code', content: block.code, lang: block.lang });
-		}
+    // Code segment
+    const block = codeBlocks[parseInt(match[1])];
+    if (block && block.code) {
+      segments.push({ type: "code", content: block.code, lang: block.lang });
+    }
 
-		lastIndex = match.index + match[0].length;
-	}
+    lastIndex = match.index + match[0].length;
+  }
 
-	// Remaining text after the last code block
-	if (lastIndex < fullHtml.length) {
-		const html = fullHtml.slice(lastIndex).trim();
-		if (html) {
-			segments.push({ type: 'text', content: '', html });
-		}
-	}
+  // Remaining text after the last code block
+  if (lastIndex < fullHtml.length) {
+    const html = fullHtml.slice(lastIndex).trim();
+    if (html) {
+      segments.push({ type: "text", content: "", html });
+    }
+  }
 
-	// No code blocks — treat the whole thing as text
-	if (segments.length === 0 && docs.trim()) {
-		segments.push({ type: 'text', content: '', html: fullHtml });
-	}
+  // No code blocks — treat the whole thing as text
+  if (segments.length === 0 && docs.trim()) {
+    segments.push({ type: "text", content: "", html: fullHtml });
+  }
 
-	return segments;
+  return segments;
 }
 
 // Highlight all code blocks in parsed documentation
 export async function highlightDocumentation(
-	segments: DocSegment[],
-	theme: 'dark' | 'light' = 'dark',
-): Promise<Array<{ type: 'text' | 'code'; content: string; html: string }>> {
-	const { highlightCode } = await import('./shiki');
-	return Promise.all(
-		segments.map(async (segment) => {
-			if (segment.type === 'code') {
-				const html = await highlightCode(segment.content, segment.lang, theme);
-				return { type: 'code' as const, content: segment.content, html };
-			}
-			// Text segments already have HTML from markdown-it
-			return { type: 'text' as const, content: segment.content, html: segment.html };
-		}),
-	);
+  segments: DocSegment[],
+  theme: "dark" | "light" = "dark",
+): Promise<Array<{ type: "text" | "code"; content: string; html: string }>> {
+  const { highlightCode } = await import("./shiki");
+  return Promise.all(
+    segments.map(async (segment) => {
+      if (segment.type === "code") {
+        const html = await highlightCode(segment.content, segment.lang, theme);
+        return { type: "code" as const, content: segment.content, html };
+      }
+      // Text segments already have HTML from markdown-it
+      return { type: "text" as const, content: segment.content, html: segment.html };
+    }),
+  );
 }

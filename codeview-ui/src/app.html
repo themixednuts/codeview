@@ -1,117 +1,117 @@
 <!doctype html>
 <html
-	lang="en"
-	data-theme="system"
-	data-accent="orange"
-	data-density="comfortable"
-	data-text-size="standard"
-	data-voice="editorial"
-	data-doc-layout="classic"
-	data-code-theme="solarized-light"
-	data-code-theme-light="solarized-light"
-	data-code-theme-dark="solarized-dark"
+  lang="en"
+  data-theme="system"
+  data-accent="orange"
+  data-density="comfortable"
+  data-text-size="standard"
+  data-voice="editorial"
+  data-doc-layout="classic"
+  data-code-theme="solarized-light"
+  data-code-theme-light="solarized-light"
+  data-code-theme-dark="solarized-dark"
 >
-	<head>
-		<meta charset="utf-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<script>
-			(function () {
-				document.documentElement.dataset.js = 'enabled';
-				try {
-					var readCookie = function (k) {
-						var prefix = k + '=';
-						var parts = document.cookie ? document.cookie.split(';') : [];
-						for (var i = 0; i < parts.length; i += 1) {
-							var part = parts[i].trim();
-							if (part.indexOf(prefix) !== 0) continue;
-							var raw = part.slice(prefix.length);
-							try {
-								return decodeURIComponent(raw);
-							} catch (e) {
-								return raw;
-							}
-						}
-						return null;
-					};
-					var stored = function (k, fallback, allowed) {
-						var v = readCookie(k);
-						if (v === null) {
-							try {
-								v = localStorage.getItem(k);
-							} catch (e) {
-								v = null;
-							}
-						}
-						if (v === null) return fallback;
-						return allowed && allowed.indexOf(v) === -1 ? fallback : v;
-					};
-					var prefersDark =
-						window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script>
+      (function () {
+        document.documentElement.dataset.js = "enabled";
+        try {
+          var readCookie = function (k) {
+            var prefix = k + "=";
+            var parts = document.cookie ? document.cookie.split(";") : [];
+            for (var i = 0; i < parts.length; i += 1) {
+              var part = parts[i].trim();
+              if (part.indexOf(prefix) !== 0) continue;
+              var raw = part.slice(prefix.length);
+              try {
+                return decodeURIComponent(raw);
+              } catch (e) {
+                return raw;
+              }
+            }
+            return null;
+          };
+          var stored = function (k, fallback, allowed) {
+            var v = readCookie(k);
+            if (v === null) {
+              try {
+                v = localStorage.getItem(k);
+              } catch (e) {
+                v = null;
+              }
+            }
+            if (v === null) return fallback;
+            return allowed && allowed.indexOf(v) === -1 ? fallback : v;
+          };
+          var prefersDark =
+            window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
 
-					// UI mode
-					var modePref = stored('codeview-theme', 'system', ['light', 'dark', 'system']);
-					var mode = modePref === 'system' ? (prefersDark ? 'dark' : 'light') : modePref;
-					document.documentElement.dataset.theme = mode === 'dark' ? 'dark' : 'light';
+          // UI mode
+          var modePref = stored("codeview-theme", "system", ["light", "dark", "system"]);
+          var mode = modePref === "system" ? (prefersDark ? "dark" : "light") : modePref;
+          document.documentElement.dataset.theme = mode === "dark" ? "dark" : "light";
 
-					// Tweakable axes (accent / density / voice / doc layout / code themes)
-					var accent = stored('codeview-accent', 'orange', [
-						'orange',
-						'cobalt',
-						'forest',
-						'plum',
-						'char',
-					]);
-					var density = stored('codeview-density', 'comfortable', [
-						'compact',
-						'comfortable',
-						'spacious',
-					]);
-					var voice = stored('codeview-voice', 'editorial', [
-						'editorial',
-						'technical',
-						'geometric',
-					]);
-					var textSize = stored('codeview-text-size', 'standard', [
-						'standard',
-						'large',
-						'extra-large',
-					]);
-					var docLayout = stored('codeview-doc-layout', 'classic', ['classic', 'reading', 'split']);
-					var codeLight = stored('codeview-code-light', 'solarized-light', [
-						'solarized-light',
-						'catppuccin-latte',
-						'one-light',
-						'github-light',
-					]);
-					var codeDark = stored('codeview-code-dark', 'solarized-dark', [
-						'solarized-dark',
-						'catppuccin-mocha',
-						'one-dark',
-						'github-dark',
-					]);
+          // Tweakable axes (accent / density / voice / doc layout / code themes)
+          var accent = stored("codeview-accent", "orange", [
+            "orange",
+            "cobalt",
+            "forest",
+            "plum",
+            "char",
+          ]);
+          var density = stored("codeview-density", "comfortable", [
+            "compact",
+            "comfortable",
+            "spacious",
+          ]);
+          var voice = stored("codeview-voice", "editorial", [
+            "editorial",
+            "technical",
+            "geometric",
+          ]);
+          var textSize = stored("codeview-text-size", "standard", [
+            "standard",
+            "large",
+            "extra-large",
+          ]);
+          var docLayout = stored("codeview-doc-layout", "classic", ["classic", "reading", "split"]);
+          var codeLight = stored("codeview-code-light", "solarized-light", [
+            "solarized-light",
+            "catppuccin-latte",
+            "one-light",
+            "github-light",
+          ]);
+          var codeDark = stored("codeview-code-dark", "solarized-dark", [
+            "solarized-dark",
+            "catppuccin-mocha",
+            "one-dark",
+            "github-dark",
+          ]);
 
-					document.documentElement.dataset.accent = accent;
-					document.documentElement.dataset.density = density;
-					document.documentElement.dataset.textSize = textSize;
-					document.documentElement.dataset.voice = voice;
-					document.documentElement.dataset.docLayout = docLayout;
-					document.documentElement.dataset.codeThemeLight = codeLight;
-					document.documentElement.dataset.codeThemeDark = codeDark;
-					document.documentElement.dataset.codeTheme = mode === 'dark' ? codeDark : codeLight;
-				} catch (e) {
-					document.documentElement.dataset.theme = 'light';
-					document.documentElement.dataset.accent = 'orange';
-					document.documentElement.dataset.density = 'comfortable';
-					document.documentElement.dataset.textSize = 'standard';
-					document.documentElement.dataset.voice = 'editorial';
-					document.documentElement.dataset.docLayout = 'classic';
-					document.documentElement.dataset.codeTheme = 'solarized-light';
-				}
-			})();
-		</script>
-		%sveltekit.head%
-	</head>
-	<body data-sveltekit-preload-data="hover">
-		<div style="display: contents">%sveltekit.body%</div>
-	</body>
+          document.documentElement.dataset.accent = accent;
+          document.documentElement.dataset.density = density;
+          document.documentElement.dataset.textSize = textSize;
+          document.documentElement.dataset.voice = voice;
+          document.documentElement.dataset.docLayout = docLayout;
+          document.documentElement.dataset.codeThemeLight = codeLight;
+          document.documentElement.dataset.codeThemeDark = codeDark;
+          document.documentElement.dataset.codeTheme = mode === "dark" ? codeDark : codeLight;
+        } catch (e) {
+          document.documentElement.dataset.theme = "light";
+          document.documentElement.dataset.accent = "orange";
+          document.documentElement.dataset.density = "comfortable";
+          document.documentElement.dataset.textSize = "standard";
+          document.documentElement.dataset.voice = "editorial";
+          document.documentElement.dataset.docLayout = "classic";
+          document.documentElement.dataset.codeTheme = "solarized-light";
+        }
+      })();
+    </script>
+    %sveltekit.head%
+  </head>
+  <body data-sveltekit-preload-data="hover">
+    <div style="display: contents">%sveltekit.body%</div>
+  </body>
 </html>
