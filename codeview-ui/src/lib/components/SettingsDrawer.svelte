@@ -473,7 +473,7 @@
 							label={`${option.label} layout`}
 							variant="segmented"
 							class="h-12"
-							contentClass="flex-col gap-0.5"
+							contentClass="flex-col gap-0.5 whitespace-normal text-center"
 						>
 							<span class="inline-flex items-center gap-1.5">
 								<option.Icon size={13} />{option.label}

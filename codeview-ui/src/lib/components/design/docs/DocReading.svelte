@@ -61,6 +61,7 @@
 			{crateVersion}
 			{crateVersions}
 			afterHeader={readingToc}
+			showBreadcrumb={false}
 			className="doc-article--reading"
 		/>
 	</article>

@@ -49,16 +49,16 @@
 </script>
 
 <div class={`doc-article min-w-0 ${className}`}>
-	{#if showBreadcrumb}
-		<div
-			class="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-(--panel-border-soft) pb-3"
-		>
+	<div
+		class="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-(--panel-border-soft) pb-3"
+	>
+		{#if showBreadcrumb}
 			<div class="min-w-0">
 				<Breadcrumbs {ancestors} {selected} {getNodeUrl} />
 			</div>
-			<DocReadAloud node={selected} />
-		</div>
-	{/if}
+		{/if}
+		<DocReadAloud node={selected} />
+	</div>
 	{@render afterHeader?.()}
 
 	<NodeDetails

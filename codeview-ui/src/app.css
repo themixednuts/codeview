@@ -992,7 +992,8 @@ html:not([data-hydrated="true"]) .hydrated-only {
 
 @media (max-width: 1023.98px) {
   .codeview-resizable-group {
-    display: block !important;
+    display: flex !important;
+    flex-direction: column !important;
     height: auto !important;
     overflow: visible !important;
   }
@@ -1001,20 +1002,21 @@ html:not([data-hydrated="true"]) .hydrated-only {
     width: 100% !important;
     min-width: 0 !important;
     max-width: none !important;
-    min-height: 18rem;
     flex: none !important;
-    overflow: visible !important;
   }
 
   .codeview-resizable-group > [data-pane]:first-child {
-    max-height: 46dvh;
-    min-height: 14rem;
+    height: min(48dvh, 26rem);
+    max-height: min(48dvh, 26rem);
+    min-height: 16rem;
+    overflow: hidden !important;
     border-right: 0;
     border-bottom: 1px solid var(--panel-border-strong);
   }
 
   .codeview-resizable-group > [data-pane]:not(:first-child) {
     min-height: 60dvh;
+    overflow: visible !important;
   }
 
   .codeview-resizable-group > [data-pane-resizer] {

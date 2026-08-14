@@ -103,6 +103,7 @@
 	} = $props();
 
 	let hydrated = $state(false);
+	let narrowExplorer = $state(false);
 	const expandedIds = new SvelteSet<string>();
 	const collapsedIds = new SvelteSet<string>();
 	const childrenCache = new Map<string, TreeNodeDTO[]>();
@@ -151,9 +152,16 @@
 
 	onMount(() => {
 		hydrated = true;
+		const narrowQuery = window.matchMedia('(max-width: 1023.98px)');
+		const syncNarrowExplorer = () => {
+			narrowExplorer = narrowQuery.matches;
+		};
+		syncNarrowExplorer();
+		narrowQuery.addEventListener('change', syncNarrowExplorer);
 		window.addEventListener('keydown', handleExplorerKeydown);
 		window.addEventListener('codeview-doc-layout-change', handleDocLayoutPreferenceEvent);
 		return () => {
+			narrowQuery.removeEventListener('change', syncNarrowExplorer);
 			window.removeEventListener('keydown', handleExplorerKeydown);
 			window.removeEventListener('codeview-doc-layout-change', handleDocLayoutPreferenceEvent);
 		};
@@ -179,6 +187,7 @@
 	const expandPath = $derived(expandPathCtx.getOr(null));
 	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
 	const docLayout = $derived(localDocLayoutOverride ?? viewState.layout ?? preferredDocLayout);
+	const stackExplorerTree = $derived(docLayout === 'classic' || narrowExplorer);
 	const theme = $derived(resolvedThemeCtx.getOr('light'));
 	const crateVersions = $derived(crateVersionsCtx.getOr({}));
 
@@ -1006,11 +1015,11 @@
 
 {#snippet treePane(frameClass: string)}
 	<aside
-		class={`flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
+		class={`tree-pane flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
 		aria-label="Module tree"
 	>
-		<div class="border-b border-(--panel-border-soft) px-4 pt-4 pb-3">
-			<div class="mb-1 text-xs font-medium text-(--muted-soft)">
+		<div class="tree-chrome shrink-0 border-b border-(--panel-border-soft) px-4 pt-4 pb-3">
+			<div class="tree-chrome-kicker mb-1 text-xs font-medium text-(--muted-soft)">
 				Module tree
 			</div>
 			<div class="flex min-w-0 items-center gap-2">
@@ -1110,7 +1119,7 @@
 				{/if}
 			</form>
 			{#if populatedKinds.length > 0}
-				<div class="mt-2 flex flex-wrap gap-1">
+				<div class="tree-kinds mt-2 flex flex-wrap gap-1">
 					{#each populatedKinds as facet (facet.kind)}
 						{@const isActive = kindFilter.has(facet.kind)}
 						<button
@@ -1175,7 +1184,7 @@
 				{/if}
 			{:else if treeRoots && treeRoots.length > 0}
 				<div
-					class="js-only flex items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"
+					class="js-only flex shrink-0 items-center gap-2 border-b border-(--panel-border-soft) px-3 py-2"
 					aria-label="Tree actions"
 				>
 					<button
@@ -1229,7 +1238,7 @@
 		</div>
 
 		{#if crateList.length > 0 || loadingCrateSwitcher}
-			<div class="border-t border-(--panel-border-soft) px-4 py-3">
+			<div class="tree-crate-switcher shrink-0 border-t border-(--panel-border-soft) px-4 py-3">
 				<div class="mb-2 flex items-center gap-2">
 					<span class="text-2xs font-medium text-(--muted-soft)">
 						{crateSwitcherLabel}
@@ -1508,7 +1517,7 @@
 					{@render detailPane('border-l border-(--panel-border-soft)')}
 				</Resizable.Pane>
 			</Resizable.PaneGroup>
-		{:else if docLayout === 'classic'}
+		{:else if stackExplorerTree}
 			<Resizable.PaneGroup
 				direction="horizontal"
 				autoSaveId="codeview-doc-classic"
@@ -1534,6 +1543,31 @@
 <style>
 	@media (max-width: 379.98px) {
 		.live-explorer :global(.mode-label) {
+			display: none;
+		}
+	}
+
+	@media (max-width: 1023.98px) {
+		.tree-chrome {
+			padding: 0.75rem 0.75rem 0.5rem;
+		}
+
+		.tree-chrome-kicker {
+			display: none;
+		}
+
+		.tree-kinds {
+			flex-wrap: nowrap;
+			overflow-x: auto;
+			padding-bottom: 0.125rem;
+			scrollbar-width: thin;
+		}
+
+		.tree-kinds :global(.badge) {
+			flex-shrink: 0;
+		}
+
+		.tree-crate-switcher {
 			display: none;
 		}
 	}

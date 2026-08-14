@@ -42,6 +42,7 @@
 			{crateName}
 			{crateVersion}
 			{crateVersions}
+			showBreadcrumb={false}
 			className="doc-article--classic"
 		/>
 	</article>

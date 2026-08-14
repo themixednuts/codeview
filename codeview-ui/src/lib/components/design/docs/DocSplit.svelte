@@ -61,6 +61,8 @@
 	});
 	let sourceResult = $state<SourceResult | null>(null);
 	let sourceLoaded = $state(false);
+	let sourceScroller = $state<HTMLDivElement | null>(null);
+	let sourceHighlightReady = $state(false);
 	const sourceContent = $derived(sourceResult?.content ?? null);
 	const absolutePath = $derived(sourceResult?.absolutePath ?? null);
 	const repoUrl = $derived(sourceResult?.repoUrl ?? null);
@@ -75,6 +77,7 @@
 		let cancelled = false;
 		sourceResult = null;
 		sourceLoaded = false;
+		sourceHighlightReady = false;
 
 		void getSource(sourceInput)
 			.then((result) => {
@@ -104,6 +107,25 @@
 		if (file.endsWith('.json')) return 'json';
 		return 'text';
 	}
+
+	function onSourceHighlightReady(ready: boolean) {
+		sourceHighlightReady = ready;
+	}
+
+	$effect(() => {
+		if (!sourceHighlightReady || !sourceScroller) return;
+		const line = highlightLines[0];
+		if (line == null) return;
+		const target = sourceScroller.querySelector(`[data-line="${String(line)}"]`);
+		if (!(target instanceof HTMLElement)) return;
+		const scroller = sourceScroller;
+		const offset =
+			target.getBoundingClientRect().top -
+			scroller.getBoundingClientRect().top +
+			scroller.scrollTop -
+			scroller.clientHeight / 3;
+		scroller.scrollTo({ top: Math.max(0, offset) });
+	});
 </script>
 
 {#snippet classicFallback()}
@@ -122,9 +144,9 @@
 {/snippet}
 
 {#snippet splitFrame(sourceContent: string | null, repoUrl: string | null)}
-	<div class="doc-split grid min-h-full grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(480px,44%)]">
+	<div class="doc-split grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,44%)]">
 		<article
-			class="min-w-0 overflow-y-auto px-4 py-5 sm:px-8 sm:py-7 xl:border-r xl:border-(--panel-border-soft)"
+			class="min-h-0 min-w-0 overflow-y-auto px-4 py-5 sm:px-8 sm:py-7 xl:border-r xl:border-(--panel-border-soft)"
 		>
 			<DocArticle
 				{detail}
@@ -135,12 +157,13 @@
 				{crateName}
 				{crateVersion}
 				{crateVersions}
+				showBreadcrumb={false}
 				className="doc-article--split"
 			/>
 		</article>
 
 		<aside
-			class="flex min-h-[420px] flex-col overflow-hidden bg-(--code-bg) text-(--code-ink)"
+			class="doc-split-source flex min-h-0 flex-col overflow-hidden bg-(--code-bg) text-(--code-ink)"
 			aria-label={`Source for ${detail.node.name}`}
 		>
 			<div
@@ -161,13 +184,13 @@
 				<SourceActions
 					{repoUrl}
 					{absolutePath}
-					sourceFile={span.file}
-					line={span.line}
+					sourceFile={span?.file ?? ''}
+					line={span?.line ?? 1}
 					className="split-source-actions"
 				/>
 			</div>
 
-			<div class="min-h-0 flex-1 overflow-auto">
+			<div bind:this={sourceScroller} class="min-h-0 flex-1 overflow-auto">
 				{#if sourceContent}
 					<CodeBlock
 						code={sourceContent}
@@ -177,6 +200,7 @@
 						{highlightLines}
 						showLineNumbers={true}
 						variant="flat"
+						onHighlightStateChange={onSourceHighlightReady}
 					/>
 				{:else}
 					<div
@@ -215,6 +239,12 @@
 <style>
 	.doc-split {
 		background: var(--bg);
+		min-height: 100%;
+	}
+
+	.doc-split-source {
+		min-height: min(26rem, 70dvh);
+		max-height: 70dvh;
 	}
 
 	.doc-split :global(.doc-article--split .doc-section h2) {
@@ -231,5 +261,18 @@
 
 	.doc-split :global(.design-codeblock pre) {
 		min-height: 100%;
+	}
+
+	@media (min-width: 1280px) {
+		.doc-split {
+			height: 100%;
+			min-height: 0;
+			max-height: 100%;
+		}
+
+		.doc-split-source {
+			min-height: 0;
+			max-height: none;
+		}
 	}
 </style>
