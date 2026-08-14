@@ -17,6 +17,7 @@ allowBuilds:
   msgpackr-extract: true
 
 patchedDependencies:
+  '@alchemy.run/cloudflare-frameworks@2.0.0-beta.72': patches/@alchemy.run__cloudflare-frameworks@2.0.0-beta.72.patch
   "@jesterkit/exe-sveltekit@0.1.7": patches/@jesterkit%2Fexe-sveltekit@0.1.7.patch
 
 overrides:

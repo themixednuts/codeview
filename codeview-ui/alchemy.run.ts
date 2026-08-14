@@ -1,6 +1,5 @@
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Stage } from "alchemy/Stage";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
@@ -28,6 +27,7 @@ export const Parser = Cloudflare.Worker("Parser", {
   name: parserScriptName,
   main: "./src/parse-worker.ts",
   compatibility: { date: compatibilityDate },
+  crons: ["*/5 * * * *"],
   env: {
     CRATE_GRAPHS: CrateGraphs,
     PARSE_REQUESTS: ParseRequests,
@@ -42,7 +42,7 @@ export const Parser = Cloudflare.Worker("Parser", {
     GITHUB_WORKFLOW_FILE: "parse.yml",
     PARSE_CALLBACK_BASE_URL: "https://codeview-parser.jonfonts.workers.dev",
     PLAN_DRAIN_ACTIVE_TARGET: "4",
-    PLAN_DRAIN_BATCH_SIZE: "0",
+    PLAN_DRAIN_BATCH_SIZE: "4",
     PARSE_DISPATCH_BURST: "4",
     PARSE_DISPATCH_REFILL_SECONDS: "45",
     DOCSRS_PARSE_BURST: "4",
@@ -56,45 +56,43 @@ export const Parser = Cloudflare.Worker("Parser", {
 
 export const Website = Cloudflare.Website.SvelteKit(
   "Website",
-  Effect.gen(function* () {
-    const stage = yield* Stage;
-    return {
-      name: `codeview-website-${stage}`,
-      domain: "codeview.codes",
-      compatibility: { date: compatibilityDate },
-      env: {
-        AUTH_DB: AuthDb,
-        CRATE_GRAPHS: CrateGraphs,
-        PARSE_REQUESTS: ParseRequests,
-        PARSE_STATUS: Cloudflare.DurableObject("PARSE_STATUS", {
-          className: "ParseStatusDurableObject",
-          scriptName: parserScriptName,
-        }),
-        RATE_LIMIT_API: Cloudflare.RateLimit("RATE_LIMIT_API", {
-          namespaceId: 1001,
-          simple: { limit: 60, period: 60 },
-        }),
-        RATE_LIMIT_PARSE_ANON: Cloudflare.RateLimit("RATE_LIMIT_PARSE_ANON", {
-          namespaceId: 1002,
-          simple: { limit: 6, period: 60 },
-        }),
-        RATE_LIMIT_PARSE_AUTH: Cloudflare.RateLimit("RATE_LIMIT_PARSE_AUTH", {
-          namespaceId: 1003,
-          simple: { limit: 60, period: 60 },
-        }),
-        BETTER_AUTH_URL: "https://codeview.codes",
-        GITHUB_OAUTH_CLIENT_ID: "Ov23liaAIxx0Vmp8F0zE",
-        GITHUB_ADMIN_LOGINS: "themixednuts",
-        GITHUB_REPO: "themixednuts/codeview",
-        GITHUB_REF: "main",
-        GITHUB_WORKFLOW_FILE: "parse.yml",
-        PLAN_DRAIN_ACTIVE_TARGET: "4",
-        PLAN_DRAIN_BATCH_SIZE: "0",
-        GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35",
-        BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
-        GITHUB_OAUTH_CLIENT_SECRET: Config.redacted("GITHUB_OAUTH_CLIENT_SECRET"),
-      },
-    };
+  Effect.succeed({
+    name: "codeview",
+    domain: "codeview.codes",
+    compatibility: { date: compatibilityDate },
+    env: {
+      AUTH_DB: AuthDb,
+      CRATE_GRAPHS: CrateGraphs,
+      PARSE_REQUESTS: ParseRequests,
+      PARSE_STATUS: Cloudflare.DurableObject("PARSE_STATUS", {
+        className: "ParseStatusDurableObject",
+        scriptName: parserScriptName,
+      }),
+      RATE_LIMIT_API: Cloudflare.RateLimit("RATE_LIMIT_API", {
+        namespaceId: 1001,
+        simple: { limit: 60, period: 60 },
+      }),
+      RATE_LIMIT_PARSE_ANON: Cloudflare.RateLimit("RATE_LIMIT_PARSE_ANON", {
+        namespaceId: 1002,
+        simple: { limit: 6, period: 60 },
+      }),
+      RATE_LIMIT_PARSE_AUTH: Cloudflare.RateLimit("RATE_LIMIT_PARSE_AUTH", {
+        namespaceId: 1003,
+        simple: { limit: 60, period: 60 },
+      }),
+      BETTER_AUTH_URL: "https://codeview.codes",
+      GITHUB_OAUTH_CLIENT_ID: "Ov23liaAIxx0Vmp8F0zE",
+      GITHUB_ADMIN_LOGINS: "themixednuts",
+      GITHUB_REPO: "themixednuts/codeview",
+      GITHUB_REF: "main",
+      GITHUB_WORKFLOW_FILE: "parse.yml",
+      PLAN_DRAIN_ACTIVE_TARGET: "4",
+      PLAN_DRAIN_BATCH_SIZE: "4",
+      GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35",
+      BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
+      GITHUB_OAUTH_CLIENT_SECRET: Config.redacted("GITHUB_OAUTH_CLIENT_SECRET"),
+      GITHUB_TOKEN: Config.redacted("GITHUB_TOKEN"),
+    },
   }),
 );
 

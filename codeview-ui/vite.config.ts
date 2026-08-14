@@ -203,23 +203,33 @@ export default defineConfig({
       ? undefined
       : (await import("@jesterkit/exe-sveltekit")).default({ binaryName: "codeview-server" });
 
-    return [
-      tailwindcss(),
-      sveltekit({
-        adapter,
-        compilerOptions: {
-          runes: ({ filename }) =>
-            filename.split(/[/\\]/).includes("node_modules") ? undefined : true,
-          experimental: { async: true },
-        },
-        experimental: { remoteFunctions: true },
-        version: {
-          name: appVersion,
-          pollInterval: 60_000,
-        },
-      }),
-      localWebSocket(),
-    ];
+    const kitPlugins = await sveltekit({
+      adapter,
+      compilerOptions: {
+        runes: ({ filename }) =>
+          filename.split(/[/\\]/).includes("node_modules") ? undefined : true,
+        experimental: { async: true },
+      },
+      experimental: { remoteFunctions: true },
+      version: {
+        name: appVersion,
+        pollInterval: 60_000,
+      },
+    });
+    // Kit 3 stores sveltekit() options on api.options. Alchemy still looks for
+    // the Kit 2 svelte.config.js shape api.options.kit when injecting its adapter.
+    for (const plugin of kitPlugins) {
+      if (plugin.name !== "vite-plugin-sveltekit-setup") continue;
+      const api = plugin.api;
+      if (!Predicate.isObject(api) || !("options" in api) || !Predicate.isObject(api.options)) {
+        continue;
+      }
+      if (!("kit" in api.options) || api.options.kit === undefined) {
+        api.options.kit = api.options;
+      }
+    }
+
+    return [tailwindcss(), ...kitPlugins, localWebSocket()];
   }),
   css: { devSourcemap: true },
   server: {

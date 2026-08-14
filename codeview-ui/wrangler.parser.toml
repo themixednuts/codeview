@@ -4,6 +4,9 @@ compatibility_date = "2026-07-08"
 compatibility_flags = ["nodejs_compat"]
 main = "src/parse-worker.ts"
 
+[triggers]
+crons = ["*/5 * * * *"]
+
 [vars]
 GITHUB_REPO = "themixednuts/codeview"
 GITHUB_REF = "main"
@@ -17,8 +20,8 @@ SYSROOT_PARSE_BURST = "1"
 SYSROOT_PARSE_REFILL_SECONDS = "600"
 # Active GitHub/exact-crate capacity for on-demand queue dispatch (not shard bulk).
 PLAN_DRAIN_ACTIVE_TARGET = "4"
-# 0 = do not siphon the daily R2 plan into the CF queue; shards own planned work.
-PLAN_DRAIN_BATCH_SIZE = "0"
+# Leftover daily-plan items siphoned into the CF queue each cron tick.
+PLAN_DRAIN_BATCH_SIZE = "4"
 
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"

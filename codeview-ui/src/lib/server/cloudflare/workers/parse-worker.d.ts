@@ -15,7 +15,7 @@ interface __BaseEnv_Env {
   SYSROOT_PARSE_BURST: "1";
   SYSROOT_PARSE_REFILL_SECONDS: "600";
   PLAN_DRAIN_ACTIVE_TARGET: "4";
-  PLAN_DRAIN_BATCH_SIZE: "0";
+  PLAN_DRAIN_BATCH_SIZE: "4";
   PARSE_STATUS: DurableObjectNamespace<import("../../../../parse-worker").ParseStatusDurableObject>;
   PARSE_WORKFLOW: Workflow<
     Parameters<import("../../../../parse-worker").ParseCrateWorkflow["run"]>[0]["payload"]

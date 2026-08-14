@@ -2435,6 +2435,31 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 }
 
 export default {
+  async scheduled(_controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
+    const reconciled = await reconcileFinalizingParses(env);
+    if (reconciled.ready > 0 || reconciled.failed > 0) {
+      console.log(
+        `reconciled finalizing parses ready=${reconciled.ready} failed=${reconciled.failed}`,
+      );
+    }
+    const stale = await reconcileStaleProcessingParses(env);
+    if (stale.ready > 0 || stale.failed > 0) {
+      console.log(
+        `reconciled stale parses ready=${stale.ready} failed=${stale.failed} kept=${stale.kept}`,
+      );
+    }
+    const result = await drainPlannedParses(env);
+    if (result.budgetLimited) {
+      console.log(
+        `planned parse drain paused reason=${result.budgetReason ?? "budget-limited"}`,
+      );
+    } else if (result.queued > 0) {
+      console.log(
+        `drained planned parses queued=${result.queued} skipped=${result.skipped} activeTarget=${result.activeTarget} actionsInUse=${result.actionsInUse} statusActive=${result.statusActive} githubActive=${result.githubActive}`,
+      );
+    }
+  },
+
   async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
     for (const message of batch.messages) {
       const body = Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Json)(message.body));

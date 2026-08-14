@@ -1,0 +1,26 @@
+diff --git a/dist/_chunks/cloudflare-DlrU1xIv.js b/dist/_chunks/cloudflare-DlrU1xIv.js
+index 76d7a902b4905481c80014373f8743a290f6c4a4..c0b4072ce03f7507ba100d588db44c35e05647c6 100644
+--- a/dist/_chunks/cloudflare-DlrU1xIv.js
++++ b/dist/_chunks/cloudflare-DlrU1xIv.js
+@@ -541,7 +541,7 @@ const makeCloudflareTarget = (config = {}) => makeDeployTarget({
+ 		const serverModules = sortServerModules(yield* readServerModulesFromDisk({
+ 			directory: serverOutDir,
+ 			prefix: "server"
+-		}).pipe(Effect.mapError(wrapCollectorError)), NodePath.join("server", "index.js"));
++		}).pipe(Effect.mapError(wrapCollectorError)), "server/index.js");
+ 		const externalWorkspaces = yield* collectExternalWorkspaces(externalDirectories).pipe(Effect.mapError(wrapCollectorError));
+ 		return {
+ 			...output,
+diff --git a/src/sveltekit/cloudflare.ts b/src/sveltekit/cloudflare.ts
+index 1d141eb98dc1993a04d3f12d4e70b9315e396074..1eef81f381e5f9eff166c606fa993a04199007f8 100644
+--- a/src/sveltekit/cloudflare.ts
++++ b/src/sveltekit/cloudflare.ts
+@@ -170,7 +170,7 @@ export const makeCloudflareTarget = (
+         }).pipe(Effect.mapError(wrapCollectorError));
+         const serverModules = FrameworkCore.sortServerModules(
+           modules,
+-          NodePath.join("server", "index.js"),
++          "server/index.js",
+         );
+         const externalWorkspaces =
+           yield* FrameworkCore.collectExternalWorkspaces(

@@ -22,6 +22,7 @@ overrides:
   cookie: '>=0.7.0'
 
 patchedDependencies:
+  '@alchemy.run/cloudflare-frameworks@2.0.0-beta.72': 7232a38763dcdcdf87a194a265baddb3304ff381f8ee65fabebf2468710bdaa4
   '@jesterkit/exe-sveltekit@0.1.7': b3a75e3f035a5a2e81b4094412ccf85a04e6e4e732ef46204e594f4a818c0ed3
 
 importers:
@@ -109,7 +110,7 @@ importers:
     devDependencies:
       '@alchemy.run/cloudflare-frameworks':
         specifier: 2.0.0-beta.72
-        version: 2.0.0-beta.72(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(effect@4.0.0-rc.109)(hono@4.13.2)(supports-color@10.2.2)(typescript@6.0.3)
+        version: 2.0.0-beta.72(patch_hash=7232a38763dcdcdf87a194a265baddb3304ff381f8ee65fabebf2468710bdaa4)(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(effect@4.0.0-rc.109)(hono@4.13.2)(supports-color@10.2.2)(typescript@6.0.3)
       '@cloudflare/workers-types':
         specifier: 5.20260814.1
         version: 5.20260814.1
@@ -5662,7 +5663,7 @@ snapshots:
       drizzle-orm: 1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3)
       kysely: 0.29.5
 
-  '@alchemy.run/cloudflare-frameworks@2.0.0-beta.72(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(effect@4.0.0-rc.109)(hono@4.13.2)(supports-color@10.2.2)(typescript@6.0.3)':
+  '@alchemy.run/cloudflare-frameworks@2.0.0-beta.72(patch_hash=7232a38763dcdcdf87a194a265baddb3304ff381f8ee65fabebf2468710bdaa4)(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(effect@4.0.0-rc.109)(hono@4.13.2)(supports-color@10.2.2)(typescript@6.0.3)':
     dependencies:
       '@alchemy.run/cloudflare-runtime': 2.0.0-beta.72(@distilled.cloud/cloudflare@1.0.0-rc.4(effect@4.0.0-rc.109))(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(effect@4.0.0-rc.109)(rolldown@1.1.5)(supports-color@10.2.2)(typescript@6.0.3)
       '@distilled.cloud/cloudflare': 1.0.0-rc.4(effect@4.0.0-rc.109)

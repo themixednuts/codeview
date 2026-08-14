@@ -40,7 +40,7 @@
     "static:batch": "node scripts/with-env.ts STATIC_R2_TARGET=local WRANGLER_PERSIST_TO=.wrangler/state CODEVIEW_SKIP_SIDECAR=1 -- cargo run --release --manifest-path ../Cargo.toml -p codeview-cli -- cron seed-std --if-missing && node scripts/with-env.ts STATIC_R2_TARGET=local WRANGLER_PERSIST_TO=.wrangler/state CODEVIEW_SKIP_SIDECAR=1 TOP_CRATE_COUNT?=30 -- cargo run --release --manifest-path ../Cargo.toml -p codeview-cli -- cron publish-run --corpus top:{TOP_CRATE_COUNT} --max-total {TOP_CRATE_COUNT}",
     "infra:dev": "node scripts/with-platform.ts cloudflare alchemy dev",
     "infra:plan": "alchemy plan",
-    "infra:deploy": "alchemy deploy",
+    "infra:deploy": "node scripts/with-platform.ts cloudflare alchemy deploy",
     "cf:dev": "pnpm cron:seed-std:if-missing && pnpm infra:dev",
     "cf:dev:clear": "rm -rf .wrangler .alchemy && pnpm cf:dev",
     "cf:deploy": "pnpm infra:deploy"
