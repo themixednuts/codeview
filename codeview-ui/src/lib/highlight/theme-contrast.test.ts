@@ -33,7 +33,7 @@ function contrastRatio(foreground: string, background: string): number {
 describe("static code theme tokens", () => {
   it.each(themes)("%s keeps every text token at WCAG AA contrast", (theme) => {
     const block = appCss.match(
-      new RegExp(`\\[data-code-theme='${theme}'\\] \\{([\\s\\S]*?)\\n\\t\\}`),
+      new RegExp(`\\[data-code-theme=["']${theme}["']\\]\\s*\\{([\\s\\S]*?)\\n\\s*\\}`),
     )?.[1];
     expect(block, `${theme} CSS block`).toBeDefined();
     const variables = Object.fromEntries(

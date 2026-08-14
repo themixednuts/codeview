@@ -49,6 +49,8 @@
     "@alchemy.run/better-auth": "2.0.0-beta.72",
     "@logtape/logtape": "2.0.2",
     "@lucide/svelte": "1.31.0",
+    "@shikijs/langs": "3.22.0",
+    "@shikijs/themes": "3.22.0",
     "@shikijs/transformers": "3.22.0",
     "@streamparser/json-whatwg": "0.0.22",
     "@xyflow/svelte": "1.6.1",

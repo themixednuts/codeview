@@ -30,13 +30,19 @@ importers:
     dependencies:
       '@alchemy.run/better-auth':
         specifier: 2.0.0-beta.72
-        version: 2.0.0-beta.72(a8a888c549c3045cbfaccdeec448d1e5)
+        version: 2.0.0-beta.72(d2fe9fd391c89f7fb95ecd1f5f59a25f)
       '@logtape/logtape':
         specifier: 2.0.2
         version: 2.0.2
       '@lucide/svelte':
         specifier: 1.31.0
         version: 1.31.0(svelte@5.56.9)
+      '@shikijs/langs':
+        specifier: 3.22.0
+        version: 3.22.0
+      '@shikijs/themes':
+        specifier: 3.22.0
+        version: 3.22.0
       '@shikijs/transformers':
         specifier: 3.22.0
         version: 3.22.0
@@ -48,7 +54,7 @@ importers:
         version: 1.6.1(svelte@5.56.9)
       better-auth:
         specifier: 1.7.0-rc.5
-        version: 1.7.0-rc.5(@cloudflare/workers-types@5.20260814.1)(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(svelte@5.56.9)(vitest@4.1.10)
+        version: 1.7.0-rc.5(@cloudflare/workers-types@5.20260814.1)(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(svelte@5.56.9)(vitest@4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0)))
       better-result:
         specifier: 2.7.0
         version: 2.7.0
@@ -202,7 +208,7 @@ importers:
         version: 0.2.9(@types/node@25.6.0)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.2)(jiti@2.7.0)(svelte@5.56.9)(typescript@6.0.3)(yaml@2.9.0)
       vitest:
         specifier: 4.1.10
-        version: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
+        version: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
       wrangler:
         specifier: 4.110.0
         version: 4.110.0(@cloudflare/workers-types@5.20260814.1)
@@ -5646,10 +5652,10 @@ snapshots:
       ansi-styles: 6.2.3
       is-fullwidth-code-point: 5.1.0
 
-  '@alchemy.run/better-auth@2.0.0-beta.72(a8a888c549c3045cbfaccdeec448d1e5)':
+  '@alchemy.run/better-auth@2.0.0-beta.72(d2fe9fd391c89f7fb95ecd1f5f59a25f)':
     dependencies:
       alchemy: 2.0.0-beta.72(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(effect@4.0.0-rc.109)(supports-color@10.2.2)(typescript@6.0.3)(vitest@4.1.10)(ws@8.21.3)
-      better-auth: 1.7.0-rc.5(@cloudflare/workers-types@5.20260814.1)(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(svelte@5.56.9)(vitest@4.1.10)
+      better-auth: 1.7.0-rc.5(@cloudflare/workers-types@5.20260814.1)(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(svelte@5.56.9)(vitest@4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0)))
       effect: 4.0.0-rc.109
     optionalDependencies:
       '@cloudflare/workers-types': 5.20260814.1
@@ -6124,7 +6130,7 @@ snapshots:
   '@effect/vitest@4.0.0-rc.109(effect@4.0.0-rc.109)(vitest@4.1.10)':
     dependencies:
       effect: 4.0.0-rc.109
-      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
+      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
 
   '@electric-sql/pglite-socket@0.0.20(@electric-sql/pglite@0.3.15)':
     dependencies:
@@ -7801,7 +7807,7 @@ snapshots:
       '@testing-library/dom': 10.4.1
       '@testing-library/user-event': 14.6.4(@testing-library/dom@10.4.1)
       '@vitest/browser': 4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10)
-      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
+      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -7817,7 +7823,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.1
-      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
+      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
       ws: 8.21.3
     transitivePeerDependencies:
       - bufferutil
@@ -8141,7 +8147,7 @@ snapshots:
 
   before-after-hook@4.0.0: {}
 
-  better-auth@1.7.0-rc.5(@cloudflare/workers-types@5.20260814.1)(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(svelte@5.56.9)(vitest@4.1.10):
+  better-auth@1.7.0-rc.5(@cloudflare/workers-types@5.20260814.1)(@sveltejs/kit@3.0.0-next.23(@sveltejs/vite-plugin-svelte@7.3.0(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(svelte@5.56.9)(typescript@6.0.3))(drizzle-kit@1.0.0-rc.5-ab785fc)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))(react-dom@18.3.1(react@18.3.1))(react@18.3.1)(svelte@5.56.9)(vitest@4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))):
     dependencies:
       '@better-auth/core': 1.7.0-rc.5(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260814.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.8)(kysely@0.29.5)(nanostores@1.4.2)
       '@better-auth/drizzle-adapter': 1.7.0-rc.5(@better-auth/core@1.7.0-rc.5(@better-auth/utils@0.4.2)(@better-fetch/fetch@1.3.1)(@cloudflare/workers-types@5.20260814.1)(better-call@1.4.0(zod@4.4.3))(jose@6.2.8)(kysely@0.29.5)(nanostores@1.4.2))(@better-auth/utils@0.4.2)(drizzle-orm@1.0.0-rc.5-ab785fc(@cloudflare/workers-types@5.20260814.1)(@effect/sql-d1@4.0.0-rc.109(effect@4.0.0-rc.109))(@effect/sql-sqlite-do@4.0.0-rc.109(effect@4.0.0-rc.109))(@electric-sql/pglite@0.3.15)(@libsql/client@0.17.4)(effect@4.0.0-rc.109)(valibot@1.2.0(typescript@6.0.3))(zod@4.4.3))
@@ -8167,7 +8173,7 @@ snapshots:
       react: 18.3.1
       react-dom: 18.3.1(react@18.3.1)
       svelte: 5.56.9
-      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
+      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
     transitivePeerDependencies:
       - '@cloudflare/workers-types'
       - '@opentelemetry/api'
@@ -10266,7 +10272,7 @@ snapshots:
       oxfmt: 0.62.0(svelte@5.56.9)(vite-plus@0.2.9(@types/node@25.6.0)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.2)(jiti@2.7.0)(svelte@5.56.9)(typescript@6.0.3)(yaml@2.9.0))
       oxlint: 1.77.0(oxlint-tsgolint@7.0.2001)(vite-plus@0.2.9(@types/node@25.6.0)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(esbuild@0.28.2)(jiti@2.7.0)(svelte@5.56.9)(typescript@6.0.3)(yaml@2.9.0))
       oxlint-tsgolint: 7.0.2001
-      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
+      vitest: 4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
     optionalDependencies:
       '@voidzero-dev/vite-plus-darwin-arm64': 0.2.9
       '@voidzero-dev/vite-plus-darwin-x64': 0.2.9
@@ -10311,7 +10317,7 @@ snapshots:
     optionalDependencies:
       vite: '@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0)'
 
-  vitest@4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))(vitest@4.1.10))(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0)):
+  vitest@4.1.10(@types/node@25.6.0)(@vitest/browser-preview@4.1.10)(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0)):
     dependencies:
       '@vitest/expect': 4.1.10
       '@vitest/mocker': 4.1.10(@voidzero-dev/vite-plus-core@0.2.9(@types/node@25.6.0)(esbuild@0.28.2)(jiti@2.7.0)(typescript@6.0.3)(yaml@2.9.0))
