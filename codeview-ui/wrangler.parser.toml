@@ -48,5 +48,5 @@ name = "PARSE_STATUS"
 class_name = "ParseStatusDurableObject"
 
 [[migrations]]
-tag = "v1_parse_status_sqlite"
+tag = "alchemy:v1"
 new_sqlite_classes = ["ParseStatusDurableObject"]
