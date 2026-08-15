@@ -121,8 +121,8 @@
 						}
 					})}
 				>
-					<input type="hidden" name="name" value={crateName ?? ''} />
-					<input type="hidden" name="version" value={version ?? ''} />
+					<input {...parseForm.fields.name.as('hidden', crateName ?? '')} />
+					<input {...parseForm.fields.version.as('hidden', version ?? '')} />
 					<Button type="submit" disabled={!canRetry || queueing}>
 						{queueing ? 'Queueing...' : retryLabel}
 					</Button>

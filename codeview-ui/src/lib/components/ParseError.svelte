@@ -58,8 +58,8 @@
 				}
 			})}
 		>
-			<input type="hidden" name="name" value={crateName ?? ''} />
-			<input type="hidden" name="version" value={version ?? ''} />
+			<input {...retryForm.fields.name.as('hidden', crateName ?? '')} />
+			<input {...retryForm.fields.version.as('hidden', version ?? '')} />
 			<Button type="submit" disabled={!canRetry || retrying}>
 				{retrying ? 'Retrying...' : 'Retry'}
 			</Button>
