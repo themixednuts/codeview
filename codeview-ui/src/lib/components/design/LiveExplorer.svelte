@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/env';
-	import { afterNavigate, goto, invalidateAll, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
 		KindFacet,
@@ -142,7 +142,7 @@
 		localDocLayoutOverride = event.detail;
 	}
 
-	// A real navigation has authoritative URL state. replaceState updates stay
+	// A real navigation has authoritative URL state. Shallow goto updates stay
 	// immediate through the local overrides below and do not trigger this hook.
 	afterNavigate(() => {
 		filterOverride = null;
@@ -665,7 +665,7 @@
 		if (browser) {
 			if (patch.view !== undefined) localViewOverride = patch.view;
 			if (patch.layout !== undefined) localDocLayoutOverride = patch.layout;
-			replaceState(nextUrl, page.state);
+			void goto(nextUrl, { state: page.state, shallow: true, replace: true });
 			if (patch.layout) document.documentElement.dataset.docLayout = patch.layout;
 			return;
 		}
@@ -677,7 +677,11 @@
 
 	function replaceExplorerState(patch: Partial<ExplorerViewState>) {
 		if (!browser) return;
-		replaceState(serializeExplorerState(new URL(window.location.href), patch), page.state);
+		void goto(serializeExplorerState(new URL(window.location.href), patch), {
+			state: page.state,
+			shallow: true,
+			replace: true,
+		});
 	}
 
 	function currentExtraExpandedIds(): string[] {
@@ -735,7 +739,7 @@
 
 	function retrySearch() {
 		if (searchQuery) void searchQuery.refresh();
-		else void invalidateAll();
+		else void refreshAll();
 	}
 
 	function toggleKind(kind: NodeKind) {
@@ -851,7 +855,7 @@
 		title={`${label} view`}
 		onclick={(event) => {
 			// Progressive enhancement: real URL works without JS.
-			// With JS, keep focus/scroll and use replaceState path from updateExplorerState.
+			// With JS, keep focus/scroll and use the shallow goto from updateExplorerState.
 			if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
 				return;
 			}

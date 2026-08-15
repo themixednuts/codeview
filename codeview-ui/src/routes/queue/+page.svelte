@@ -168,7 +168,7 @@
 						{#each visibleActiveEntries as entry (`${entry.name}@${entry.version}:${entry.requestId}`)}
 							<a
 								href={itemHref(entry.name, entry.version)}
-								data-sveltekit-preload-data="off"
+								data-sveltekit-preload-data="false"
 								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[64px_minmax(0,1fr)_220px]"
 							>
 								<div class="font-mono text-xs text-(--muted-soft)">
@@ -245,7 +245,7 @@
 						{#each visiblePlannedItems as item (item.workId)}
 							<a
 								href={itemHref(item.name, item.version)}
-								data-sveltekit-preload-data="off"
+								data-sveltekit-preload-data="false"
 								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[minmax(0,1fr)_180px]"
 							>
 								<div class="min-w-0">
@@ -316,7 +316,7 @@
 						{#each visibleRecentEntries as item (`${item.name}@${item.version}:${item.updatedAt}`)}
 							<a
 								href={itemHref(item.name, item.version)}
-								data-sveltekit-preload-data="off"
+								data-sveltekit-preload-data="false"
 								class="group grid gap-3 border-t border-(--panel-border-soft) bg-(--panel) px-4 py-3 transition-colors first:border-t-0 hover:bg-(--panel-strong) md:grid-cols-[minmax(0,1fr)_220px]"
 							>
 								<div class="min-w-0">

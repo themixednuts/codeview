@@ -142,7 +142,7 @@
 							{#each searchResults as crate (crateKey(crate))}
 								<a
 									href={crateHref(crate)}
-									data-sveltekit-preload-data="off"
+									data-sveltekit-preload-data="false"
 									class="corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-[border-color,background-color,box-shadow] hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
 									<div class="flex min-w-0 items-baseline gap-2">
@@ -184,7 +184,7 @@
 							{#each localCrates as crate (crateKey(crate))}
 								<a
 									href={crateHref(crate)}
-									data-sveltekit-preload-data="off"
+									data-sveltekit-preload-data="false"
 									class="group corner-squircle flex min-w-0 items-center gap-2.5 rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) px-3 py-2.5 transition-[border-color,background-color,box-shadow] hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
 									<KindBadge kind="crate" size={14} />
@@ -220,7 +220,7 @@
 							{#each topCrates as crate (crateKey(crate))}
 								<a
 									href={crateHref(crate)}
-									data-sveltekit-preload-data="off"
+									data-sveltekit-preload-data="false"
 									class="group corner-squircle block rounded-(--radius-card) border border-(--panel-border) bg-(--panel) px-4 py-3.5 transition-[border-color,background-color,box-shadow] hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:shadow-(--shadow-soft)"
 								>
 									<div class="flex items-start justify-between gap-3">

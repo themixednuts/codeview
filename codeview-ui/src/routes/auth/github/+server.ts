@@ -12,5 +12,6 @@ export const POST: RequestHandler = async (event) => {
   const result = await signInWithGithub(event, callbackURL);
 
   if (!result.url) error(502, "GitHub sign-in did not return a redirect");
-  redirectToGithubOAuth(result.url);
+  if (result.setCookies.length === 0) error(502, "GitHub sign-in did not set OAuth cookies");
+  return redirectToGithubOAuth(result.url, result.setCookies);
 };

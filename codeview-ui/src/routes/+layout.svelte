@@ -1,7 +1,7 @@
 <script lang="ts">
 	import '../app.css';
 	import { browser } from '$app/env';
-	import { afterNavigate, onNavigate, replaceState } from '$app/navigation';
+	import { afterNavigate, goto, onNavigate } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page, updated } from '$app/state';
 	import { ProcessingStatusConnection } from '#lib/realtime/index.js';
@@ -435,7 +435,11 @@
 		document.documentElement.dataset.docLayout = next;
 		window.dispatchEvent(new CustomEvent('codeview-doc-layout-change', { detail: next }));
 		if (isExplorerRoute) {
-			replaceState(serializeExplorerState(page.url, { layout: next }), page.state);
+			void goto(serializeExplorerState(page.url, { layout: next }), {
+				state: page.state,
+				shallow: true,
+				replace: true,
+			});
 		}
 	}
 
@@ -627,7 +631,7 @@
 		<div class="flex min-w-0 items-center justify-end gap-1.5 sm:gap-2">
 			{#if auth.authConfigured}
 				{#if auth.user}
-					<form method="POST" action="/auth/sign-out">
+					<form method="POST" action="/auth/sign-out" data-sveltekit-reload>
 						<input type="hidden" name="returnTo" value={currentAuthRedirect()} />
 						<Button
 							type="submit"
@@ -641,7 +645,7 @@
 						</Button>
 					</form>
 				{:else}
-					<form method="POST" action="/auth/github">
+					<form method="POST" action="/auth/github" data-sveltekit-reload>
 						<input type="hidden" name="returnTo" value={currentAuthRedirect()} />
 						<Button
 							type="submit"

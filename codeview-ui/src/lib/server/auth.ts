@@ -138,29 +138,66 @@ export async function getAuthStateFromRequest(request: Request, env: AuthEnv): P
   };
 }
 
+const SignInSocialResult = Schema.Struct({
+  url: Schema.optionalKey(Schema.String),
+});
+
 export function signInWithGithub(
   event: RequestEvent,
   callbackURL: string,
-): Promise<{ url: string | undefined }> {
+): Promise<{ url: string | undefined; setCookies: string[] }> {
   const env = authEnv(event);
   if (!isAuthConfigured(env)) {
     return Promise.reject(new Error("GitHub OAuth is not configured"));
   }
   return runAuth(event.request, env, (auth) =>
-    auth.api.signInSocial({
-      body: { provider: "github", callbackURL },
-      headers: event.request.headers,
+    Effect.gen(function* () {
+      const instance = yield* auth.auth;
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          instance.api.signInSocial({
+            body: { provider: "github", callbackURL },
+            headers: event.request.headers,
+            asResponse: true,
+          }),
+        catch: (cause) =>
+          cause instanceof Error ? cause : new Error("GitHub sign-in failed", { cause }),
+      });
+      const response = yield* requireAuthResponse(result);
+      const payload = yield* Effect.tryPromise({
+        try: () => response.json(),
+        catch: (cause) =>
+          cause instanceof Error ? cause : new Error("GitHub sign-in returned invalid JSON", { cause }),
+      });
+      const decoded = Option.getOrUndefined(Schema.decodeUnknownOption(SignInSocialResult)(payload));
+      return {
+        url: decoded?.url,
+        setCookies: response.headers.getSetCookie(),
+      };
     }),
   );
 }
 
-export function signOutCurrentSession(event: RequestEvent): Promise<void> {
+export function signOutCurrentSession(event: RequestEvent): Promise<string[]> {
   const env = authEnv(event);
   if (!isAuthConfigured(env)) {
     return Promise.reject(new Error("GitHub OAuth is not configured"));
   }
   return runAuth(event.request, env, (auth) =>
-    Effect.asVoid(auth.api.signOut({ headers: event.request.headers })),
+    Effect.gen(function* () {
+      const instance = yield* auth.auth;
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          instance.api.signOut({
+            headers: event.request.headers,
+            asResponse: true,
+          }),
+        catch: (cause) =>
+          cause instanceof Error ? cause : new Error("Sign-out failed", { cause }),
+      });
+      const response = yield* requireAuthResponse(result);
+      return response.headers.getSetCookie();
+    }),
   );
 }
 
@@ -239,6 +276,11 @@ function kitRuntimeContext(env: AuthEnv): BaseRuntimeContext {
     },
     set: (id) => Effect.succeed(id),
   };
+}
+
+function requireAuthResponse(result: unknown): Effect.Effect<Response, Error> {
+  if (result instanceof Response) return Effect.succeed(result);
+  return Effect.fail(new Error("Better Auth did not return a Response"));
 }
 
 function runAuth<A, E>(

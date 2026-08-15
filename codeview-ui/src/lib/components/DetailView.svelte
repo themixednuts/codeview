@@ -110,7 +110,7 @@
 		const segCount = (id: string) => id.split('::').length;
 		if (segCount(rawDetail.node.id) > segCount(nodeId)) return;
 		log.info`re-export redirect: "${nodeId}" → "${rawDetail.node.id}"`;
-		goto(resolveAppPath(getNodeUrl(rawDetail.node.id)), { replaceState: true });
+		goto(resolveAppPath(getNodeUrl(rawDetail.node.id)), { replace: true });
 	});
 	$effect(() => {
 		log.debug`nodeView: nodeId="${nodeId}" detail=${detail ? 'yes' : 'null'} via=${nodeViewQuery ? 'proxy' : 'ssr'}`;
