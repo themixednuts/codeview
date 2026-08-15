@@ -341,13 +341,9 @@ pub fn generate_rustdoc_json_with_options(
         options,
     );
 
-    // For lib crates the rustdoc name matches the crate name; for binary crates
-    // rustdoc uses the target (binary) name which may differ from the package name.
-    let rustdoc_name = if lib_target.is_some() {
-        crate_name.clone()
-    } else {
-        primary_target.name.replace('-', "_")
-    };
+    // rustdoc writes `{target.name}.json`. Package names can differ from the
+    // lib/bin target, e.g. package `rustls-webpki` with `[lib] name = "webpki"`.
+    let rustdoc_name = rustdoc_output_crate_name(primary_target);
 
     if let Some(target) = plan.target.as_deref() {
         install_nightly_target(target)?;
@@ -392,12 +388,7 @@ pub fn generate_rustdoc_json_with_options(
     }
 
     let target_dir = metadata.target_directory.into_std_path_buf();
-    let crate_file = format!("{rustdoc_name}.json");
-    let json_path = if let Some(target) = plan.target {
-        target_dir.join(target).join("doc").join(crate_file)
-    } else {
-        target_dir.join("doc").join(crate_file)
-    };
+    let json_path = rustdoc_json_output_path(&target_dir, &rustdoc_name, plan.target.as_deref());
 
     Ok(RustdocJson {
         crate_name,
@@ -406,6 +397,23 @@ pub fn generate_rustdoc_json_with_options(
         manifest_path: manifest_path.to_path_buf(),
         src_path,
     })
+}
+
+#[cfg(feature = "native")]
+fn rustdoc_output_crate_name(target: &cargo_metadata::Target) -> String {
+    target.name.replace('-', "_")
+}
+
+fn rustdoc_json_output_path(
+    target_dir: &Path,
+    rustdoc_name: &str,
+    cross_compile_target: Option<&str>,
+) -> PathBuf {
+    let crate_file = format!("{rustdoc_name}.json");
+    match cross_compile_target {
+        Some(target) => target_dir.join(target).join("doc").join(crate_file),
+        None => target_dir.join("doc").join(crate_file),
+    }
 }
 
 #[cfg(feature = "native")]
@@ -701,15 +709,8 @@ pub fn generate_workspace_rustdoc_json(
             }
         }
 
-        // For lib crates the rustdoc name matches the crate name; for binary crates
-        // rustdoc uses the target (binary) name which may differ from the package name.
-        let rustdoc_name = if lib_target.is_some() {
-            crate_name.replace('-', "_")
-        } else {
-            primary_target.name.replace('-', "_")
-        };
-        let crate_file = format!("{rustdoc_name}.json");
-        let json_path = target_dir.join("doc").join(crate_file);
+        let rustdoc_name = rustdoc_output_crate_name(primary_target);
+        let json_path = rustdoc_json_output_path(&target_dir, &rustdoc_name, None);
 
         if json_path.exists() {
             results.push(RustdocJson {
@@ -1255,6 +1256,7 @@ pub fn extract_graph_validated(
     policy: &RustdocFormatPolicy,
 ) -> Result<(Graph, RustdocValidationReport), RustdocError> {
     let validated = validate_rustdoc_json(json, crate_name, policy)?;
+    let rustdoc_name = rustdoc_name_for_graph(&validated.krate, crate_name, None);
     let (graph, stats) = build_graph_with_stats(
         &validated.krate,
         crate_name,
@@ -1263,7 +1265,7 @@ pub fn extract_graph_validated(
             source: None,
             call_mode: CallMode::Strict,
             skip_external_nodes: true,
-            rustdoc_name: None,
+            rustdoc_name,
         },
     )?;
     let mut report = validated.report;
@@ -1471,6 +1473,17 @@ fn local_crate_name_from_paths(krate: &rdt::Crate) -> Option<String> {
         })
 }
 
+fn rustdoc_name_for_graph(
+    krate: &rdt::Crate,
+    crate_name: &str,
+    explicit: Option<String>,
+) -> Option<String> {
+    let actual = explicit.or_else(|| local_crate_name_from_paths(krate))?;
+    (normalise_crate_name_for_validation(&actual)
+        != normalise_crate_name_for_validation(crate_name))
+    .then_some(actual)
+}
+
 fn normalise_crate_name_for_validation(name: &str) -> String {
     name.replace('-', "_").to_lowercase()
 }
@@ -1532,6 +1545,7 @@ fn validate_graph_quality(
 
 pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
+    let rustdoc_name = rustdoc_name_for_graph(&krate, crate_name, None);
     build_graph(
         &krate,
         crate_name,
@@ -1540,7 +1554,7 @@ pub fn extract_graph(json: &str, crate_name: &str) -> Result<Graph, RustdocError
             source: None,
             call_mode: CallMode::Strict,
             skip_external_nodes: true,
-            rustdoc_name: None,
+            rustdoc_name,
         },
     )
 }
@@ -1558,6 +1572,7 @@ pub fn extract_graph_with_source_map(
 ) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
     let provider = MemorySourceProvider::new(source_files);
+    let rustdoc_name = rustdoc_name_for_graph(&krate, crate_name, None);
     build_graph(
         &krate,
         crate_name,
@@ -1566,7 +1581,7 @@ pub fn extract_graph_with_source_map(
             source: Some((Path::new(root_file), &provider)),
             call_mode,
             skip_external_nodes: true,
-            rustdoc_name: None,
+            rustdoc_name,
         },
     )
 }
@@ -1582,6 +1597,7 @@ pub fn extract_graph_with_sources(
 ) -> Result<Graph, RustdocError> {
     let krate = parse_rustdoc_lenient(json)?;
     let workspace_members = get_workspace_members(workspace_manifest_path)?;
+    let rustdoc_name = rustdoc_name_for_graph(&krate, crate_name, rustdoc_name.map(str::to_string));
     build_graph(
         &krate,
         crate_name,
@@ -1590,7 +1606,7 @@ pub fn extract_graph_with_sources(
             source: Some((root_file, &FsSourceProvider)),
             call_mode,
             skip_external_nodes: false,
-            rustdoc_name: rustdoc_name.map(|s| s.to_string()),
+            rustdoc_name,
         },
     )
 }
@@ -1608,8 +1624,9 @@ struct BuildGraphOptions<'a> {
     /// Edges referencing external nodes are still created (as cross-crate references)
     /// but no Node entries or module hierarchies are built for them.
     skip_external_nodes: bool,
-    /// The name rustdoc uses internally for the root crate. For binary crates this may
-    /// differ from `crate_name` (e.g. crate "codeview_cli" has rustdoc name "codeview").
+    /// The name rustdoc uses internally for the root crate. Binary targets and
+    /// renamed libs can differ from `crate_name` (e.g. package `rustls-webpki`
+    /// with `[lib] name = "webpki"`).
     rustdoc_name: Option<String>,
 }
 
@@ -6910,6 +6927,62 @@ pub struct Small;
                 && edge.to == "fixture::Missing"
                 && edge.kind == EdgeKind::Contains
         }));
+    }
+
+    #[test]
+    fn extract_graph_validated_remaps_renamed_lib_crate() {
+        let mut value = minimal_rustdoc_value("webpki");
+        value["index"]["0"]["inner"]["module"]["items"] = serde_json::json!([1]);
+        value["index"]["1"] = rustdoc_function_item(1, "verify");
+        value["paths"]["1"] = serde_json::json!({
+            "crate_id": 0,
+            "path": ["webpki", "verify"],
+            "kind": "function"
+        });
+
+        let (graph, report) = extract_graph_validated(
+            &value.to_string(),
+            "rustls_webpki",
+            &RustdocFormatPolicy::strict(),
+        )
+        .expect("renamed lib crate extracts under the package name");
+
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("local crate name `webpki`")
+                    && warning.contains("rustls_webpki"))
+        );
+        assert!(
+            graph
+                .nodes
+                .iter()
+                .any(|node| node.id == "rustls_webpki" && node.kind == NodeKind::Crate)
+        );
+        let verify = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "rustls_webpki::verify")
+            .expect("local item is rewritten onto the package crate id");
+        assert!(!verify.is_external);
+        assert!(graph.nodes.iter().all(|node| node.id != "webpki::verify"));
+    }
+
+    #[test]
+    fn rustdoc_json_output_uses_lib_target_name() {
+        assert_eq!(
+            rustdoc_json_output_path(Path::new("/tmp/target"), "webpki", None),
+            PathBuf::from("/tmp/target/doc/webpki.json")
+        );
+        assert_eq!(
+            rustdoc_json_output_path(
+                Path::new("/tmp/target"),
+                "webpki",
+                Some("x86_64-unknown-linux-gnu"),
+            ),
+            PathBuf::from("/tmp/target/x86_64-unknown-linux-gnu/doc/webpki.json")
+        );
     }
 
     #[test]
