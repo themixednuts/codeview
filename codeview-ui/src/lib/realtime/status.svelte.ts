@@ -115,6 +115,15 @@ export class CrateStatusConnection implements Disposable {
   async retry(name: string, version: string) {
     this.#log.info`retry ${name}@${version}`;
     this.error = null;
-    await this.triggerParse(name, version);
+    this.status = "processing";
+    this.step = null;
+    this.connect(name, version);
+    try {
+      await triggerCrateParse({ name, version, force: true });
+    } catch (err) {
+      this.#log.error`retry failed ${name}@${version}: ${String(err)}`;
+      this.status = "failed";
+      this.error = err instanceof Error ? err.message : String(err);
+    }
   }
 }

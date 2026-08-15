@@ -19,7 +19,7 @@ use crate::publisher::crates_dump::{
     MetadataSource, SnapshotBuildOptions, SnapshotLoad,
 };
 use crate::publisher::freshness::Staleness;
-use crate::publisher::r2::{self, read_json, write_json};
+use crate::publisher::r2::{self, LATEST_PLAN_KEY, LatestPlanPointer, read_json, write_json};
 use crate::publisher::shards;
 
 use super::CronContext;
@@ -822,6 +822,16 @@ async fn write_plan(ctx: &CronContext, raw: &str, plan: &WorkPlan) -> Result<()>
         }
         PlanDestination::R2(key) => {
             write_json(&ctx.r2, &key, plan).await?;
+            write_json(
+                &ctx.r2,
+                LATEST_PLAN_KEY,
+                &LatestPlanPointer {
+                    key: key.clone(),
+                    run_id: plan.run_id.clone(),
+                    generated_at: plan.generated_at.clone(),
+                },
+            )
+            .await?;
         }
     }
     Ok(())

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vite-plus/test";
+import * as Effect from "effect/Effect";
 import {
+  listParsePlanKeys,
   makeParseRequest,
   shouldAcceptQueuedParseRequest,
   type StoredParseStatus,
@@ -52,5 +54,29 @@ describe("queued parse registration", () => {
       requestedAt: "2026-07-09T11:59:59.000Z",
     };
     expect(shouldAcceptQueuedParseRequest(storedStatus("failed"), request)).toBe(false);
+  });
+});
+
+describe("listParsePlanKeys", () => {
+  test("lists run prefixes instead of every object under rust/_runs/", async () => {
+    const listed: R2ListOptions[] = [];
+    const bucket = {
+      async list(options?: R2ListOptions) {
+        listed.push(options ?? {});
+        return {
+          objects: [],
+          delimitedPrefixes: ["rust/_runs/111-1/", "rust/_runs/999-1/"],
+          truncated: false,
+        };
+      },
+    };
+
+    await expect(Effect.runPromise(listParsePlanKeys(bucket))).resolves.toEqual([
+      { key: "rust/_runs/999-1/plan.json" },
+      { key: "rust/_runs/111-1/plan.json" },
+    ]);
+    expect(listed).toEqual([
+      { prefix: "rust/_runs/", delimiter: "/", limit: 200, cursor: undefined },
+    ]);
   });
 });

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { requestCrateParse } from '#lib/rpc/crate.remote.js';
+	import { requestCrateRetry } from '#lib/rpc/crate.remote.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 
 	let {
@@ -19,7 +19,7 @@
 	let retrying = $state(false);
 	let retryError = $state<string | null>(null);
 	const canRetry = $derived(!!crateName && !!version);
-	const retryForm = requestCrateParse;
+	const retryForm = requestCrateRetry;
 </script>
 
 <div class="flex flex-1 items-center justify-center">

@@ -467,20 +467,23 @@ impl LocalMiniflareBackend {
             .to_string();
 
         let mut cmd = tokio::process::Command::new("node");
-        cmd.args(["--experimental-strip-types", "--no-warnings=ExperimentalWarning"])
-            .arg(&script_path)
-            .args([
-                "--binding",
-                &self.binding,
-                "--bucket",
-                &self.bucket,
-                "--persist-to",
-                &persist_to,
-            ])
-            .current_dir(&cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+        cmd.args([
+            "--experimental-strip-types",
+            "--no-warnings=ExperimentalWarning",
+        ])
+        .arg(&script_path)
+        .args([
+            "--binding",
+            &self.binding,
+            "--bucket",
+            &self.bucket,
+            "--persist-to",
+            &persist_to,
+        ])
+        .current_dir(&cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
 
         let mut child = cmd
             .spawn()
@@ -802,6 +805,16 @@ pub const CATALOG_KEY: &str = "rust/catalog.json";
 
 /// Public pointer to the current sharded freshness aggregate.
 pub const INDEX_MANIFEST_KEY: &str = "rust/_index/_manifest.json";
+
+/// Public pointer to the newest parse work plan.
+pub const LATEST_PLAN_KEY: &str = "rust/_index/latest-plan.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct LatestPlanPointer {
+    pub key: String,
+    pub run_id: String,
+    pub generated_at: String,
+}
 
 /// Helper to read+parse JSON via the trait.
 pub async fn read_json<T: serde::de::DeserializeOwned>(

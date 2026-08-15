@@ -3,6 +3,7 @@ import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type { RequestEvent } from "@sveltejs/kit";
@@ -58,8 +59,11 @@ import {
   normalizeCrateName,
 } from "../validation";
 import { getLogger } from "#lib/log.js";
-import { actorFromUser, getAuthStateFromRequest } from "../auth";
+import { actorFromUser, getAuthStateFromRequest, type AuthState } from "../auth";
 import {
+  LATEST_PLAN_POINTER_KEY,
+  LatestPlanPointer,
+  listParsePlanKeys,
   makeParseRequest,
   parseStatusObject,
   parseWorkflowId,
@@ -432,17 +436,31 @@ type FreshnessEntry = {
   schemaVersion?: number;
 };
 
-type PlanKeyCandidate = {
-  key: string;
-  uploaded?: string;
-};
-
 type ResolvedRefCacheEntry = {
   value: Promise<ArtifactRef | null>;
   expiresAt: number | null;
 };
 
 const resolvedRefCache = new Map<string, ResolvedRefCacheEntry>();
+const publicQueueCaches = new WeakMap<AppEnv, Cache.Cache<number, ParseQueueSnapshot, Error>>();
+const PUBLIC_QUEUE_SNAPSHOT_TTL_MS = 15_000;
+
+function publicQueueCache(
+  env: AppEnv,
+  lookup: (limit: number) => Effect.Effect<ParseQueueSnapshot, Error>,
+): Cache.Cache<number, ParseQueueSnapshot, Error> {
+  const existing = publicQueueCaches.get(env);
+  if (existing) return existing;
+  const cache = Effect.runSync(
+    Cache.makeWith<number, ParseQueueSnapshot, Error>(lookup, {
+      capacity: 4,
+      timeToLive: (exit) =>
+        Exit.isSuccess(exit) ? Duration.millis(PUBLIC_QUEUE_SNAPSHOT_TTL_MS) : Duration.zero,
+    }),
+  );
+  publicQueueCaches.set(env, cache);
+  return cache;
+}
 
 function artifactPrefix(name: string, version: string): string {
   return `rust/${name}/${version}`;
@@ -842,7 +860,11 @@ async function readArtifactJsonWithCache(
   return decodeTrustedJson<Schema.Json | null>(await inflight);
 }
 
-export function createCloudflareProvider(env: AppEnv, request?: Request): DataProvider {
+export function createCloudflareProvider(
+  env: AppEnv,
+  request?: Request,
+  authState?: AuthState | null,
+): DataProvider {
   const mutableJsonCache = Effect.runSync(
     Cache.makeWith(
       (key: string) =>
@@ -901,39 +923,67 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     return `parse:anon:${ip}`;
   }
 
-  async function resolveParseRequestContext({ rateLimit }: { rateLimit: boolean }) {
-    const auth = request ? await getAuthStateFromRequest(request, env) : null;
-    const actor = actorFromUser(auth?.user ?? null);
-    if (!rateLimit) return { auth, actor, rateLimitError: null, configError: null };
+  const resolveParseRequestContext = Effect.fn("CloudflareProvider.resolveParseRequestContext")(
+    function* (options: { rateLimit: boolean }) {
+      let auth = authState ?? null;
+      if (!auth && request) {
+        auth = yield* Effect.tryPromise({
+          try: () => getAuthStateFromRequest(request, env),
+          catch: (cause) => new Error(`parse auth lookup failed: ${errorMessage(cause)}`),
+        }).pipe(
+          Effect.catch((err) =>
+            Effect.sync(() => {
+              log.warn`${err.message}`;
+              return null;
+            }),
+          ),
+        );
+      }
+      const actor = actorFromUser(auth?.user ?? null);
+      if (!options.rateLimit) return { auth, actor, rateLimitError: null, configError: null };
 
-    const limiter = actor
-      ? (env.RATE_LIMIT_PARSE_AUTH ?? env.RATE_LIMIT_API_AUTH ?? env.RATE_LIMIT_API)
-      : (env.RATE_LIMIT_PARSE_ANON ?? env.RATE_LIMIT_API_ANON ?? env.RATE_LIMIT_API);
-    if (!limiter) {
+      const limiter = actor
+        ? (env.RATE_LIMIT_PARSE_AUTH ?? env.RATE_LIMIT_API_AUTH ?? env.RATE_LIMIT_API)
+        : (env.RATE_LIMIT_PARSE_ANON ?? env.RATE_LIMIT_API_ANON ?? env.RATE_LIMIT_API);
+      if (!limiter) {
+        return {
+          auth,
+          actor,
+          rateLimitError: null,
+          configError: new NotAvailableError({
+            message: "Hosted parse rate limiting is not configured",
+          }),
+        };
+      }
+
+      const key = actor ? `parse:user:${actor.id}` : anonymousParseRateLimitKey();
+      const outcome = yield* Effect.tryPromise({
+        try: () => limiter.limit({ key }),
+        catch: (cause) => new Error(`Hosted parse rate limiting failed: ${errorMessage(cause)}`),
+      }).pipe(
+        Effect.catch((err) =>
+          Effect.succeed({
+            success: false as const,
+            configError: new NotAvailableError({ message: err.message }),
+          }),
+        ),
+      );
+      if ("configError" in outcome) {
+        return { auth, actor, rateLimitError: null, configError: outcome.configError };
+      }
+      if (outcome.success) return { auth, actor, rateLimitError: null, configError: null };
       return {
         auth,
         actor,
-        rateLimitError: null,
-        configError: new NotAvailableError({
-          message: "Hosted parse rate limiting is not configured",
+        configError: null,
+        rateLimitError: new RateLimitError({
+          message: actor
+            ? "Too many signed-in parse requests. Try again shortly."
+            : "Too many anonymous parse requests. Sign in for a higher limit or try again shortly.",
         }),
       };
-    }
-
-    const key = actor ? `parse:user:${actor.id}` : anonymousParseRateLimitKey();
-    const outcome = await limiter.limit({ key });
-    if (outcome.success) return { auth, actor, rateLimitError: null, configError: null };
-    return {
-      auth,
-      actor,
-      configError: null,
-      rateLimitError: new RateLimitError({
-        message: actor
-          ? "Too many signed-in parse requests. Try again shortly."
-          : "Too many anonymous parse requests. Sign in for a higher limit or try again shortly.",
-      }),
-    };
-  }
+    },
+  );
 
   function readJson<T>(key: string, _ttlMs = MUTABLE_JSON_TTL_MS): Promise<T | null> {
     return Effect.runPromise(Cache.get(mutableJsonCache, key)).then((value) =>
@@ -1471,7 +1521,10 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     return loaded > 0 ? total : 0;
   }
 
-  async function buildParseQueueSnapshot(limit: number): Promise<ParseQueueSnapshot> {
+  async function buildParseQueueSnapshot(
+    limit: number,
+    options: { includeGitHubRuns: boolean },
+  ): Promise<ParseQueueSnapshot> {
     return Effect.runPromise(
       Effect.gen(function* () {
         const boundedLimit = Math.max(1, Math.min(limit, 100));
@@ -1488,30 +1541,29 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
                 }),
               ),
             ),
-            Effect.tryPromise({
-              try: () => listActiveGitHubParseRuns(boundedLimit),
-              catch: (cause) =>
-                new Error(`active GitHub parse run load failed: ${errorMessage(cause)}`),
-            }).pipe(
-              Effect.catch((err) =>
-                Effect.sync(() => {
-                  log.warn`${err.message}`;
-                  const empty: ActiveParseRun[] = [];
-                  return empty;
-                }),
-              ),
-            ),
+            options.includeGitHubRuns
+              ? Effect.tryPromise({
+                  try: () => listActiveGitHubParseRuns(boundedLimit),
+                  catch: (cause) =>
+                    new Error(`active GitHub parse run load failed: ${errorMessage(cause)}`),
+                }).pipe(
+                  Effect.catch((err) =>
+                    Effect.sync(() => {
+                      log.warn`${err.message}`;
+                      const empty: ActiveParseRun[] = [];
+                      return empty;
+                    }),
+                  ),
+                )
+              : Effect.succeed<ActiveParseRun[]>([]),
           ],
           { concurrency: 2 },
         );
         const recent = yield* Effect.promise(() => removeStaleFailedQueueEntries(queue.recent));
-        const planned = yield* Effect.tryPromise({
-          try: () => loadLatestPlannedRun(boundedLimit),
-          catch: (cause) => new Error(`planned parse run load failed: ${errorMessage(cause)}`),
-        }).pipe(
+        const planned = yield* loadLatestPlannedRun(boundedLimit).pipe(
           Effect.catch((err) =>
             Effect.sync(() => {
-              log.warn`${err.message}`;
+              log.warn`${errorMessage(err)}`;
               return null;
             }),
           ),
@@ -1763,44 +1815,39 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     };
   }
 
-  async function listPlanKeys(maxKeys = 5000): Promise<PlanKeyCandidate[]> {
-    const candidates: PlanKeyCandidate[] = [];
-    let cursor: string | undefined;
-    do {
-      const page = await env.CRATE_GRAPHS.list({
-        prefix: "rust/_runs/",
-        limit: Math.min(1000, Math.max(1, maxKeys - candidates.length)),
-        cursor,
-      });
-      for (const object of page.objects) {
-        if (object.key.endsWith("/plan.json")) {
-          candidates.push({
-            key: object.key,
-            uploaded: object.uploaded?.toISOString(),
-          });
-        }
-        if (candidates.length >= maxKeys) break;
+  const loadLatestPlannedRun = Effect.fn("CloudflareProvider.loadLatestPlannedRun")(function* (
+    limit: number,
+  ) {
+    const rawPointer = yield* Effect.promise(() => readJson<Schema.Json>(LATEST_PLAN_POINTER_KEY));
+    if (rawPointer) {
+      const pointer = yield* Schema.decodeUnknownEffect(LatestPlanPointer)(rawPointer).pipe(
+        Effect.option,
+      );
+      if (Option.isSome(pointer)) {
+        const pointed = yield* Effect.promise(() => readJson<WorkPlanArtifact>(pointer.value.key));
+        if (pointed) return yield* Effect.promise(() => planFromArtifact(pointed, limit));
       }
-      cursor = page.truncated ? page.cursor : undefined;
-    } while (cursor && candidates.length < maxKeys);
-    return candidates.sort(
-      (a, b) => (b.uploaded ?? "").localeCompare(a.uploaded ?? "") || b.key.localeCompare(a.key),
-    );
-  }
-
-  async function loadLatestPlannedRun(limit: number): Promise<PlannedParseRun | null> {
-    const plans = await Promise.all(
-      (await listPlanKeys()).slice(0, 25).map(async ({ key }) => {
-        const raw = await readJson<WorkPlanArtifact>(key);
-        return raw ? await planFromArtifact(raw, limit) : null;
-      }),
-    );
-    return (
-      plans
-        .filter((plan): plan is PlannedParseRun => plan !== null)
-        .sort((a, b) => b.generatedAt.localeCompare(a.generatedAt))[0] ?? null
-    );
-  }
+    }
+    const latest = (yield* listParsePlanKeys(env.CRATE_GRAPHS))[0];
+    if (!latest) return null;
+    const raw = yield* Effect.promise(() => readJson<WorkPlanArtifact>(latest.key));
+    if (!raw) return null;
+    const planned = yield* Effect.promise(() => planFromArtifact(raw, limit));
+    if (!planned) return null;
+    const encoded = yield* Schema.encodeUnknownEffect(LatestPlanPointer)({
+      key: latest.key,
+      run_id: planned.runId,
+      generated_at: planned.generatedAt,
+    }).pipe(Effect.option);
+    if (Option.isSome(encoded)) {
+      yield* Effect.tryPromise({
+        try: () =>
+          env.CRATE_GRAPHS.put(LATEST_PLAN_POINTER_KEY, JSON.stringify(encoded.value)),
+        catch: (cause) => new Error(`latest plan pointer write failed: ${errorMessage(cause)}`),
+      }).pipe(Effect.catch(() => Effect.void));
+    }
+    return planned;
+  });
 
   let publishedCratesCache: Promise<CrateSummaryResult[]> | null = null;
   async function listPublishedCrates(): Promise<CrateSummaryResult[]> {
@@ -2084,98 +2131,15 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     },
 
     async triggerParse(name: string, version: string, force?: boolean) {
-      if (!isValidCrateName(name) || !isValidVersion(version)) {
-        return Result.err(new ValidationError({ message: "Invalid crate name or version" }));
-      }
-      const normalizedName = normalizeCrateName(name);
-      const requestKind = isStdCrate(normalizedName) ? "sysroot" : "crate";
-      const requestedVersion =
-        requestKind === "sysroot" && version === "latest" ? DEFAULT_RUST_CHANNEL : version;
-      if (requestKind === "sysroot" && !isStdJsonCrate(normalizedName)) {
-        return Result.err(
-          new NotAvailableError({
-            message: "Hosted toolchain parsing supports std, core, alloc, proc_macro, and test.",
-          }),
-        );
-      }
-      let parseContext: Awaited<ReturnType<typeof resolveParseRequestContext>> | null = null;
-      if (force) {
-        parseContext = await resolveParseRequestContext({ rateLimit: false });
-        if (!parseContext.auth?.isAdmin) {
-          return Result.err(
+      return Effect.runPromise(
+        Effect.tryPromise({
+          try: () => enqueueHostedParse(name, version, force),
+          catch: (cause) =>
             new NotAvailableError({
-              message: "Force parse requires admin access",
+              message: `Hosted parse request failed: ${errorMessage(cause)}`,
             }),
-          );
-        }
-      }
-      if (!force) {
-        const ref = await resolveRefForArtifact(name, requestedVersion);
-        if (ref) {
-          const meta = await readArtifactJson<HostedMetaArtifact>(ref, "site/meta.json");
-          if (isCurrentHostedMeta(meta, ref)) {
-            return Result.ok(undefined);
-          }
-        }
-      }
-      if (requestKind === "sysroot" && !isRustChannel(requestedVersion)) {
-        return Result.err(
-          new NotAvailableError({
-            message: HOSTED_SYSROOT_UNAVAILABLE_MESSAGE,
-          }),
-        );
-      }
-      parseContext ??= await resolveParseRequestContext({ rateLimit: true });
-      if (parseContext.configError) return Result.err(parseContext.configError);
-      if (parseContext.rateLimitError) return Result.err(parseContext.rateLimitError);
-      if (!env.PARSE_REQUESTS) {
-        return Result.err(
-          new NotAvailableError({
-            message: "Hosted parse queue is not configured",
-          }),
-        );
-      }
-      const parseRequest = makeParseRequest(
-        name,
-        requestedVersion,
-        !!force,
-        "ui",
-        requestKind,
-        parseContext.actor,
+        }).pipe(Effect.catch((err) => Effect.succeed(Result.err(err)))),
       );
-      const workflowId = parseWorkflowId(parseRequest.requestId);
-      if (env.PARSE_STATUS) {
-        try {
-          const registration = await registerQueuedParseRequest(env.PARSE_STATUS, parseRequest);
-          if (!registration.accepted) return Result.ok(undefined);
-        } catch (err) {
-          return Result.err(
-            new NotAvailableError({
-              message: `Hosted parse queue registration failed: ${errorMessage(err)}`,
-            }),
-          );
-        }
-      }
-      try {
-        await env.PARSE_REQUESTS.send(parseRequest);
-      } catch (err) {
-        await recordHostedParseEvent({
-          kind: parseRequest.kind,
-          name: parseRequest.name,
-          version: parseRequest.version,
-          status: "failed",
-          step: "queue-send",
-          error: errorMessage(err),
-          requestId: parseRequest.requestId,
-          workflowId,
-        }).catch(() => {});
-        return Result.err(
-          new NotAvailableError({
-            message: `Hosted parse queue send failed: ${errorMessage(err)}`,
-          }),
-        );
-      }
-      return Result.ok(undefined);
     },
 
     async triggerStdInstall(_name: string, _version: string) {
@@ -2249,11 +2213,18 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
     },
 
     async getParseQueue(limit = 50): Promise<ParseQueueSnapshot> {
-      return buildParseQueueSnapshot(limit);
+      const boundedLimit = Math.max(1, Math.min(limit, 100));
+      const cache = publicQueueCache(env, (queuedLimit) =>
+        Effect.tryPromise({
+          try: () => buildParseQueueSnapshot(queuedLimit, { includeGitHubRuns: false }),
+          catch: (cause) => new Error(`public parse queue load failed: ${errorMessage(cause)}`),
+        }),
+      );
+      return Effect.runPromise(Cache.get(cache, boundedLimit));
     },
 
     async getAdminDashboard(limit = 100): Promise<AdminDashboardData> {
-      const queue = await buildParseQueueSnapshot(limit);
+      const queue = await buildParseQueueSnapshot(limit, { includeGitHubRuns: true });
       const allowance = await buildParseAllowance(queue);
       return { queue, allowance };
     },
@@ -2269,6 +2240,116 @@ export function createCloudflareProvider(env: AppEnv, request?: Request): DataPr
       return ref?.version ?? version;
     },
   };
+
+  async function enqueueHostedParse(name: string, version: string, force?: boolean) {
+    if (!isValidCrateName(name) || !isValidVersion(version)) {
+      return Result.err(new ValidationError({ message: "Invalid crate name or version" }));
+    }
+    const normalizedName = normalizeCrateName(name);
+    const requestKind = isStdCrate(normalizedName) ? "sysroot" : "crate";
+    const requestedVersion =
+      requestKind === "sysroot" && version === "latest" ? DEFAULT_RUST_CHANNEL : version;
+    if (requestKind === "sysroot" && !isStdJsonCrate(normalizedName)) {
+      return Result.err(
+        new NotAvailableError({
+          message: "Hosted toolchain parsing supports std, core, alloc, proc_macro, and test.",
+        }),
+      );
+    }
+    let parseContext: {
+      auth: AuthState | null;
+      actor: ReturnType<typeof actorFromUser>;
+      rateLimitError: RateLimitError | null;
+      configError: NotAvailableError | null;
+    } | null = null;
+    if (force) {
+      parseContext = await Effect.runPromise(resolveParseRequestContext({ rateLimit: false }));
+      if (!parseContext.auth?.isAdmin) {
+        return Result.err(
+          new NotAvailableError({
+            message: "Force parse requires admin access",
+          }),
+        );
+      }
+    }
+    if (!force) {
+      const ref = await resolveRefForArtifact(name, requestedVersion);
+      if (ref) {
+        const meta = await readArtifactJson<HostedMetaArtifact>(ref, "site/meta.json");
+        if (isCurrentHostedMeta(meta, ref)) {
+          return Result.ok(undefined);
+        }
+      }
+    }
+    if (requestKind === "sysroot" && !isRustChannel(requestedVersion)) {
+      return Result.err(
+        new NotAvailableError({
+          message: HOSTED_SYSROOT_UNAVAILABLE_MESSAGE,
+        }),
+      );
+    }
+    parseContext ??= await Effect.runPromise(resolveParseRequestContext({ rateLimit: true }));
+    if (parseContext.configError) return Result.err(parseContext.configError);
+    if (parseContext.rateLimitError) return Result.err(parseContext.rateLimitError);
+    if (!env.PARSE_REQUESTS) {
+      return Result.err(
+        new NotAvailableError({
+          message: "Hosted parse queue is not configured",
+        }),
+      );
+    }
+    const parseRequest = makeParseRequest(
+      name,
+      requestedVersion,
+      !!force,
+      "ui",
+      requestKind,
+      parseContext.actor,
+    );
+    const workflowId = parseWorkflowId(parseRequest.requestId);
+    if (env.PARSE_STATUS) {
+      const registration = await Effect.runPromise(
+        Effect.tryPromise({
+          try: () => registerQueuedParseRequest(env.PARSE_STATUS, parseRequest),
+          catch: (cause) =>
+            new NotAvailableError({
+              message: `Hosted parse queue registration failed: ${errorMessage(cause)}`,
+            }),
+        }).pipe(Effect.catch((err) => Effect.succeed(Result.err(err)))),
+      );
+      if (registration instanceof Object && "isErr" in registration && registration.isErr()) {
+        return registration;
+      }
+      if ("accepted" in registration && !registration.accepted) return Result.ok(undefined);
+    }
+    const sent = await Effect.runPromise(
+      Effect.tryPromise({
+        try: () => env.PARSE_REQUESTS.send(parseRequest),
+        catch: (cause) =>
+          new NotAvailableError({
+            message: `Hosted parse queue send failed: ${errorMessage(cause)}`,
+          }),
+      }).pipe(
+        Effect.catch((err) =>
+          Effect.promise(async () => {
+            await recordHostedParseEvent({
+              kind: parseRequest.kind,
+              name: parseRequest.name,
+              version: parseRequest.version,
+              status: "failed",
+              step: "queue-send",
+              error: err.message,
+              requestId: parseRequest.requestId,
+              workflowId,
+            }).catch(() => {});
+            return Result.err(err);
+          }),
+        ),
+      ),
+    );
+    if (sent instanceof Object && "isErr" in sent && sent.isErr()) return sent;
+    return Result.ok(undefined);
+  }
 }
 
 function hostedAppEnv<T>(env: T): AppEnv {
@@ -2282,7 +2363,7 @@ export function createProvider(event: RequestEvent): DataProvider {
   if (!env) {
     throw new Error("Hosted Cloudflare provider requires platform.env");
   }
-  return createCloudflareProvider(hostedAppEnv(env), event.request);
+  return createCloudflareProvider(hostedAppEnv(env), event.request, event.locals.auth);
 }
 
 /** Hosted mode uses the parser status Durable Object for realtime parse/status events. */

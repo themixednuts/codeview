@@ -38,6 +38,7 @@ vi.mock("../auth", async (importOriginal) => {
   };
 });
 
+import { getAuthStateFromRequest } from "../auth";
 import { createCloudflareProvider } from "./provider";
 
 type HostedTestEnv = {
@@ -63,9 +64,13 @@ function jsonObject(value: Json): R2ObjectBody {
   );
 }
 
-function fakeBucket(objects: Map<string, Json>): R2Bucket {
+function fakeBucket(
+  objects: Map<string, Json>,
+  hooks?: { onGet?: (key: string) => void; onList?: (options?: R2ListOptions) => void },
+): R2Bucket {
   return fakeBinding<R2Bucket>({
     async get(key: string) {
+      hooks?.onGet?.(key);
       const value = objects.get(key);
       return value === undefined ? null : jsonObject(value);
     },
@@ -86,11 +91,31 @@ function fakeBucket(objects: Map<string, Json>): R2Bucket {
       return objects.has(key) ? fakeBinding<R2Object>({}) : null;
     },
     async list(options?: R2ListOptions) {
+      hooks?.onList?.(options);
       const prefix = options?.prefix ?? "";
+      const delimiter = options?.delimiter;
       const keys = [...objects.keys()].filter((key) => key.startsWith(prefix)).sort();
+      if (!delimiter) {
+        return fakeBinding<R2Objects>({
+          objects: keys.map((key) => ({ key })),
+          delimitedPrefixes: [],
+          truncated: false,
+        });
+      }
+      const delimitedPrefixes = new Set<string>();
+      const nested: string[] = [];
+      for (const key of keys) {
+        const rest = key.slice(prefix.length);
+        const delimAt = rest.indexOf(delimiter);
+        if (delimAt >= 0) {
+          delimitedPrefixes.add(prefix + rest.slice(0, delimAt + delimiter.length));
+        } else {
+          nested.push(key);
+        }
+      }
       return fakeBinding<R2Objects>({
-        objects: keys.map((key) => ({ key })),
-        delimitedPrefixes: [],
+        objects: nested.map((key) => ({ key })),
+        delimitedPrefixes: [...delimitedPrefixes],
         truncated: false,
       });
     },
@@ -278,6 +303,7 @@ function hostedNodeViewArtifact(prefix: string, nodeId: string, version = "1.0.0
 describe("createCloudflareProvider", () => {
   afterEach(() => {
     mockAuthState.value = null;
+    vi.mocked(getAuthStateFromRequest).mockClear();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -621,7 +647,27 @@ describe("createCloudflareProvider", () => {
     ]);
   });
 
-  test("includes active GitHub parse workflow runs in queue snapshots", async () => {
+  test("keeps GitHub parse workflow runs off the public queue page", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        GITHUB_REPO: "themixednuts/codeview",
+        GITHUB_WORKFLOW_FILE: "parse.yml",
+      }),
+    );
+
+    await expect(provider.getParseQueue?.(10)).resolves.toMatchObject({
+      active: [],
+      activeRuns: [],
+      recent: [],
+      planned: null,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  test("includes active GitHub parse workflow runs in admin dashboard snapshots", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -658,7 +704,8 @@ describe("createCloudflareProvider", () => {
       }),
     );
 
-    await expect(provider.getParseQueue?.(10)).resolves.toMatchObject({
+    const dashboard = await provider.getAdminDashboard?.(10);
+    expect(dashboard?.queue).toMatchObject({
       active: [],
       activeRuns: [
         {
@@ -743,6 +790,92 @@ describe("createCloudflareProvider", () => {
         },
       ],
     });
+  });
+
+  test("loads only the newest planned run for the public queue", async () => {
+    const gets: string[] = [];
+    const objects = new Map<string, Json>([
+      [
+        "rust/_runs/111-1/plan.json",
+        {
+          run_id: "111-1",
+          generated_at: "2026-07-01T00:00:00Z",
+          mode: "daily",
+          work: [{ name: "old", version: "1.0.0", kind: "crate" }],
+        },
+      ],
+      ["rust/_runs/111-1/deltas/0.jsonl", ""],
+      [
+        "rust/_runs/999-1/plan.json",
+        {
+          run_id: "999-1",
+          generated_at: "2026-08-15T00:00:00Z",
+          mode: "daily",
+          work: [{ name: "new", version: "2.0.0", kind: "crate" }],
+        },
+      ],
+      ["rust/_runs/999-1/deltas/0.jsonl", ""],
+    ]);
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects, { onGet: (key) => gets.push(key) }),
+      }),
+    );
+
+    const snapshot = await provider.getParseQueue?.(10);
+
+    expect(snapshot?.planned).toMatchObject({
+      runId: "999-1",
+      items: [{ name: "new", version: "2.0.0", state: "pending" }],
+    });
+    expect(gets.filter((key) => key.endsWith("/plan.json"))).toEqual([
+      "rust/_runs/999-1/plan.json",
+    ]);
+  });
+
+  test("uses the latest-plan pointer instead of listing run prefixes", async () => {
+    const lists: R2ListOptions[] = [];
+    const objects = new Map<string, Json>([
+      [
+        "rust/_index/latest-plan.json",
+        {
+          key: "rust/_runs/555-1/plan.json",
+          run_id: "555-1",
+          generated_at: "2026-08-15T00:00:00Z",
+        },
+      ],
+      [
+        "rust/_runs/555-1/plan.json",
+        {
+          run_id: "555-1",
+          generated_at: "2026-08-15T00:00:00Z",
+          mode: "daily",
+          work: [{ name: "pointed", version: "3.0.0", kind: "crate" }],
+        },
+      ],
+      [
+        "rust/_runs/111-1/plan.json",
+        {
+          run_id: "111-1",
+          generated_at: "2026-07-01T00:00:00Z",
+          mode: "daily",
+          work: [{ name: "old", version: "1.0.0", kind: "crate" }],
+        },
+      ],
+    ]);
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(objects, { onList: (options) => lists.push(options ?? {}) }),
+      }),
+    );
+
+    const snapshot = await provider.getParseQueue?.(10);
+
+    expect(snapshot?.planned).toMatchObject({
+      runId: "555-1",
+      items: [{ name: "pointed", version: "3.0.0" }],
+    });
+    expect(lists).toEqual([]);
   });
 
   test("builds admin dashboard allowance from GitHub active runs and billing", async () => {
@@ -950,6 +1083,71 @@ describe("createCloudflareProvider", () => {
         description: "queued",
       },
     ]);
+  });
+
+  test("still queues a parse when auth lookup throws on a consumed request body", async () => {
+    vi.mocked(getAuthStateFromRequest).mockRejectedValueOnce(new Error("body already used"));
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+        PARSE_STATUS: fakeParseStatusNamespace(null, []),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+      new Request("https://codeview.codes/crate", { method: "POST", body: "name=serde" }),
+    );
+
+    const result = await provider.triggerParse("serde", "1.0.228");
+    if (result.isErr()) throw result.error;
+    expect(sent).toHaveLength(1);
+  });
+
+  test("uses provided auth state instead of re-reading the request", async () => {
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+        PARSE_STATUS: fakeParseStatusNamespace(null, []),
+        RATE_LIMIT_PARSE_ANON: fakeRateLimit(),
+      }),
+      new Request("https://codeview.codes/crate", { method: "POST", body: "used" }),
+      {
+        user: null,
+        session: null,
+        isAdmin: false,
+        authConfigured: true,
+        adminAllowlistConfigured: false,
+      },
+    );
+
+    const result = await provider.triggerParse("serde", "1.0.228");
+    if (result.isErr()) throw result.error;
+    expect(getAuthStateFromRequest).not.toHaveBeenCalled();
+    expect(sent).toHaveLength(1);
+  });
+
+  test("returns a typed error when parse rate limiting throws", async () => {
+    const sent: ParseRequestMessage[] = [];
+    const provider = createCloudflareProvider(
+      testEnv({
+        CRATE_GRAPHS: fakeBucket(new Map()),
+        PARSE_REQUESTS: fakeQueue(sent),
+        RATE_LIMIT_PARSE_ANON: fakeBinding<RateLimit>({
+          async limit() {
+            throw new Error("rate limiter exploded");
+          },
+        }),
+      }),
+    );
+
+    const result = await provider.triggerParse("serde", "1.0.228");
+    expect(result.isErr()).toBe(true);
+    if (!result.isErr()) throw new Error("expected parse request to fail closed");
+    expect(result.error._tag).toBe("NotAvailableError");
+    expect(result.error.message).toContain("rate limiting failed");
+    expect(sent).toHaveLength(0);
   });
 
   test("fails closed when hosted parse rate limiting is missing", async () => {

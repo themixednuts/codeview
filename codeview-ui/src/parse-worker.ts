@@ -7,6 +7,7 @@ import {
   type WorkflowStepContext,
 } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
@@ -14,6 +15,9 @@ import { isCurrentHostedArtifactMetadata } from "./lib/hosted-contract";
 import {
   crateStatusTag,
   isParseRequestMessage,
+  LATEST_PLAN_POINTER_KEY,
+  LatestPlanPointer,
+  listParsePlanKeys,
   makeParseRequest,
   parseStatusObject,
   parseWorkflowId,
@@ -893,29 +897,8 @@ async function readDispatchPressure(
   };
 }
 
-async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 2000): Promise<PlanCandidate[]> {
-  const candidates: PlanCandidate[] = [];
-  let cursor: string | undefined;
-  do {
-    const page = await env.CRATE_GRAPHS.list({
-      prefix: "rust/_runs/",
-      limit: Math.min(1000, Math.max(1, maxKeys - candidates.length)),
-      cursor,
-    });
-    for (const object of page.objects) {
-      if (object.key.endsWith("/plan.json")) {
-        candidates.push({
-          key: object.key,
-          uploaded: object.uploaded?.toISOString(),
-        });
-      }
-      if (candidates.length >= maxKeys) break;
-    }
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor && candidates.length < maxKeys);
-  return candidates.sort(
-    (a, b) => (b.uploaded ?? "").localeCompare(a.uploaded ?? "") || b.key.localeCompare(a.key),
-  );
+async function listPlanKeys(env: ParseWorkerEnv, maxKeys = 200): Promise<PlanCandidate[]> {
+  return Effect.runPromise(listParsePlanKeys(env.CRATE_GRAPHS, maxKeys));
 }
 
 async function readPlan(env: ParseWorkerEnv, key: string): Promise<WorkPlanArtifact | null> {
@@ -929,14 +912,18 @@ function generatedAt(plan: WorkPlanArtifact): string {
 }
 
 async function loadLatestPlan(env: ParseWorkerEnv): Promise<WorkPlanArtifact | null> {
-  const plans = await Promise.all(
-    (await listPlanKeys(env)).slice(0, 25).map(async ({ key }) => readPlan(env, key)),
-  );
-  return (
-    plans
-      .filter((plan): plan is WorkPlanArtifact => plan !== null)
-      .sort((a, b) => generatedAt(b).localeCompare(generatedAt(a)))[0] ?? null
-  );
+  const pointerObject = await env.CRATE_GRAPHS.get(LATEST_PLAN_POINTER_KEY);
+  if (pointerObject) {
+    const pointer = Option.getOrUndefined(
+      Schema.decodeUnknownOption(LatestPlanPointer)(await pointerObject.json()),
+    );
+    if (pointer) {
+      const pointed = await readPlan(env, pointer.key);
+      if (pointed) return pointed;
+    }
+  }
+  const latest = (await listPlanKeys(env))[0];
+  return latest ? readPlan(env, latest.key) : null;
 }
 
 function statusIsNewerThanPlan(status: StoredParseStatus, plan: WorkPlanArtifact | null): boolean {

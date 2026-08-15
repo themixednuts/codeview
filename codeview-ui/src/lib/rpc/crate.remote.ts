@@ -74,18 +74,30 @@ export const getCrateStatus = query(
   },
 );
 
-async function requestParse({ name, version }: { name: string; version: string }): Promise<void> {
+async function queueHostedParse(name: string, version: string, force: boolean): Promise<void> {
   assertCrateRef(name, version);
   const provider = await loader.provider();
-  const result = await provider.triggerParse(name, version, false);
+  const result = await provider.triggerParse(name, version, force);
   throwIfProviderErr(result, { RateLimitError: 429 });
 }
 
 /** Trigger parsing from an imperative client flow. */
-export const triggerCrateParse = command(TriggerParseInputSchema, requestParse);
+export const triggerCrateParse = command(
+  TriggerParseInputSchema,
+  async ({ name, version, force }) => {
+    await queueHostedParse(name, version, force === true);
+  },
+);
 
 /** Progressively enhanced parse request form for user-facing controls. */
-export const requestCrateParse = form(TriggerParseInputSchema, requestParse);
+export const requestCrateParse = form(CrateVersionInputSchema, async ({ name, version }) => {
+  await queueHostedParse(name, version, false);
+});
+
+/** Retry a failed or stuck parse. Form fields stay strings so validation cannot 500. */
+export const requestCrateRetry = form(CrateVersionInputSchema, async ({ name, version }) => {
+  await queueHostedParse(name, version, true);
+});
 
 /** Trigger std crate install + parse (local mode, requires user consent). */
 export const installStdDocs = form(
