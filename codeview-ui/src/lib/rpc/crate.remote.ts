@@ -94,9 +94,9 @@ export const requestCrateParse = form(CrateVersionInputSchema, async ({ name, ve
   await queueHostedParse(name, version, false);
 });
 
-/** Retry a failed or stuck parse. Form fields stay strings so validation cannot 500. */
+/** Re-queue a failed parse. Force/overwrite stays on the admin dashboard. */
 export const requestCrateRetry = form(CrateVersionInputSchema, async ({ name, version }) => {
-  await queueHostedParse(name, version, true);
+  await queueHostedParse(name, version, false);
 });
 
 /** Trigger std crate install + parse (local mode, requires user consent). */
