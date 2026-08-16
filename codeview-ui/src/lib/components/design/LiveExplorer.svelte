@@ -35,6 +35,7 @@
 	} from '#lib/url-state.js';
 	import SkeletonTree from '#lib/components/SkeletonTree.svelte';
 	import * as Resizable from '#lib/components/ui/resizable/index.js';
+	import * as Sheet from '#lib/components/ui/sheet/index.js';
 	import Icon from './Icon.svelte';
 	import KindBadge from './KindBadge.svelte';
 	import Signature from './Signature.svelte';
@@ -104,6 +105,7 @@
 
 	let hydrated = $state(false);
 	let narrowExplorer = $state(false);
+	let mobileTreeOpen = $state(false);
 	const expandedIds = new SvelteSet<string>();
 	const collapsedIds = new SvelteSet<string>();
 	const childrenCache = new Map<string, TreeNodeDTO[]>();
@@ -188,6 +190,7 @@
 	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
 	const docLayout = $derived(localDocLayoutOverride ?? viewState.layout ?? preferredDocLayout);
 	const stackExplorerTree = $derived(docLayout === 'classic' || narrowExplorer);
+	const mobileExplorer = $derived(hydrated && narrowExplorer);
 	const theme = $derived(resolvedThemeCtx.getOr('light'));
 	const crateVersions = $derived(crateVersionsCtx.getOr({}));
 
@@ -627,7 +630,19 @@
 		filterInputTimer = null;
 	}
 
+	function explorerIsNarrow(): boolean {
+		return browser && window.matchMedia('(max-width: 1023.98px)').matches;
+	}
+
+	function closeMobileTree() {
+		mobileTreeOpen = false;
+	}
+
 	function handleTreeRowLinkClick(row: FlatTreeNode, href: string, event: MouseEvent) {
+		if (explorerIsNarrow()) {
+			closeMobileTree();
+			return;
+		}
 		if (!row.hasChildren) return;
 		if (event.defaultPrevented || event.button !== 0) return;
 		if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -860,6 +875,7 @@
 				return;
 			}
 			event.preventDefault();
+			closeMobileTree();
 			void updateExplorerState({ view: nextMode });
 		}}
 	>
@@ -875,9 +891,10 @@
 		data-sveltekit-noscroll
 		data-sveltekit-keepfocus
 		aria-current={isSelected ? 'page' : undefined}
-		class="group flex items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors hover:bg-(--panel-muted) {isSelected
+		class="tree-search-row group flex items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
+		onclick={() => closeMobileTree()}
 	>
 		<KindBadge kind={node.kind} size={14} />
 		<span class="min-w-0 flex-1">
@@ -906,22 +923,22 @@
 		aria-expanded={row.hasChildren ? row.isExpanded : undefined}
 		data-tree-node-id={node.id}
 		tabindex="-1"
-		class="group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors hover:bg-(--panel-muted) {isSelected
+		class="tree-row group relative flex min-h-8 items-center gap-1.5 rounded-md pr-2 transition-colors hover:bg-(--panel-muted) {isSelected
 			? 'bg-(--accent-soft)'
 			: ''}"
-		style={`padding-left: ${8 + row.depth * 14}px`}
+		style={`--tree-depth: ${row.depth}; padding-left: calc(0.5rem + (var(--tree-depth) * var(--tree-indent, 14px)));`}
 		ondblclick={(event) => toggleTreeRowFromDoubleClick(row, event)}
 	>
 		{#if row.depth > 0}
 			<span
-				class="absolute top-0 bottom-0 w-px"
-				style={`left: ${4 + row.depth * 14 - 8}px; background: ${isSelected ? 'var(--accent)' : 'var(--panel-border-soft)'}`}
+				class="tree-row-guide absolute top-0 bottom-0 w-px"
+				style={`left: calc((var(--tree-depth) * var(--tree-indent, 14px)) - 0.25rem); background: ${isSelected ? 'var(--accent)' : 'var(--panel-border-soft)'}`}
 			></span>
 		{/if}
 		{#if row.hasChildren}
 			<button
 				type="button"
-				class="js-only grid size-5 shrink-0 place-items-center rounded text-(--muted-soft) hover:bg-(--panel-solid) hover:text-(--ink)"
+				class="tree-row-toggle js-only grid size-5 shrink-0 place-items-center rounded text-(--muted-soft) hover:bg-(--panel-solid) hover:text-(--ink)"
 				aria-label={row.isExpanded ? `Collapse ${node.name}` : `Expand ${node.name}`}
 				aria-expanded={row.isExpanded}
 				onclick={(event) => {
@@ -933,7 +950,7 @@
 				<Icon name={row.isExpanded ? 'chevron-down' : 'chevron-right'} size={13} />
 			</button>
 		{:else}
-			<span class="size-5 shrink-0"></span>
+			<span class="tree-row-toggle size-5 shrink-0"></span>
 		{/if}
 		{#if row.hasChildren}
 			<span class="no-js-only size-5 shrink-0" aria-hidden="true"></span>
@@ -1019,6 +1036,7 @@
 
 {#snippet treePane(frameClass: string)}
 	<aside
+		id="crate-module-tree"
 		class={`tree-pane flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
 		aria-label="Module tree"
 	>
@@ -1089,7 +1107,7 @@
 				<span class="absolute top-1/2 left-2 -translate-y-1/2 text-(--muted-soft)">
 					<Icon name="search" size={12} />
 				</span>
-				<span class="kbd absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">S</span>
+				<span class="kbd tree-filter-kbd absolute top-1/2 right-2 -translate-y-1/2" aria-hidden="true">S</span>
 				{#each effectiveKindParams as kind (kind)}
 					<input type="hidden" name="k" value={kind} />
 				{/each}
@@ -1347,7 +1365,7 @@
 
 {#snippet detailPane(frameClass: string)}
 	<aside
-		class={`flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
+		class={`detail-pane flex h-full min-h-0 flex-col overflow-hidden bg-(--panel) ${frameClass}`}
 		aria-label="Selected item details"
 	>
 		{#if selected && selectedDesign}
@@ -1453,7 +1471,10 @@
 	</aside>
 {/snippet}
 
-<div class="live-explorer flex min-h-0 flex-1 flex-col overflow-hidden bg-(--bg)">
+<div
+	class="live-explorer flex min-h-0 flex-1 flex-col overflow-hidden bg-(--bg)"
+	class:mobile-tree-open={mobileTreeOpen}
+>
 	<div
 		class="flex min-h-12 items-center gap-3 border-b border-(--panel-border-soft) bg-(--panel) px-4"
 	>
@@ -1470,6 +1491,7 @@
 						href={resolveAppPath(getNodeUrl(ancestor.id))}
 						data-sveltekit-noscroll
 						class="truncate text-(--link) underline decoration-(--panel-border-strong) underline-offset-2"
+						onclick={() => closeMobileTree()}
 					>
 						{ancestor.name}
 					</a>
@@ -1486,6 +1508,20 @@
 			<span class="mono hidden text-xs text-(--muted-soft) sm:inline">
 				{relationshipTotal} relationships
 			</span>
+			<button
+				type="button"
+				class="explorer-tree-toggle js-only inline-flex items-center gap-1.5 rounded-md border border-(--panel-border-soft) px-2.5 py-1 text-xs font-medium {mobileTreeOpen
+					? 'bg-(--panel-solid) text-(--ink) shadow-(--shadow-soft)'
+					: 'bg-(--panel-muted) text-(--muted)'}"
+				aria-pressed={mobileTreeOpen}
+				aria-controls="crate-module-tree"
+				onclick={() => {
+					mobileTreeOpen = !mobileTreeOpen;
+				}}
+			>
+				<Icon name="layers" size={11} />
+				<span class="mode-label">{mobileTreeOpen ? 'Close tree' : 'Tree'}</span>
+			</button>
 			<div
 				class="flex items-center rounded-md border border-(--panel-border-soft) bg-(--panel-muted) p-0.5"
 				aria-label="Explorer mode"
@@ -1496,8 +1532,23 @@
 		</div>
 	</div>
 
-	<div class="min-h-0 flex-1 overflow-auto lg:overflow-hidden">
-		{#if mode === 'graph'}
+	<div class="explorer-body min-h-0 flex-1 overflow-auto lg:overflow-hidden">
+		{#if mobileExplorer}
+			{#if mode === 'graph'}
+				<div class="flex h-full min-h-0 flex-col overflow-hidden">
+					<div class="min-h-0 flex-1 overflow-hidden">
+						{@render nodeContentPane('')}
+					</div>
+					<div
+						class="max-h-[42%] min-h-48 shrink-0 overflow-hidden border-t border-(--panel-border-soft)"
+					>
+						{@render detailPane('')}
+					</div>
+				</div>
+			{:else}
+				{@render nodeContentPane('')}
+			{/if}
+		{:else if mode === 'graph'}
 			<Resizable.PaneGroup
 				direction="horizontal"
 				autoSaveId="codeview-explorer-graph"
@@ -1542,9 +1593,28 @@
 			{@render nodeContentPane('')}
 		{/if}
 	</div>
+
+	{#if mobileExplorer}
+		<Sheet.Root bind:open={mobileTreeOpen}>
+			<Sheet.Content
+				side="left"
+				class="h-full max-h-dvh w-full gap-0 overflow-hidden border-r border-(--panel-border) bg-(--panel) p-0 data-[side=left]:w-full data-[side=left]:sm:max-w-md"
+			>
+				<Sheet.Header class="sr-only">
+					<Sheet.Title>Module tree</Sheet.Title>
+					<Sheet.Description>Browse crate modules and items.</Sheet.Description>
+				</Sheet.Header>
+				{@render treePane('tree-pane-sheet h-full min-h-0')}
+			</Sheet.Content>
+		</Sheet.Root>
+	{/if}
 </div>
 
 <style>
+	.explorer-tree-toggle {
+		display: none;
+	}
+
 	@media (max-width: 379.98px) {
 		.live-explorer :global(.mode-label) {
 			display: none;
@@ -1552,8 +1622,16 @@
 	}
 
 	@media (max-width: 1023.98px) {
+		.explorer-tree-toggle {
+			display: inline-flex;
+		}
+
 		.tree-chrome {
 			padding: 0.75rem 0.75rem 0.5rem;
+		}
+
+		:global(.tree-pane-sheet) .tree-chrome {
+			padding-right: 3rem;
 		}
 
 		.tree-chrome-kicker {
@@ -1573,6 +1651,32 @@
 
 		.tree-crate-switcher {
 			display: none;
+		}
+
+		.tree-filter-kbd {
+			display: none;
+		}
+
+		.tree-row {
+			--tree-indent: 10px;
+			min-height: 2.75rem;
+			gap: 0.125rem;
+		}
+
+		.tree-row-toggle {
+			width: 2.5rem;
+			height: 2.5rem;
+		}
+
+		.tree-search-row {
+			min-height: 2.75rem;
+			padding-top: 0.5rem;
+			padding-bottom: 0.5rem;
+		}
+
+		:global(.tree-pane input[type='search']) {
+			height: 2.5rem;
+			font-size: 1rem;
 		}
 	}
 </style>

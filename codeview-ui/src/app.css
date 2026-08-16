@@ -1022,6 +1022,57 @@ html:not([data-hydrated="true"]) .hydrated-only {
   .codeview-resizable-group > [data-pane-resizer] {
     display: none !important;
   }
+
+  html[data-js="enabled"] .live-explorer .explorer-body {
+    overflow: hidden;
+  }
+
+  html[data-js="enabled"] .live-explorer .codeview-resizable-group {
+    height: 100% !important;
+    overflow: hidden !important;
+  }
+
+  html[data-js="enabled"] .live-explorer:not(.mobile-tree-open)
+    .codeview-resizable-group
+    > [data-pane]:has(.tree-pane) {
+    display: none !important;
+  }
+
+  html[data-js="enabled"] .live-explorer:not(.mobile-tree-open)
+    .codeview-resizable-group
+    > [data-pane]:not(:has(.tree-pane)) {
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: hidden !important;
+  }
+
+  html[data-js="enabled"] .live-explorer.mobile-tree-open
+    .codeview-resizable-group
+    > [data-pane]:has(.tree-pane) {
+    display: flex !important;
+    flex: 1 1 auto !important;
+    height: 100% !important;
+    max-height: none !important;
+    min-height: 0 !important;
+    overflow: hidden !important;
+    border-bottom: 0;
+  }
+
+  html[data-js="enabled"] .live-explorer.mobile-tree-open
+    .codeview-resizable-group
+    > [data-pane]:not(:has(.tree-pane)) {
+    display: none !important;
+  }
+
+  html[data-js="enabled"] .live-explorer:not(.mobile-tree-open)
+    .codeview-resizable-group
+    > [data-pane]:has(.detail-pane) {
+    flex: 0 1 42% !important;
+    min-height: 12rem !important;
+    overflow: auto !important;
+  }
 }
 
 @keyframes shimmer {
