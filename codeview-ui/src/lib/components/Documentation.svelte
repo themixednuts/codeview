@@ -173,6 +173,24 @@
 		border: 1px solid var(--code-border);
 	}
 
+	.documentation-text :global(pre) {
+		margin: 0.9em 0;
+		padding: 0.75rem 1rem;
+		overflow-x: auto;
+		background: var(--code-bg);
+		border: 1px solid var(--code-border);
+		border-radius: var(--radius-card);
+		color: var(--code-ink);
+	}
+
+	.documentation-text :global(pre code) {
+		padding: 0;
+		border: 0;
+		background: transparent;
+		font-size: var(--code-fs, 0.9375rem);
+		line-height: 1.65;
+	}
+
 	.documentation-text :global(img) {
 		display: inline;
 	}

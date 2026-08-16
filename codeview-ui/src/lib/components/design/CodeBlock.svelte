@@ -170,10 +170,6 @@
 		background: transparent;
 	}
 
-	.design-codeblock--flat :global(pre) {
-		padding: 0;
-	}
-
 	:global(html[data-hydrated='true']) .design-codeblock--deferred:not(.design-codeblock--ready) {
 		visibility: hidden;
 	}
