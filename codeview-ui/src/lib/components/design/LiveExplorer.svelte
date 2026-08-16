@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { browser } from '$app/env';
-	import { afterNavigate, goto, refreshAll } from '$app/navigation';
+	import { goto, refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
 	import type {
 		KindFacet,
@@ -29,9 +29,9 @@
 	import {
 		parseExplorerState,
 		serializeExplorerState,
+		explorerVisibleUrl,
 		type ExplorerDocLayout,
 		type ExplorerViewState,
-		type ExplorerViewMode,
 	} from '#lib/url-state.js';
 	import SkeletonTree from '#lib/components/SkeletonTree.svelte';
 	import * as Resizable from '#lib/components/ui/resizable/index.js';
@@ -117,14 +117,8 @@
 	let lastReadyKey = '';
 	let observedNonReady = false;
 	let treeFilterInput = $state<HTMLInputElement | null>(null);
-	let localViewOverride = $state<ExplorerViewMode | null>(null);
-	let localDocLayoutOverride = $state<ExplorerDocLayout | null>(null);
-	let localOverrideRouteKey = $state<string | null>(null);
 	let treeNavigationTimer: ReturnType<typeof setTimeout> | null = null;
 	let filterInputTimer: ReturnType<typeof setTimeout> | null = null;
-	let filterDraftOverride = $state<string | null>(null);
-	let filterOverride = $state<string | null>(null);
-	let kindOverride = $state.raw<NodeKind[] | null>(null);
 
 	const attachTreeFilterInput: Attachment<HTMLInputElement> = (node) => {
 		treeFilterInput = node;
@@ -140,17 +134,8 @@
 	function handleDocLayoutPreferenceEvent(event: Event) {
 		if (!(event instanceof CustomEvent) || !Predicate.isString(event.detail)) return;
 		if (!isExplorerDocLayout(event.detail)) return;
-		localViewOverride = 'docs';
-		localDocLayoutOverride = event.detail;
+		void updateExplorerState({ view: 'docs', layout: event.detail });
 	}
-
-	// A real navigation has authoritative URL state. Shallow goto updates stay
-	// immediate through the local overrides below and do not trigger this hook.
-	afterNavigate(() => {
-		filterOverride = null;
-		kindOverride = null;
-		filterDraftOverride = null;
-	});
 
 	onMount(() => {
 		hydrated = true;
@@ -174,21 +159,22 @@
 		clearFilterInputTimer();
 	});
 
-	const viewState = $derived(parseExplorerState(page.url));
-	const mode = $derived(localViewOverride ?? viewState.view);
+	const explorerUrl = $derived(explorerVisibleUrl(page));
+	const viewState = $derived(parseExplorerState(explorerUrl));
+	const mode = $derived(viewState.view);
 	const graphHref = $derived.by(() => {
-		const url = serializeExplorerState(page.url, { view: 'graph' });
+		const url = serializeExplorerState(explorerUrl, { view: 'graph' });
 		url.hash = '';
 		return `${url.pathname}${url.search}`;
 	});
 	const docsHref = $derived.by(() => {
-		const url = serializeExplorerState(page.url, { view: 'docs' });
+		const url = serializeExplorerState(explorerUrl, { view: 'docs' });
 		url.hash = '';
 		return `${url.pathname}${url.search}`;
 	});
 	const expandPath = $derived(expandPathCtx.getOr(null));
 	const preferredDocLayout = $derived(docLayoutCtx.getOr('classic'));
-	const docLayout = $derived(localDocLayoutOverride ?? viewState.layout ?? preferredDocLayout);
+	const docLayout = $derived(viewState.layout ?? preferredDocLayout);
 	const stackExplorerTree = $derived(docLayout === 'classic' || narrowExplorer);
 	const mobileExplorer = $derived(hydrated && narrowExplorer);
 	const theme = $derived(resolvedThemeCtx.getOr('light'));
@@ -202,11 +188,9 @@
 		selected ? toDesignNode(selected, { ancestors, getNodeUrl }) : null,
 	);
 	const selectedPath = $derived(selectedDesign?.path ?? selected?.id ?? selectedNodeId);
-	const filterDraft = $derived(filterDraftOverride ?? filter);
-	const activeFilter = $derived(filterOverride ?? filter);
-	const effectiveKindParams = $derived(
-		(kindOverride ?? kindParams).filter((kind) => kind !== 'Impl'),
-	);
+	let q = $derived(viewState.q);
+	const activeFilter = $derived(q);
+	const effectiveKindParams = $derived(viewState.k.filter((kind) => kind !== 'Impl'));
 	const kindFilter = $derived.by(() => new Set<NodeKind>(effectiveKindParams));
 	const totalItems = $derived.by(() => {
 		return kindFacets.reduce((total, facet) => total + facet.count, 0);
@@ -246,20 +230,6 @@
 	const emptySearchMessage = $derived(
 		activeFilter ? `No results for "${activeFilter}"` : 'No items match these filters',
 	);
-	$effect(() => {
-		const key = `${canonicalCrateName ?? crateName ?? ''}:${version ?? ''}:${selectedNodeId}`;
-		if (localOverrideRouteKey === null) {
-			localOverrideRouteKey = key;
-			return;
-		}
-		if (key === localOverrideRouteKey) return;
-		localOverrideRouteKey = key;
-		localViewOverride = null;
-		localDocLayoutOverride = null;
-		filterOverride = null;
-		kindOverride = null;
-		filterDraftOverride = null;
-	});
 
 	function loadTreeChildren(input: { name: string; version?: string; nodeId: string }) {
 		return isHosted ? getStaticTreeChildren(input) : getTreeChildren(input);
@@ -674,29 +644,23 @@
 		writeExpandedIdsToUrl();
 	}
 
-	function updateExplorerState(patch: Partial<ExplorerViewState>): Promise<void> | void {
-		const baseUrl = browser ? new URL(window.location.href) : page.url;
-		const nextUrl = serializeExplorerState(baseUrl, patch);
-		if (browser) {
-			if (patch.view !== undefined) localViewOverride = patch.view;
-			if (patch.layout !== undefined) localDocLayoutOverride = patch.layout;
-			void goto(nextUrl, { state: page.state, shallow: true, replace: true });
-			if (patch.layout) document.documentElement.dataset.docLayout = patch.layout;
-			return;
-		}
-		return goto(nextUrl, {
-			replace: true,
-			reset: false,
-		});
+	function explorerHref(patch: Partial<ExplorerViewState>): string {
+		const url = serializeExplorerState(explorerUrl, patch);
+		return `${url.pathname}${url.search}${url.hash}`;
 	}
 
-	function replaceExplorerState(patch: Partial<ExplorerViewState>) {
-		if (!browser) return;
-		void goto(serializeExplorerState(new URL(window.location.href), patch), {
+	function updateExplorerState(patch: Partial<ExplorerViewState>): Promise<void> {
+		const href = explorerHref(patch);
+		if (patch.layout) document.documentElement.dataset.docLayout = patch.layout;
+		return goto(href, {
 			state: page.state,
 			shallow: true,
 			replace: true,
 		});
+	}
+
+	function replaceExplorerState(patch: Partial<ExplorerViewState>) {
+		void updateExplorerState(patch);
 	}
 
 	function currentExtraExpandedIds(): string[] {
@@ -720,11 +684,10 @@
 
 	function commitFilter(nextFilter: string) {
 		clearFilterInputTimer();
-		if (nextFilter === activeFilter) {
+		if (nextFilter === viewState.q) {
 			return;
 		}
-		filterOverride = nextFilter;
-		updateExplorerState({ q: nextFilter });
+		replaceExplorerState({ q: nextFilter });
 	}
 
 	function scheduleFilterUpdate(nextFilter: string) {
@@ -738,7 +701,7 @@
 	function handleFilterInput(event: Event) {
 		const input = event.currentTarget;
 		if (!(input instanceof HTMLInputElement)) return;
-		filterDraftOverride = input.value;
+		q = input.value;
 		scheduleFilterUpdate(input.value);
 	}
 
@@ -748,7 +711,7 @@
 		if (!(form instanceof HTMLFormElement)) return;
 		const raw = new FormData(form).get('q');
 		const nextFilter = Predicate.isString(raw) ? raw : '';
-		filterDraftOverride = nextFilter;
+		q = nextFilter;
 		commitFilter(nextFilter);
 	}
 
@@ -761,15 +724,16 @@
 		const next = new Set<NodeKind>(effectiveKindParams);
 		if (next.has(kind)) next.delete(kind);
 		else next.add(kind);
-		kindOverride = nodeKindOrder.filter((candidate) => next.has(candidate));
-		updateExplorerState({ k: kindOverride });
+		replaceExplorerState({
+			k: nodeKindOrder.filter((candidate) => next.has(candidate)),
+		});
 	}
 
 	function kindHref(kind: NodeKind): string {
 		const next = new Set<NodeKind>(effectiveKindParams);
 		if (next.has(kind)) next.delete(kind);
 		else next.add(kind);
-		const url = serializeExplorerState(browser ? new URL(window.location.href) : page.url, {
+		const url = serializeExplorerState(explorerUrl, {
 			k: nodeKindOrder.filter((candidate) => next.has(candidate)),
 		});
 		return `${url.pathname}${url.search}`;
@@ -855,7 +819,7 @@
 </script>
 
 {#snippet modeButton(nextMode: 'graph' | 'docs', label: string, icon: 'link' | 'hash')}
-	{@const href = serializeExplorerState(page.url, { view: nextMode })}
+	{@const href = serializeExplorerState(explorerUrl, { view: nextMode })}
 	{@const modeHref = `${href.pathname}${href.search}`}
 	<a
 		href={resolveAppPath(modeHref)}
@@ -1100,7 +1064,7 @@
 					name="q"
 					placeholder="Filter items..."
 					aria-label="Filter crate items"
-					value={filterDraft}
+					value={q}
 					class="mono corner-squircle h-8 w-full rounded-(--radius-control) border border-(--panel-border) bg-(--panel-solid) pr-12 pl-7 text-xs text-(--ink) shadow-(--shadow-soft) transition-colors outline-none hover:border-(--panel-border-strong) focus:border-(--accent) focus:ring-2 focus:ring-(--accent-ring)"
 					oninput={handleFilterInput}
 				/>

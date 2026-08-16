@@ -153,6 +153,14 @@ function setText(params: URLSearchParams, key: string, value: string | null | un
   if (normalized) params.set(key, normalized);
 }
 
+/** Address-bar URL. Kit 3 shallow `goto` updates `page.shallow.url`, not `page.url`. */
+export function explorerVisibleUrl(page: {
+  url: AppUrl;
+  shallow: { url: AppUrl } | null;
+}): AppUrl {
+  return page.shallow?.url ?? page.url;
+}
+
 export function parseExplorerState(url: AppUrl): ExplorerViewState {
   const { searchParams } = url;
   return {

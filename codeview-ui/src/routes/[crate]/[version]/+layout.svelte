@@ -20,7 +20,7 @@
 	import { getStaticTreeRoots, getTreeRoots } from '#lib/rpc/roots.remote.js';
 	import { nodeIdFromPath, nodeUrlForRoute } from '#lib/url.js';
 	import { hyphenateCrateName } from '#lib/crate-names.js';
-	import { parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
+	import { explorerVisibleUrl, parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
 	import { onMount } from 'svelte';
 	import CrateParseState from '#lib/components/CrateParseState.svelte';
 	import LiveExplorer from '#lib/components/design/LiveExplorer.svelte';
@@ -48,7 +48,7 @@
 	const hasValidCrateParam = $derived(isValidCrateNameParam(canonicalCrateName));
 	const hasValidVersionParam = $derived(isValidVersionParam(version));
 	const canQueryCrate = $derived(hasValidCrateParam && hasValidVersionParam);
-	const viewState = $derived(parseExplorerState(page.url));
+	const viewState = $derived(parseExplorerState(explorerVisibleUrl(page)));
 
 	// --- SSE connections for status and parse progress ---
 	const statusConn = new CrateStatusConnection();

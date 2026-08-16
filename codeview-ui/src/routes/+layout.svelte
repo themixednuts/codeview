@@ -8,7 +8,7 @@
 	import { onDestroy, onMount, untrack } from 'svelte';
 	import * as Predicate from 'effect/Predicate';
 	import { perf } from '#lib/perf.js';
-	import { parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
+	import { explorerVisibleUrl, parseExplorerState, serializeExplorerState } from '#lib/url-state.js';
 	import {
 		ACCENT_KEY,
 		ACCENT_VALUES,
@@ -369,7 +369,7 @@
 	let docLayout = $state<DocLayoutMode>('classic');
 	let codeThemeLight = $state<CodeTheme>('solarized-light');
 	let codeThemeDark = $state<CodeTheme>('solarized-dark');
-	const explorerViewState = $derived(parseExplorerState(page.url));
+	const explorerViewState = $derived(parseExplorerState(explorerVisibleUrl(page)));
 	const activeDocLayout = $derived(explorerViewState.layout ?? docLayout);
 	const isExplorerRoute = $derived(Boolean(page.params.crate && page.params.version));
 
@@ -435,7 +435,7 @@
 		document.documentElement.dataset.docLayout = next;
 		window.dispatchEvent(new CustomEvent('codeview-doc-layout-change', { detail: next }));
 		if (isExplorerRoute) {
-			void goto(serializeExplorerState(page.url, { layout: next }), {
+			void goto(serializeExplorerState(explorerVisibleUrl(page), { layout: next }), {
 				state: page.state,
 				shallow: true,
 				replace: true,
