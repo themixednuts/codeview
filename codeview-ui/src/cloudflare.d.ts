@@ -8,6 +8,7 @@ interface __BaseEnv_Env {
   RATE_LIMIT_API: RateLimit;
   RATE_LIMIT_PARSE_ANON: RateLimit;
   RATE_LIMIT_PARSE_AUTH: RateLimit;
+  RATE_LIMIT_CRAWL: RateLimit;
   ASSETS: Fetcher;
   BETTER_AUTH_URL: "https://codeview.codes";
   GITHUB_OAUTH_CLIENT_ID: "Ov23liaAIxx0Vmp8F0zE";

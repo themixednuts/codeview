@@ -285,3 +285,50 @@ export function isParseRequestMessage(value: Schema.Json): value is ParseRequest
   );
   return candidate !== undefined && Number.isFinite(Date.parse(candidate.requestedAt));
 }
+
+export const PARSE_WORKER_TASK_SCHEMA_VERSION = 2;
+
+export type ParseWorkerTaskKind = "reconcile-finalizing" | "reconcile-stale" | "drain-planned";
+
+export type ParseDrainPressureSnapshot = {
+  statusActive: number;
+  githubActive: number;
+  actionsInUse: number;
+  capacityReliable: boolean;
+  capacityReason?: string;
+};
+
+export type ParseWorkerTaskMessage = {
+  schemaVersion: typeof PARSE_WORKER_TASK_SCHEMA_VERSION;
+  task: ParseWorkerTaskKind;
+  enqueuedAt: string;
+  pressure: ParseDrainPressureSnapshot;
+  reconcileCursor?: number;
+};
+
+const ParseDrainPressureSnapshotSchema = Schema.Struct({
+  statusActive: Schema.Number,
+  githubActive: Schema.Number,
+  actionsInUse: Schema.Number,
+  capacityReliable: Schema.Boolean,
+  capacityReason: Schema.optionalKey(Schema.String),
+});
+
+const ParseWorkerTaskMessageSchema = Schema.Struct({
+  schemaVersion: Schema.Literal(PARSE_WORKER_TASK_SCHEMA_VERSION),
+  task: Schema.Literals(["reconcile-finalizing", "reconcile-stale", "drain-planned"]),
+  enqueuedAt: Schema.String,
+  pressure: ParseDrainPressureSnapshotSchema,
+  reconcileCursor: Schema.optionalKey(Schema.Number),
+});
+
+export function isParseWorkerTaskMessage(value: Schema.Json): value is ParseWorkerTaskMessage {
+  const candidate = Option.getOrUndefined(
+    Schema.decodeUnknownOption(ParseWorkerTaskMessageSchema)(value),
+  );
+  return candidate !== undefined && Number.isFinite(Date.parse(candidate.enqueuedAt));
+}
+
+export function isKnownQueueMessage(value: Schema.Json): value is ParseRequestMessage | ParseWorkerTaskMessage {
+  return isParseWorkerTaskMessage(value) || isParseRequestMessage(value);
+}

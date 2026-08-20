@@ -80,6 +80,10 @@ export const Website = Cloudflare.Website.SvelteKit(
         namespaceId: 1003,
         simple: { limit: 60, period: 60 },
       }),
+      RATE_LIMIT_CRAWL: Cloudflare.RateLimit("RATE_LIMIT_CRAWL", {
+        namespaceId: 1004,
+        simple: { limit: 30, period: 60 },
+      }),
       BETTER_AUTH_URL: "https://codeview.codes",
       GITHUB_OAUTH_CLIENT_ID: "Ov23liaAIxx0Vmp8F0zE",
       GITHUB_ADMIN_LOGINS: "themixednuts",

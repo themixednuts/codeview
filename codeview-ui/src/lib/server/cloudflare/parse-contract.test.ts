@@ -1,8 +1,10 @@
 import { describe, expect, test } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import {
+  isParseWorkerTaskMessage,
   listParsePlanKeys,
   makeParseRequest,
+  PARSE_WORKER_TASK_SCHEMA_VERSION,
   shouldAcceptQueuedParseRequest,
   type StoredParseStatus,
 } from "./parse-contract";
@@ -54,6 +56,28 @@ describe("queued parse registration", () => {
       requestedAt: "2026-07-09T11:59:59.000Z",
     };
     expect(shouldAcceptQueuedParseRequest(storedStatus("failed"), request)).toBe(false);
+  });
+});
+
+describe("parse worker task messages", () => {
+  test("accepts cron maintenance tasks", () => {
+    expect(
+      isParseWorkerTaskMessage({
+        schemaVersion: PARSE_WORKER_TASK_SCHEMA_VERSION,
+        task: "drain-planned",
+        enqueuedAt: "2026-08-20T00:00:00.000Z",
+        pressure: {
+          statusActive: 1,
+          githubActive: 2,
+          actionsInUse: 2,
+          capacityReliable: true,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  test("rejects parse requests as worker tasks", () => {
+    expect(isParseWorkerTaskMessage(makeParseRequest("serde", "1.0.228", false))).toBe(false);
   });
 });
 

@@ -15,27 +15,31 @@ import { isCurrentHostedArtifactMetadata } from "./lib/hosted-contract";
 import {
   crateStatusTag,
   isParseRequestMessage,
+  isParseWorkerTaskMessage,
   LATEST_PLAN_POINTER_KEY,
   LatestPlanPointer,
   listParsePlanKeys,
   makeParseRequest,
+  PARSE_WORKER_TASK_SCHEMA_VERSION,
   parseStatusObject,
   parseWorkflowId,
   registerQueuedParseRequest,
   shouldAcceptQueuedParseRequest,
   type BeginParseResponse,
   type ParseCompletionPayload,
+  type ParseDrainPressureSnapshot,
   type ParseQueueSnapshot,
   type QueueParseResponse,
   type ParseRequestMessage,
   type ParseStatusEvent,
+  type ParseWorkerTaskMessage,
   type ParseWorkflowParams,
   type StoredParseStatus,
 } from "./lib/server/cloudflare/parse-contract";
 
 type ParseWorkerEnv = Env & {
   CRATE_GRAPHS: R2Bucket;
-  PARSE_REQUESTS?: Queue<ParseRequestMessage>;
+  PARSE_REQUESTS?: Queue;
   PARSE_STATUS: DurableObjectNamespace;
   PARSE_WORKFLOW: Workflow<ParseWorkflowParams>;
   GITHUB_TOKEN?: string;
@@ -80,6 +84,7 @@ const ACTIVE_GITHUB_RUN_STATUSES = [
 ] as const;
 const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
 const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
+const RECONCILE_BATCH_SIZE = 8;
 const GITHUB_CALLBACK_WAIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const MAX_ORPHANED_PROCESSING_RECONCILE_MS = GITHUB_CALLBACK_WAIT_TIMEOUT_MS + 15 * 60 * 1000;
 const GITHUB_CALLBACK_WAIT_TIMEOUT = "6 hours";
@@ -1136,7 +1141,10 @@ async function enqueuePlannedItem(env: ParseWorkerEnv, item: PlannedParseItem): 
   }
 }
 
-async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
+async function drainPlannedParses(
+  env: ParseWorkerEnv,
+  options?: { pressure?: ParseDrainPressureSnapshot },
+): Promise<{
   queued: number;
   skipped: number;
   statusActive: number;
@@ -1162,7 +1170,7 @@ async function drainPlannedParses(env: ParseWorkerEnv): Promise<{
   // 0 disables plan→queue siphon; shards own daily planned work.
   const batchSize = parseNonNegativeInteger(env.PLAN_DRAIN_BATCH_SIZE, 0);
   if (batchSize === 0) return empty;
-  const pressure = await readDrainPressure(env);
+  const pressure = options?.pressure ?? (await readDrainPressure(env));
   if (!pressure.capacityReliable) {
     return {
       ...pressure,
@@ -1268,16 +1276,20 @@ async function verifyArtifacts(env: ParseWorkerEnv, name: string, version: strin
 
 async function reconcileFinalizingParses(
   env: ParseWorkerEnv,
-): Promise<{ ready: number; failed: number }> {
+  options?: { cursor?: number; batchSize?: number },
+): Promise<{ ready: number; failed: number; nextCursor: number; hasMore: boolean }> {
+  const cursor = options?.cursor ?? 0;
+  const batchSize = options?.batchSize ?? RECONCILE_BATCH_SIZE;
   const url = new URL("https://status/queue");
   url.searchParams.set("limit", "100");
   const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
-  if (!response.ok) return { ready: 0, failed: 0 };
+  if (!response.ok) return { ready: 0, failed: 0, nextCursor: cursor, hasMore: false };
   const snapshot = decodeTrustedJson<ParseQueueSnapshot>(await response.json());
+  const finalizing = snapshot.active.filter((status) => status.step === "finalizing");
+  const batch = finalizing.slice(cursor, cursor + batchSize);
   let ready = 0;
   let failed = 0;
-  for (const status of snapshot.active) {
-    if (status.step !== "finalizing") continue;
+  for (const status of batch) {
     try {
       await verifyArtifacts(env, status.name, status.version);
       await updateStatus(env, {
@@ -1310,7 +1322,8 @@ async function reconcileFinalizingParses(
       failed += 1;
     }
   }
-  return { ready, failed };
+  const nextCursor = cursor + batch.length;
+  return { ready, failed, nextCursor, hasMore: nextCursor < finalizing.length };
 }
 
 async function markReadyIfArtifactsExist(
@@ -1355,27 +1368,32 @@ async function failStaleProcessing(
   });
 }
 
-async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
-  ready: number;
-  failed: number;
-  kept: number;
-}> {
+async function reconcileStaleProcessingParses(
+  env: ParseWorkerEnv,
+  options?: { cursor?: number; batchSize?: number; githubActive?: number | null },
+): Promise<{ ready: number; failed: number; kept: number; nextCursor: number; hasMore: boolean }> {
+  const cursor = options?.cursor ?? 0;
+  const batchSize = options?.batchSize ?? RECONCILE_BATCH_SIZE;
   const url = new URL("https://status/queue");
   url.searchParams.set("limit", "100");
   const response = await parseStatusObject(env.PARSE_STATUS).fetch(url);
-  if (!response.ok) return { ready: 0, failed: 0, kept: 0 };
+  if (!response.ok) return { ready: 0, failed: 0, kept: 0, nextCursor: cursor, hasMore: false };
   const snapshot = decodeTrustedJson<ParseQueueSnapshot>(await response.json());
-  const githubActive = await countActiveGitHubParseRuns(env).catch((err) => {
-    console.warn(`stale parse reconciliation cannot read active GitHub runs: ${errorMessage(err)}`);
-    return null;
-  });
+  const staleCandidates = snapshot.active.filter((status) => status.step !== "finalizing");
+  const batch = staleCandidates.slice(cursor, cursor + batchSize);
+  const githubActive =
+    options?.githubActive !== undefined
+      ? options.githubActive
+      : await countActiveGitHubParseRuns(env).catch((err) => {
+          console.warn(`stale parse reconciliation cannot read active GitHub runs: ${errorMessage(err)}`);
+          return null;
+        });
   const now = Date.now();
   let ready = 0;
   let failed = 0;
   let kept = 0;
 
-  for (const status of snapshot.active) {
-    if (status.step === "finalizing") continue;
+  for (const status of batch) {
     const updatedAtMs = Date.parse(status.updatedAt);
     const ageMs = Number.isFinite(updatedAtMs) ? now - updatedAtMs : 0;
 
@@ -1461,7 +1479,8 @@ async function reconcileStaleProcessingParses(env: ParseWorkerEnv): Promise<{
     failed += 1;
   }
 
-  return { ready, failed, kept };
+  const nextCursor = cursor + batch.length;
+  return { ready, failed, kept, nextCursor, hasMore: nextCursor < staleCandidates.length };
 }
 
 export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
@@ -2261,6 +2280,90 @@ async function waitForDispatchCapacity(
   return false;
 }
 
+async function enqueueWorkerTasks(env: ParseWorkerEnv): Promise<void> {
+  if (!env.PARSE_REQUESTS) return;
+  const pressure = await readDrainPressure(env);
+  const enqueuedAt = new Date().toISOString();
+  const base = {
+    schemaVersion: PARSE_WORKER_TASK_SCHEMA_VERSION,
+    enqueuedAt,
+    pressure,
+    reconcileCursor: 0,
+  } satisfies Omit<ParseWorkerTaskMessage, "task">;
+  await env.PARSE_REQUESTS.send([
+    { ...base, task: "reconcile-finalizing" },
+    { ...base, task: "reconcile-stale" },
+    { ...base, task: "drain-planned" },
+  ]);
+}
+
+async function handleWorkerTaskMessage(
+  message: Message<unknown>,
+  body: ParseWorkerTaskMessage,
+  env: ParseWorkerEnv,
+): Promise<void> {
+  const cursor = body.reconcileCursor ?? 0;
+  try {
+    switch (body.task) {
+      case "reconcile-finalizing": {
+        const result = await reconcileFinalizingParses(env, {
+          cursor,
+          batchSize: RECONCILE_BATCH_SIZE,
+        });
+        if (result.hasMore) {
+          await env.PARSE_REQUESTS!.send({
+            ...body,
+            reconcileCursor: result.nextCursor,
+            enqueuedAt: new Date().toISOString(),
+          });
+        } else if (result.ready > 0 || result.failed > 0) {
+          console.log(
+            `reconciled finalizing parses ready=${result.ready} failed=${result.failed}`,
+          );
+        }
+        break;
+      }
+      case "reconcile-stale": {
+        const githubActive = body.pressure.capacityReliable ? body.pressure.githubActive : null;
+        const result = await reconcileStaleProcessingParses(env, {
+          cursor,
+          batchSize: RECONCILE_BATCH_SIZE,
+          githubActive,
+        });
+        if (result.hasMore) {
+          await env.PARSE_REQUESTS!.send({
+            ...body,
+            reconcileCursor: result.nextCursor,
+            enqueuedAt: new Date().toISOString(),
+          });
+        } else if (result.ready > 0 || result.failed > 0 || result.kept > 0) {
+          console.log(
+            `reconciled stale parses ready=${result.ready} failed=${result.failed} kept=${result.kept}`,
+          );
+        }
+        break;
+      }
+      case "drain-planned": {
+        const result = await drainPlannedParses(env, { pressure: body.pressure });
+        if (result.budgetLimited) {
+          console.log(
+            `planned parse drain paused reason=${result.budgetReason ?? "budget-limited"}`,
+          );
+        } else if (result.queued > 0) {
+          console.log(
+            `drained planned parses queued=${result.queued} skipped=${result.skipped} activeTarget=${result.activeTarget} actionsInUse=${result.actionsInUse} statusActive=${result.statusActive} githubActive=${result.githubActive}`,
+          );
+        }
+        break;
+      }
+    }
+    message.ack();
+  } catch (err) {
+    console.warn(`worker task ${body.task} failed: ${errorMessage(err)}`);
+    message.retry({ delaySeconds: 60 });
+  }
+}
+
 async function handleQueueMessage(
   message: Message<unknown>,
   body: ParseRequestMessage,
@@ -2423,34 +2526,21 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 
 export default {
   async scheduled(_controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
-    const reconciled = await reconcileFinalizingParses(env);
-    if (reconciled.ready > 0 || reconciled.failed > 0) {
-      console.log(
-        `reconciled finalizing parses ready=${reconciled.ready} failed=${reconciled.failed}`,
-      );
-    }
-    const stale = await reconcileStaleProcessingParses(env);
-    if (stale.ready > 0 || stale.failed > 0) {
-      console.log(
-        `reconciled stale parses ready=${stale.ready} failed=${stale.failed} kept=${stale.kept}`,
-      );
-    }
-    const result = await drainPlannedParses(env);
-    if (result.budgetLimited) {
-      console.log(
-        `planned parse drain paused reason=${result.budgetReason ?? "budget-limited"}`,
-      );
-    } else if (result.queued > 0) {
-      console.log(
-        `drained planned parses queued=${result.queued} skipped=${result.skipped} activeTarget=${result.activeTarget} actionsInUse=${result.actionsInUse} statusActive=${result.statusActive} githubActive=${result.githubActive}`,
-      );
-    }
+    await enqueueWorkerTasks(env);
   },
 
   async queue(batch: MessageBatch<unknown>, env: ParseWorkerEnv): Promise<void> {
     for (const message of batch.messages) {
       const body = Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Json)(message.body));
-      if (body === undefined || !isParseRequestMessage(body)) {
+      if (body === undefined) {
+        message.ack();
+        continue;
+      }
+      if (isParseWorkerTaskMessage(body)) {
+        await handleWorkerTaskMessage(message, body, env);
+        continue;
+      }
+      if (!isParseRequestMessage(body)) {
         message.ack();
         continue;
       }

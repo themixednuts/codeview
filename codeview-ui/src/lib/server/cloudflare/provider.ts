@@ -95,6 +95,7 @@ type AppEnv = Env & {
   RATE_LIMIT_API_AUTH?: RateLimit;
   RATE_LIMIT_PARSE_ANON?: RateLimit;
   RATE_LIMIT_PARSE_AUTH?: RateLimit;
+  RATE_LIMIT_CRAWL?: RateLimit;
   AUTH_DB?: D1Database;
   BETTER_AUTH_SECRET?: string;
   BETTER_AUTH_URL?: string;

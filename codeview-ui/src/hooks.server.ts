@@ -3,6 +3,8 @@ import type { Handle } from "@sveltejs/kit/hooks";
 import { setupLogging } from "#lib/log.server.js";
 import { handleWsUpgrade } from "$provider";
 import { getAuthState, handleAuthRequest } from "#lib/server/auth.js";
+import { cacheControlForResponse, isAggressiveCrawlPath } from "#lib/server/cache-policy.js";
+import { isHosted } from "#lib/platform.js";
 import {
   ACCENT_KEY,
   ACCENT_VALUES,
@@ -45,13 +47,18 @@ export const handle: Handle = async ({ event, resolve }) => {
     return handleWsUpgrade(event);
   }
 
+  const crawlDenied = await maybeDenyAggressiveCrawler(event);
+  if (crawlDenied) {
+    return withSecurityHeaders(crawlDenied);
+  }
+
   event.locals.auth = await getAuthState(event);
   event.locals.user = event.locals.auth.user;
   event.locals.session = event.locals.auth.session;
 
   if (event.url.pathname === "/api/auth" || event.url.pathname.startsWith("/api/auth/")) {
     return withSecurityHeaders(
-      withDynamicCachePolicy(event.url.pathname, await handleAuthRequest(event)),
+      withDynamicCachePolicy(event.request, event.url.pathname, event.locals.user !== null, await handleAuthRequest(event)),
     );
   }
 
@@ -67,21 +74,51 @@ export const handle: Handle = async ({ event, resolve }) => {
       return nextHtml;
     },
   });
-  return withSecurityHeaders(withDynamicCachePolicy(event.url.pathname, response));
+  return withSecurityHeaders(
+    withDynamicCachePolicy(event.request, event.url.pathname, event.locals.user !== null, response),
+  );
 };
 
-function withDynamicCachePolicy(pathname: string, response: Response): Response {
-  if (pathname.startsWith("/_app/immutable/") && !response.ok) {
-    return withCacheControl(response, "no-store");
-  }
-  if (response.headers.has("Cache-Control")) return response;
-  if (pathname.startsWith("/_app/immutable/") || pathname.startsWith("/favicon")) return response;
-  return withCacheControl(response, "no-store");
+async function maybeDenyAggressiveCrawler(event: Parameters<Handle>[0]["event"]): Promise<Response | null> {
+  if (!isHosted || event.request.method !== "GET") return null;
+  if (!isAggressiveCrawlPath(event.url.pathname)) return null;
+
+  const limiter = event.platform?.env?.RATE_LIMIT_CRAWL;
+  if (!limiter) return null;
+
+  const ip =
+    event.request.headers.get("cf-connecting-ip") ??
+    event.request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+    "unknown";
+  const outcome = await limiter.limit({ key: `crawl:${ip}` });
+  if (outcome.success) return null;
+
+  return new Response("Too many requests", {
+    status: 429,
+    headers: {
+      "Cache-Control": "no-store",
+      "Retry-After": "60",
+    },
+  });
+}
+
+function withDynamicCachePolicy(
+  request: Request,
+  pathname: string,
+  loggedIn: boolean,
+  response: Response,
+): Response {
+  const value = cacheControlForResponse(pathname, response, request, loggedIn);
+  if (value === response.headers.get("Cache-Control")) return response;
+  return withCacheControl(response, value);
 }
 
 function withCacheControl(response: Response, value: string): Response {
   const headers = new Headers(response.headers);
   headers.set("Cache-Control", value);
+  if (value.includes("s-maxage")) {
+    headers.set("Cloudflare-CDN-Cache-Control", value);
+  }
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
