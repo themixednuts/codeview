@@ -240,7 +240,7 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     }
 
     // Convert internal Graph → CrateGraph for the static-artifact builders.
-    let crate_graph = codeview_core::CrateGraph {
+    let crate_graph = shards::project_routeable_external_reexports(&codeview_core::CrateGraph {
         id: graph
             .nodes
             .iter()
@@ -252,7 +252,7 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
         nodes: graph.nodes,
         edges: graph.edges,
         aliases: graph.aliases,
-    };
+    });
 
     let graph_hash = shards::graph_hash(&crate_graph);
     eprintln!(
@@ -543,7 +543,7 @@ fn classify_rustdoc_error(err: RustdocError) -> PublishError {
             PublishError::Transient(anyhow::Error::new(e).context("parser source parse"))
         }
         RustdocError::RustdocFailed(status) => {
-            PublishError::Transient(anyhow::anyhow!("cargo rustdoc failed with status {status}"))
+            PublishError::Permanent(format!("cargo rustdoc failed with status {status}"))
         }
         RustdocError::MissingRootPackage => {
             PublishError::Transient(anyhow::anyhow!("parser missing root package"))
@@ -553,7 +553,7 @@ fn classify_rustdoc_error(err: RustdocError) -> PublishError {
 
 #[cfg(test)]
 mod tests {
-    use super::{hosted_metadata_is_current, shards};
+    use super::{PublishError, classify_rustdoc_error, hosted_metadata_is_current, shards};
 
     fn metadata(schema_version: u32, name: &str, version: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
@@ -588,6 +588,25 @@ mod tests {
             &metadata(shards::STATIC_SCHEMA_VERSION, "serde", "1.0.227"),
             "serde",
             "1.0.228"
+        ));
+    }
+
+    #[test]
+    fn cargo_rustdoc_build_failure_is_permanent() {
+        #[cfg(unix)]
+        let status = {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1 << 8)
+        };
+        #[cfg(windows)]
+        let status = {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(1)
+        };
+
+        assert!(matches!(
+            classify_rustdoc_error(codeview_rustdoc::RustdocError::RustdocFailed(status)),
+            PublishError::Permanent(_)
         ));
     }
 }

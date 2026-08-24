@@ -313,6 +313,15 @@ pub fn generate_rustdoc_json_with_options(
     manifest_path: &Path,
     options: RustdocBuildOptions,
 ) -> Result<RustdocJson, RustdocError> {
+    generate_rustdoc_json_with_options_inner(manifest_path, options, true)
+}
+
+#[cfg(feature = "native")]
+fn generate_rustdoc_json_with_options_inner(
+    manifest_path: &Path,
+    options: RustdocBuildOptions,
+    allow_lock_refresh: bool,
+) -> Result<RustdocJson, RustdocError> {
     let metadata = MetadataCommand::new().manifest_path(manifest_path).exec()?;
     let package = metadata
         .root_package()
@@ -374,14 +383,21 @@ pub fn generate_rustdoc_json_with_options(
         .status()?;
 
     if !status.success() {
+        if allow_lock_refresh && refresh_packaged_proc_macro2_lock(manifest_path)? {
+            eprintln!(
+                "cargo rustdoc failed with the packaged lockfile; retrying after updating proc-macro2"
+            );
+            return generate_rustdoc_json_with_options_inner(manifest_path, options, false);
+        }
         // `--cfg docsrs` enables `feature(doc_auto_cfg)`, which nightly 1.92
         // removed (merged into `doc_cfg`). Retry without the docs.rs cfg so
         // crates that still declare the old feature can still emit JSON.
         if options.docs_rs {
             eprintln!("docs.rs-style rustdoc failed; retrying without --cfg docsrs");
-            return generate_rustdoc_json_with_options(
+            return generate_rustdoc_json_with_options_inner(
                 manifest_path,
                 RustdocBuildOptions::default(),
+                false,
             );
         }
         return Err(RustdocError::RustdocFailed(status));
@@ -397,6 +413,40 @@ pub fn generate_rustdoc_json_with_options(
         manifest_path: manifest_path.to_path_buf(),
         src_path,
     })
+}
+
+#[cfg(feature = "native")]
+fn refresh_packaged_proc_macro2_lock(manifest_path: &Path) -> Result<bool, RustdocError> {
+    let Some(crate_dir) = manifest_path.parent() else {
+        return Ok(false);
+    };
+    let lock_path = crate_dir.join("Cargo.lock");
+    let lock = match fs::read_to_string(&lock_path) {
+        Ok(lock) => lock,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(RustdocError::Io(err)),
+    };
+    if !lockfile_contains_package(&lock, "proc-macro2") {
+        return Ok(false);
+    }
+
+    let status = Command::new("cargo")
+        .arg("+nightly")
+        .arg("update")
+        .arg("--manifest-path")
+        .arg(manifest_path)
+        .arg("-p")
+        .arg("proc-macro2")
+        .status()?;
+    Ok(status.success())
+}
+
+#[cfg(feature = "native")]
+fn lockfile_contains_package(lock: &str, package: &str) -> bool {
+    let expected = format!("name = \"{package}\"");
+    lock.split("[[package]]")
+        .skip(1)
+        .any(|section| section.lines().map(str::trim).any(|line| line == expected))
 }
 
 #[cfg(feature = "native")]
@@ -6603,6 +6653,23 @@ pub struct Small;
         assert!(!enabled_features.contains("debugger_visualizer"));
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn packaged_lock_detects_proc_macro2_compatibility_refresh() {
+        let lock = r#"
+[[package]]
+name = "proc-macro2"
+version = "1.0.51"
+
+[[package]]
+name = "quote"
+version = "1.0.23"
+"#;
+
+        assert!(lockfile_contains_package(lock, "proc-macro2"));
+        assert!(!lockfile_contains_package(lock, "syn"));
     }
 
     #[test]

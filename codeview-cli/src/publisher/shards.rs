@@ -232,6 +232,103 @@ pub struct StaticTreeChildrenShard {
 
 // ─── Tree construction ────────────────────────────────────────────────
 
+pub(crate) fn project_routeable_external_reexports(graph: &CrateGraph) -> CrateGraph {
+    let nodes_by_id: HashMap<&str, &Node> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let existing_ids: HashSet<&str> = nodes_by_id.keys().copied().collect();
+    let mut replacements = HashMap::<(String, String), Vec<String>>::new();
+    let mut projected_nodes = Vec::new();
+    let mut consumed_aliases = HashSet::new();
+
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::ReExports)
+    {
+        if nodes_by_id
+            .get(edge.from.as_str())
+            .is_none_or(|node| node.is_external)
+        {
+            continue;
+        }
+        let Some(canonical_node) = nodes_by_id
+            .get(edge.to.as_str())
+            .filter(|node| node.is_external)
+        else {
+            continue;
+        };
+        let mut public_ids: Vec<String> = graph
+            .aliases
+            .iter()
+            .filter(|(public_id, canonical_id)| {
+                canonical_id.as_str() == edge.to
+                    && public_id.rsplit_once("::").map(|(parent, _)| parent)
+                        == Some(edge.from.as_str())
+            })
+            .map(|(public_id, _)| public_id.clone())
+            .collect();
+        if public_ids.is_empty() {
+            public_ids.push(format!("{}::{}", edge.from, canonical_node.name));
+        }
+        public_ids.sort();
+        public_ids.dedup();
+
+        for public_id in &public_ids {
+            if existing_ids.contains(public_id.as_str())
+                || projected_nodes
+                    .iter()
+                    .any(|node: &Node| node.id == *public_id)
+            {
+                consumed_aliases.insert(public_id.clone());
+                continue;
+            }
+            let mut node = (*canonical_node).clone();
+            node.id = public_id.clone();
+            node.name = public_id
+                .rsplit_once("::")
+                .map_or_else(|| canonical_node.name.clone(), |(_, name)| name.to_string());
+            node.is_external = false;
+            projected_nodes.push(node);
+            consumed_aliases.insert(public_id.clone());
+        }
+        replacements.insert((edge.from.clone(), edge.to.clone()), public_ids);
+    }
+
+    if replacements.is_empty() {
+        return graph.clone();
+    }
+
+    let mut projected = graph.clone();
+    projected.nodes.extend(projected_nodes);
+    projected
+        .aliases
+        .retain(|public_id, _| !consumed_aliases.contains(public_id));
+    projected.edges = graph
+        .edges
+        .iter()
+        .flat_map(|edge| {
+            replacements
+                .get(&(edge.from.clone(), edge.to.clone()))
+                .filter(|_| edge.kind == EdgeKind::ReExports)
+                .map(|public_ids| {
+                    public_ids
+                        .iter()
+                        .map(|public_id| {
+                            let mut projected_edge = edge.clone();
+                            projected_edge.to = public_id.clone();
+                            projected_edge
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| vec![edge.clone()])
+        })
+        .collect();
+    projected
+}
+
 /// Walk Contains/Defines edges to build the parent→children map.
 pub(crate) fn build_tree_relations(
     graph: &CrateGraph,
@@ -269,12 +366,14 @@ pub(crate) fn build_tree_relations(
     };
 
     for edge in &graph.edges {
-        if !matches!(edge.kind, EdgeKind::Contains | EdgeKind::Defines) {
-            continue;
-        }
-
         let source = nodes_by_id.get(edge.from.as_str());
         let target = nodes_by_id.get(edge.to.as_str());
+        let is_tree_edge = matches!(edge.kind, EdgeKind::Contains | EdgeKind::Defines)
+            || (edge.kind == EdgeKind::ReExports
+                && target.is_some_and(|node| is_local_page_node(node)));
+        if !is_tree_edge {
+            continue;
+        }
         if source.is_some_and(|node| node.kind == NodeKind::Impl) {
             continue;
         }
@@ -1055,6 +1154,66 @@ mod tests {
             ],
             aliases: HashMap::new(),
         }
+    }
+
+    fn external_reexport_facade() -> CrateGraph {
+        CrateGraph {
+            id: "facade".to_string(),
+            name: "facade".to_string(),
+            version: "1.0.0".to_string(),
+            nodes: vec![
+                node("facade", "facade", NodeKind::Crate),
+                external_node("dependency::Useful", "Useful", NodeKind::Struct),
+                external_node("dependency_two", "dependency_two", NodeKind::Crate),
+            ],
+            edges: vec![
+                edge("facade", "dependency::Useful", EdgeKind::ReExports),
+                edge("facade", "dependency_two", EdgeKind::ReExports),
+            ],
+            aliases: HashMap::from([(
+                "facade::Renamed".to_string(),
+                "dependency::Useful".to_string(),
+            )]),
+        }
+    }
+
+    #[test]
+    fn external_reexports_become_routeable_local_pages() {
+        let graph = project_routeable_external_reexports(&external_reexport_facade());
+
+        let projected = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "facade::Renamed")
+            .expect("projected public re-export");
+        assert_eq!(projected.name, "Renamed");
+        assert!(!projected.is_external);
+        assert!(graph.nodes.iter().any(|node| {
+            node.id == "facade::dependency_two"
+                && node.name == "dependency_two"
+                && !node.is_external
+        }));
+        assert!(!graph.aliases.contains_key("facade::Renamed"));
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "facade"
+                && edge.to == "facade::Renamed"
+                && edge.kind == EdgeKind::ReExports
+        }));
+        assert!(validate(&graph).is_ok());
+        assert!(build_all(&graph, "facade", &["latest", "stable"]).is_ok());
+        assert_eq!(
+            crate::publisher::hosted_artifacts::build_all(&graph, "facade")
+                .expect("hosted facade artifacts")
+                .report
+                .node_view_entries,
+            3
+        );
+
+        let (children, _) = build_tree_relations(&graph);
+        assert_eq!(
+            children["facade"],
+            ["facade::Renamed", "facade::dependency_two"]
+        );
     }
 
     #[test]
