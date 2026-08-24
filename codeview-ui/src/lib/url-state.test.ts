@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
   EXPLORER_EX_LIMIT,
+  EXPLORER_QUERY_LIMIT,
+  EXPLORER_VALUE_LIMIT,
+  canonicalizeExplorerUrl,
   parseExplorerState,
   parseHomeState,
   serializeExplorerState,
@@ -40,6 +43,21 @@ describe("url-state", () => {
   it("normalizes kind facets in project order", () => {
     const state = parseExplorerState(url("?k=Trait&k=module&k=Unknown&k=Struct&k=Trait"));
     expect(state.k).toEqual(["Module", "Struct", "Trait"]);
+  });
+
+  it("canonicalizes explorer cache keys and removes meaningless variants", () => {
+    const canonical = canonicalizeExplorerUrl(
+      url("?unknown=1&k=Trait&k=module&k=Unknown&k=Trait&view=bad&q=%20syn%20"),
+    );
+    expect(canonical.search).toBe("?q=syn&k=Module&k=Trait");
+  });
+
+  it("bounds user-controlled explorer values", () => {
+    const state = parseExplorerState(
+      url(`?q=${"q".repeat(EXPLORER_QUERY_LIMIT + 1)}&src=${"s".repeat(EXPLORER_VALUE_LIMIT + 1)}`),
+    );
+    expect(state.q).toHaveLength(EXPLORER_QUERY_LIMIT);
+    expect(state.src).toHaveLength(EXPLORER_VALUE_LIMIT);
   });
 
   it("sorts, dedupes, and caps expanded ids", () => {

@@ -2,6 +2,8 @@ import type { NodeKind } from "#lib/schema.js";
 import { nodeKindOrder } from "#lib/display-names.js";
 
 export const EXPLORER_EX_LIMIT = 64;
+export const EXPLORER_QUERY_LIMIT = 100;
+export const EXPLORER_VALUE_LIMIT = 256;
 
 export type ExplorerViewMode = "docs" | "graph";
 export type ExplorerDocLayout = "classic" | "reading" | "split";
@@ -101,8 +103,8 @@ function readEnum<T extends string>(
   return fallback;
 }
 
-function readText(params: AppSearchParams, key: string): string {
-  return (params.get(key) ?? "").trim();
+function readText(params: AppSearchParams, key: string, limit = EXPLORER_VALUE_LIMIT): string {
+  return (params.get(key) ?? "").trim().slice(0, limit);
 }
 
 function readOptionalText(params: AppSearchParams, key: string): string | null {
@@ -124,7 +126,7 @@ function normalizeExpandedIds(rawIds: readonly string[]): string[] {
   if (!rawIds.length) return [];
   const ids = new Set<string>();
   for (const raw of rawIds) {
-    const value = raw.trim();
+    const value = raw.trim().slice(0, EXPLORER_VALUE_LIMIT);
     if (value) ids.add(value);
   }
   return Array.from(ids).sort().slice(0, EXPLORER_EX_LIMIT);
@@ -154,10 +156,7 @@ function setText(params: URLSearchParams, key: string, value: string | null | un
 }
 
 /** Address-bar URL. Kit 3 shallow `goto` updates `page.shallow.url`, not `page.url`. */
-export function explorerVisibleUrl(page: {
-  url: AppUrl;
-  shallow: { url: AppUrl } | null;
-}): AppUrl {
+export function explorerVisibleUrl(page: { url: AppUrl; shallow: { url: AppUrl } | null }): AppUrl {
   return page.shallow?.url ?? page.url;
 }
 
@@ -166,7 +165,7 @@ export function parseExplorerState(url: AppUrl): ExplorerViewState {
   return {
     view: readEnum(searchParams, "view", EXPLORER_VIEW_VALUES, "docs"),
     layout: readEnum(searchParams, "layout", DOC_LAYOUT_VALUES, null),
-    q: readText(searchParams, "q"),
+    q: readText(searchParams, "q", EXPLORER_QUERY_LIMIT),
     k: normalizeKinds(searchParams.getAll("k")),
     ex: readExpandedIds(searchParams),
     gbi: searchParams.get("gbi") === "1",
@@ -200,6 +199,14 @@ export function serializeExplorerState(base: AppUrl, patch: Partial<ExplorerView
   setText(url.searchParams, "rel", next.rel);
 
   return url;
+}
+
+/** Canonical public explorer URL used as the Workers Cache key. */
+export function canonicalizeExplorerUrl(base: AppUrl): URL {
+  const state = parseExplorerState(base);
+  const url = new URL(base.href);
+  url.search = "";
+  return serializeExplorerState(url, state);
 }
 
 /**

@@ -1,30 +1,39 @@
-const DOC_PAGE_PREFIXES = ["/admin", "/api/", "/queue", "/settings", "/_app/"] as const;
+const RESERVED_FIRST_SEGMENTS = new Set([
+  "_app",
+  "admin",
+  "api",
+  "auth",
+  "go",
+  "queue",
+  "settings",
+]);
 
-/** Aggressive bot crawl paths that drove most CPU-limit 503s in prod observability. */
-const AGGRESSIVE_CRAWL_PATTERNS = [
-  /\/prefetch(?:\/|$)/i,
-  /\/gen\/(?:visit_mut|visit|fold)(?:\/|$)/i,
-] as const;
-
-export const ANONYMOUS_DOC_CACHE_CONTROL =
-  "public, s-maxage=3600, stale-while-revalidate=86400";
+export const ANONYMOUS_DOC_CACHE_CONTROL = "public, s-maxage=3600, stale-while-revalidate=86400";
 
 export function isDocExplorerPath(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
-  if (segments.length < 2) return false;
-  return !DOC_PAGE_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  const firstSegment = segments[0];
+  if (!firstSegment || segments.length < 2) return false;
+  return !RESERVED_FIRST_SEGMENTS.has(firstSegment.toLowerCase());
 }
 
-export function isAggressiveCrawlPath(pathname: string): boolean {
-  return AGGRESSIVE_CRAWL_PATTERNS.some((pattern) => pattern.test(pathname));
+export function isDocExplorerRequest(request: Request): boolean {
+  if (request.method !== "GET") return false;
+  const pathname = new URL(request.url).pathname;
+  if (pathname.endsWith("/__data.json") || pathname.endsWith(".html__data.json")) return false;
+  return isDocExplorerPath(pathname);
 }
 
 export function hasCredentialHeaders(request: Request): boolean {
   return request.headers.has("Cookie") || request.headers.has("Authorization");
 }
 
-export function shouldEdgeCacheDocPage(request: Request, pathname: string, loggedIn: boolean): boolean {
-  if (request.method !== "GET") return false;
+export function shouldEdgeCacheDocPage(
+  request: Request,
+  pathname: string,
+  loggedIn: boolean,
+): boolean {
+  if (!isDocExplorerRequest(request)) return false;
   if (loggedIn) return false;
   if (hasCredentialHeaders(request)) return false;
   return isDocExplorerPath(pathname);
@@ -40,15 +49,40 @@ export function cacheControlForResponse(
   if (pathname.startsWith("/_app/immutable/") || pathname.startsWith("/favicon")) {
     return response.headers.get("Cache-Control") ?? "public, max-age=31536000, immutable";
   }
+  if (loggedIn || hasCredentialHeaders(request) || response.headers.has("Set-Cookie")) {
+    return "no-store";
+  }
   if (response.headers.has("Cache-Control")) {
     return response.headers.get("Cache-Control")!;
   }
-  if (
-    response.ok &&
-    !response.headers.has("Set-Cookie") &&
-    shouldEdgeCacheDocPage(request, pathname, loggedIn)
-  ) {
+  if (response.ok && shouldEdgeCacheDocPage(request, pathname, loggedIn)) {
     return ANONYMOUS_DOC_CACHE_CONTROL;
   }
   return "no-store";
+}
+
+export function withCacheHeaders(response: Response, value: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", value);
+  if (value.includes("s-maxage")) {
+    headers.set("Cloudflare-CDN-Cache-Control", value);
+    appendVary(headers, "Cookie");
+    appendVary(headers, "Authorization");
+  } else {
+    headers.delete("Cloudflare-CDN-Cache-Control");
+  }
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function appendVary(headers: Headers, name: string): void {
+  const values = (headers.get("Vary") ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (!values.some((value) => value.toLowerCase() === name.toLowerCase())) values.push(name);
+  headers.set("Vary", values.join(", "));
 }

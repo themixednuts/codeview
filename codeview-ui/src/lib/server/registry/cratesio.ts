@@ -8,6 +8,11 @@ const CRATES_IO_API = "https://crates.io/api/v1";
 const CRATES_IO_INDEX = "https://index.crates.io";
 const USER_AGENT = "codeview (https://github.com/themixednuts/codeview)";
 const DEFAULT_VERSION_LIMIT = Number.POSITIVE_INFINITY;
+const CACHE_TTL_BY_STATUS = {
+  "200-299": 600,
+  "404": 60,
+  "500-599": -1,
+} as const satisfies Record<string, number>;
 
 interface CratesIoVersion {
   num: string;
@@ -23,12 +28,20 @@ interface CratesIoCrate {
   max_version: string;
 }
 
+function cachedRequestInit(): RequestInit<RequestInitCfProperties> {
+  return {
+    headers: { "User-Agent": USER_AGENT },
+    cf: {
+      cacheEverything: true,
+      cacheTtlByStatus: CACHE_TTL_BY_STATUS,
+    },
+  };
+}
+
 async function fetchJson(url: string): Promise<Result<Json, FetchError | JsonParseError>> {
   let res: Response;
   try {
-    res = await fetch(url, {
-      headers: { "User-Agent": USER_AGENT },
-    });
+    res = await fetch(url, cachedRequestInit());
   } catch (err) {
     return Result.err(new FetchError({ url, status: 0, statusText: String(err) }));
   }
@@ -48,9 +61,7 @@ async function fetchJson(url: string): Promise<Result<Json, FetchError | JsonPar
 async function fetchText(url: string): Promise<Result<string, FetchError>> {
   let res: Response;
   try {
-    res = await fetch(url, {
-      headers: { "User-Agent": USER_AGENT },
-    });
+    res = await fetch(url, cachedRequestInit());
   } catch (err) {
     return Result.err(new FetchError({ url, status: 0, statusText: String(err) }));
   }

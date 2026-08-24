@@ -35,6 +35,13 @@ describe("crates.io registry adapter", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "https://crates.io/api/v1/crates?sort=downloads&per_page=10",
     );
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      headers: { "User-Agent": "codeview (https://github.com/themixednuts/codeview)" },
+      cf: {
+        cacheEverything: true,
+        cacheTtlByStatus: { "200-299": 600, "404": 60, "500-599": -1 },
+      },
+    });
     expect(results).toMatchObject([
       {
         name: "syn",
@@ -90,8 +97,10 @@ describe("crates.io registry adapter", () => {
     const versions = await createCratesIoAdapter().listVersions("demo", 3);
 
     expect(versions).toEqual(["1.2.0", "1.0.0"]);
-    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual([
-      "https://index.crates.io/de/mo/demo",
-    ]);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://index.crates.io/de/mo/demo");
+    expect(fetchMock.mock.calls[0][1]?.cf).toEqual({
+      cacheEverything: true,
+      cacheTtlByStatus: { "200-299": 600, "404": 60, "500-599": -1 },
+    });
   });
 });

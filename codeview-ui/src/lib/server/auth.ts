@@ -4,7 +4,7 @@ import {
   type BetterAuthProps,
 } from "@alchemy.run/better-auth";
 import { Drizzle as BetterAuthDrizzle } from "@alchemy.run/better-auth/Drizzle";
-import { RuntimeContext, type BaseRuntimeContext } from "alchemy";
+import { RuntimeContext, type BaseRuntimeContext } from "alchemy/RuntimeContext";
 import type { RequestEvent } from "@sveltejs/kit";
 import { drizzle } from "drizzle-orm/d1";
 import * as Effect from "effect/Effect";
@@ -141,6 +141,7 @@ export async function getAuthStateFromRequest(request: Request, env: AuthEnv): P
 const SignInSocialResult = Schema.Struct({
   url: Schema.optionalKey(Schema.String),
 });
+const AuthResponse = Schema.instanceOf(Response);
 
 export function signInWithGithub(
   event: RequestEvent,
@@ -163,13 +164,17 @@ export function signInWithGithub(
         catch: (cause) =>
           cause instanceof Error ? cause : new Error("GitHub sign-in failed", { cause }),
       });
-      const response = yield* requireAuthResponse(result);
+      const response = yield* decodeAuthResponse(result);
       const payload = yield* Effect.tryPromise({
         try: () => response.json(),
         catch: (cause) =>
-          cause instanceof Error ? cause : new Error("GitHub sign-in returned invalid JSON", { cause }),
+          cause instanceof Error
+            ? cause
+            : new Error("GitHub sign-in returned invalid JSON", { cause }),
       });
-      const decoded = Option.getOrUndefined(Schema.decodeUnknownOption(SignInSocialResult)(payload));
+      const decoded = Option.getOrUndefined(
+        Schema.decodeUnknownOption(SignInSocialResult)(payload),
+      );
       return {
         url: decoded?.url,
         setCookies: response.headers.getSetCookie(),
@@ -195,7 +200,7 @@ export function signOutCurrentSession(event: RequestEvent): Promise<string[]> {
         catch: (cause) =>
           cause instanceof Error ? cause : new Error("Sign-out failed", { cause }),
       });
-      const response = yield* requireAuthResponse(result);
+      const response = yield* decodeAuthResponse(result);
       return response.headers.getSetCookie();
     }),
   );
@@ -278,9 +283,10 @@ function kitRuntimeContext(env: AuthEnv): BaseRuntimeContext {
   };
 }
 
-function requireAuthResponse(result: unknown): Effect.Effect<Response, Error> {
-  if (result instanceof Response) return Effect.succeed(result);
-  return Effect.fail(new Error("Better Auth did not return a Response"));
+function decodeAuthResponse(result: typeof AuthResponse.Encoded): Effect.Effect<Response, Error> {
+  return Schema.decodeUnknownEffect(AuthResponse)(result).pipe(
+    Effect.mapError(() => new Error("Better Auth did not return a Response")),
+  );
 }
 
 function runAuth<A, E>(

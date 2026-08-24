@@ -76,6 +76,7 @@
   "devDependencies": {
     "@alchemy.run/cloudflare-frameworks": "2.0.0-beta.72",
     "@cloudflare/workers-types": "5.20260814.1",
+    "@effect/platform-bun": "4.0.0-rc.109",
     "@effect/platform-node": "4.0.0-rc.109",
     "@effect/sql-d1": "4.0.0-rc.109",
     "@effect/sql-sqlite-do": "4.0.0-rc.109",

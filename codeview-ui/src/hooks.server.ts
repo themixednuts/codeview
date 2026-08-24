@@ -3,8 +3,14 @@ import type { Handle } from "@sveltejs/kit/hooks";
 import { setupLogging } from "#lib/log.server.js";
 import { handleWsUpgrade } from "$provider";
 import { getAuthState, handleAuthRequest } from "#lib/server/auth.js";
-import { cacheControlForResponse, isAggressiveCrawlPath } from "#lib/server/cache-policy.js";
+import {
+  cacheControlForResponse,
+  isDocExplorerPath,
+  isDocExplorerRequest,
+  withCacheHeaders,
+} from "#lib/server/cache-policy.js";
 import { isHosted } from "#lib/platform.js";
+import { canonicalizeExplorerUrl } from "#lib/url-state.js";
 import {
   ACCENT_KEY,
   ACCENT_VALUES,
@@ -47,7 +53,12 @@ export const handle: Handle = async ({ event, resolve }) => {
     return handleWsUpgrade(event);
   }
 
-  const crawlDenied = await maybeDenyAggressiveCrawler(event);
+  const canonicalRedirect = maybeRedirectCanonicalExplorerUrl(event);
+  if (canonicalRedirect) {
+    return withSecurityHeaders(canonicalRedirect);
+  }
+
+  const crawlDenied = await maybeDenyDocCrawler(event);
   if (crawlDenied) {
     return withSecurityHeaders(crawlDenied);
   }
@@ -58,7 +69,12 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   if (event.url.pathname === "/api/auth" || event.url.pathname.startsWith("/api/auth/")) {
     return withSecurityHeaders(
-      withDynamicCachePolicy(event.request, event.url.pathname, event.locals.user !== null, await handleAuthRequest(event)),
+      withDynamicCachePolicy(
+        event.request,
+        event.url.pathname,
+        event.locals.user !== null,
+        await handleAuthRequest(event),
+      ),
     );
   }
 
@@ -79,9 +95,26 @@ export const handle: Handle = async ({ event, resolve }) => {
   );
 };
 
-async function maybeDenyAggressiveCrawler(event: Parameters<Handle>[0]["event"]): Promise<Response | null> {
-  if (!isHosted || event.request.method !== "GET") return null;
-  if (!isAggressiveCrawlPath(event.url.pathname)) return null;
+function maybeRedirectCanonicalExplorerUrl(event: Parameters<Handle>[0]["event"]): Response | null {
+  if (!isDocExplorerRequest(event.request) || !isDocExplorerPath(event.url.pathname)) return null;
+
+  const canonical = canonicalizeExplorerUrl(event.url);
+  if (canonical.search === event.url.search) return null;
+
+  return new Response(null, {
+    status: 308,
+    headers: {
+      "Cache-Control": "no-store",
+      Location: `${canonical.pathname}${canonical.search}`,
+    },
+  });
+}
+
+async function maybeDenyDocCrawler(
+  event: Parameters<Handle>[0]["event"],
+): Promise<Response | null> {
+  if (!isHosted || !isDocExplorerRequest(event.request)) return null;
+  if (!isDocExplorerPath(event.url.pathname)) return null;
 
   const limiter = event.platform?.env?.RATE_LIMIT_CRAWL;
   if (!limiter) return null;
@@ -109,21 +142,7 @@ function withDynamicCachePolicy(
   response: Response,
 ): Response {
   const value = cacheControlForResponse(pathname, response, request, loggedIn);
-  if (value === response.headers.get("Cache-Control")) return response;
-  return withCacheControl(response, value);
-}
-
-function withCacheControl(response: Response, value: string): Response {
-  const headers = new Headers(response.headers);
-  headers.set("Cache-Control", value);
-  if (value.includes("s-maxage")) {
-    headers.set("Cloudflare-CDN-Cache-Control", value);
-  }
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
+  return withCacheHeaders(response, value);
 }
 
 function withSecurityHeaders(response: Response): Response {

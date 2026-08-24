@@ -27,6 +27,10 @@ export const Parser = Cloudflare.Worker("Parser", {
   name: parserScriptName,
   main: "./src/parse-worker.ts",
   compatibility: { date: compatibilityDate },
+  observability: {
+    enabled: true,
+    logs: { enabled: true, invocationLogs: true, headSamplingRate: 0.05 },
+  },
   crons: ["*/5 * * * *"],
   env: {
     CRATE_GRAPHS: CrateGraphs,
@@ -60,6 +64,12 @@ export const Website = Cloudflare.Website.SvelteKit(
     name: "codeview",
     domain: "codeview.codes",
     compatibility: { date: compatibilityDate },
+    workersDev: false,
+    cache: { enabled: true, crossVersionCache: false },
+    observability: {
+      enabled: true,
+      logs: { enabled: true, invocationLogs: true, headSamplingRate: 0.01 },
+    },
     env: {
       AUTH_DB: AuthDb,
       CRATE_GRAPHS: CrateGraphs,
@@ -82,7 +92,7 @@ export const Website = Cloudflare.Website.SvelteKit(
       }),
       RATE_LIMIT_CRAWL: Cloudflare.RateLimit("RATE_LIMIT_CRAWL", {
         namespaceId: 1004,
-        simple: { limit: 30, period: 60 },
+        simple: { limit: 60, period: 60 },
       }),
       BETTER_AUTH_URL: "https://codeview.codes",
       GITHUB_OAUTH_CLIENT_ID: "Ov23liaAIxx0Vmp8F0zE",
