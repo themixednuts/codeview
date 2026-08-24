@@ -7,7 +7,9 @@ import {
   cacheControlForResponse,
   isDocExplorerPath,
   isDocExplorerRequest,
+  readCachedAnonymousDocResponse,
   withCacheHeaders,
+  writeCachedAnonymousDocResponse,
 } from "#lib/server/cache-policy.js";
 import { isHosted } from "#lib/platform.js";
 import { canonicalizeExplorerUrl } from "#lib/url-state.js";
@@ -63,6 +65,11 @@ export const handle: Handle = async ({ event, resolve }) => {
     return withSecurityHeaders(crawlDenied);
   }
 
+  const cachedDocResponse = await maybeReadCachedDocResponse(event);
+  if (cachedDocResponse) {
+    return withResponseHeader(cachedDocResponse, "X-Codeview-Cache", "HIT");
+  }
+
   event.locals.auth = await getAuthState(event);
   event.locals.user = event.locals.auth.user;
   event.locals.session = event.locals.auth.session;
@@ -90,10 +97,50 @@ export const handle: Handle = async ({ event, resolve }) => {
       return nextHtml;
     },
   });
-  return withSecurityHeaders(
+  const securedResponse = withSecurityHeaders(
     withDynamicCachePolicy(event.request, event.url.pathname, event.locals.user !== null, response),
   );
+  const cached = await maybeWriteCachedDocResponse(event, securedResponse);
+  return cached ? withResponseHeader(securedResponse, "X-Codeview-Cache", "MISS") : securedResponse;
 };
+
+function getDefaultWorkerCache(): Cache | null {
+  if (!isHosted || globalThis.caches === undefined) return null;
+  // SAFETY: Cloudflare Workers CacheStorage exposes `caches.default`; DOM CacheStorage omits it.
+  const workerCaches = globalThis.caches as CacheStorage & { default?: Cache };
+  return workerCaches.default ?? null;
+}
+
+async function maybeReadCachedDocResponse(
+  event: Parameters<Handle>[0]["event"],
+): Promise<Response | null> {
+  const cache = getDefaultWorkerCache();
+  if (!cache) return null;
+  try {
+    return await readCachedAnonymousDocResponse(cache, event.request, event.url.pathname);
+  } catch {
+    return null;
+  }
+}
+
+async function maybeWriteCachedDocResponse(
+  event: Parameters<Handle>[0]["event"],
+  response: Response,
+): Promise<boolean> {
+  const cache = getDefaultWorkerCache();
+  if (!cache) return false;
+  try {
+    return await writeCachedAnonymousDocResponse(
+      cache,
+      event.request,
+      event.url.pathname,
+      event.locals.user !== null,
+      response,
+    );
+  } catch {
+    return false;
+  }
+}
 
 function maybeRedirectCanonicalExplorerUrl(event: Parameters<Handle>[0]["event"]): Response | null {
   if (!isDocExplorerRequest(event.request) || !isDocExplorerPath(event.url.pathname)) return null;
@@ -155,6 +202,16 @@ function withSecurityHeaders(response: Response): Response {
     "Content-Security-Policy",
     "frame-ancestors 'none'; base-uri 'self'; object-src 'none'; worker-src 'self'",
   );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function withResponseHeader(response: Response, name: string, value: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set(name, value);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

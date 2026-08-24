@@ -2,11 +2,24 @@ import { describe, expect, test } from "vite-plus/test";
 import {
   ANONYMOUS_DOC_CACHE_CONTROL,
   cacheControlForResponse,
+  type DocResponseCache,
   isDocExplorerPath,
   isDocExplorerRequest,
+  readCachedAnonymousDocResponse,
   shouldEdgeCacheDocPage,
   withCacheHeaders,
+  writeCachedAnonymousDocResponse,
 } from "./cache-policy";
+
+function createResponseCache(): DocResponseCache {
+  const entries = new Map<string, Response>();
+  return {
+    match: async (request) => entries.get(request.url)?.clone(),
+    put: async (request, response) => {
+      entries.set(request.url, response.clone());
+    },
+  };
+}
 
 describe("cache-policy", () => {
   test("detects crate doc explorer paths", () => {
@@ -111,5 +124,34 @@ describe("cache-policy", () => {
       "no-store",
     );
     expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
+  });
+
+  test("reads and writes only anonymous doc responses", async () => {
+    const cache = createResponseCache();
+    const anonymous = new Request("https://codeview.codes/syn/3.0.3/TypeMacro");
+    const credentialed = new Request(anonymous, { headers: { Cookie: "session=secret" } });
+    const pathname = new URL(anonymous.url).pathname;
+    const response = withCacheHeaders(new Response("anonymous"), ANONYMOUS_DOC_CACHE_CONTROL);
+
+    expect(await writeCachedAnonymousDocResponse(cache, anonymous, pathname, false, response)).toBe(
+      true,
+    );
+    expect((await readCachedAnonymousDocResponse(cache, anonymous, pathname))?.status).toBe(200);
+    expect(await readCachedAnonymousDocResponse(cache, credentialed, pathname)).toBeNull();
+    expect(
+      await writeCachedAnonymousDocResponse(cache, credentialed, pathname, false, response),
+    ).toBe(false);
+    expect(await writeCachedAnonymousDocResponse(cache, anonymous, pathname, true, response)).toBe(
+      false,
+    );
+    expect(
+      await writeCachedAnonymousDocResponse(
+        cache,
+        anonymous,
+        pathname,
+        false,
+        new Response("private", { headers: { "Set-Cookie": "session=secret" } }),
+      ),
+    ).toBe(false);
   });
 });

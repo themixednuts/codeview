@@ -10,6 +10,11 @@ const RESERVED_FIRST_SEGMENTS = new Set([
 
 export const ANONYMOUS_DOC_CACHE_CONTROL = "public, s-maxage=3600, stale-while-revalidate=86400";
 
+export interface DocResponseCache {
+  match(request: Request): Promise<Response | undefined>;
+  put(request: Request, response: Response): Promise<void>;
+}
+
 export function isDocExplorerPath(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
   const firstSegment = segments[0];
@@ -76,6 +81,28 @@ export function withCacheHeaders(response: Response, value: string): Response {
     statusText: response.statusText,
     headers,
   });
+}
+
+export async function readCachedAnonymousDocResponse(
+  cache: DocResponseCache,
+  request: Request,
+  pathname: string,
+): Promise<Response | null> {
+  if (!shouldEdgeCacheDocPage(request, pathname, false)) return null;
+  return (await cache.match(request)) ?? null;
+}
+
+export async function writeCachedAnonymousDocResponse(
+  cache: DocResponseCache,
+  request: Request,
+  pathname: string,
+  loggedIn: boolean,
+  response: Response,
+): Promise<boolean> {
+  if (!response.ok || response.headers.has("Set-Cookie")) return false;
+  if (!shouldEdgeCacheDocPage(request, pathname, loggedIn)) return false;
+  await cache.put(request, response.clone());
+  return true;
 }
 
 function appendVary(headers: Headers, name: string): void {

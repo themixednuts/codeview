@@ -33,8 +33,7 @@ pattern = "codeview.codes"
 custom_domain = true
 
 [cache]
-enabled = true
-cross_version_cache = false
+enabled = false
 
 [[r2_buckets]]
 binding = "CRATE_GRAPHS"

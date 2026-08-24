@@ -65,7 +65,7 @@ export const Website = Cloudflare.Website.SvelteKit(
     domain: "codeview.codes",
     compatibility: { date: compatibilityDate },
     workersDev: false,
-    cache: { enabled: true, crossVersionCache: false },
+    cache: { enabled: false },
     observability: {
       enabled: true,
       logs: { enabled: true, invocationLogs: true, headSamplingRate: 0.01 },
