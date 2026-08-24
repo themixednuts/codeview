@@ -67,7 +67,7 @@ export const handle: Handle = async ({ event, resolve }) => {
 
   const cachedDocResponse = await maybeReadCachedDocResponse(event);
   if (cachedDocResponse) {
-    return withResponseHeader(cachedDocResponse, "X-Codeview-Cache", "HIT");
+    return withManualCacheResult(cachedDocResponse, "HIT");
   }
 
   event.locals.auth = await getAuthState(event);
@@ -101,7 +101,7 @@ export const handle: Handle = async ({ event, resolve }) => {
     withDynamicCachePolicy(event.request, event.url.pathname, event.locals.user !== null, response),
   );
   const cached = await maybeWriteCachedDocResponse(event, securedResponse);
-  return cached ? withResponseHeader(securedResponse, "X-Codeview-Cache", "MISS") : securedResponse;
+  return cached ? withManualCacheResult(securedResponse, "MISS") : securedResponse;
 };
 
 function getDefaultWorkerCache(): Cache | null {
@@ -217,6 +217,14 @@ function withResponseHeader(response: Response, name: string, value: string): Re
     statusText: response.statusText,
     headers,
   });
+}
+
+function withManualCacheResult(response: Response, status: "HIT" | "MISS"): Response {
+  return withResponseHeader(
+    withCacheHeaders(response, "private, no-store"),
+    "X-Codeview-Cache",
+    status,
+  );
 }
 
 function getHtmlDataAttributes(cookies: Cookies): HtmlDataAttributes {
