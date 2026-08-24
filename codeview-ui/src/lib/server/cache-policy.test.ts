@@ -11,13 +11,22 @@ import {
   writeCachedAnonymousDocResponse,
 } from "./cache-policy";
 
-function createResponseCache(): DocResponseCache {
+function createResponseCache() {
   const entries = new Map<string, Response>();
-  return {
-    match: async (request) => entries.get(request.url)?.clone(),
-    put: async (request, response) => {
+  const keys: string[] = [];
+  const cache = {
+    match: async (request: Request) => {
+      keys.push(request.url);
+      return entries.get(request.url)?.clone();
+    },
+    put: async (request: Request, response: Response) => {
+      keys.push(request.url);
       entries.set(request.url, response.clone());
     },
+  } satisfies DocResponseCache;
+  return {
+    keys,
+    cache,
   };
 }
 
@@ -127,7 +136,7 @@ describe("cache-policy", () => {
   });
 
   test("reads and writes only anonymous doc responses", async () => {
-    const cache = createResponseCache();
+    const { cache, keys } = createResponseCache();
     const anonymous = new Request("https://codeview.codes/syn/3.0.3/TypeMacro");
     const credentialed = new Request(anonymous, { headers: { Cookie: "session=secret" } });
     const pathname = new URL(anonymous.url).pathname;
@@ -153,5 +162,9 @@ describe("cache-policy", () => {
         new Response("private", { headers: { "Set-Cookie": "session=secret" } }),
       ),
     ).toBe(false);
+    expect(keys.length).toBeGreaterThan(0);
+    expect(keys.every((key) => key.startsWith("https://codeview.internal/doc-pages-v1/"))).toBe(
+      true,
+    );
   });
 });

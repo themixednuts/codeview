@@ -15,6 +15,9 @@ export interface DocResponseCache {
   put(request: Request, response: Response): Promise<void>;
 }
 
+const DOC_RESPONSE_CACHE_ORIGIN = "https://codeview.internal";
+const DOC_RESPONSE_CACHE_NAMESPACE = "doc-pages-v1";
+
 export function isDocExplorerPath(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
   const firstSegment = segments[0];
@@ -89,7 +92,7 @@ export async function readCachedAnonymousDocResponse(
   pathname: string,
 ): Promise<Response | null> {
   if (!shouldEdgeCacheDocPage(request, pathname, false)) return null;
-  return (await cache.match(request)) ?? null;
+  return (await cache.match(docResponseCacheRequest(request))) ?? null;
 }
 
 export async function writeCachedAnonymousDocResponse(
@@ -101,8 +104,16 @@ export async function writeCachedAnonymousDocResponse(
 ): Promise<boolean> {
   if (!response.ok || response.headers.has("Set-Cookie")) return false;
   if (!shouldEdgeCacheDocPage(request, pathname, loggedIn)) return false;
-  await cache.put(request, response.clone());
+  await cache.put(docResponseCacheRequest(request), response.clone());
   return true;
+}
+
+function docResponseCacheRequest(request: Request): Request {
+  const source = new URL(request.url);
+  const key = new URL(DOC_RESPONSE_CACHE_ORIGIN);
+  key.pathname = `/${DOC_RESPONSE_CACHE_NAMESPACE}${source.pathname}`;
+  key.search = source.search;
+  return new Request(key, { method: "GET" });
 }
 
 function appendVary(headers: Headers, name: string): void {
