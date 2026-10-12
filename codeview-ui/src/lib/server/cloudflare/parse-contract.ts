@@ -60,6 +60,9 @@ export type ParseCompletionPayload = {
   runId?: string;
   runUrl?: string;
   error?: string;
+  /** Deterministic failure (parse-one exit 65); retrying will not help. */
+  permanent?: boolean;
+  parserRevision?: string;
   completedAt: string;
 };
 
@@ -215,12 +218,23 @@ export async function registerQueuedParseRequest(
   return value as QueueParseResponse;
 }
 
+/**
+ * A `processing` row older than the GitHub callback window (6 h wait plus
+ * slack) is orphaned: its queue message or workflow is gone. Without this,
+ * one lost message made the crate un-requestable forever.
+ */
+export const ORPHANED_PROCESSING_MS = 6 * 60 * 60 * 1000 + 30 * 60 * 1000;
+
 export function shouldAcceptQueuedParseRequest(
   existing: StoredParseStatus | null,
   message: ParseRequestMessage,
+  now = Date.now(),
 ): boolean {
   if (!existing) return true;
-  if (existing.status === "processing") return false;
+  if (existing.status === "processing") {
+    const updatedAt = Date.parse(existing.updatedAt);
+    return Number.isFinite(updatedAt) && now - updatedAt > ORPHANED_PROCESSING_MS;
+  }
   const requestedAt = Date.parse(message.requestedAt);
   const existingUpdatedAt = Date.parse(existing.updatedAt);
   return (
@@ -329,6 +343,8 @@ export function isParseWorkerTaskMessage(value: Schema.Json): value is ParseWork
   return candidate !== undefined && Number.isFinite(Date.parse(candidate.enqueuedAt));
 }
 
-export function isKnownQueueMessage(value: Schema.Json): value is ParseRequestMessage | ParseWorkerTaskMessage {
+export function isKnownQueueMessage(
+  value: Schema.Json,
+): value is ParseRequestMessage | ParseWorkerTaskMessage {
   return isParseWorkerTaskMessage(value) || isParseRequestMessage(value);
 }

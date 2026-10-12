@@ -39,7 +39,7 @@ import {
 
 type ParseWorkerEnv = Env & {
   CRATE_GRAPHS: R2Bucket;
-  PARSE_REQUESTS?: Queue;
+  PARSE_REQUESTS?: Queue<ParseRequestMessage | ParseWorkerTaskMessage>;
   PARSE_STATUS: DurableObjectNamespace;
   PARSE_WORKFLOW: Workflow<ParseWorkflowParams>;
   GITHUB_TOKEN?: string;
@@ -83,6 +83,12 @@ const ACTIVE_GITHUB_RUN_STATUSES = [
   "requested",
 ] as const;
 const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
+/** Status step for deterministic failures (e.g. the crate is a `compile_error!`). */
+const PERMANENT_FAILURE_STEP = "failed-permanent";
+/** Planned work skips a permanent failure for this long; a new parser revision re-plans it. */
+const PERMANENT_FAILURE_PLAN_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+/** UI requests waiting for GitHub capacity give up after this long. */
+const MAX_DISPATCH_WAIT_MS = 6 * 60 * 60 * 1000;
 const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
 const RECONCILE_BATCH_SIZE = 8;
 const GITHUB_CALLBACK_WAIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
@@ -172,31 +178,6 @@ type GitHubWorkflowRunsResponse = {
   workflow_runs?: GitHubWorkflowRun[];
 };
 
-type GitHubRepositoryResponse = {
-  private?: boolean;
-  owner?: {
-    login?: string;
-    type?: string;
-  };
-};
-
-type GitHubBillingUsageItem = {
-  product?: string;
-  sku?: string;
-  unitType?: string;
-  grossQuantity?: number;
-  discountQuantity?: number;
-  quantity?: number;
-  netQuantity?: number;
-  grossAmount?: number;
-  discountAmount?: number;
-  netAmount?: number;
-};
-
-type GitHubBillingUsageSummaryResponse = {
-  usageItems?: GitHubBillingUsageItem[];
-};
-
 const ACTIVE_GITHUB_RUN_STATUS_SET: ReadonlySet<string> = new Set(ACTIVE_GITHUB_RUN_STATUSES);
 
 function isActiveGitHubRunStatus(status: string | undefined): boolean {
@@ -235,50 +216,6 @@ function parseGitHubWorkflowRunsResponse(value: Schema.Json): GitHubWorkflowRuns
   return {
     workflow_runs: value.workflow_runs.flatMap((run) => {
       const parsed = parseGitHubWorkflowRun(run);
-      return parsed ? [parsed] : [];
-    }),
-  };
-}
-
-function parseGitHubRepositoryResponse(value: Schema.Json): GitHubRepositoryResponse {
-  if (!isJsonObject(value)) return {};
-  const owner = isJsonObject(value.owner) ? value.owner : undefined;
-  return {
-    private: Predicate.isBoolean(value.private) ? value.private : undefined,
-    owner: owner
-      ? {
-          login: Predicate.isString(owner.login) ? owner.login : undefined,
-          type: Predicate.isString(owner.type) ? owner.type : undefined,
-        }
-      : undefined,
-  };
-}
-
-function parseGitHubBillingUsageItem(value: Schema.Json): GitHubBillingUsageItem | null {
-  if (!isJsonObject(value)) return null;
-  return {
-    product: Predicate.isString(value.product) ? value.product : undefined,
-    sku: Predicate.isString(value.sku) ? value.sku : undefined,
-    unitType: Predicate.isString(value.unitType) ? value.unitType : undefined,
-    grossQuantity: Predicate.isNumber(value.grossQuantity) ? value.grossQuantity : undefined,
-    discountQuantity: Predicate.isNumber(value.discountQuantity)
-      ? value.discountQuantity
-      : undefined,
-    quantity: Predicate.isNumber(value.quantity) ? value.quantity : undefined,
-    netQuantity: Predicate.isNumber(value.netQuantity) ? value.netQuantity : undefined,
-    grossAmount: Predicate.isNumber(value.grossAmount) ? value.grossAmount : undefined,
-    discountAmount: Predicate.isNumber(value.discountAmount) ? value.discountAmount : undefined,
-    netAmount: Predicate.isNumber(value.netAmount) ? value.netAmount : undefined,
-  };
-}
-
-function parseGitHubBillingUsageSummaryResponse(
-  value: Schema.Json,
-): GitHubBillingUsageSummaryResponse {
-  if (!isJsonObject(value) || !Array.isArray(value.usageItems)) return {};
-  return {
-    usageItems: value.usageItems.flatMap((item) => {
-      const parsed = parseGitHubBillingUsageItem(item);
       return parsed ? [parsed] : [];
     }),
   };
@@ -422,39 +359,6 @@ function parseNonNegativeInteger(value: string | undefined, fallback: number): n
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function finiteNumber(value: number | undefined): number | null {
-  return Predicate.isNumber(value) && Number.isFinite(value) ? value : null;
-}
-
-function githubNetUsageQuantity(item: GitHubBillingUsageItem): number {
-  return finiteNumber(item.netQuantity) ?? 0;
-}
-
-function isActionsMinuteUsage(item: GitHubBillingUsageItem): boolean {
-  const product = (item.product ?? "").toLowerCase();
-  const sku = (item.sku ?? "").toLowerCase();
-  const unitType = (item.unitType ?? "").toLowerCase();
-  return (product.includes("actions") || sku.includes("actions")) && unitType.includes("minute");
-}
-
-function totalBillableActionsMinutes(body: GitHubBillingUsageSummaryResponse): number {
-  return (body.usageItems ?? [])
-    .filter(isActionsMinuteUsage)
-    .reduce((total, item) => total + githubNetUsageQuantity(item), 0);
-}
-
-function monthStartIso(now = new Date()): string {
-  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
-}
-
-function workflowRunDurationMinutes(run: GitHubWorkflowRun, nowMs: number): number {
-  const start = run.created_at ? Date.parse(run.created_at) : NaN;
-  if (!Number.isFinite(start)) return 0;
-  const isActive = isActiveGitHubRunStatus(run.status);
-  const updated = run.updated_at ? Date.parse(run.updated_at) : NaN;
-  const end = isActive ? nowMs : Number.isFinite(updated) ? updated : nowMs;
-  return Math.max(0, (end - start) / 60_000);
-}
 
 function isSafeCrateName(value: string): boolean {
   return SAFE_CRATE_NAME_PATTERN.test(value);
@@ -514,6 +418,8 @@ const ParseCompletionPayloadSchema = Schema.Struct({
   runId: Schema.optionalKey(Schema.Unknown),
   runUrl: Schema.optionalKey(Schema.Unknown),
   error: Schema.optionalKey(Schema.Unknown),
+  permanent: Schema.optionalKey(Schema.Unknown),
+  parserRevision: Schema.optionalKey(Schema.Unknown),
   completedAt: Schema.String,
 });
 
@@ -534,6 +440,11 @@ function parseCompletionPayload(value: Schema.Json): ParseCompletionPayload | nu
   const runId = Predicate.isString(raw.runId) && isSafeId(raw.runId) ? raw.runId : undefined;
   const runUrl = Predicate.isString(raw.runUrl) ? raw.runUrl : undefined;
   const error = Predicate.isString(raw.error) ? raw.error.slice(0, 4000) : undefined;
+  const permanent = raw.permanent === true ? true : undefined;
+  const parserRevision =
+    Predicate.isString(raw.parserRevision) && isSafeId(raw.parserRevision)
+      ? raw.parserRevision
+      : undefined;
   return {
     schemaVersion: 1,
     kind,
@@ -545,6 +456,8 @@ function parseCompletionPayload(value: Schema.Json): ParseCompletionPayload | nu
     runId,
     runUrl,
     error,
+    permanent,
+    parserRevision,
     completedAt: raw.completedAt,
   };
 }
@@ -628,7 +541,13 @@ async function dispatchGitHubParse(
   });
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`GitHub dispatch failed: ${response.status} ${response.statusText} ${body}`);
+    const message = `GitHub dispatch failed: ${response.status} ${response.statusText} ${body}`;
+    // Bad credentials, missing workflow or invalid inputs will not fix
+    // themselves; only rate limits and server errors are worth retrying.
+    if (response.status >= 400 && response.status < 500 && response.status !== 429) {
+      throw new NonRetryableError(message);
+    }
+    throw new Error(message);
   }
   return { dispatchedAt: databaseNow(), workflowFile };
 }
@@ -704,31 +623,21 @@ async function countActiveGitHubParseRuns(env: ParseWorkerEnv): Promise<number> 
   const repo = env.GITHUB_REPO;
   if (!repo) return 0;
   const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
-  const ids = new Set<number>();
-  const failedStatuses: string[] = [];
-  await Promise.all(
-    ACTIVE_GITHUB_RUN_STATUSES.map(async (status) => {
-      const url = new URL(
-        `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
-      );
-      url.searchParams.set("status", status);
-      url.searchParams.set("per_page", "20");
-      const response = await fetch(url, { headers: githubReadHeaders(env) });
-      if (!response.ok) {
-        console.warn(
-          `active GitHub parse run count failed status=${status} code=${response.status}`,
-        );
-        failedStatuses.push(`${status}:${response.status}`);
-        return;
-      }
-      const body = parseGitHubWorkflowRunsResponse(await response.json());
-      for (const run of body.workflow_runs ?? []) {
-        if (Predicate.isNumber(run.id)) ids.add(run.id);
-      }
-    }),
+  // One request for the most recent runs, filtered here, instead of one
+  // request per status every tick and every queue delivery.
+  const url = new URL(
+    `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
   );
-  if (failedStatuses.length) {
-    throw new Error(`active GitHub parse run count incomplete: ${failedStatuses.join(", ")}`);
+  url.searchParams.set("per_page", "50");
+  url.searchParams.set("exclude_pull_requests", "true");
+  const response = await fetch(url, { headers: githubReadHeaders(env) });
+  if (!response.ok) {
+    throw new Error(`active GitHub parse run count failed: ${response.status}`);
+  }
+  const body = parseGitHubWorkflowRunsResponse(await response.json());
+  const ids = new Set<number>();
+  for (const run of body.workflow_runs ?? []) {
+    if (Predicate.isNumber(run.id) && isActiveGitHubRunStatus(run.status)) ids.add(run.id);
   }
   return ids.size;
 }
@@ -752,89 +661,6 @@ async function loadGitHubWorkflowRun(
   return parsed;
 }
 
-async function loadGitHubRepository(env: ParseWorkerEnv): Promise<GitHubRepositoryResponse | null> {
-  const repo = env.GITHUB_REPO;
-  if (!repo) return null;
-  const response = await fetch(`https://api.github.com/repos/${repo}`, {
-    headers: githubReadHeaders(env),
-  });
-  if (!response.ok) return null;
-  return parseGitHubRepositoryResponse(await response.json());
-}
-
-async function loadGitHubRepoBillableActionsMinutes(
-  env: ParseWorkerEnv,
-  repository: GitHubRepositoryResponse,
-): Promise<number | null> {
-  const owner = repository.owner?.login ?? env.GITHUB_REPO?.split("/")[0];
-  if (!owner || !env.GITHUB_TOKEN) return null;
-  const ownerType = repository.owner?.type;
-  const path =
-    ownerType === "Organization"
-      ? `/organizations/${owner}/settings/billing/usage/summary`
-      : `/users/${owner}/settings/billing/usage/summary`;
-  const url = new URL(`https://api.github.com${path}`);
-  url.searchParams.set("product", "Actions");
-  if (env.GITHUB_REPO) url.searchParams.set("repository", env.GITHUB_REPO);
-  const response = await fetch(url, {
-    headers: githubReadHeaders(env),
-  });
-  if (!response.ok) return null;
-  const body = parseGitHubBillingUsageSummaryResponse(await response.json());
-  return totalBillableActionsMinutes(body);
-}
-
-async function estimateParseWorkflowMinutesThisMonth(env: ParseWorkerEnv): Promise<number | null> {
-  const repo = env.GITHUB_REPO;
-  if (!repo) return null;
-  const workflowFile = env.GITHUB_WORKFLOW_FILE ?? DEFAULT_GITHUB_WORKFLOW_FILE;
-  const startedAt = monthStartIso();
-  const nowMs = Date.now();
-  let total = 0;
-  let loaded = 0;
-  for (let page = 1; page <= 5; page += 1) {
-    const url = new URL(
-      `https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/runs`,
-    );
-    url.searchParams.set("created", `>=${startedAt}`);
-    url.searchParams.set("per_page", "100");
-    url.searchParams.set("page", String(page));
-    const response = await fetch(url, { headers: githubReadHeaders(env) });
-    if (!response.ok) return null;
-    const body = parseGitHubWorkflowRunsResponse(await response.json());
-    const runs = body.workflow_runs ?? [];
-    loaded += runs.length;
-    for (const run of runs) total += workflowRunDurationMinutes(run, nowMs);
-    if (runs.length < 100) break;
-  }
-  return loaded > 0 ? total : 0;
-}
-
-async function plannedDrainBudgetAllowance(env: ParseWorkerEnv): Promise<{
-  allowed: boolean;
-  reason?: string;
-  estimatedRepoMinutesThisMonth?: number;
-}> {
-  const repository = await loadGitHubRepository(env).catch(() => null);
-  if (repository?.private !== true) return { allowed: true };
-
-  const repoActionsUsageMinutes = await loadGitHubRepoBillableActionsMinutes(env, repository).catch(
-    () => null,
-  );
-  const estimatedRepoMinutesThisMonth =
-    repoActionsUsageMinutes ?? (await estimateParseWorkflowMinutesThisMonth(env).catch(() => null));
-  return estimatedRepoMinutesThisMonth === null
-    ? {
-        allowed: true,
-        reason: "budget-unavailable",
-      }
-    : {
-        allowed: true,
-        reason: "budget-unavailable",
-        estimatedRepoMinutesThisMonth,
-      };
-}
-
 async function readDrainPressure(env: ParseWorkerEnv): Promise<{
   statusActive: number;
   githubActive: number;
@@ -843,7 +669,7 @@ async function readDrainPressure(env: ParseWorkerEnv): Promise<{
   capacityReason?: string;
 }> {
   const [statusActive, githubActiveResult] = await Promise.all([
-    readProcessingCount(env),
+    readProcessingCount(env, { dispatchCapacityOnly: true }),
     countActiveGitHubParseRuns(env)
       .then((count) => ({ ok: true as const, count }))
       .catch((err) => ({ ok: false as const, error: errorMessage(err) })),
@@ -1055,6 +881,14 @@ async function plannedItemAlreadyHandled(
   if (status?.status === "processing") return true;
   if (await plannedItemSatisfiedByFreshness(env, item, plan)) return true;
   if (status?.status === "failed" && statusIsNewerThanPlan(status, plan)) return true;
+  if (status?.status === "failed" && status.step === PERMANENT_FAILURE_STEP) {
+    // A new daily plan does not change a deterministic failure. Only a
+    // parser refresh (reason "parser a -> b") is worth another attempt.
+    const updatedAtMs = Date.parse(status.updatedAt);
+    const recent =
+      Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < PERMANENT_FAILURE_PLAN_COOLDOWN_MS;
+    if (recent && !planReasonParserTarget(item.reason)) return true;
+  }
   if (
     status?.status === "ready" &&
     statusIsNewerThanPlan(status, plan) &&
@@ -1194,19 +1028,6 @@ async function drainPlannedParses(
       skipped: 0,
     };
   }
-  const budget = await plannedDrainBudgetAllowance(env);
-  if (!budget.allowed) {
-    return {
-      ...pressure,
-      activeTarget,
-      availableSlots,
-      budgetLimited: true,
-      budgetReason: budget.reason,
-      queued: 0,
-      skipped: 0,
-    };
-  }
-
   const plan = await loadLatestPlan(env);
   const work = Array.isArray(plan?.work) ? plan.work : [];
   let queued = 0;
@@ -1385,7 +1206,9 @@ async function reconcileStaleProcessingParses(
     options?.githubActive !== undefined
       ? options.githubActive
       : await countActiveGitHubParseRuns(env).catch((err) => {
-          console.warn(`stale parse reconciliation cannot read active GitHub runs: ${errorMessage(err)}`);
+          console.warn(
+            `stale parse reconciliation cannot read active GitHub runs: ${errorMessage(err)}`,
+          );
           return null;
         });
   const now = Date.now();
@@ -1457,7 +1280,14 @@ async function reconcileStaleProcessingParses(
       continue;
     }
 
-    if (await markReadyIfArtifactsExist(env, status)) {
+    // Existing artifacts may be from an older parser. While GitHub could
+    // still be running this request, wait for its callback instead of
+    // marking it ready early (which then dropped the callback).
+    const mayStillBeRunning =
+      (status.step === "github-running" || status.step === "workflow-started") &&
+      githubActive !== 0 &&
+      ageMs < MAX_ORPHANED_PROCESSING_RECONCILE_MS;
+    if (!mayStillBeRunning && (await markReadyIfArtifactsExist(env, status))) {
       ready += 1;
       continue;
     }
@@ -2032,14 +1862,32 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
       });
     });
 
-    const dispatch = await step.do(
-      "dispatch github action",
-      WORKFLOW_GITHUB_DISPATCH_STEP_CONFIG,
-      async (ctx) => {
+    let dispatch: Awaited<ReturnType<typeof dispatchGitHubParse>>;
+    try {
+      dispatch = await step.do(
+        "dispatch github action",
+        WORKFLOW_GITHUB_DISPATCH_STEP_CONFIG,
+        async (ctx) => {
+          logWorkflowRetry(ctx, params);
+          return dispatchGitHubParse(this.env, params, workflowId);
+        },
+      );
+    } catch (err) {
+      await step.do("mark dispatch failed", WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
         logWorkflowRetry(ctx, params);
-        return dispatchGitHubParse(this.env, params, workflowId);
-      },
-    );
+        await updateStatus(this.env, {
+          kind: params.kind,
+          name: params.name,
+          version: params.version,
+          status: "failed",
+          step: "github-dispatch",
+          error: errorMessage(err).slice(0, 4000),
+          requestId: params.requestId,
+          workflowId,
+        });
+      });
+      return { ok: false };
+    }
 
     await step.do("mark github running", WORKFLOW_STATUS_STEP_CONFIG, async (ctx) => {
       logWorkflowRetry(ctx, params);
@@ -2121,7 +1969,7 @@ export class ParseCrateWorkflow extends WorkflowEntrypoint<ParseWorkerEnv, Parse
           name: params.name,
           version: params.version,
           status: "failed",
-          step: "failed",
+          step: payload?.permanent ? PERMANENT_FAILURE_STEP : "failed",
           error: payload?.error ?? "GitHub parse workflow failed",
           requestId: params.requestId,
           workflowId,
@@ -2265,6 +2113,25 @@ async function waitForDispatchCapacity(
   const pressure = await readDispatchPressure(env, body.requestId);
   if (pressure.capacityReliable && pressure.actionsInUse < activeTarget) return true;
 
+  const requestedAtMs = Date.parse(body.requestedAt);
+  if (Number.isFinite(requestedAtMs) && Date.now() - requestedAtMs > MAX_DISPATCH_WAIT_MS) {
+    await updateStatus(env, {
+      name: body.name,
+      version: body.version,
+      kind: body.kind,
+      status: "failed",
+      step: "waiting-capacity-timeout",
+      error: pressure.capacityReliable
+        ? "Parse request waited too long for GitHub capacity"
+        : `GitHub capacity unavailable: ${pressure.capacityReason ?? "unknown"}`,
+      requestId: body.requestId,
+      workflowId: parseWorkflowId(body.requestId),
+      requestedBy: body.requestedBy,
+    });
+    message.ack();
+    return false;
+  }
+
   await updateStatus(env, {
     name: body.name,
     version: body.version,
@@ -2280,6 +2147,8 @@ async function waitForDispatchCapacity(
   return false;
 }
 
+const WORKER_TASKS = ["reconcile-finalizing", "reconcile-stale", "drain-planned"] as const;
+
 async function enqueueWorkerTasks(env: ParseWorkerEnv): Promise<void> {
   if (!env.PARSE_REQUESTS) return;
   const pressure = await readDrainPressure(env);
@@ -2290,11 +2159,11 @@ async function enqueueWorkerTasks(env: ParseWorkerEnv): Promise<void> {
     pressure,
     reconcileCursor: 0,
   } satisfies Omit<ParseWorkerTaskMessage, "task">;
-  await env.PARSE_REQUESTS.send([
-    { ...base, task: "reconcile-finalizing" },
-    { ...base, task: "reconcile-stale" },
-    { ...base, task: "drain-planned" },
-  ]);
+  // `send([...])` would enqueue ONE message whose body is the array; the
+  // consumer would not recognise it and the tasks would never run.
+  await env.PARSE_REQUESTS.sendBatch(
+    WORKER_TASKS.map((task) => ({ body: { ...base, task } satisfies ParseWorkerTaskMessage })),
+  );
 }
 
 async function handleWorkerTaskMessage(
@@ -2317,9 +2186,7 @@ async function handleWorkerTaskMessage(
             enqueuedAt: new Date().toISOString(),
           });
         } else if (result.ready > 0 || result.failed > 0) {
-          console.log(
-            `reconciled finalizing parses ready=${result.ready} failed=${result.failed}`,
-          );
+          console.log(`reconciled finalizing parses ready=${result.ready} failed=${result.failed}`);
         }
         break;
       }
@@ -2458,6 +2325,20 @@ async function handleQueueMessage(
   }
 }
 
+async function deliverCompletionEvent(
+  env: ParseWorkerEnv,
+  payload: ParseCompletionPayload,
+): Promise<boolean> {
+  try {
+    const instance = await env.PARSE_WORKFLOW.get(payload.workflowId);
+    await instance.sendEvent({ type: "github-complete", payload });
+    return true;
+  } catch (err) {
+    console.warn(`workflow event delivery failed for ${payload.workflowId}: ${errorMessage(err)}`);
+    return false;
+  }
+}
+
 async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Response> {
   if (!env.PARSE_CALLBACK_SECRET) {
     return json({ error: "parse callback secret is not configured" }, { status: 503 });
@@ -2473,37 +2354,35 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
     return json({ error: "invalid callback payload" }, { status: 400 });
   }
   const existing = await readStatus(env, payload.name, payload.version);
-  if (existing?.requestId && existing.requestId !== payload.requestId) {
-    return json({ ok: true, eventDelivered: false, ignored: "stale-request" });
-  }
-  if (existing?.requestId === payload.requestId) {
-    if (existing.status === "ready") {
-      return json({ ok: true, eventDelivered: false, alreadyReady: true });
-    }
-    if (!payload.ok && existing.status === "failed") {
-      return json({ ok: true, eventDelivered: false, alreadyFailed: true });
-    }
+  // The status row may already be settled (a newer request replaced it, or
+  // reconcile marked it ready first), but this payload's workflow is still
+  // waiting for its event. Deliver it so the workflow finishes instead of
+  // hanging until the 6 hour timeout; skip only the status write.
+  const settled =
+    existing?.requestId && existing.requestId !== payload.requestId
+      ? "stale-request"
+      : existing?.requestId === payload.requestId && existing.status === "ready"
+        ? "already-ready"
+        : existing?.requestId === payload.requestId && !payload.ok && existing.status === "failed"
+          ? "already-failed"
+          : null;
+  if (settled) {
+    const eventDelivered = await deliverCompletionEvent(env, payload);
+    return json({ ok: true, eventDelivered, settled });
   }
   await updateStatus(env, {
     kind: payload.kind,
     name: payload.name,
     version: payload.version,
     status: payload.ok ? "processing" : "failed",
-    step: payload.ok ? "finalizing" : "failed",
+    step: payload.ok ? "finalizing" : payload.permanent ? PERMANENT_FAILURE_STEP : "failed",
     error: payload.error,
     requestId: payload.requestId,
     workflowId: payload.workflowId,
     githubRunId: payload.runId,
     githubRunUrl: payload.runUrl,
   });
-  let eventDelivered = true;
-  try {
-    const instance = await env.PARSE_WORKFLOW.get(payload.workflowId);
-    await instance.sendEvent({ type: "github-complete", payload });
-  } catch (err) {
-    eventDelivered = false;
-    console.warn(`workflow event delivery failed for ${payload.workflowId}: ${errorMessage(err)}`);
-  }
+  const eventDelivered = await deliverCompletionEvent(env, payload);
   if (payload.ok) {
     try {
       await verifyArtifacts(env, payload.name, payload.version);
@@ -2533,6 +2412,7 @@ export default {
     for (const message of batch.messages) {
       const body = Option.getOrUndefined(Schema.decodeUnknownOption(Schema.Json)(message.body));
       if (body === undefined) {
+        console.warn(`dropping non-JSON parse queue message id=${message.id}`);
         message.ack();
         continue;
       }
@@ -2541,10 +2421,20 @@ export default {
         continue;
       }
       if (!isParseRequestMessage(body)) {
+        console.warn(
+          `dropping unrecognised parse queue message id=${message.id}: ${JSON.stringify(body).slice(0, 200)}`,
+        );
         message.ack();
         continue;
       }
-      await handleQueueMessage(message, body, env);
+      try {
+        await handleQueueMessage(message, body, env);
+      } catch (err) {
+        console.warn(
+          `parse queue message failed ${body.name}@${body.version} request=${body.requestId}: ${errorMessage(err)}`,
+        );
+        message.retry({ delaySeconds: 60 });
+      }
     }
   },
 
