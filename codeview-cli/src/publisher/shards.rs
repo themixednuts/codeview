@@ -418,6 +418,35 @@ pub(crate) fn add_alias_tree_nodes(
     let mut aliases: Vec<_> = graph.aliases.iter().collect();
     aliases.sort_by(|(left, _), (right, _)| left.cmp(right));
 
+    // `build_tree_relations` lists a local re-export target beneath the
+    // re-exporting parent under its canonical id. When the same parent also
+    // has a public alias for that target, the alias node below replaces the
+    // canonical entry so the item appears once, under its public path.
+    // Genuine structural children (Contains/Defines) are never replaced.
+    let mut reexport_pairs: HashSet<(&str, &str)> = HashSet::new();
+    let mut structural_pairs: HashSet<(&str, &str)> = HashSet::new();
+    let mut structural_parent: HashMap<&str, &str> = HashMap::new();
+    for edge in &graph.edges {
+        match edge.kind {
+            EdgeKind::ReExports => {
+                reexport_pairs.insert((edge.from.as_str(), edge.to.as_str()));
+            }
+            EdgeKind::Contains | EdgeKind::Defines => {
+                structural_pairs.insert((edge.from.as_str(), edge.to.as_str()));
+                if nodes_by_id
+                    .get(edge.from.as_str())
+                    .is_some_and(|node| node.kind != NodeKind::Impl)
+                    && edge.from != edge.to
+                {
+                    structural_parent
+                        .entry(edge.to.as_str())
+                        .or_insert(edge.from.as_str());
+                }
+            }
+            _ => {}
+        }
+    }
+
     let mut alias_nodes = Vec::new();
     for (alias, canonical) in aliases {
         if nodes_by_id.contains_key(alias.as_str()) {
@@ -438,10 +467,23 @@ pub(crate) fn add_alias_tree_nodes(
 
         let mut alias_node = (*canonical_node).clone();
         alias_node.id = alias.clone();
-        children
-            .entry(parent.to_string())
-            .or_default()
-            .push(alias.clone());
+        let siblings = children.entry(parent.to_string()).or_default();
+        let canonical_is_reexport_only = reexport_pairs.contains(&(parent, canonical.as_str()))
+            && !structural_pairs.contains(&(parent, canonical.as_str()));
+        let canonical_slot = canonical_is_reexport_only
+            .then(|| siblings.iter().position(|id| id == canonical))
+            .flatten();
+        match canonical_slot {
+            Some(index) => {
+                siblings[index] = alias.clone();
+                if parents.get(canonical.as_str()).map(String::as_str) == Some(parent)
+                    && let Some(owner) = structural_parent.get(canonical.as_str())
+                {
+                    parents.insert(canonical.clone(), (*owner).to_string());
+                }
+            }
+            None => siblings.push(alias.clone()),
+        }
         parents.insert(alias.clone(), parent.to_string());
         alias_nodes.push(alias_node);
     }
@@ -1034,7 +1076,7 @@ pub fn graph_hash(graph: &CrateGraph) -> String {
         a.from
             .cmp(&b.from)
             .then(a.to.cmp(&b.to))
-            .then_with(|| format!("{:?}", a.kind).cmp(&format!("{:?}", b.kind)))
+            .then_with(|| edge_kind_sort_key(a.kind).cmp(edge_kind_sort_key(b.kind)))
     });
 
     let value = serde_json::json!({
@@ -1048,6 +1090,22 @@ pub fn graph_hash(graph: &CrateGraph) -> String {
     let mut hasher = Sha256::new();
     canonical_hash(&value, &mut hasher);
     hex::encode(hasher.finalize())
+}
+
+/// Sort key for edge kinds in [`graph_hash`]. Must stay byte-identical to the
+/// `Debug` rendering of each variant (the historical sort key), otherwise
+/// edges with equal endpoints reorder and published hashes change.
+fn edge_kind_sort_key(kind: EdgeKind) -> &'static str {
+    match kind {
+        EdgeKind::Contains => "Contains",
+        EdgeKind::Defines => "Defines",
+        EdgeKind::Implements => "Implements",
+        EdgeKind::UsesType => "UsesType",
+        EdgeKind::CallsStatic => "CallsStatic",
+        EdgeKind::CallsRuntime => "CallsRuntime",
+        EdgeKind::Derives => "Derives",
+        EdgeKind::ReExports => "ReExports",
+    }
 }
 
 fn canonical_hash<H: sha2::Digest>(value: &serde_json::Value, h: &mut H) {
@@ -1403,5 +1461,258 @@ mod tests {
         assert!(!search_ids.contains(&"demo::impl-1"));
         assert!(!search_ids.contains(&"demo::impl-1::clone"));
         assert!(search_ids.contains(&"demo::Thing"));
+    }
+
+    /// Mirrors serde's layout: `pub use de::Deserializer` at the crate root
+    /// and `pub use self::ignored_any::IgnoredAny` inside `de`, where
+    /// `ignored_any` is a private child module. ReExports edges are listed
+    /// before the structural ones so the first-wins parent map would
+    /// otherwise point the canonical items at the re-exporting parent.
+    fn reexport_alias_graph() -> CrateGraph {
+        let mut private_module = node("demo::de::ignored_any", "ignored_any", NodeKind::Module);
+        private_module.visibility = Visibility::Inherited;
+        CrateGraph {
+            id: "demo".to_string(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            nodes: vec![
+                node("demo", "demo", NodeKind::Crate),
+                node("demo::de", "de", NodeKind::Module),
+                node("demo::de::Deserializer", "Deserializer", NodeKind::Trait),
+                private_module,
+                node(
+                    "demo::de::ignored_any::IgnoredAny",
+                    "IgnoredAny",
+                    NodeKind::Struct,
+                ),
+            ],
+            edges: vec![
+                edge("demo", "demo::de::Deserializer", EdgeKind::ReExports),
+                edge(
+                    "demo::de",
+                    "demo::de::ignored_any::IgnoredAny",
+                    EdgeKind::ReExports,
+                ),
+                edge("demo", "demo::de", EdgeKind::Contains),
+                edge("demo::de", "demo::de::Deserializer", EdgeKind::Contains),
+                edge("demo::de", "demo::de::ignored_any", EdgeKind::Contains),
+                edge(
+                    "demo::de::ignored_any",
+                    "demo::de::ignored_any::IgnoredAny",
+                    EdgeKind::Contains,
+                ),
+            ],
+            aliases: HashMap::from([
+                (
+                    "demo::Deserializer".to_string(),
+                    "demo::de::Deserializer".to_string(),
+                ),
+                (
+                    "demo::de::IgnoredAny".to_string(),
+                    "demo::de::ignored_any::IgnoredAny".to_string(),
+                ),
+            ]),
+        }
+    }
+
+    fn assert_reexport_children_deduplicated(children: &HashMap<String, Vec<String>>) {
+        let mut root = children["demo"].clone();
+        root.sort();
+        assert_eq!(root, ["demo::Deserializer", "demo::de"]);
+        let mut de = children["demo::de"].clone();
+        de.sort();
+        assert_eq!(
+            de,
+            [
+                "demo::de::Deserializer",
+                "demo::de::IgnoredAny",
+                "demo::de::ignored_any"
+            ]
+        );
+        assert_eq!(
+            children["demo::de::ignored_any"],
+            ["demo::de::ignored_any::IgnoredAny"]
+        );
+    }
+
+    #[test]
+    fn reexported_items_appear_once_under_their_public_alias() {
+        let graph = reexport_alias_graph();
+        let (mut children, mut parents) = build_tree_relations(&graph);
+        let alias_nodes = add_alias_tree_nodes(&graph, &mut children, &mut parents);
+
+        let mut alias_ids: Vec<&str> = alias_nodes.iter().map(|node| node.id.as_str()).collect();
+        alias_ids.sort();
+        assert_eq!(alias_ids, ["demo::Deserializer", "demo::de::IgnoredAny"]);
+        assert_reexport_children_deduplicated(&children);
+
+        // Canonical items keep their structural parent for breadcrumbs.
+        assert_eq!(parents["demo::de::Deserializer"], "demo::de");
+        assert_eq!(
+            parents["demo::de::ignored_any::IgnoredAny"],
+            "demo::de::ignored_any"
+        );
+        assert_eq!(parents["demo::Deserializer"], "demo");
+        assert_eq!(parents["demo::de::IgnoredAny"], "demo::de");
+
+        // Static artifacts: manifest root children and tree-children shards.
+        let artifacts = build_all(&graph, "demo", &[]).expect("static artifacts");
+        let manifest: StaticCrateManifest = serde_json::from_slice(
+            &artifacts
+                .iter()
+                .find(|artifact| artifact.key == "rust/demo/1.0.0/manifest.json")
+                .expect("manifest")
+                .body,
+        )
+        .expect("deserialize manifest");
+        let root_ids: Vec<&str> = manifest.root_children["demo"]
+            .iter()
+            .map(|child| child.node.id.as_str())
+            .collect();
+        assert!(root_ids.contains(&"demo::Deserializer"));
+        assert!(!root_ids.contains(&"demo::de::Deserializer"));
+        let mut static_children: HashMap<String, Vec<String>> = HashMap::new();
+        for artifact in artifacts
+            .iter()
+            .filter(|artifact| artifact.key.contains("/tree-children/"))
+        {
+            let shard: StaticTreeChildrenShard =
+                serde_json::from_slice(&artifact.body).expect("deserialize tree shard");
+            for (parent, entry) in shard.parents {
+                static_children.insert(
+                    parent,
+                    entry
+                        .children
+                        .into_iter()
+                        .map(|child| child.node.id)
+                        .collect(),
+                );
+            }
+        }
+        assert_reexport_children_deduplicated(&static_children);
+
+        // Hosted `site/*` artifacts read by the live site.
+        let hosted = crate::publisher::hosted_artifacts::build_all(&graph, "demo")
+            .expect("hosted artifacts");
+        let meta: crate::publisher::hosted_artifacts::HostedMetaArtifact = serde_json::from_slice(
+            &hosted
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.key == "rust/demo/1.0.0/site/meta.json")
+                .expect("hosted meta")
+                .body,
+        )
+        .expect("deserialize hosted meta");
+        let hosted_root_ids: Vec<&str> = meta.root_children["demo"]
+            .iter()
+            .map(|child| child.node.id.as_str())
+            .collect();
+        assert!(hosted_root_ids.contains(&"demo::Deserializer"));
+        assert!(!hosted_root_ids.contains(&"demo::de::Deserializer"));
+        let mut hosted_children: HashMap<String, Vec<String>> = HashMap::new();
+        for artifact in hosted
+            .artifacts
+            .iter()
+            .filter(|artifact| artifact.key.contains("/site/tree-children/"))
+        {
+            let shard: crate::publisher::hosted_artifacts::HostedTreeChildrenShard =
+                serde_json::from_slice(&artifact.body).expect("deserialize hosted tree shard");
+            for (parent, entry) in shard.parents {
+                hosted_children.insert(
+                    parent,
+                    entry
+                        .children
+                        .into_iter()
+                        .map(|child| child.node.id)
+                        .collect(),
+                );
+            }
+        }
+        assert_reexport_children_deduplicated(&hosted_children);
+    }
+
+    #[test]
+    fn same_module_rename_keeps_structural_child_and_alias() {
+        // `pub use self::Thing as Renamed;` inside `demo`: the canonical item
+        // is a genuine child, so both names stay listed.
+        let graph = CrateGraph {
+            id: "demo".to_string(),
+            name: "demo".to_string(),
+            version: "1.0.0".to_string(),
+            nodes: vec![
+                node("demo", "demo", NodeKind::Crate),
+                node("demo::Thing", "Thing", NodeKind::Struct),
+            ],
+            edges: vec![
+                edge("demo", "demo::Thing", EdgeKind::Contains),
+                edge("demo", "demo::Thing", EdgeKind::ReExports),
+            ],
+            aliases: HashMap::from([("demo::Renamed".to_string(), "demo::Thing".to_string())]),
+        };
+        let (mut children, mut parents) = build_tree_relations(&graph);
+        add_alias_tree_nodes(&graph, &mut children, &mut parents);
+        assert_eq!(children["demo"], ["demo::Thing", "demo::Renamed"]);
+    }
+
+    fn legacy_graph_hash(graph: &CrateGraph) -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut nodes = graph.nodes.clone();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut edges = graph.edges.clone();
+        edges.sort_by(|a, b| {
+            a.from
+                .cmp(&b.from)
+                .then(a.to.cmp(&b.to))
+                .then_with(|| format!("{:?}", a.kind).cmp(&format!("{:?}", b.kind)))
+        });
+        let value = serde_json::json!({
+            "id": graph.id,
+            "name": graph.name,
+            "version": graph.version,
+            "nodes": nodes,
+            "edges": edges,
+        });
+        let mut hasher = Sha256::new();
+        canonical_hash(&value, &mut hasher);
+        hex::encode(hasher.finalize())
+    }
+
+    #[test]
+    fn edge_kind_sort_key_matches_debug_rendering() {
+        for kind in [
+            EdgeKind::Contains,
+            EdgeKind::Defines,
+            EdgeKind::Implements,
+            EdgeKind::UsesType,
+            EdgeKind::CallsStatic,
+            EdgeKind::CallsRuntime,
+            EdgeKind::Derives,
+            EdgeKind::ReExports,
+        ] {
+            assert_eq!(edge_kind_sort_key(kind), format!("{kind:?}"));
+        }
+    }
+
+    #[test]
+    fn graph_hash_is_unchanged_by_static_edge_kind_sort_key() {
+        let mut graph = graph_with_external_and_impls();
+        // Parallel edges between the same endpoints exercise the kind
+        // tie-breaker, listed out of order.
+        for kind in [
+            EdgeKind::UsesType,
+            EdgeKind::ReExports,
+            EdgeKind::CallsRuntime,
+            EdgeKind::Contains,
+            EdgeKind::Derives,
+            EdgeKind::CallsStatic,
+            EdgeKind::Implements,
+            EdgeKind::Defines,
+        ] {
+            graph.edges.push(edge("demo", "demo::Thing", kind));
+        }
+        assert_eq!(graph_hash(&graph), legacy_graph_hash(&graph));
+        let reexports = reexport_alias_graph();
+        assert_eq!(graph_hash(&reexports), legacy_graph_hash(&reexports));
     }
 }

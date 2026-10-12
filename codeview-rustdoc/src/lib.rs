@@ -4761,9 +4761,15 @@ fn clean_other_attr(value: &str) -> Option<String> {
     ];
     if INTERNAL_PREFIXES
         .iter()
-        .any(|p| payload == *p || payload.starts_with(&format!("{p}(")))
+        .any(|p| is_debug_variant(payload, p))
     {
         return None;
+    }
+
+    // ── OnUnimplemented { directive: Directive { message: FormatString { … } } }
+    //    → #[diagnostic::on_unimplemented(message = "…", …)], or dropped. ──
+    if is_debug_variant(payload, "OnUnimplemented") {
+        return render_on_unimplemented(payload);
     }
 
     // ── Lang(VariantName) → #[lang = "snake_name"] ──
@@ -4832,9 +4838,144 @@ fn clean_other_attr(value: &str) -> Option<String> {
         return Some(format!("#[{}]", camel_to_snake(payload)));
     }
 
+    // ── Unrecognised struct-shaped payloads (`Foo { field: … }`) are raw
+    //    compiler `Debug` dumps with no source-level spelling; never show them. ──
+    if payload.contains('{') {
+        return None;
+    }
+
     // ── Final fallback: keep the cleaned form so users see *something*, but
-    //    strip the noisy `#[attr = ]` wrapper and the wrapping `Foo { … }`. ──
+    //    strip the noisy `#[attr = ]` wrapper. ──
     Some(format!("#[{payload}]"))
+}
+
+/// Whether a Debug payload is the variant `name`, in unit (`Name`), tuple
+/// (`Name(…)`) or struct (`Name { … }` / `Name {…}`) form.
+fn is_debug_variant(payload: &str, name: &str) -> bool {
+    payload.strip_prefix(name).is_some_and(|rest| {
+        rest.is_empty() || rest.starts_with('(') || rest.starts_with('{') || rest.starts_with(" {")
+    })
+}
+
+/// Render a `OnUnimplemented { directive: Directive { … } }` Debug payload as
+/// `#[diagnostic::on_unimplemented(message = "…", label = "…", note = "…")]`.
+///
+/// Returns `None` for the compiler-internal `#[rustc_on_unimplemented]` form
+/// (`is_rustc_attr: true`) and whenever no user-facing text can be recovered,
+/// so the raw Debug dump never reaches the UI.
+fn render_on_unimplemented(payload: &str) -> Option<String> {
+    let mut fields = debug_struct_fields(payload)?;
+    // Newer compilers nest the options in a `directive: Directive { … }`
+    // field; tolerate the flattened shape too.
+    if let Some((_, directive)) = fields.iter().find(|(name, _)| *name == "directive") {
+        fields = debug_struct_fields(directive)?;
+    }
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, value)| *value)
+    };
+    if field("is_rustc_attr") == Some("true") {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    for (field_name, attr_key) in [("message", "message"), ("label", "label")] {
+        if let Some(text) =
+            field(field_name).and_then(|value| format_string_inputs(value).into_iter().next())
+        {
+            parts.push(format!("{attr_key} = \"{text}\""));
+        }
+    }
+    if let Some(notes) = field("notes") {
+        for note in format_string_inputs(notes) {
+            parts.push(format!("note = \"{note}\""));
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "#[diagnostic::on_unimplemented({})]",
+        parts.join(", ")
+    ))
+}
+
+/// Split the outermost `{ … }` body of a Debug struct dump into
+/// `(field, value)` pairs, respecting nested brackets and string literals.
+fn debug_struct_fields(value: &str) -> Option<Vec<(&str, &str)>> {
+    let open = value.find('{')?;
+    let close = value.rfind('}')?;
+    if close <= open {
+        return None;
+    }
+    let body = &value[open + 1..close];
+
+    let mut fields = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut start = 0;
+    let mut push_field = |from: usize, to: usize| {
+        let segment = body[from..to].trim();
+        if let Some((name, value)) = segment.split_once(':') {
+            fields.push((name.trim(), value.trim()));
+        }
+    };
+    for (index, ch) in body.char_indices() {
+        if in_string {
+            match ch {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                push_field(start, index);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    push_field(start, body.len());
+    Some(fields)
+}
+
+/// Collect the `input: "…"` string of every `FormatString { … }` in a Debug
+/// value, returned verbatim (Debug escaping is valid Rust literal escaping).
+fn format_string_inputs(value: &str) -> Vec<&str> {
+    const MARKER: &str = "input: \"";
+    let mut inputs = Vec::new();
+    let mut rest = value;
+    while let Some(found) = rest.find(MARKER) {
+        let literal = &rest[found + MARKER.len()..];
+        let mut escaped = false;
+        let mut end = None;
+        for (index, ch) in literal.char_indices() {
+            match ch {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => {
+                    end = Some(index);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else {
+            break;
+        };
+        inputs.push(&literal[..end]);
+        rest = &literal[end + 1..];
+    }
+    inputs
 }
 
 /// Parse a `Stability { stability: Stability { level: …, feature: "…" } }` Debug
@@ -5868,6 +6009,87 @@ mod tests {
         assert_eq!(
             clean_other_attr("#[attr = AllowInternalUnstable([\"liballoc_internals\"])]"),
             None,
+        );
+    }
+
+    /// Real payload emitted by nightly rustdoc for serde 1.0.229's
+    /// `de::Deserializer` (`#[diagnostic::on_unimplemented(message = …)]`).
+    const SERDE_ON_UNIMPLEMENTED: &str = "#[attr = OnUnimplemented {directive: Directive {is_rustc_attr: false, filters: [], message: FormatString {input: \"the trait bound `{Self}: serde::de::Deserializer<'de>` is not satisfied\", pieces: [Lit(\"the trait bound `\"), Arg(SelfUpper), Lit(\": serde::de::Deserializer<'de>` is not satisfied\")]}, notes: []}}]";
+
+    #[test]
+    fn clean_other_attr_on_unimplemented_renders_diagnostic_message() {
+        assert_eq!(
+            clean_other_attr(SERDE_ON_UNIMPLEMENTED),
+            Some(
+                "#[diagnostic::on_unimplemented(message = \"the trait bound `{Self}: serde::de::Deserializer<'de>` is not satisfied\")]"
+                    .to_string()
+            ),
+        );
+        assert_eq!(
+            attribute_to_string(&rdt::Attribute::Other(SERDE_ON_UNIMPLEMENTED.to_string())),
+            clean_other_attr(SERDE_ON_UNIMPLEMENTED),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_on_unimplemented_keeps_label_and_notes() {
+        let input = "#[attr = OnUnimplemented {directive: Directive {is_rustc_attr: false, filters: [], message: FormatString {input: \"cannot use `{Self}`\", pieces: [Lit(\"cannot use `\"), Arg(SelfUpper), Lit(\"`\")]}, label: FormatString {input: \"needs \\\"Foo\\\", here\", pieces: [Lit(\"needs \\\"Foo\\\", here\")]}, notes: [FormatString {input: \"first, note\", pieces: [Lit(\"first, note\")]}, FormatString {input: \"second note\", pieces: [Lit(\"second note\")]}]}}]";
+        assert_eq!(
+            clean_other_attr(input),
+            Some(
+                "#[diagnostic::on_unimplemented(message = \"cannot use `{Self}`\", label = \"needs \\\"Foo\\\", here\", note = \"first, note\", note = \"second note\")]"
+                    .to_string()
+            ),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_on_unimplemented_pretty_debug_is_normalised() {
+        let input = "#[attr = OnUnimplemented {\n    directive: Directive {\n        is_rustc_attr: false,\n        filters: [],\n        message: FormatString {\n            input: \"oops\",\n            pieces: [Lit(\"oops\")],\n        },\n        notes: [],\n    },\n}]";
+        assert_eq!(
+            clean_other_attr(input),
+            Some("#[diagnostic::on_unimplemented(message = \"oops\")]".to_string()),
+        );
+    }
+
+    #[test]
+    fn clean_other_attr_on_unimplemented_without_text_or_rustc_is_dropped() {
+        // Internal `#[rustc_on_unimplemented]` stays hidden.
+        assert_eq!(
+            clean_other_attr(
+                &SERDE_ON_UNIMPLEMENTED.replace("is_rustc_attr: false", "is_rustc_attr: true")
+            ),
+            None,
+        );
+        // Nothing user-facing to recover → dropped rather than dumped.
+        assert_eq!(
+            clean_other_attr(
+                "#[attr = OnUnimplemented {directive: Directive {is_rustc_attr: false, filters: [], notes: []}}]"
+            ),
+            None,
+        );
+        assert_eq!(clean_other_attr("#[attr = OnUnimplemented {garbage]"), None);
+    }
+
+    #[test]
+    fn clean_other_attr_never_renders_debug_struct_dumps() {
+        // Internal prefixes match struct form too, not just unit/tuple.
+        assert_eq!(clean_other_attr("#[attr = CfgTrace { cfg: True }]"), None);
+        assert_eq!(clean_other_attr("#[attr = Coverage {on: false}]"), None);
+        // Unknown struct-shaped payloads are compiler Debug dumps.
+        assert_eq!(
+            clean_other_attr("#[attr = SomeFutureAttr {span: Span, value: Foo { x: 1 }}]"),
+            None,
+        );
+        // Unit variants still render.
+        assert_eq!(
+            clean_other_attr("#[attr = TrackCaller]"),
+            Some("#[track_caller]".to_string()),
+        );
+        // Names that merely share a prefix are not swallowed.
+        assert_eq!(
+            clean_other_attr("#[attr = UsedLinker]"),
+            Some("#[used_linker]".to_string()),
         );
     }
 
