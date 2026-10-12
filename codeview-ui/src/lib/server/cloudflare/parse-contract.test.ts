@@ -5,6 +5,7 @@ import {
   listParsePlanKeys,
   makeParseRequest,
   PARSE_WORKER_TASK_SCHEMA_VERSION,
+  ORPHANED_PROCESSING_MS,
   shouldAcceptQueuedParseRequest,
   type StoredParseStatus,
 } from "./parse-contract";
@@ -33,12 +34,25 @@ describe("queued parse registration", () => {
   });
 
   test("does not replace active work", () => {
+    const existing = storedStatus("processing");
     expect(
       shouldAcceptQueuedParseRequest(
-        storedStatus("processing"),
+        existing,
         makeParseRequest("serde", "1.0.228", true),
+        Date.parse(existing.updatedAt) + 60_000,
       ),
     ).toBe(false);
+  });
+
+  test("replaces orphaned active work past the callback window", () => {
+    const existing = storedStatus("processing");
+    expect(
+      shouldAcceptQueuedParseRequest(
+        existing,
+        makeParseRequest("serde", "1.0.228", false),
+        Date.parse(existing.updatedAt) + ORPHANED_PROCESSING_MS + 1,
+      ),
+    ).toBe(true);
   });
 
   test("replaces an older terminal status", () => {
