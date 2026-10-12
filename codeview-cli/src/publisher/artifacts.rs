@@ -96,6 +96,8 @@ pub enum CrateSource<'a> {
     DocsRs {
         /// Optional target triple override.
         target: Option<&'a str>,
+        /// Shared request spacing for bulk shard drains.
+        throttle: Option<&'a docs_rs::DocsRsThrottle>,
     },
     LocalFile {
         path: &'a std::path::Path,
@@ -108,7 +110,10 @@ pub enum CrateSource<'a> {
 
 impl Default for CrateSource<'_> {
     fn default() -> Self {
-        CrateSource::DocsRs { target: None }
+        CrateSource::DocsRs {
+            target: None,
+            throttle: None,
+        }
     }
 }
 
@@ -152,8 +157,12 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     let (json_bytes, recorded_source) = match source {
         CrateSource::DocsRs {
             target: docsrs_target,
+            throttle,
         } => {
             let http = docs_rs::http_client().map_err(PublishError::Transient)?;
+            if let Some(throttle) = throttle {
+                throttle.acquire().await;
+            }
             match docs_rs::fetch_rustdoc_json(&http, package_name, version, docsrs_target).await {
                 Ok(download) => {
                     eprintln!(
@@ -317,30 +326,23 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
 
     // ─── 6. Upload to R2 ─────────────────────────────────────────
     //
-    // Concurrency is per-backend: S3Backend = 8 (Cloudflare R2 fans out
+    // Concurrency is per-backend: S3Backend = 32 (Cloudflare R2 fans out
     // fine), LocalMiniflareBackend = 1 (wrangler subprocess contention
-    // on miniflare's SQLite locks).  Trait default is 8.
-    use futures::stream::StreamExt;
-    let concurrency = r2.concurrency_hint().max(1);
-    let total = artifacts.len();
-    let r2_for_upload = r2.clone();
-    let mut completed = 0usize;
-    let mut stream = futures::stream::iter(artifacts.into_iter().map(|art| {
-        let r2 = r2_for_upload.clone();
-        async move {
-            r2.put(&art.key, art.body, art.content_type)
-                .await
-                .with_context(|| format!("upload {}", art.key))
-        }
-    }))
-    .buffer_unordered(concurrency);
-    while let Some(result) = stream.next().await {
-        result.map_err(PublishError::Transient)?;
-        completed += 1;
-        if completed % 25 == 0 || completed == total {
-            eprint!(".");
-        }
-    }
+    // on miniflare's SQLite locks).
+    //
+    // Readers and the freshness check trust `meta.json` and the
+    // manifests/pointers, so those go up only after every shard they
+    // point at has landed. A failed upload then leaves the previous
+    // markers in place instead of advertising missing shards.
+    let (markers, shard_artifacts): (Vec<_>, Vec<_>) = artifacts
+        .into_iter()
+        .partition(|art| is_commit_marker(&art.key));
+    upload_artifacts(&r2, shard_artifacts)
+        .await
+        .map_err(PublishError::Transient)?;
+    upload_artifacts(&r2, markers)
+        .await
+        .map_err(PublishError::Transient)?;
     eprintln!();
 
     // ─── 7. Record freshness ─────────────────────────────────────
@@ -467,6 +469,43 @@ fn find_unpacked_crate_dir(root: &std::path::Path) -> Option<std::path::PathBuf>
     })
 }
 
+fn is_commit_marker(key: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "/meta.json",
+        "/manifest.json",
+        "/search-manifest.json",
+        "/latest.json",
+        "/stable.json",
+    ];
+    MARKERS.iter().any(|marker| key.ends_with(marker))
+}
+
+async fn upload_artifacts(
+    r2: &Arc<dyn R2>,
+    artifacts: Vec<shards::Artifact>,
+) -> anyhow::Result<()> {
+    let concurrency = r2.concurrency_hint().max(1);
+    let total = artifacts.len();
+    let mut completed = 0usize;
+    let mut stream = futures::stream::iter(artifacts.into_iter().map(|art| {
+        let r2 = r2.clone();
+        async move {
+            r2.put(&art.key, art.body, art.content_type)
+                .await
+                .with_context(|| format!("upload {}", art.key))
+        }
+    }))
+    .buffer_unordered(concurrency);
+    while let Some(result) = stream.next().await {
+        result?;
+        completed += 1;
+        if completed.is_multiple_of(25) || completed == total {
+            eprint!(".");
+        }
+    }
+    Ok(())
+}
+
 async fn hosted_artifacts_are_current(
     r2: &Arc<dyn R2>,
     storage_name: &str,
@@ -539,14 +578,14 @@ fn classify_rustdoc_error(err: RustdocError) -> PublishError {
         RustdocError::Metadata(e) => {
             PublishError::Transient(anyhow::Error::new(e).context("parser cargo metadata"))
         }
-        RustdocError::Syn(e) => {
-            PublishError::Transient(anyhow::Error::new(e).context("parser source parse"))
-        }
+        // Source and manifest shape are fixed for a published crate
+        // version; retrying cannot change the result.
+        RustdocError::Syn(_) => PublishError::Permanent(format!("parser source parse: {msg}")),
         RustdocError::RustdocFailed(status) => {
             PublishError::Permanent(format!("cargo rustdoc failed with status {status}"))
         }
         RustdocError::MissingRootPackage => {
-            PublishError::Transient(anyhow::anyhow!("parser missing root package"))
+            PublishError::Permanent("parser missing root package".to_string())
         }
     }
 }

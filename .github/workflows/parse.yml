@@ -9,10 +9,14 @@ run-name: >-
 # The site build only builds the Cloudflare Worker/Svelte app. Parsing is
 # handled offline on GitHub-hosted runners:
 #
+#   build           -> compile codeview-cli once; every other job downloads it
 #   parse-one       -> exact crate/version request from the hosted queue
 #   plan            -> read requested work and write one deterministic work plan to R2
-#   parse-shard     -> drain bounded shards with docs.rs request delays
+#   parse-shard     -> drain bounded shards with docs.rs request spacing
 #   freshness-merge -> single-writer index/catalog/ref finalizer
+#
+# Hosted requests run concurrently with each other and with the nightly
+# backfill; only freshness-merge (the catalog writer) is serialized.
 #
 # Local/offline equivalent:
 #
@@ -92,28 +96,31 @@ on:
 env:
   R2_BUCKET: crate-graphs
   STATIC_R2_TARGET: remote
-  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-  R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
   CODEVIEW_SKIP_SIDECAR: '1'
 
+permissions:
+  contents: read
+
+# Exact-crate requests get their own group so a user request never waits
+# behind the ~45 minute backfill. Backfills still never overlap.
 concurrency:
-  group: codeview-static-publish
+  group: >-
+    ${{ github.event_name == 'workflow_dispatch' && inputs.crate != ''
+      && format('codeview-parse-{0}-{1}-{2}', inputs.request_kind || 'crate', inputs.crate, inputs.version)
+      || 'codeview-static-publish' }}
   cancel-in-progress: false
   queue: max
 
 jobs:
-  parse_one:
-    name: parse exact crate
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.request_kind == '' || inputs.request_kind == 'crate') && inputs.crate != '' && inputs.version != '' }}
+  build:
+    name: build codeview-cli
     runs-on: ubuntu-latest
+    outputs:
+      parser_revision: ${{ steps.revision.outputs.parser_revision }}
     steps:
       - uses: actions/checkout@v6
-
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
-          toolchain: nightly
+          persist-credentials: false
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
@@ -125,67 +132,124 @@ jobs:
           shared-key: cron-release
 
       - name: Build codeview-cli
-        run: cargo +stable build --release -p codeview-cli
+        run: cargo +stable build --locked --release -p codeview-cli
 
       - name: Resolve parser revision
-        run: bash .github/scripts/export-parser-revision.sh
+        id: revision
+        run: |
+          bash .github/scripts/export-parser-revision.sh
+          grep '^PARSER_REVISION=' "$GITHUB_ENV" | tail -1 | sed 's/^PARSER_REVISION=/parser_revision=/' >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: codeview-cli
+          path: target/release/codeview
+          retention-days: 1
+          if-no-files-found: error
+
+  parse_one:
+    name: parse exact crate
+    needs: build
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.request_kind == '' || inputs.request_kind == 'crate') && inputs.crate != '' && inputs.version != '' }}
+    runs-on: ubuntu-latest
+    outputs:
+      exit_code: ${{ steps.parse.outputs.exit_code }}
+      run_id: ${{ steps.parse.outputs.run_id }}
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      # No repository checkout: the docs.rs fallback builds untrusted crate
+      # source, so keep tokens and the repo off this runner's disk.
+      - uses: actions/download-artifact@v8
+        with:
+          name: codeview-cli
+          path: bin
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: nightly
 
       - name: Parse and publish exact crate
+        id: parse
         env:
           NAME: ${{ inputs.crate }}
           VERSION: ${{ inputs.version }}
+          PARSE_FORCE: ${{ inputs.parse_force || 'false' }}
         run: |
+          chmod +x bin/codeview
+          RUN_ID="direct-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           FORCE_FLAG=""
-          if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
+          if [[ "$PARSE_FORCE" == "true" ]]; then
             FORCE_FLAG="--force"
           fi
           for ATTEMPT in 1 2 3; do
             set +e
-            target/release/codeview cron parse-one \
+            bin/codeview cron parse-one \
               --name "$NAME" \
               --version "$VERSION" \
               $FORCE_FLAG \
+              --run-id "$RUN_ID" \
               --bucket "$R2_BUCKET"
             EXIT_CODE=$?
             set -e
 
-            if [[ "$EXIT_CODE" -eq 0 ]]; then
+            if [[ "$EXIT_CODE" -eq 0 || "$EXIT_CODE" -ne 64 || "$ATTEMPT" -eq 3 ]]; then
               break
-            fi
-            if [[ "$EXIT_CODE" -ne 64 || "$ATTEMPT" -eq 3 ]]; then
-              exit "$EXIT_CODE"
             fi
 
             DELAY=$((15 * 2 ** (ATTEMPT - 1)))
             echo "Transient parse failure (attempt $ATTEMPT); retrying in ${DELAY}s"
             sleep "$DELAY"
           done
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit "$EXIT_CODE"
 
-      - name: Refresh hosted refs and catalog
+  merge_one:
+    name: refresh hosted refs and catalog
+    needs: [build, parse_one]
+    # Also runs after a failed parse so the failure is recorded and the
+    # planner stops retrying deterministic failures.
+    if: ${{ always() && needs.build.result == 'success' && (needs.parse_one.result == 'success' || needs.parse_one.result == 'failure') && needs.parse_one.outputs.run_id != '' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codeview-catalog-writer
+      cancel-in-progress: false
+      queue: max
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: codeview-cli
+          path: bin
+
+      - name: Merge direct delta
         run: |
-          RUN_ID="direct-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          target/release/codeview cron freshness-merge \
-            --run-id "$RUN_ID" \
+          chmod +x bin/codeview
+          bin/codeview cron freshness-merge \
+            --run-id "${{ needs.parse_one.outputs.run_id }}" \
             --write-catalog \
-            --bootstrap \
+            --bootstrap-if-missing \
             --bucket "$R2_BUCKET"
 
   seed_sysroot:
     name: seed std sysroot
+    needs: build
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.request_kind == 'sysroot' && inputs.crate != '' && inputs.version != '' }}
     runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.seed.outputs.run_id }}
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust stable for codeview-cli
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cron-release
-
       - name: Generate exact rustdoc JSON
         id: rustdoc_json
         env:
@@ -229,76 +293,105 @@ jobs:
           done
           echo "json_dir=$JSON_DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Build codeview-cli
-        run: cargo +stable build --release -p codeview-cli
-
-      - name: Resolve parser revision
-        run: bash .github/scripts/export-parser-revision.sh
+      - uses: actions/download-artifact@v8
+        with:
+          name: codeview-cli
+          path: bin
 
       - name: Seed and publish std artifacts
+        id: seed
         env:
           REQUEST_VERSION: ${{ inputs.version }}
           REQUEST_TOOLCHAIN: ${{ inputs.toolchain }}
           JSON_DIR: ${{ steps.rustdoc_json.outputs.json_dir }}
+          PARSE_FORCE: ${{ inputs.parse_force || 'false' }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: |
+          chmod +x bin/codeview
+          RUN_ID="sysroot-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           TOOLCHAIN="${REQUEST_TOOLCHAIN:-$REQUEST_VERSION}"
           FORCE_FLAG=""
-          if [[ "${{ inputs.parse_force || 'false' }}" == "true" ]]; then
+          if [[ "$PARSE_FORCE" == "true" ]]; then
             FORCE_FLAG="--force"
           fi
-          target/release/codeview cron seed-std \
+          bin/codeview cron seed-std \
             --toolchains "$TOOLCHAIN" \
             --json-dir "$JSON_DIR" \
             $FORCE_FLAG \
+            --run-id "$RUN_ID" \
             --bucket "$R2_BUCKET"
 
-      - name: Refresh hosted refs and catalog
+  merge_sysroot:
+    name: refresh hosted sysroot refs and catalog
+    needs: [build, seed_sysroot]
+    if: ${{ always() && needs.build.result == 'success' && (needs.seed_sysroot.result == 'success' || needs.seed_sysroot.result == 'failure') && needs.seed_sysroot.outputs.run_id != '' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: codeview-catalog-writer
+      cancel-in-progress: false
+      queue: max
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: codeview-cli
+          path: bin
+
+      - name: Merge sysroot delta
         run: |
-          RUN_ID="sysroot-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          target/release/codeview cron freshness-merge \
-            --run-id "$RUN_ID" \
+          chmod +x bin/codeview
+          bin/codeview cron freshness-merge \
+            --run-id "${{ needs.seed_sysroot.outputs.run_id }}" \
             --write-catalog \
-            --bootstrap \
+            --bootstrap-if-missing \
             --bucket "$R2_BUCKET"
 
   plan:
     name: plan static publish
+    needs: build
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.crate == '' }}
     runs-on: ubuntu-latest
     outputs:
       worker_matrix: ${{ steps.plan.outputs.worker_matrix }}
       run_id: ${{ steps.plan.outputs.run_id }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: actions/download-artifact@v8
         with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cron-release
-
-      - name: Build codeview-cli
-        run: cargo +stable build --release -p codeview-cli
-
-      - name: Resolve parser revision
-        run: bash .github/scripts/export-parser-revision.sh
+          name: codeview-cli
+          path: bin
 
       - name: Build bounded work plan
         id: plan
+        env:
+          CORPUS: ${{ inputs.corpus || 'top:5000' }}
+          MAX_TOTAL: ${{ inputs.max_total || '100' }}
+          MAX_PER_SHARD: ${{ inputs.max_per_shard || '15' }}
+          SHARD_COUNT: ${{ inputs.shard_count || '8' }}
+          FORCE_NAMES: ${{ inputs.force || '' }}
         run: |
+          chmod +x bin/codeview
           RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           PLAN_KEY="rust/_runs/${RUN_ID}/plan.json"
-          target/release/codeview cron plan \
+          bin/codeview cron plan \
             --mode daily \
-            --corpus "${{ inputs.corpus || 'top:5000' }}" \
-            --max-total "${{ inputs.max_total || '100' }}" \
-            --max-per-shard "${{ inputs.max_per_shard || '15' }}" \
-            --shard-count "${{ inputs.shard_count || '8' }}" \
-            --force "${{ inputs.force || '' }}" \
+            --corpus "$CORPUS" \
+            --max-total "$MAX_TOTAL" \
+            --max-per-shard "$MAX_PER_SHARD" \
+            --shard-count "$SHARD_COUNT" \
+            --force "$FORCE_NAMES" \
             --plan-out "r2:${PLAN_KEY}" \
             --matrix-out "$GITHUB_OUTPUT" \
             --run-id "$RUN_ID" \
@@ -306,79 +399,77 @@ jobs:
 
   parse:
     name: parse shard ${{ matrix.shard_index }}
-    needs: plan
+    needs: [build, plan]
     if: needs.plan.outputs.worker_matrix != '' && needs.plan.outputs.worker_matrix != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix: ${{ fromJSON(needs.plan.outputs.worker_matrix) }}
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          name: codeview-cli
+          path: bin
 
       - name: Install Rust nightly
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
           toolchain: nightly
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cron-release
-
-      - name: Build codeview-cli
-        run: cargo +stable build --release -p codeview-cli
-
-      - name: Resolve parser revision
-        run: bash .github/scripts/export-parser-revision.sh
-
       - name: Drain shard
+        env:
+          MAX_PER_SHARD: ${{ inputs.max_per_shard || '15' }}
+          MAX_DURATION_MINUTES: ${{ inputs.max_duration_minutes || '45' }}
+          DOCSRS_MIN_DELAY_MS: ${{ inputs.docsrs_min_delay_ms || '15000' }}
         run: |
+          chmod +x bin/codeview
           PLAN_KEY="rust/_runs/${{ needs.plan.outputs.run_id }}/plan.json"
-          target/release/codeview cron parse-shard \
+          bin/codeview cron parse-shard \
             --plan "r2:${PLAN_KEY}" \
             --shard-index "${{ matrix.shard_index }}" \
             --shard-count "${{ needs.plan.outputs.shard_count }}" \
-            --max-items "${{ inputs.max_per_shard || '15' }}" \
-            --max-duration-minutes "${{ inputs.max_duration_minutes || '45' }}" \
-            --docsrs-min-delay-ms "${{ inputs.docsrs_min_delay_ms || '15000' }}" \
+            --max-items "$MAX_PER_SHARD" \
+            --max-duration-minutes "$MAX_DURATION_MINUTES" \
+            --docsrs-min-delay-ms "$DOCSRS_MIN_DELAY_MS" \
             --run-id "${{ needs.plan.outputs.run_id }}" \
             --bucket "$R2_BUCKET"
 
   finalize:
     name: merge freshness + catalog
-    needs: [plan, parse]
-    if: always() && needs.plan.outputs.worker_matrix != '' && needs.plan.outputs.worker_matrix != '[]'
+    needs: [build, plan, parse]
+    if: always() && needs.build.result == 'success' && needs.plan.outputs.worker_matrix != '' && needs.plan.outputs.worker_matrix != '[]'
     runs-on: ubuntu-latest
+    concurrency:
+      group: codeview-catalog-writer
+      cancel-in-progress: false
+      queue: max
+    env:
+      PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+      - uses: actions/download-artifact@v8
         with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: cron-release
-
-      - name: Build codeview-cli
-        run: cargo +stable build --release -p codeview-cli
-
-      - name: Resolve parser revision
-        run: bash .github/scripts/export-parser-revision.sh
+          name: codeview-cli
+          path: bin
 
       - name: Merge deltas and publish catalog
+        env:
+          BOOTSTRAP: ${{ inputs.bootstrap || 'false' }}
         run: |
+          chmod +x bin/codeview
           BOOTSTRAP_FLAG=""
-          if [[ "${{ inputs.bootstrap || 'false' }}" == "true" ]]; then
+          if [[ "$BOOTSTRAP" == "true" ]]; then
             BOOTSTRAP_FLAG="--bootstrap"
           fi
-          target/release/codeview cron freshness-merge \
+          bin/codeview cron freshness-merge \
             --run-id "${{ needs.plan.outputs.run_id }}" \
             --write-catalog \
             $BOOTSTRAP_FLAG \
@@ -386,7 +477,7 @@ jobs:
 
   notify_crate:
     name: notify hosted crate workflow
-    needs: parse_one
+    needs: [build, parse_one, merge_one]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && (inputs.request_kind == '' || inputs.request_kind == 'crate') && inputs.callback_url != '' && inputs.workflow_id != '' }}
     runs-on: ubuntu-latest
     steps:
@@ -400,6 +491,9 @@ jobs:
           CRATE_NAME: ${{ inputs.crate }}
           CRATE_VERSION: ${{ inputs.version }}
           JOB_RESULT: ${{ needs.parse_one.result }}
+          MERGE_RESULT: ${{ needs.merge_one.result }}
+          PARSE_EXIT_CODE: ${{ needs.parse_one.outputs.exit_code }}
+          PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -409,8 +503,16 @@ jobs:
           fi
           OK=false
           ERROR=""
-          if [[ "$JOB_RESULT" == "success" ]]; then
+          # Exit code 65 means deterministic failure: the hosted queue
+          # should not retry until the parser revision changes.
+          PERMANENT=false
+          if [[ "$PARSE_EXIT_CODE" == "65" ]]; then
+            PERMANENT=true
+          fi
+          if [[ "$JOB_RESULT" == "success" && "$MERGE_RESULT" == "success" ]]; then
             OK=true
+          elif [[ "$JOB_RESULT" == "success" ]]; then
+            ERROR="GitHub catalog merge job result: $MERGE_RESULT"
           else
             ERROR="GitHub parse job result: $JOB_RESULT"
           fi
@@ -424,7 +526,9 @@ jobs:
             --arg runUrl "$RUN_URL" \
             --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg error "$ERROR" \
+            --arg parserRevision "$PARSER_REVISION" \
             --argjson ok "$OK" \
+            --argjson permanent "$PERMANENT" \
             '{
               schemaVersion: 1,
               kind: $kind,
@@ -436,6 +540,8 @@ jobs:
               runId: $runId,
               runUrl: $runUrl,
               error: (if $error == "" then null else $error end),
+              permanent: $permanent,
+              parserRevision: (if $parserRevision == "" then null else $parserRevision end),
               completedAt: $completedAt
             }' > callback.json
           curl -fsS \
@@ -451,7 +557,7 @@ jobs:
 
   notify_sysroot:
     name: notify hosted sysroot workflow
-    needs: seed_sysroot
+    needs: [build, seed_sysroot, merge_sysroot]
     if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.request_kind == 'sysroot' && inputs.callback_url != '' && inputs.workflow_id != '' }}
     runs-on: ubuntu-latest
     steps:
@@ -465,6 +571,9 @@ jobs:
           CRATE_NAME: ${{ inputs.crate }}
           CRATE_VERSION: ${{ inputs.version }}
           JOB_RESULT: ${{ needs.seed_sysroot.result }}
+          MERGE_RESULT: ${{ needs.merge_sysroot.result }}
+          PARSE_EXIT_CODE: ''
+          PARSER_REVISION: ${{ needs.build.outputs.parser_revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -474,8 +583,16 @@ jobs:
           fi
           OK=false
           ERROR=""
-          if [[ "$JOB_RESULT" == "success" ]]; then
+          # Exit code 65 means deterministic failure: the hosted queue
+          # should not retry until the parser revision changes.
+          PERMANENT=false
+          if [[ "$PARSE_EXIT_CODE" == "65" ]]; then
+            PERMANENT=true
+          fi
+          if [[ "$JOB_RESULT" == "success" && "$MERGE_RESULT" == "success" ]]; then
             OK=true
+          elif [[ "$JOB_RESULT" == "success" ]]; then
+            ERROR="GitHub catalog merge job result: $MERGE_RESULT"
           else
             ERROR="GitHub sysroot seed job result: $JOB_RESULT"
           fi
@@ -489,7 +606,9 @@ jobs:
             --arg runUrl "$RUN_URL" \
             --arg completedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg error "$ERROR" \
+            --arg parserRevision "$PARSER_REVISION" \
             --argjson ok "$OK" \
+            --argjson permanent "$PERMANENT" \
             '{
               schemaVersion: 1,
               kind: $kind,
@@ -501,6 +620,8 @@ jobs:
               runId: $runId,
               runUrl: $runUrl,
               error: (if $error == "" then null else $error end),
+              permanent: $permanent,
+              parserRevision: (if $parserRevision == "" then null else $parserRevision end),
               completedAt: $completedAt
             }' > callback.json
           curl -fsS \
@@ -516,7 +637,7 @@ jobs:
 
   summary:
     name: parse summary
-    needs: [plan, parse, finalize, parse_one, seed_sysroot, notify_crate, notify_sysroot]
+    needs: [build, plan, parse, finalize, parse_one, merge_one, seed_sysroot, merge_sysroot, notify_crate, notify_sysroot]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -525,8 +646,12 @@ jobs:
           echo "run_id=${{ needs.plan.outputs.run_id }}"
           echo "shard_count=${{ needs.plan.outputs.shard_count }}"
           echo "matrix=${{ needs.plan.outputs.worker_matrix }}"
+          echo "build_result=${{ needs.build.result }}"
+          echo "parser_revision=${{ needs.build.outputs.parser_revision }}"
           echo "parse_one_result=${{ needs.parse_one.result }}"
+          echo "merge_one_result=${{ needs.merge_one.result }}"
           echo "seed_sysroot_result=${{ needs.seed_sysroot.result }}"
+          echo "merge_sysroot_result=${{ needs.merge_sysroot.result }}"
           echo "notify_crate_result=${{ needs.notify_crate.result }}"
           echo "notify_sysroot_result=${{ needs.notify_sysroot.result }}"
           echo "parse_result=${{ needs.parse.result }}"

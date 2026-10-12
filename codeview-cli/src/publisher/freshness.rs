@@ -134,7 +134,15 @@ impl FreshnessRegistry {
         current_schema_version: u32,
     ) -> Result<Staleness> {
         let Some(entry) = self.version(name, observed_newest_version).await? else {
-            return Ok(Staleness::NeverParsed);
+            // A miss on the exact version is a new release when any other
+            // version of the crate is already published.
+            return Ok(match self.latest(name).await? {
+                Some(latest) => Staleness::NewerVersion {
+                    observed: observed_newest_version.to_string(),
+                    recorded: latest.version,
+                },
+                None => Staleness::NeverParsed,
+            });
         };
         if entry.version != observed_newest_version {
             return Ok(Staleness::NewerVersion {
@@ -174,17 +182,15 @@ impl FreshnessRegistry {
 
     /// Enumerate every recorded crate.  Used by the catalog rebuilder.
     pub async fn list_all(&self) -> Result<Vec<FreshnessEntry>> {
-        let mut out = Vec::new();
+        use futures::stream::{StreamExt as _, TryStreamExt as _};
         let keys = self.r2.list_prefix("rust/_index/by-version/").await?;
-        for key in keys {
-            if !is_version_freshness_key(&key) {
-                continue;
-            }
-            if let Some(entry) = read_json::<FreshnessEntry>(&self.r2, &key).await? {
-                out.push(entry);
-            }
-        }
-        Ok(out)
+        let entries: Vec<Option<FreshnessEntry>> =
+            futures::stream::iter(keys.into_iter().filter(|key| is_version_freshness_key(key)))
+                .map(|key| async move { read_json::<FreshnessEntry>(&self.r2, &key).await })
+                .buffered(32)
+                .try_collect()
+                .await?;
+        Ok(entries.into_iter().flatten().collect())
     }
 }
 

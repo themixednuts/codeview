@@ -3,7 +3,8 @@ set -euo pipefail
 
 # Freshness should change only when graph/artifact output can change. Using the
 # repository commit makes UI, workflow, and documentation edits reparse every
-# published crate.
+# published crate. Likewise only the parser's resolved dependency tree counts,
+# so bumping e.g. the S3 client in Cargo.lock does not reparse every crate.
 revision="$(
   {
     git ls-tree -r HEAD -- \
@@ -16,7 +17,9 @@ revision="$(
       codeview-cli/src/cron/seed_std.rs \
       codeview-cli/src/sysroot.rs \
       codeview-cli/src/publisher
-    sha256sum Cargo.lock
+    cargo tree --locked -p codeview-rustdoc -p codeview-core -e normal --prefix none |
+      sed 's/ (\*)$//; s/ (proc-macro)$//' |
+      sort -u
   } |
     sha256sum |
     cut -d' ' -f1

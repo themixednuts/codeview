@@ -223,6 +223,34 @@ pub fn http_client() -> Result<reqwest::Client, anyhow::Error> {
         .context("build reqwest client")
 }
 
+/// Spaces docs.rs requests by a minimum interval between request starts.
+///
+/// Shard workers used to sleep the full delay after every crate, even when
+/// the crate made no docs.rs request (fresh, failed early) or had already
+/// spent longer than the delay parsing and uploading.
+pub struct DocsRsThrottle {
+    min_interval: std::time::Duration,
+    next_allowed: tokio::sync::Mutex<Option<tokio::time::Instant>>,
+}
+
+impl DocsRsThrottle {
+    pub fn new(min_interval: std::time::Duration) -> Self {
+        Self {
+            min_interval,
+            next_allowed: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Wait until the next request may start, then reserve the slot.
+    pub async fn acquire(&self) {
+        let mut next_allowed = self.next_allowed.lock().await;
+        if let Some(at) = *next_allowed {
+            tokio::time::sleep_until(at).await;
+        }
+        *next_allowed = Some(tokio::time::Instant::now() + self.min_interval);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Cursor, Write};

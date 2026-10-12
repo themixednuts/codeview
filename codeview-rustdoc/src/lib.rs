@@ -359,6 +359,7 @@ fn generate_rustdoc_json_with_options_inner(
     }
 
     let mut command = Command::new("cargo");
+    scrub_secret_env(&mut command);
     command
         .arg("+nightly")
         .arg("rustdoc")
@@ -430,7 +431,9 @@ fn refresh_packaged_proc_macro2_lock(manifest_path: &Path) -> Result<bool, Rustd
         return Ok(false);
     }
 
-    let status = Command::new("cargo")
+    let mut command = Command::new("cargo");
+    scrub_secret_env(&mut command);
+    let status = command
         .arg("+nightly")
         .arg("update")
         .arg("--manifest-path")
@@ -655,6 +658,25 @@ fn string_array_field(
             .map(str::to_string)
             .collect(),
     )
+}
+
+/// Registry crates run arbitrary `build.rs` and proc-macro code during
+/// `cargo rustdoc`. Never hand them the publisher's storage or API
+/// credentials.
+#[cfg(feature = "native")]
+fn scrub_secret_env(command: &mut Command) {
+    const SECRET_PREFIXES: &[&str] = &["R2_", "AWS_", "CLOUDFLARE_", "ACTIONS_"];
+    const SECRET_NAMES: &[&str] = &["GITHUB_TOKEN", "GH_TOKEN", "PARSE_CALLBACK_SECRET"];
+    for (key, _) in std::env::vars_os() {
+        let Some(name) = key.to_str() else { continue };
+        if SECRET_NAMES.contains(&name)
+            || SECRET_PREFIXES
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
+        {
+            command.env_remove(&key);
+        }
+    }
 }
 
 #[cfg(feature = "native")]
