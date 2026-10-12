@@ -22,7 +22,10 @@ use crate::publisher::freshness::Staleness;
 use crate::publisher::r2::{self, LATEST_PLAN_KEY, LatestPlanPointer, read_json, write_json};
 use crate::publisher::shards;
 
+use futures::StreamExt as _;
+
 use super::CronContext;
+use super::freshness_merge;
 
 const DEFAULT_CHANNEL: &str = "default";
 #[derive(Debug, Args)]
@@ -176,6 +179,18 @@ struct CatalogCrate {
 struct SelectedCandidate {
     candidate: CrateCandidate,
     forced: bool,
+}
+
+const FRESHNESS_CHECK_CONCURRENCY: usize = 64;
+
+enum CandidateEvaluation {
+    Evaluated(EvaluatedCandidate),
+    NoVersion(String),
+    RecentFailure {
+        name: String,
+        version: String,
+        outcome: super::parse_shard::RunDeltaOutcome,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -424,30 +439,69 @@ pub(crate) async fn build_plan(ctx: &CronContext, config: PlanBuildConfig) -> Re
         &config.force_names,
         config.force_all,
     );
-    let mut evaluated = Vec::with_capacity(selected.len());
-    for item in selected {
-        let Some(version) = item.candidate.newest_non_yanked.clone() else {
-            config.log(format!(
-                "[plan] snapshot has no non-yanked version: {}",
-                item.candidate.name
-            ));
-            continue;
-        };
-        let staleness = ctx
-            .freshness
-            .check(
-                &normalise_crate_name(&item.candidate.name),
-                &version,
-                &ctx.parser_revision,
-                codeview_core::SCHEMA_VERSION,
-            )
-            .await?;
-        evaluated.push(EvaluatedCandidate {
-            candidate: item.candidate,
-            version,
-            staleness,
-            forced: item.forced,
-        });
+    let failures = freshness_merge::load_failures(&ctx.r2).await?;
+    let now = chrono::Utc::now();
+    let mut evaluations = futures::stream::iter(selected.into_iter().map(|item| {
+        let failures = &failures;
+        async move {
+            let Some(version) = item.candidate.newest_non_yanked.clone() else {
+                return Ok(CandidateEvaluation::NoVersion(item.candidate.name));
+            };
+            let canonical = normalise_crate_name(&item.candidate.name);
+            if !item.forced
+                && let Some(failure) =
+                    failures.get(&freshness_merge::aggregate_key(&canonical, &version))
+                && failure.blocks_retry(&ctx.parser_revision, now)
+            {
+                return Ok(CandidateEvaluation::RecentFailure {
+                    name: item.candidate.name,
+                    version,
+                    outcome: failure.outcome,
+                });
+            }
+            let staleness = ctx
+                .freshness
+                .check(
+                    &canonical,
+                    &version,
+                    &ctx.parser_revision,
+                    codeview_core::SCHEMA_VERSION,
+                )
+                .await?;
+            anyhow::Ok(CandidateEvaluation::Evaluated(EvaluatedCandidate {
+                candidate: item.candidate,
+                version,
+                staleness,
+                forced: item.forced,
+            }))
+        }
+    }))
+    // `buffered` keeps candidate order, so the plan stays deterministic.
+    .buffered(FRESHNESS_CHECK_CONCURRENCY);
+    let mut evaluated = Vec::new();
+    let mut skipped_failures = 0usize;
+    while let Some(evaluation) = evaluations.next().await {
+        match evaluation? {
+            CandidateEvaluation::Evaluated(candidate) => evaluated.push(candidate),
+            CandidateEvaluation::NoVersion(name) => {
+                config.log(format!("[plan] snapshot has no non-yanked version: {name}"));
+            }
+            CandidateEvaluation::RecentFailure {
+                name,
+                version,
+                outcome,
+            } => {
+                skipped_failures += 1;
+                config.log(format!(
+                    "[plan] skipping {name}@{version}: recent {outcome:?} failure"
+                ));
+            }
+        }
+    }
+    if skipped_failures > 0 {
+        config.log(format!(
+            "[plan] skipped {skipped_failures} candidates with recent failures"
+        ));
     }
 
     let plan = assemble_work_plan(

@@ -29,6 +29,8 @@ use crate::publisher::freshness::Source;
 use crate::sysroot::{STD_JSON_CRATES, aliases_for_toolchain, detect_sysroot};
 
 use super::CronContext;
+use super::parse_shard::{append_run_delta, delta_for_result};
+use super::plan::{WorkItem, WorkKind};
 
 #[derive(Debug, Args)]
 pub struct SeedStd {
@@ -57,6 +59,11 @@ pub struct SeedStd {
     /// R2 bucket (default: `crate-graphs`).
     #[arg(long, default_value = "crate-graphs")]
     pub bucket: String,
+
+    /// Record each crate's outcome as a run delta under
+    /// `rust/_runs/<run-id>/deltas/std.jsonl` for `freshness-merge`.
+    #[arg(long)]
+    pub run_id: Option<String>,
 }
 
 pub async fn run(args: SeedStd) -> Result<()> {
@@ -175,25 +182,49 @@ pub async fn run(args: SeedStd) -> Result<()> {
             })
             .await;
 
-            match outcome {
+            let failed = match &outcome {
                 Ok(Outcome::AlreadyFresh) => {
                     eprintln!("[seed-std] {crate_name}: fresh, no work needed");
                     total_skipped += 1;
+                    false
                 }
                 Ok(Outcome::ParserBumpedSameOutput) => {
                     eprintln!(
                         "[seed-std] {crate_name}: parser bumped, output identical, registry refreshed"
                     );
                     total_skipped += 1;
+                    false
                 }
                 Ok(Outcome::Published { nodes, edges }) => {
                     eprintln!("[seed-std] {crate_name}: {nodes} nodes, {edges} edges published");
                     total_published += 1;
+                    false
                 }
                 Err(err) => {
                     eprintln!("[seed-std] {crate_name}: {err}");
                     total_failed += 1;
+                    true
                 }
+            };
+
+            if let Some(run_id) = args.run_id.as_deref() {
+                let item = WorkItem {
+                    work_id: format!("std:{crate_name}@{}", info.toolchain_version),
+                    kind: WorkKind::Std,
+                    name: crate_name.to_string(),
+                    version: info.toolchain_version.clone(),
+                    channel: toolchain.to_string(),
+                    priority_tier: "sysroot".to_string(),
+                    download_rank: None,
+                    reason: if failed {
+                        "sysroot seed failed"
+                    } else {
+                        "sysroot seed"
+                    }
+                    .to_string(),
+                };
+                let delta = delta_for_result(&ctx, &item, crate_name, outcome).await;
+                append_run_delta(&ctx, run_id, "std", &delta).await?;
             }
         }
     }

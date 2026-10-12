@@ -10,10 +10,12 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::publisher::artifacts::{
-    CrateSource, PublishOptions, hyphenate_crate_name, normalise_crate_name, publish_one,
+    CrateSource, Outcome, PublishOptions, hyphenate_crate_name, normalise_crate_name, publish_one,
 };
 
 use super::CronContext;
+use super::parse_shard::{RunDeltaOutcome, append_run_delta, delta_for_result};
+use super::plan::{WorkItem, WorkKind};
 
 #[derive(Debug, Args)]
 pub struct ParseOne {
@@ -41,6 +43,13 @@ pub struct ParseOne {
     /// Default `latest,stable` matches what the worker resolves.
     #[arg(long, default_value = "latest,stable")]
     pub aliases: String,
+
+    /// Record the outcome (success or failure) as a run delta under
+    /// `rust/_runs/<run-id>/deltas/direct.jsonl`, so a following
+    /// `freshness-merge --run-id <run-id>` can update just this crate in
+    /// the aggregate index instead of re-listing every freshness record.
+    #[arg(long)]
+    pub run_id: Option<String>,
 }
 
 pub async fn run(args: ParseOne) -> Result<()> {
@@ -76,27 +85,54 @@ pub async fn run(args: ParseOne) -> Result<()> {
         force: args.force,
         source: CrateSource::DocsRs {
             target: args.docsrs_target.as_deref(),
+            throttle: None,
         },
         aliases: &aliases,
     })
     .await;
 
-    match outcome {
-        Ok(crate::publisher::artifacts::Outcome::AlreadyFresh) => {
+    let exit_code = match &outcome {
+        Ok(Outcome::AlreadyFresh) => {
             eprintln!("[parse-one] OK (fresh, no work needed)");
-            std::process::exit(0);
+            0
         }
-        Ok(crate::publisher::artifacts::Outcome::ParserBumpedSameOutput) => {
+        Ok(Outcome::ParserBumpedSameOutput) => {
             eprintln!("[parse-one] OK (parser bumped, output identical, registry refreshed)");
-            std::process::exit(0);
+            0
         }
-        Ok(crate::publisher::artifacts::Outcome::Published { nodes, edges }) => {
+        Ok(Outcome::Published { nodes, edges }) => {
             eprintln!("[parse-one] OK ({nodes} nodes, {edges} edges published)");
-            std::process::exit(0);
+            0
         }
         Err(err) => {
             eprintln!("[parse-one] {err}");
-            std::process::exit(err.exit_code());
+            err.exit_code()
         }
+    };
+
+    if let Some(run_id) = args.run_id.as_deref() {
+        let item = WorkItem {
+            work_id: format!("direct:{canonical}@{}", args.version),
+            kind: WorkKind::Crate,
+            name: args.name.clone(),
+            version: args.version.clone(),
+            channel: args
+                .docsrs_target
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
+            priority_tier: "direct".to_string(),
+            download_rank: None,
+            reason: "direct request".to_string(),
+        };
+        let delta = delta_for_result(&ctx, &item, &canonical, outcome).await;
+        if delta.outcome == RunDeltaOutcome::Transient && exit_code == 0 {
+            eprintln!(
+                "[parse-one] warning: {}",
+                delta.error.as_deref().unwrap_or("transient delta")
+            );
+        }
+        append_run_delta(&ctx, run_id, "direct", &delta).await?;
     }
+
+    std::process::exit(exit_code);
 }

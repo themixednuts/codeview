@@ -12,6 +12,7 @@ use crate::publisher::artifacts::{
     CrateSource, Outcome, PublishError, PublishOptions, hyphenate_crate_name, normalise_crate_name,
     publish_one,
 };
+use crate::publisher::docs_rs::DocsRsThrottle;
 use crate::publisher::r2::{R2, read_json};
 use crate::publisher::shards;
 
@@ -190,7 +191,7 @@ pub(crate) async fn drain_shard(
     let deadline = config
         .max_duration_minutes
         .map(|minutes| Instant::now() + Duration::from_secs(minutes.saturating_mul(60)));
-    let delay = Duration::from_millis(config.docsrs_min_delay_ms);
+    let throttle = DocsRsThrottle::new(Duration::from_millis(config.docsrs_min_delay_ms));
 
     let shard_work: Vec<_> = plan
         .work
@@ -230,7 +231,7 @@ pub(crate) async fn drain_shard(
             break;
         }
 
-        let delta = process_item(ctx, &item, config.force).await;
+        let delta = process_item(ctx, &item, config.force, &throttle).await;
         match &delta.outcome {
             RunDeltaOutcome::Published | RunDeltaOutcome::ParserBumped => report.published += 1,
             RunDeltaOutcome::Fresh => report.fresh += 1,
@@ -240,19 +241,6 @@ pub(crate) async fn drain_shard(
         }
         append_run_delta(ctx, &config.run_id, config.shard_index, &delta).await?;
         report.processed += 1;
-
-        if delay > Duration::ZERO
-            && config
-                .max_items
-                .is_none_or(|max_items| report.processed < max_items)
-        {
-            if let Some(deadline) = deadline
-                && Instant::now() + delay >= deadline
-            {
-                break;
-            }
-            tokio::time::sleep(delay).await;
-        }
     }
 
     eprintln!(
@@ -275,7 +263,12 @@ pub(crate) fn shard_work_counts(plan: &WorkPlan, shard_count: usize) -> Vec<usiz
         .collect()
 }
 
-async fn process_item(ctx: &CronContext, item: &super::plan::WorkItem, force: bool) -> RunDelta {
+async fn process_item(
+    ctx: &CronContext,
+    item: &super::plan::WorkItem,
+    force: bool,
+    throttle: &DocsRsThrottle,
+) -> RunDelta {
     if item.kind != WorkKind::Crate {
         return error_delta(
             item,
@@ -307,13 +300,26 @@ async fn process_item(ctx: &CronContext, item: &super::plan::WorkItem, force: bo
         force,
         source: CrateSource::DocsRs {
             target: docsrs_target,
+            throttle: Some(throttle),
         },
         aliases: &aliases,
     })
     .await;
 
-    match outcome {
-        Ok(outcome) => success_delta(ctx, item, &canonical, outcome).await,
+    delta_for_result(ctx, item, &canonical, outcome).await
+}
+
+/// Convert one `publish_one` result into the delta line the single-writer
+/// `freshness-merge` consumes. Shared by shard workers and direct
+/// `parse-one --run-id` requests so both record failures the same way.
+pub(crate) async fn delta_for_result(
+    ctx: &CronContext,
+    item: &super::plan::WorkItem,
+    canonical_name: &str,
+    result: Result<Outcome, PublishError>,
+) -> RunDelta {
+    match result {
+        Ok(outcome) => success_delta(ctx, item, canonical_name, outcome).await,
         Err(PublishError::Transient(err)) => {
             error_delta(item, RunDeltaOutcome::Transient, format!("{err:#}"))
         }
@@ -389,10 +395,10 @@ fn error_delta(item: &super::plan::WorkItem, outcome: RunDeltaOutcome, error: St
     }
 }
 
-async fn append_run_delta(
+pub(crate) async fn append_run_delta(
     ctx: &CronContext,
     run_id: &str,
-    shard_index: usize,
+    shard_index: impl std::fmt::Display,
     delta: &RunDelta,
 ) -> Result<()> {
     let key = format!("rust/_runs/{run_id}/deltas/{shard_index}.jsonl");

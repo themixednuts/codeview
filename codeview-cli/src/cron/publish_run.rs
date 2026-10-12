@@ -193,6 +193,7 @@ pub async fn run(args: PublishRun) -> Result<()> {
                         write_catalog: true,
                         write_refs: true,
                         bootstrap: false,
+                        bootstrap_if_missing: false,
                         generation: run_id,
                         generated_at,
                     },

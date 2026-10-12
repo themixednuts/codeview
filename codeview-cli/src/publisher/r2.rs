@@ -55,7 +55,7 @@ pub trait R2: Send + Sync {
 
     /// How many concurrent `put` calls this backend tolerates.
     ///
-    /// `S3Backend` returns 8 — Cloudflare R2 happily fans out.
+    /// `S3Backend` returns 32 — Cloudflare R2 happily fans out.
     /// `LocalMiniflareBackend` returns 1 — every `put` spawns a
     /// fresh `wrangler r2 object put` subprocess, which spins up its
     /// own miniflare and contends for the same SQLite locks; concurrent
@@ -230,6 +230,10 @@ fn wrangler_is_transient(err: &anyhow::Error) -> bool {
 
 #[async_trait::async_trait]
 impl R2 for S3Backend {
+    fn concurrency_hint(&self) -> usize {
+        32
+    }
+
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let op = format!("R2 get {key}");
         with_retries(&op, s3_is_transient, || async {

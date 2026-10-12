@@ -12,11 +12,12 @@
 //! the default 256 shards are `00` through `ff`.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Args;
+use futures::stream::{self, StreamExt as _, TryStreamExt as _};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -68,6 +69,12 @@ pub struct FreshnessMerge {
     #[arg(long)]
     pub bootstrap: bool,
 
+    /// Bootstrap only when no aggregate manifest exists yet. Direct
+    /// single-crate requests use this so they apply their one delta to the
+    /// existing aggregate instead of re-listing every freshness record.
+    #[arg(long)]
+    pub bootstrap_if_missing: bool,
+
     /// Generation id for new changed shards and the manifest pointer.
     #[arg(long)]
     pub generation: Option<String>,
@@ -95,6 +102,7 @@ pub async fn run(args: FreshnessMerge) -> Result<()> {
             write_catalog: args.write_catalog,
             write_refs: args.write_refs && !args.no_write_refs,
             bootstrap: args.bootstrap,
+            bootstrap_if_missing: args.bootstrap_if_missing,
             generation: args.generation.clone().unwrap_or(args.run_id),
             generated_at: args
                 .generated_at
@@ -124,6 +132,7 @@ pub(crate) struct FinalizeConfig {
     pub(crate) write_catalog: bool,
     pub(crate) write_refs: bool,
     pub(crate) bootstrap: bool,
+    pub(crate) bootstrap_if_missing: bool,
     pub(crate) generation: String,
     pub(crate) generated_at: String,
 }
@@ -139,6 +148,7 @@ pub(crate) async fn finalize(
         write_catalog: config.write_catalog,
         write_refs: config.write_refs,
         bootstrap: config.bootstrap,
+        bootstrap_if_missing: config.bootstrap_if_missing,
         generation: config.generation,
         generated_at: config.generated_at,
         parser_revision: ctx.parser_revision.clone(),
@@ -155,6 +165,7 @@ pub(crate) struct FreshnessMergeConfig {
     pub(crate) write_catalog: bool,
     pub(crate) write_refs: bool,
     pub(crate) bootstrap: bool,
+    pub(crate) bootstrap_if_missing: bool,
     pub(crate) generation: String,
     pub(crate) generated_at: String,
     pub(crate) parser_revision: String,
@@ -180,16 +191,34 @@ pub(crate) async fn merge(
         anyhow::bail!("--index-shards must be greater than zero");
     }
 
-    let loaded = load_current_aggregate(&r2, freshness, config.bootstrap).await?;
+    let loaded = load_current_aggregate(
+        &r2,
+        freshness,
+        config.bootstrap,
+        config.bootstrap_if_missing,
+    )
+    .await?;
     let deltas = read_run_deltas(&r2, &config.delta_prefix).await?;
     let mut entries = loaded.entries;
     for delta in &deltas {
         apply_delta(freshness, &mut entries, delta, &config).await?;
     }
 
-    let write_result = write_aggregate_outputs(&r2, &entries, loaded.manifest.as_ref(), &config)
-        .await
-        .context("write aggregate outputs")?;
+    // Refs only change for crates this run touched. A bootstrap rebuilds
+    // the aggregate from scratch, so it still rewrites every ref.
+    let touched_refs = loaded
+        .manifest
+        .is_some()
+        .then(|| touched_storage_names(&entries, &deltas));
+    let write_result = write_aggregate_outputs(
+        &r2,
+        &entries,
+        loaded.manifest.as_ref(),
+        touched_refs.as_ref(),
+        &config,
+    )
+    .await
+    .context("write aggregate outputs")?;
 
     Ok(FreshnessMergeReport {
         run_id: config.run_id,
@@ -256,6 +285,87 @@ pub(crate) struct AggregateFailure {
     pub(crate) outcome: RunDeltaOutcome,
     pub(crate) error: String,
     pub(crate) last_attempt_at: String,
+    /// Parser revision that produced the failure. A permanent failure is
+    /// only worth retrying once the parser changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) parser_revision: Option<String>,
+    /// Consecutive failed attempts, used to back off transient failures.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) attempts: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
+const PERMANENT_FAILURE_COOLDOWN_DAYS: i64 = 30;
+const MAX_TRANSIENT_BACKOFF_DAYS: i64 = 7;
+
+impl AggregateFailure {
+    /// Whether the planner should leave this crate/version alone for now.
+    ///
+    /// Permanent and quarantined failures (e.g. a crate whose source is a
+    /// `compile_error!`) are deterministic: skip them until the parser
+    /// revision changes. Failures recorded before revisions were stored
+    /// fall back to a 30-day cooldown. Transient failures back off one day
+    /// per consecutive attempt, capped at a week.
+    pub(crate) fn blocks_retry(
+        &self,
+        current_parser_revision: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let age_days = chrono::DateTime::parse_from_rfc3339(&self.last_attempt_at)
+            .map(|at| (now - at.with_timezone(&chrono::Utc)).num_days())
+            .unwrap_or(i64::MAX);
+        match self.outcome {
+            RunDeltaOutcome::Permanent | RunDeltaOutcome::Quarantine => {
+                match self.parser_revision.as_deref() {
+                    Some(revision) => revision == current_parser_revision,
+                    None => age_days < PERMANENT_FAILURE_COOLDOWN_DAYS,
+                }
+            }
+            RunDeltaOutcome::Transient => {
+                age_days < i64::from(self.attempts.max(1)).min(MAX_TRANSIENT_BACKOFF_DAYS)
+            }
+            RunDeltaOutcome::Published | RunDeltaOutcome::Fresh | RunDeltaOutcome::ParserBumped => {
+                false
+            }
+        }
+    }
+}
+
+const AGGREGATE_READ_CONCURRENCY: usize = 32;
+
+/// Failure markers from the current aggregate index, keyed by
+/// `aggregate_key(name, version)`. Empty when no aggregate exists yet.
+pub(crate) async fn load_failures(r2: &Arc<dyn R2>) -> Result<HashMap<String, AggregateFailure>> {
+    let Some(manifest) = read_json::<AggregateManifest>(r2, INDEX_MANIFEST_KEY).await? else {
+        return Ok(HashMap::new());
+    };
+    let shards = read_aggregate_shards(r2, &manifest).await?;
+    Ok(shards
+        .into_iter()
+        .flat_map(|shard| shard.entries.into_values())
+        .filter_map(|entry| {
+            let key = aggregate_key(&entry.name, &entry.version);
+            entry.failure.map(|failure| (key, failure))
+        })
+        .collect())
+}
+
+async fn read_aggregate_shards(
+    r2: &Arc<dyn R2>,
+    manifest: &AggregateManifest,
+) -> Result<Vec<AggregateShard>> {
+    stream::iter(manifest.shards.iter())
+        .map(|shard_ref| async move {
+            read_json::<AggregateShard>(r2, &shard_ref.key)
+                .await?
+                .with_context(|| format!("aggregate shard missing: {}", shard_ref.key))
+        })
+        .buffered(AGGREGATE_READ_CONCURRENCY)
+        .try_collect()
+        .await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -295,10 +405,27 @@ struct WriteResult {
     refs_written: usize,
 }
 
+fn touched_storage_names(
+    entries: &BTreeMap<String, AggregateEntry>,
+    deltas: &[RunDelta],
+) -> BTreeSet<String> {
+    deltas
+        .iter()
+        .map(|delta| {
+            let key = aggregate_key(&normalise_crate_name(&delta.name), &delta.version);
+            entries
+                .get(&key)
+                .map(|entry| entry.storage_name.clone())
+                .unwrap_or_else(|| hyphenate_crate_name(&delta.name))
+        })
+        .collect()
+}
+
 async fn load_current_aggregate(
     r2: &Arc<dyn R2>,
     freshness: &FreshnessRegistry,
     bootstrap: bool,
+    bootstrap_if_missing: bool,
 ) -> Result<LoadedAggregate> {
     if !bootstrap
         && let Some(manifest) = read_json::<AggregateManifest>(r2, INDEX_MANIFEST_KEY).await?
@@ -308,10 +435,7 @@ async fn load_current_aggregate(
             manifest.generation, manifest.shard_count,
         );
         let mut entries = BTreeMap::new();
-        for shard_ref in &manifest.shards {
-            let shard: AggregateShard = read_json(r2, &shard_ref.key)
-                .await?
-                .with_context(|| format!("aggregate shard missing: {}", shard_ref.key))?;
+        for shard in read_aggregate_shards(r2, &manifest).await? {
             for (_key, entry) in shard.entries {
                 entries.insert(aggregate_key(&entry.name, &entry.version), entry);
             }
@@ -322,7 +446,7 @@ async fn load_current_aggregate(
         });
     }
 
-    if !bootstrap {
+    if !bootstrap && !bootstrap_if_missing {
         anyhow::bail!(
             "aggregate manifest missing at {INDEX_MANIFEST_KEY}; rerun with --bootstrap to initialize from per-crate freshness files"
         );
@@ -400,10 +524,17 @@ async fn apply_delta(
                 AggregateEntry::placeholder(delta, &canonical_name, config)
             };
             entry.apply_enrichment(delta, previous.as_ref());
+            let attempts = previous
+                .as_ref()
+                .and_then(|entry| entry.failure.as_ref())
+                .map_or(0, |failure| failure.attempts.max(1))
+                + 1;
             entry.failure = Some(AggregateFailure {
                 outcome: delta.outcome,
                 error: delta.error.clone().unwrap_or_default(),
                 last_attempt_at: config.generated_at.clone(),
+                parser_revision: Some(config.parser_revision.clone()),
+                attempts,
             });
             entries.insert(aggregate_key(&entry.name, &entry.version), entry);
         }
@@ -415,6 +546,7 @@ async fn write_aggregate_outputs(
     r2: &Arc<dyn R2>,
     entries: &BTreeMap<String, AggregateEntry>,
     previous_manifest: Option<&AggregateManifest>,
+    touched_refs: Option<&BTreeSet<String>>,
     config: &FreshnessMergeConfig,
 ) -> Result<WriteResult> {
     let shards_by_id = partition_entries(entries, config.index_shards);
@@ -461,7 +593,9 @@ async fn write_aggregate_outputs(
     }
 
     let refs_written = if config.write_refs {
-        write_refs(r2, entries).await.context("write refs")?
+        write_refs(r2, entries, touched_refs)
+            .await
+            .context("write refs")?
     } else {
         0
     };
@@ -561,12 +695,25 @@ fn catalog_from_aggregate(
     catalog::build_catalog(crates, generated_at)
 }
 
-async fn write_refs(r2: &Arc<dyn R2>, entries: &BTreeMap<String, AggregateEntry>) -> Result<usize> {
-    let refs = refs_from_aggregate(entries);
+const REF_WRITE_CONCURRENCY: usize = 16;
+
+async fn write_refs(
+    r2: &Arc<dyn R2>,
+    entries: &BTreeMap<String, AggregateEntry>,
+    only: Option<&BTreeSet<String>>,
+) -> Result<usize> {
+    let refs: Vec<_> = refs_from_aggregate(entries)
+        .into_iter()
+        .filter(|ref_file| only.is_none_or(|only| only.contains(&ref_file.storage_name)))
+        .collect();
     let count = refs.len();
-    for ref_file in refs {
-        write_json(r2, &refs_key(&ref_file.storage_name), &ref_file).await?;
-    }
+    stream::iter(refs)
+        .map(|ref_file| async move {
+            write_json(r2, &refs_key(&ref_file.storage_name), &ref_file).await
+        })
+        .buffer_unordered(REF_WRITE_CONCURRENCY)
+        .try_collect::<()>()
+        .await?;
     Ok(count)
 }
 
@@ -660,7 +807,7 @@ fn compare_entries_for_newest(left: &&AggregateEntry, right: &&AggregateEntry) -
         .then_with(|| left.name.cmp(&right.name))
 }
 
-fn aggregate_key(name: &str, version: &str) -> String {
+pub(crate) fn aggregate_key(name: &str, version: &str) -> String {
     format!("{name}@{version}")
 }
 
@@ -857,6 +1004,7 @@ mod tests {
             write_catalog: false,
             write_refs: false,
             bootstrap: false,
+            bootstrap_if_missing: false,
             generation: generation.to_string(),
             generated_at: "2026-07-04T00:00:00Z".to_string(),
             parser_revision: "parser-new".to_string(),
@@ -968,6 +1116,105 @@ mod tests {
         let entries = load_entries(&r2).await;
         assert_eq!(entries["alpha@1.0.0"].storage_name, "alpha");
         assert_eq!(entries["serde_json@1.0.0"].storage_name, "serde-json");
+    }
+
+    #[tokio::test]
+    async fn incremental_merge_rewrites_only_touched_refs() {
+        let r2 = MemoryR2::new();
+        let backend = r2.backend();
+        let freshness = FreshnessRegistry::new(backend.clone());
+        for (name, storage) in [("alpha", None), ("serde_json", Some("serde-json"))] {
+            record(
+                &r2,
+                &freshness,
+                entry(
+                    name,
+                    storage,
+                    "1.0.0",
+                    "2026-07-01T00:00:00Z",
+                    "hash",
+                    Source::DocsRs,
+                ),
+            )
+            .await;
+        }
+        let mut cfg = config("run-1", "gen-1");
+        cfg.bootstrap = true;
+        cfg.write_refs = true;
+        merge(backend.clone(), &freshness, cfg)
+            .await
+            .expect("bootstrap merge");
+
+        r2.clear_put_log();
+        r2.put_jsonl(
+            "rust/_runs/run-2/deltas/direct.jsonl",
+            &[delta("serde_json", "1.0.0", RunDeltaOutcome::Fresh)],
+        )
+        .await;
+        r2.clear_put_log();
+        let mut cfg = config("run-2", "gen-2");
+        cfg.write_refs = true;
+        let report = merge(backend, &freshness, cfg).await.expect("merge");
+
+        assert_eq!(report.refs_written, 1);
+        let ref_puts: Vec<_> = r2
+            .put_log()
+            .into_iter()
+            .filter(|key| key.starts_with("rust/_refs/"))
+            .collect();
+        assert_eq!(ref_puts, vec!["rust/_refs/serde-json.json".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_if_missing_initializes_then_reuses_aggregate() {
+        let r2 = MemoryR2::new();
+        let backend = r2.backend();
+        let freshness = FreshnessRegistry::new(backend.clone());
+        let mut cfg = config("run-1", "gen-1");
+        cfg.bootstrap_if_missing = true;
+        merge(backend, &freshness, cfg)
+            .await
+            .expect("bootstrap-if-missing initializes an empty aggregate");
+        let manifest: AggregateManifest = r2.json(INDEX_MANIFEST_KEY).await;
+        assert_eq!(manifest.generation, "gen-1");
+    }
+
+    #[test]
+    fn failure_retry_policy() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-12T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let failure = |outcome, revision: Option<&str>, at: &str, attempts| AggregateFailure {
+            outcome,
+            error: String::new(),
+            last_attempt_at: at.to_string(),
+            parser_revision: revision.map(str::to_string),
+            attempts,
+        };
+        let recent = "2026-10-11T00:00:00Z";
+        let old = "2026-08-01T00:00:00Z";
+
+        // Deterministic failures wait for a parser change.
+        assert!(failure(RunDeltaOutcome::Permanent, Some("rev"), old, 1).blocks_retry("rev", now));
+        assert!(
+            !failure(RunDeltaOutcome::Permanent, Some("old"), recent, 1).blocks_retry("rev", now)
+        );
+        assert!(
+            failure(RunDeltaOutcome::Quarantine, Some("rev"), recent, 1).blocks_retry("rev", now)
+        );
+        // Legacy markers without a revision use a time-based cooldown.
+        assert!(failure(RunDeltaOutcome::Permanent, None, recent, 0).blocks_retry("rev", now));
+        assert!(!failure(RunDeltaOutcome::Permanent, None, old, 0).blocks_retry("rev", now));
+        // Transient failures back off one day per attempt, capped at a week.
+        assert!(
+            !failure(RunDeltaOutcome::Transient, Some("rev"), recent, 1).blocks_retry("rev", now)
+        );
+        assert!(
+            failure(RunDeltaOutcome::Transient, Some("rev"), recent, 3).blocks_retry("rev", now)
+        );
+        assert!(
+            !failure(RunDeltaOutcome::Transient, Some("rev"), old, 30).blocks_retry("rev", now)
+        );
     }
 
     #[tokio::test]
@@ -1329,6 +1576,8 @@ mod tests {
                     outcome: RunDeltaOutcome::Permanent,
                     error: "failed".to_string(),
                     last_attempt_at: "2026-07-04T00:00:00Z".to_string(),
+                    parser_revision: None,
+                    attempts: 0,
                 }),
                 ..AggregateEntry::placeholder(
                     &delta("failed", "0.1.0", RunDeltaOutcome::Permanent),
@@ -1365,6 +1614,8 @@ mod tests {
                 outcome: RunDeltaOutcome::Transient,
                 error: "timeout".to_string(),
                 last_attempt_at: "2026-07-04T00:00:00Z".to_string(),
+                parser_revision: Some("parser".to_string()),
+                attempts: 2,
             }),
         };
         let shard = AggregateShard {
