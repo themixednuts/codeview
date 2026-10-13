@@ -1,0 +1,90 @@
+diff --git a/dist/index.js b/dist/index.js
+index 87f9cb2cf7a8471df032cbea70f28e61cc7b429d..c13a4d0c032b0071d37ef22d198db1d9ae630c79 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -178,10 +178,17 @@ var adapter = (options) => {
+       const path = join4(import.meta.dirname, "server");
+       builder.copy(path, join4(SVELTEKIT_DIR, "temp-server"));
+       builder.log.success("[JesterKit] Server copied");
+-      const manifest = builder.generateManifest({ relativePath: "./server" });
+-      const manifestModule = `const manifest = ${manifest};
+-export default manifest;`;
+-      await writeFile2(join4(SVELTEKIT_DIR, "manifest.js"), manifestModule, "utf-8");
++      // Kit 3 removed builder.generateManifest; it writes a ready server
++      // instance module instead. The static server still needs appDir and
++      // the prerendered paths, so write those beside it.
++      builder.generateServerInstance(join4(SVELTEKIT_DIR, "manifest.js"), {
++        serverDirectory: join4(SVELTEKIT_DIR, "server")
++      });
++      const metaModule = `export default ${JSON.stringify({
++        appDir: builder.config.kit.appDir,
++        prerenderedRoutes: builder.prerendered.paths
++      })};`;
++      await writeFile2(join4(SVELTEKIT_DIR, "meta.js"), metaModule, "utf-8");
+       builder.log.success("[JesterKit] Manifest generated");
+       if (adapterOptions.embedStatic) {
+         const clientAssets = await discoverClientAssets(join4(SVELTEKIT_DIR, "client"), join4(SVELTEKIT_DIR, "prerendered"));
+diff --git a/dist/server/index.ts b/dist/server/index.ts
+index b612b3fa0d80710e313335cc0b1843f0d7519031..dabca6563d8aaf226bcbb09a32ae6c9e02505566 100644
+--- a/dist/server/index.ts
++++ b/dist/server/index.ts
+@@ -8,12 +8,11 @@ import { assetMap } from "./assets.generated.ts";
+ 
+ // Types
+ import type { Server as ServerType } from "@sveltejs/kit";
+-import type { SSRManifest } from "@sveltejs/kit";
+ 
+ // Variables
+ const manifest = await getSvelteKitManifest();
+-const prerenderedRoutes = await getPrerenderedRoutes(manifest);
+-const svelteKitServer = await instantiateServer(manifest);
++const prerenderedRoutes = manifest.prerenderedRoutes;
++const svelteKitServer = await instantiateServer();
+ const staticServer = {
+ 	respond: async (req: Request) => {
+ 		const url = new URL(req.url);
+@@ -48,20 +47,14 @@ const staticServer = {
+ 
+ async function getSvelteKitManifest() {
+ 	// @ts-ignore
+-	const manifestModule = await import("../manifest.js");
+-	const manifest = manifestModule.default;
+-	return manifest as SSRManifest;
++	const metaModule = await import("../meta.js");
++	return metaModule.default as { appDir: string; prerenderedRoutes: string[] };
+ }
+ 
+-async function getPrerenderedRoutes(manifest: SSRManifest) {
+-	return Array.from(manifest._.prerendered_routes);
+-}
+-
+-async function instantiateServer(manifest: SSRManifest) {
+-	const serverModule = await import("../server/index.js");
+-	const { Server } = serverModule as { Server: new (manifest: SSRManifest) => ServerType };
+-
+-	const server = new Server(manifest);
++async function instantiateServer() {
++	// Written by Kit 3's builder.generateServerInstance.
++	// @ts-ignore
++	const { server } = (await import("../manifest.js")) as { server: ServerType };
+ 	await server.init({ env: Bun.env as Record<string, string> });
+ 
+ 	return server;
+@@ -118,8 +111,17 @@ const server = Bun.serve({
+ 			getClientAddress() {
+ 				return bunServer.requestIP(req)?.address || "127.0.0.1";
+ 			},
++			platform: {
++				server: bunServer,
++			},
+ 		});
+ 	},
++	websocket: {
++		open(ws: any) { ws.data?.open?.(ws); },
++		message(ws: any, msg: any) { ws.data?.message?.(ws, msg); },
++		close(ws: any, code: number, reason: string) { ws.data?.close?.(ws, code, reason); },
++		drain(ws: any) { ws.data?.drain?.(ws); },
++	},
+ 	error(e: Error) {
+ 		return Response.json(
+ 			{
