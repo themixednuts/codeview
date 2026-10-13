@@ -109,8 +109,8 @@
 	}
 
 	function updateSourceParam(src: string | null) {
-		// The serializer returns a concrete URL so query-only modal state never loses the current route.
-		// eslint-disable-next-line svelte/no-navigation-without-resolve
+		// The serializer returns a concrete URL so query-only modal state never loses the current route;
+		// it is already resolved, so it does not go through `resolve()`.
 		void goto(serializeExplorerState(page.url, { src }), {
 			replace: true,
 			reset: false,

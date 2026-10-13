@@ -21,7 +21,7 @@
 </svelte:head>
 
 <div class="flex flex-1 overflow-auto">
-	<main id="main-content" tabindex="-1" class="mx-auto w-full max-w-[640px] px-4 py-16 sm:px-6">
+	<main id="main-content" tabindex="-1" class="mx-auto w-full max-w-160 px-4 py-16 sm:px-6">
 		<p class="font-mono text-sm text-(--muted-soft)">{page.status}</p>
 		<h1 class="mt-2 font-display text-2xl font-semibold text-(--ink)">{heading}</h1>
 		<p class="mt-3 text-(--muted)">{detail}</p>

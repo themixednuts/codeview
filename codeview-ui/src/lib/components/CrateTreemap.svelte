@@ -185,7 +185,7 @@
 	<div class="overflow-x-auto p-3">
 		<svg
 			viewBox="0 0 {VIEW_WIDTH} {VIEW_HEIGHT}"
-			class="h-auto min-h-[300px] w-full"
+			class="h-auto min-h-75 w-full"
 			preserveAspectRatio="xMidYMid meet"
 			aria-label="Module treemap"
 		>
@@ -223,7 +223,7 @@
 							y={rect.y + 12}
 							text-anchor="start"
 							dominant-baseline="auto"
-							class="pointer-events-none fill-(--ink) text-[10px] font-medium"
+							class="pointer-events-none fill-(--ink) text-2xs font-medium"
 							style="text-shadow: 0 1px 2px rgba(0,0,0,0.3)"
 						>
 							{displayLabel}

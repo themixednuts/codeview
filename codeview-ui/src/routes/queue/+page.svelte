@@ -110,7 +110,7 @@
 <div class="flex flex-1 overflow-auto">
 	<main id="main-content" tabindex="-1" class="w-full">
 		<div class="border-b border-(--panel-border-soft)">
-			<div class="mx-auto flex max-w-[1180px] flex-col gap-3 px-4 py-5 sm:px-6 lg:px-8">
+			<div class="mx-auto flex max-w-295 flex-col gap-3 px-4 py-5 sm:px-6 lg:px-8">
 				<div class="flex flex-wrap items-end justify-between gap-4">
 					<div class="min-w-0">
 						<div
@@ -151,7 +151,7 @@
 			</div>
 		</div>
 
-		<div class="mx-auto grid w-full max-w-[1180px] gap-8 px-4 py-8 sm:px-6 lg:px-8">
+		<div class="mx-auto grid w-full max-w-295 gap-8 px-4 py-8 sm:px-6 lg:px-8">
 			<section class="min-w-0">
 				<div class="mb-3 flex items-center justify-between gap-3">
 					<div class="flex min-w-0 items-center gap-2">
@@ -275,7 +275,7 @@
 										</span>
 									</div>
 									<div
-										class="mt-1 line-clamp-1 min-h-[18px] text-sm text-(--muted)"
+										class="mt-1 line-clamp-1 min-h-4.5 text-sm text-(--muted)"
 										aria-hidden={!item.reason}
 									>
 										{item.reason ?? ''}
@@ -352,7 +352,7 @@
 										{/if}
 									</div>
 									<div
-										class="mt-1 line-clamp-1 min-h-[18px] text-sm text-(--muted)"
+										class="mt-1 line-clamp-1 min-h-4.5 text-sm text-(--muted)"
 										aria-hidden={!item.error}
 									>
 										{item.error ?? ''}

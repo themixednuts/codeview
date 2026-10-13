@@ -9,3 +9,5 @@ Local `codeview ui` still builds a sidecar with `@jesterkit/exe-sveltekit`. Alch
 Follow the effect skill. Follow create-webapp conventions when adding packages or rewriting config.
 
 Anti-slop oxlint rules stay at error. Existing TypeScript still has hundreds of findings (object parameters, type assertions, known-value widening). New code should pass. Do not turn the rules off.
+
+Run `pnpm lint` in `codeview-ui` after UI changes. It runs Oxlint (`vp lint`) and the `@shadcn/lint` design-system rules through ESLint (`pnpm lint:shadcn`, config in `eslint.config.mjs`), which also read Svelte markup. Fix every error; do not add new warnings.

@@ -746,6 +746,14 @@ html:not([data-hydrated="true"]) .hydrated-only {
     color: var(--muted);
   }
 
+  /* `impl`, `for`, `fn`, `pub`… in rendered signatures. The class was used
+     but never defined, so keywords picked up whatever the parent set. */
+  .token-keyword {
+    font-family: var(--font-code);
+    font-weight: 600;
+    color: var(--muted);
+  }
+
   /* Shiki — colors now flow from --code-* vars, not shiki's theme */
   .shiki,
   .shiki code {
