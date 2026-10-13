@@ -1,7 +1,7 @@
 import MarkdownIt from "markdown-it";
 import markdownItGithubAlerts from "markdown-it-github-alerts";
 import sanitizeHtml from "sanitize-html";
-import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
+import type { Env, MarkdownIt as MarkdownItInstance, StateInline } from "markdown-it";
 
 // Type for resolved intra-doc links: link text -> node ID
 export type DocLinks = Record<string, string>;
@@ -95,8 +95,9 @@ md.core.ruler.push("demote_doc_headings", (state) => {
 // Keep the tags as inline HTML so MarkdownIt still parses their contents.
 md.block.ruler.disable(["html_block"]);
 
-function markdownEnv(env: RenderEnvironment | null | undefined): RenderEnvironment {
-  return env ?? {};
+function markdownEnv(env: Env | null | undefined): RenderEnvironment {
+  // SAFETY: every md.render call in this module passes a RenderEnvironment as env.
+  return (env ?? {}) as RenderEnvironment;
 }
 
 function docLinkHref(env: RenderEnvironment | undefined, nodeId: string): string {
@@ -121,7 +122,7 @@ function sanitizeRenderedHtml(html: string): string {
  *
  * The plugin stores doc_links in md.options for access during rendering.
  */
-function intraDocLinksPlugin(md: MarkdownIt): void {
+function intraDocLinksPlugin(md: MarkdownItInstance): void {
   // Add inline rule for intra-doc links BEFORE backticks are processed
   md.inline.ruler.before("backticks", "intra_doc_link", intraDocLinkRule);
 }
