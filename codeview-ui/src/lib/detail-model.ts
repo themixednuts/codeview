@@ -9,6 +9,9 @@ import type {
 } from "#lib/schema.js";
 import { isPublic } from "#lib/display-names.js";
 
+/** Upper bound for the implementers list; serde's Deserializer alone has ~100. */
+const MAX_WHERE_USED = 500;
+
 export type SelectedEdges = {
   incoming: Edge[];
   outgoing: Edge[];
@@ -291,10 +294,6 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
   const traitImplGroups = buildImplMemberGroups(detail, sourceImpls, relatedNodeMap);
   const traitItems = collectTraitItems(detail, relatedNodeMap);
   const methodCount = methodGroups.reduce((sum, group) => sum + group.methods.length, 0);
-  const traitImplMemberCount = traitImplGroups.reduce(
-    (sum, group) => sum + group.methods.length,
-    0,
-  );
   const totalImpls = sourceImpls.length + blanketImpls.length;
   const tocEntries: TocEntry[] = [];
   if ((selected.fields?.length ?? 0) > 0)
@@ -335,22 +334,10 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
     tocEntries.push({
       anchor: "trait-impls",
       title: "Trait implementations",
-      count: traitImplMemberCount > 0 ? traitImplMemberCount : totalImpls,
+      // Same number the section header shows: impl blocks, not their members.
+      count: totalImpls,
     });
   }
-  // Implementers section (traits only) — surfaces incoming Implements edges.
-  if (selected.kind === "Trait" || selected.kind === "TraitAlias") {
-    let implCount = 0;
-    for (const edge of filteredEdges.incoming) {
-      if (!isWhereUsedEdge(edge, selected)) continue;
-      if (edge.from === selected.id) continue;
-      implCount++;
-      if (implCount >= 8) break;
-    }
-    if (implCount > 0)
-      tocEntries.push({ anchor: "implementers", title: "Implementers", count: implCount });
-  }
-
   const seen = new Set<string>();
   const whereUsed: WhereUsedRef[] = [];
   for (const edge of filteredEdges.incoming) {
@@ -358,7 +345,13 @@ export function buildDetailDocModel(detail: NodeDetail | null | undefined): Deta
     if (edge.from === selected.id || seen.has(edge.from)) continue;
     seen.add(edge.from);
     whereUsed.push({ id: edge.from, name: displayNode(edge.from, relatedNodeMap) });
-    if (whereUsed.length >= 8) break;
+    if (whereUsed.length >= MAX_WHERE_USED) break;
+  }
+
+  // Implementers section (traits only) — surfaces incoming Implements edges.
+  // The TOC count matches the list the section renders.
+  if ((selected.kind === "Trait" || selected.kind === "TraitAlias") && whereUsed.length > 0) {
+    tocEntries.push({ anchor: "implementers", title: "Implementers", count: whereUsed.length });
   }
 
   return {

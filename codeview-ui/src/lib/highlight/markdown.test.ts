@@ -92,3 +92,13 @@ describe("rustdoc markdown links", () => {
     expect(html).not.toContain("crate::de");
   });
 });
+
+describe("doc heading levels", () => {
+  it("demotes authored headings below the page h1 and keeps the authored level", () => {
+    const html = renderMarkdown("# Title\n\n## Sub\n\n###### Deep\n\ntext");
+    expect(html).toContain('<h2 class="doc-h1">Title</h2>');
+    expect(html).toContain('<h3 class="doc-h2">Sub</h3>');
+    expect(html).toContain('<h6 class="doc-h6">Deep</h6>');
+    expect(html).not.toContain("<h1");
+  });
+});

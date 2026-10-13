@@ -62,8 +62,17 @@
 	}
 </script>
 
+<svelte:head>
+	<title>Codeview · Explore Rust crates</title>
+	<meta
+		name="description"
+		content="Browse Rust crate documentation as navigable module trees, item pages and relationship graphs."
+	/>
+</svelte:head>
+
 <div class="flex flex-1 overflow-auto">
-	<main class="w-full">
+	<main id="main-content" tabindex="-1" class="w-full">
+		<h1 class="sr-only">Codeview: explore Rust crates</h1>
 		<div class="border-b border-(--panel-border-soft)">
 			<div class="mx-auto flex max-w-[1180px] flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
 				<div class="flex flex-wrap items-center gap-2 text-sm text-(--muted)">
@@ -92,7 +101,7 @@
 		>
 			<aside class="min-w-0">
 				<div class="mb-3 flex items-center justify-between">
-					<h1 class="text-sm font-medium text-(--ink-soft)">Browse</h1>
+					<h2 class="text-sm font-medium text-(--ink-soft)">Browse</h2>
 				</div>
 				<ul class="space-y-0.5">
 					{#each sidebarSections as section (section.id)}

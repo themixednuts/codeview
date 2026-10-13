@@ -414,19 +414,21 @@
 		class="pointer-events-none absolute left-0 right-0 flex items-center justify-between px-6"
 		style="top: 12px"
 	>
-		<div class="mono flex items-center gap-2 text-2xs text-(--muted-soft)">
-			<span class="inline-block h-px w-6 bg-(--panel-border)"></span>
-			<span>points into {detail.node.name}</span>
+		<div class="mono flex max-w-[48%] min-w-0 items-center gap-2 text-2xs text-(--muted-soft)">
+			<span class="inline-block h-px w-6 shrink-0 bg-(--panel-border)"></span>
+			<span class="truncate">points into {detail.node.name}</span>
 		</div>
-		<div class="mono flex items-center gap-2 text-2xs text-(--muted-soft)">
-			<span>{detail.node.name} points to</span>
-			<span class="inline-block h-px w-6 bg-(--panel-border)"></span>
+		<div
+			class="mono flex max-w-[48%] min-w-0 items-center justify-end gap-2 text-2xs text-(--muted-soft)"
+		>
+			<span class="truncate">{detail.node.name} points to</span>
+			<span class="inline-block h-px w-6 shrink-0 bg-(--panel-border)"></span>
 		</div>
 	</div>
 
 	{#if graphIsCapped}
 		<div
-			class="pointer-events-none absolute left-1/2 z-20 -translate-x-1/2 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-2.5 py-1 text-xs text-(--muted)"
+			class="pointer-events-none absolute left-1/2 z-20 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-(--panel-border-soft) bg-(--panel-solid) px-2.5 py-1 text-center text-xs text-(--muted)"
 			style="top: 42px"
 		>
 			showing {shownGraphStats.relatedNodes.toLocaleString()} of {fullGraphStats.relatedNodes.toLocaleString()}
@@ -441,7 +443,7 @@
 			edges={flowEdges}
 			{nodeTypes}
 			{edgeTypes}
-			width={graphSize.width}
+			width={containerWidth || graphSize.width}
 			height={height}
 			nodesDraggable={true}
 			nodesConnectable={false}

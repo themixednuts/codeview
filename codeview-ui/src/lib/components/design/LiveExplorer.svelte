@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { plainDocSummary } from '#lib/doc-summary.js';
 	import { browser } from '$app/env';
 	import { goto, refreshAll } from '$app/navigation';
 	import { page } from '$app/state';
@@ -209,7 +210,7 @@
 			0,
 		),
 	);
-	const docSummary = $derived(docsSummary(selected?.docs));
+	const docSummary = $derived(plainDocSummary(selected?.docs));
 	const searchQuery = $derived(
 		activeFilter.trim() || effectiveKindParams.length > 0
 			? searchNodes({
@@ -739,16 +740,6 @@
 		return `${url.pathname}${url.search}`;
 	}
 
-	function docsSummary(docs: string | null | undefined): string | null {
-		if (!docs) return null;
-		const first = docs
-			.trim()
-			.split(/\n\s*\n/, 1)[0]
-			?.replace(/\s+/g, ' ')
-			.trim();
-		if (!first) return null;
-		return first.length > 220 ? `${first.slice(0, 217)}...` : first;
-	}
 
 	function isEditableTarget(target: EventTarget | null): boolean {
 		if (!(target instanceof HTMLElement)) return false;
@@ -1265,7 +1256,8 @@
 					crateName={canonicalCrateName ?? crateName ?? ''}
 					crateVersion={version ?? ''}
 					{getNodeUrl}
-					height={620}
+					height={mobileExplorer ? 520 : 620}
+					compact={mobileExplorer}
 				/>
 			</div>
 			<div class="no-js-only flex min-h-80 items-center justify-center p-6 text-center">
@@ -1450,19 +1442,32 @@
 				aria-label="Node path"
 				class="mono flex min-w-0 flex-nowrap items-baseline gap-1 overflow-hidden text-sm"
 			>
+				<!-- On phones only the parent is shown: truncating every ancestor
+				     shrank each to a couple of characters (`s :: ( :: v :: St…`). -->
+				{#if ancestors.length > 1}
+					<span class="shrink-0 text-(--muted-soft) sm:hidden" aria-hidden="true">…&nbsp;::</span>
+				{/if}
 				{#each ancestors as ancestor, index (ancestor.id)}
+					{@const isParent = index === ancestors.length - 1}
 					<a
 						href={resolveAppPath(getNodeUrl(ancestor.id))}
 						data-sveltekit-noscroll
-						class="truncate text-(--link) underline decoration-(--panel-border-strong) underline-offset-2"
+						class={[
+							'min-w-[3ch] truncate text-(--link) underline decoration-(--panel-border-strong) underline-offset-2',
+							!isParent && 'max-sm:hidden',
+						]}
 						onclick={() => closeMobileTree()}
 					>
 						{ancestor.name}
 					</a>
-					<span class="text-(--muted-soft)">::</span>
+					<span class={['shrink-0 text-(--muted-soft)', !isParent && 'max-sm:hidden']}>::</span>
 				{/each}
 				{#if selected}
-					<span class="truncate font-bold text-(--ink)" aria-current="page">{selected.name}</span>
+					<span
+						class="max-w-[75%] shrink-0 truncate font-bold text-(--ink)"
+						aria-current="page"
+						title={selected.name}>{selected.name}</span
+					>
 				{:else}
 					<span class="text-(--muted)">Loading...</span>
 				{/if}

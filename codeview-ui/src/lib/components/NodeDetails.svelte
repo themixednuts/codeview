@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { firstDocParagraph } from '#lib/doc-summary.js';
 	import type { Node, NodeKind, Visibility } from '#lib/graph.js';
 	import { isPublic, visibilityLabel } from '#lib/display-names.js';
 	import type { GenericBound, GenericParam, TypeRef, WherePredicate } from '#lib/schema.js';
@@ -277,10 +278,15 @@
 		}
 	}
 
-	function docsSummary(docs: string | null | undefined): string | null {
-		if (!docs) return null;
-		const paragraph = docs.split(/\n\s*\n/, 1)[0]?.trim();
-		return paragraph || null;
+	// Rendered through <Documentation>, so keep Markdown but skip headings,
+	// badges and code fences that open many crate docs.
+	const docsSummary = firstDocParagraph;
+
+	// Lint levels and `#[doc(...)]` settings (often a dozen on a crate root)
+	// matter little to readers and pushed the docs far down on phones.
+	const LINT_OR_DOC_ATTR_RE = /^#!?\[\s*(allow|warn|deny|forbid|expect|doc)\s*\(/;
+	function isLintOrDocAttr(attr: string): boolean {
+		return LINT_OR_DOC_ATTR_RE.test(attr.trim());
 	}
 
 	/** Visibility keyword prefix for a field (`pub ` / `pub(crate) ` / ``). */
@@ -541,31 +547,24 @@
 	{/if}
 {/snippet}
 
-{#snippet genericParamContent(p: GenericParam)}
-	{#if p.kind.kind === 'Const'}<span class="text-(--muted)">const</span>{/if}
-	<span class="token-name">{p.name}</span>
-	{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}
-		<span class="text-(--muted)">:</span>
-		{#each p.kind.bounds as b, i (i)}
-			{#if i > 0}<span class="text-(--muted)">+</span>{/if}
-			{@render boundContent(b)}
-		{/each}
-	{/if}
-	{#if p.kind.kind === 'Lifetime' && p.kind.outlives && p.kind.outlives.length > 0}
-		<span class="text-(--muted)">:</span>
-		{#each p.kind.outlives as lt, i (i)}{#if i > 0}<span class="text-(--muted)">+</span>{/if}
-			<span class="token-name">{lt}</span>{/each}
-	{/if}
-	{#if p.kind.kind === 'Const'}
-		<span class="text-(--muted)">:</span>
-		{@render typeContent(p.kind.type)}
-		{#if p.kind.default}<span class="text-(--muted)">= {p.kind.default}</span>{/if}
-	{/if}
-	{#if p.kind.kind === 'Type' && p.kind.default}
-		<span class="text-(--muted)">=</span>
-		{@render typeContent(p.kind.default)}
-	{/if}
-{/snippet}
+<!-- Whitespace between tags renders as spaces, so this snippet keeps tags
+     adjacent and spells out Rust's spacing (`const N: T = d`, `T: A + B`). -->
+{#snippet genericParamContent(p: GenericParam)}{#if p.kind.kind === 'Const'}<span
+			class="text-(--muted)">const</span
+		>{' '}{/if}<span class="token-name">{p.name}</span
+	>{#if p.kind.kind === 'Type' && p.kind.bounds && p.kind.bounds.length > 0}<span
+			class="text-(--muted)">:</span
+		>{' '}{#each p.kind.bounds as b, i (i)}{#if i > 0}{' '}<span class="text-(--muted)">+</span
+				>{' '}{/if}{@render boundContent(b)}{/each}{/if}{#if p.kind.kind === 'Lifetime' && p.kind.outlives && p.kind.outlives.length > 0}<span
+			class="text-(--muted)">:</span
+		>{' '}{#each p.kind.outlives as lt, i (i)}{#if i > 0}{' '}<span class="text-(--muted)">+</span
+				>{' '}{/if}<span class="token-name">{lt}</span>{/each}{/if}{#if p.kind.kind === 'Const'}<span
+			class="text-(--muted)">:</span
+		>{' '}{@render typeContent(p.kind.type)}{#if p.kind.default}{' '}<span class="text-(--muted)"
+				>= {p.kind.default}</span
+			>{/if}{/if}{#if p.kind.kind === 'Type' && p.kind.default}{' '}<span class="text-(--muted)"
+			>=</span
+		>{' '}{@render typeContent(p.kind.default)}{/if}{/snippet}
 
 {#snippet wherePredContent(pred: WherePredicate)}
 	{#if pred.kind === 'Bound'}
@@ -625,14 +624,16 @@
 	{@const implWhere = implBlock.generics?.where_predicates ?? []}
 	<div class="min-w-0">
 		<code class="text-sm leading-6 font-(--font-code) text-(--ink)">
-			<span class="token-keyword">impl</span>
-			{#if implBlock.impl_category === 'Negative'}<span class="text-(--danger)">
-					!
-				</span>{/if}{#if implGenerics.length > 0}<span class="text-(--muted)">&lt;</span>
-				{#each implGenerics as p, i (i)}{#if i > 0}<span class="text-(--muted)">
-							,
-						</span>{/if}{@render genericParamContent(p)}{/each}
-				<span class="text-(--muted)">&gt;</span>{/if}{#if implBlock.impl_trait}
+			<!-- Keep the generic list on one line: template whitespace between these
+			     tags renders as `impl < 'de , E >Trait`. -->
+			<span class="token-keyword">impl</span
+			>{#if implGenerics.length > 0}<span class="text-(--muted)">&lt;</span
+				>{#each implGenerics as p, i (i)}{#if i > 0}<span class="text-(--muted)">,&nbsp;</span
+						>{/if}{@render genericParamContent(p)}{/each}<span class="text-(--muted)"
+					>&gt;</span
+				>{/if}{' '}{#if implBlock.impl_category === 'Negative'}<span class="text-(--danger)"
+					>!</span
+				>{/if}{#if implBlock.impl_trait}
 				{@render traitLink(implBlock.impl_trait)}
 				<span class="token-keyword">for</span>
 				<span class="token-name">{selected?.name}</span>
@@ -836,10 +837,24 @@
 		<!-- Attributes are source syntax and belong immediately before the
 		     declaration they annotate. -->
 		{#if selected.attrs && selected.attrs.length > 0}
+			{@const lintAttrs = selected.attrs.filter(isLintOrDocAttr)}
+			{@const shownAttrs = selected.attrs.filter((attr) => !isLintOrDocAttr(attr))}
 			<div class="mb-1 text-sm leading-5 font-(--font-code)">
-				{#each selected.attrs as attr (attr)}
+				{#each shownAttrs as attr (attr)}
 					<code class="token-meta block">{attr}</code>
 				{/each}
+				{#if lintAttrs.length > 0}
+					<details class="group">
+						<summary
+							class="cursor-pointer font-sans text-xs text-(--muted-soft) select-none hover:text-(--muted)"
+						>
+							{lintAttrs.length} lint/doc attribute{lintAttrs.length === 1 ? '' : 's'}
+						</summary>
+						{#each lintAttrs as attr (attr)}
+							<code class="token-meta block">{attr}</code>
+						{/each}
+					</details>
+				{/if}
 			</div>
 		{/if}
 
@@ -1291,7 +1306,7 @@
 						Trait implementations
 					</h2>
 					<span class="font-mono text-xs text-(--muted-soft) tabular-nums">
-						{sourceImpls.length}
+						{sourceImpls.length + blanketImpls.length}
 					</span>
 				</div>
 				<div class="space-y-4">

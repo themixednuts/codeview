@@ -7,6 +7,8 @@
 	import { QueueStatusConnection } from '#lib/realtime/index.js';
 	import { labelForParseStep } from '#lib/realtime/constants.js';
 	import { onMount } from 'svelte';
+	import { hyphenateCrateName, normalizeCrateName } from '#lib/crate-names.js';
+	import { isStdCrate } from '#lib/std.js';
 	import type { PageProps } from './$types';
 
 	const PAGE_SIZE = 10;
@@ -44,7 +46,9 @@
 	);
 
 	function itemHref(name: string, version: string): string {
-		return resolve('/[crate]/[version]', { crate: name, version });
+		// Link to the canonical hyphenated URL instead of bouncing through a redirect.
+		const crate = isStdCrate(normalizeCrateName(name)) ? name : hyphenateCrateName(name);
+		return resolve('/[crate]/[version]', { crate, version });
 	}
 
 	function statusLabel(status: string, step?: string): string {
@@ -98,8 +102,13 @@
 	});
 </script>
 
+<svelte:head>
+	<title>Parse queue · Codeview</title>
+	<meta name="description" content="Crate documentation builds that are running or planned on Codeview." />
+</svelte:head>
+
 <div class="flex flex-1 overflow-auto">
-	<main class="w-full">
+	<main id="main-content" tabindex="-1" class="w-full">
 		<div class="border-b border-(--panel-border-soft)">
 			<div class="mx-auto flex max-w-[1180px] flex-col gap-3 px-4 py-5 sm:px-6 lg:px-8">
 				<div class="flex flex-wrap items-end justify-between gap-4">
@@ -227,6 +236,9 @@
 							<span class="truncate font-mono text-xs text-(--muted-soft)">
 								{planned.pending} pending · {planned.ready} ready
 							</span>
+							{#if plannedItems.length > PAGE_SIZE}
+								<span class="text-(--muted-soft)" aria-hidden="true">|</span>
+							{/if}
 						{/if}
 						{#if plannedItems.length > PAGE_SIZE}
 							<StablePagination

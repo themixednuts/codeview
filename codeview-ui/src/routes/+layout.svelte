@@ -70,6 +70,7 @@
 	import type { LayoutProps } from './$types';
 	import Icon from '#lib/components/design/Icon.svelte';
 	import { Toaster } from '#lib/components/ui/sonner/index.js';
+	import LogInIcon from '@lucide/svelte/icons/log-in';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { toast } from 'svelte-sonner';
@@ -585,12 +586,13 @@
 		<button
 			type="button"
 			class="js-only corner-squircle inline-flex h-8 w-full max-w-[440px] min-w-8 items-center justify-between gap-2 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 font-mono text-xs text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center sm:px-3"
-			aria-label="Search crates and Rust items"
-			title="Global search"
+			aria-label="Search crates"
+			title="Search crates"
 			onclick={() => (commandOpen = true)}
 		>
 			<span class="inline-flex min-w-0 items-center gap-2">
 				<Icon name="search" size={12} />
+				<span class="truncate min-[520px]:hidden">Search</span>
 				<span class="hidden truncate min-[520px]:inline">Search crates...</span>
 			</span>
 			<span class="hidden shrink-0 items-center gap-1 lg:inline-flex" aria-hidden="true">
@@ -653,8 +655,10 @@
 							size="sm"
 							class="border-(--panel-border) bg-(--panel) text-(--ink)"
 							title="Sign in with GitHub"
+							aria-label="Sign in with GitHub"
 						>
-							<Icon name="github" size={13} />
+							<!-- Not the GitHub mark: the repo link next to it already uses it. -->
+							<LogInIcon class="size-[13px]" aria-hidden="true" />
 							<span class="hidden sm:inline">Sign in</span>
 						</Button>
 					</form>

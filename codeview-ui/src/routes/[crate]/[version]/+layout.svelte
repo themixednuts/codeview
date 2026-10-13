@@ -31,6 +31,7 @@
 	import { isValidCrateNameParam, isValidVersionParam } from '#lib/crate-ref.js';
 	import { isHosted } from '#lib/platform.js';
 	import { hasNonEmptyArray, preferNonEmptyArray } from '#lib/load-precedence.js';
+	import { plainDocSummary } from '#lib/doc-summary.js';
 
 	const log = getLogger('layout');
 
@@ -469,7 +470,26 @@
 	const crateSwitcherLabel = $derived(buildCrateSwitcherLabel(localCrates));
 	const crateVersionOptions = $derived(buildCrateVersionOptions(versionsFromQuery, version));
 	const loadingCrateSwitcher = $derived(!isHosted && !localCrates && !indexFromQuery);
+
+	const headNode = $derived(data?.nodeView?.detail.node ?? null);
+	const headTitle = $derived.by(() => {
+		const crateLabel = `${canonicalCrateName} ${version ?? ''}`.trim();
+		if (!headNode || headNode.kind === 'Crate') return `${crateLabel} · Codeview`;
+		const path = [...(data?.nodeView?.ancestors ?? []).map((a: { name: string }) => a.name), headNode.name]
+			.filter(Boolean)
+			.join('::');
+		return `${path || headNode.name} · ${crateLabel} · Codeview`;
+	});
+	const headDescription = $derived(
+		plainDocSummary(headNode?.docs, 160) ??
+			`Explore the ${canonicalCrateName} Rust crate: modules, items and relationships.`,
+	);
 </script>
+
+<svelte:head>
+	<title>{headTitle}</title>
+	<meta name="description" content={headDescription} />
+</svelte:head>
 
 <CrateParseState
 	{crateName}

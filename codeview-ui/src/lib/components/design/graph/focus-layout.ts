@@ -106,9 +106,17 @@ const FOCUS_HEIGHT = 48;
 const PILL_HEIGHT = 32;
 const GROUP_GAP_ROWS = 0.85;
 
+// Monospace advance is ~0.6em plus rendering slack: 13px pills (--text-sm)
+// and 15px focus pill (--text-md). The old 7.2px/char estimate truncated
+// labels like "Deseriali…" despite free space.
+const PILL_CHAR_WIDTH = 8.1;
+const FOCUS_CHAR_WIDTH = 9.3;
+
 export function measureFocusPill(node: DesignNode<Node>, isFocus = false): number {
   const label = node.label || node.id;
-  return isFocus ? Math.max(160, 96 + label.length * 8.8) : Math.max(98, 52 + label.length * 7.2);
+  return isFocus
+    ? Math.max(160, 96 + label.length * FOCUS_CHAR_WIDTH)
+    : Math.max(98, 52 + label.length * PILL_CHAR_WIDTH);
 }
 
 export function layoutFocusGraph(model: FocusGraphModel, size: FocusGraphSize): FocusGraphLayout {
