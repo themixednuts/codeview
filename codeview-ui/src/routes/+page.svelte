@@ -74,7 +74,7 @@
 	<main id="main-content" tabindex="-1" class="w-full">
 		<h1 class="sr-only">Codeview: explore Rust crates</h1>
 		<div class="border-b border-(--panel-border-soft)">
-			<div class="mx-auto flex max-w-[1180px] flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
+			<div class="mx-auto flex max-w-295 flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
 				<div class="flex flex-wrap items-center gap-2 text-sm text-(--muted)">
 					<span>Showing</span>
 					<span class="badge badge-sm bg-(--panel) text-(--ink)">
@@ -97,7 +97,7 @@
 		</div>
 
 		<div
-			class="mx-auto grid w-full max-w-[1180px] gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-10 lg:px-8"
+			class="mx-auto grid w-full max-w-295 gap-8 px-4 py-8 sm:px-6 lg:grid-cols-[260px_minmax(0,1fr)] lg:gap-10 lg:px-8"
 		>
 			<aside class="min-w-0">
 				<div class="mb-3 flex items-center justify-between">

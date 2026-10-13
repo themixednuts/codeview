@@ -439,7 +439,7 @@
 	</header>
 
 	{#if data.moduleNodes.length === 0}
-		<div class="flex min-h-[280px] items-center justify-center p-8 text-sm text-(--muted)">
+		<div class="flex min-h-70 items-center justify-center p-8 text-sm text-(--muted)">
 			No module graph is available for this crate.
 		</div>
 	{:else}
@@ -510,7 +510,7 @@
 			<div class="ml-auto flex flex-wrap items-center gap-2">
 				{#each activeRelations as relation (relation)}
 					<span class="mono inline-flex items-center gap-1 text-xs text-(--muted)">
-						<span class="inline-block h-[3px] w-3 rounded" style={`background: ${REL[relation].color}`}></span>
+						<span class="inline-block h-0.75 w-3 rounded" style={`background: ${REL[relation].color}`}></span>
 						{REL[relation].label}
 					</span>
 				{/each}

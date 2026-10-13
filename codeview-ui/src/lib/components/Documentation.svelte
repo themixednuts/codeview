@@ -69,7 +69,7 @@
 >
 	{#each segments as segment, i (i)}
 		{#if segment.type === 'text'}
-			<div class="documentation-text prose prose-sm text-(--ink)">
+			<div class="documentation-text text-(--ink)">
 				<!-- eslint-disable-next-line svelte/no-at-html-tags -- sanitized markdown-it output -->
 				{@html segment.html}
 			</div>

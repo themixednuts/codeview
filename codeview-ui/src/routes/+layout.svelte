@@ -585,7 +585,7 @@
 
 		<button
 			type="button"
-			class="js-only corner-squircle inline-flex h-8 w-full max-w-[440px] min-w-8 items-center justify-between gap-2 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 font-mono text-xs text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center sm:px-3"
+			class="js-only corner-squircle inline-flex h-8 w-full max-w-110 min-w-8 items-center justify-between gap-2 justify-self-start rounded-(--radius-control) border border-(--panel-border) bg-(--panel) px-2 font-mono text-xs text-(--muted) shadow-(--shadow-soft) transition-colors hover:border-(--accent-ring) hover:bg-(--panel-strong) hover:text-(--ink) min-[1120px]:justify-self-center sm:px-3"
 			aria-label="Search crates"
 			title="Search crates"
 			onclick={() => (commandOpen = true)}
@@ -605,7 +605,7 @@
 			method="GET"
 			action={resolve('/')}
 			role="search"
-			class="no-js-only relative block w-full max-w-[440px] min-w-0 justify-self-start min-[1120px]:justify-self-center"
+			class="no-js-only relative block w-full max-w-110 min-w-0 justify-self-start min-[1120px]:justify-self-center"
 		>
 			<label for="global-crate-search" class="sr-only">Search crates</label>
 			<Icon
@@ -658,7 +658,7 @@
 							aria-label="Sign in with GitHub"
 						>
 							<!-- Not the GitHub mark: the repo link next to it already uses it. -->
-							<LogInIcon class="size-[13px]" aria-hidden="true" />
+							<LogInIcon class="size-3.25" aria-hidden="true" />
 							<span class="hidden sm:inline">Sign in</span>
 						</Button>
 					</form>

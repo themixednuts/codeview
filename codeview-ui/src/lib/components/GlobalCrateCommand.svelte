@@ -92,7 +92,7 @@
 		class="font-mono text-sm"
 		aria-label="Search crates"
 	/>
-	<Command.List class="max-h-[420px]">
+	<Command.List class="max-h-105">
 		{#if loading}
 			<div class="flex items-center gap-2 px-4 py-5 text-sm text-(--muted)">
 				<span

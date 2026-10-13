@@ -542,7 +542,7 @@
 					onmouseleave={() => (hoveredRel = null)}
 					aria-label={relationLabel(rel)}
 				>
-					<span class="inline-block h-[3px] w-3 rounded" style={`background: ${REL[rel].color}`}></span>
+					<span class="inline-block h-0.75 w-3 rounded" style={`background: ${REL[rel].color}`}></span>
 					{relationLabel(rel)}
 				</button>
 			{/each}

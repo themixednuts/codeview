@@ -145,7 +145,7 @@
 	<div class="flex items-center justify-center overflow-x-auto p-4">
 		<svg
 			viewBox="0 0 {viewSize} {viewSize}"
-			class="h-auto max-h-[500px] w-auto max-w-full"
+			class="h-auto max-h-125 w-auto max-w-full"
 			preserveAspectRatio="xMidYMid meet"
 			aria-label="Module sunburst"
 		>
@@ -196,7 +196,7 @@
 				y={cy - 8}
 				text-anchor="middle"
 				dominant-baseline="auto"
-				class="fill-(--ink) text-[13px] font-semibold"
+				class="fill-(--ink) text-sm font-semibold"
 			>
 				{centerLabel}
 			</text>
@@ -205,7 +205,7 @@
 				y={cy + 10}
 				text-anchor="middle"
 				dominant-baseline="auto"
-				class="fill-(--muted) text-[11px]"
+				class="fill-(--muted) text-xs"
 			>
 				{centerCount.toLocaleString()} items
 			</text>

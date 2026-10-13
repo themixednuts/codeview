@@ -174,7 +174,7 @@
 					<span class="truncate" title={displayFile}>{displayFile}</span>
 					{#if lineLabel}
 						<span
-							class="shrink-0 rounded px-1.5 py-[1px] text-2xs"
+							class="shrink-0 rounded px-1.5 py-0.25 text-2xs"
 							style="background: var(--accent-soft); color: var(--accent)"
 						>
 							{lineLabel}
@@ -204,7 +204,7 @@
 					/>
 				{:else}
 					<div
-						class="flex h-full min-h-[280px] items-center justify-center gap-2 p-6 text-sm text-(--muted)"
+						class="flex h-full min-h-70 items-center justify-center gap-2 p-6 text-sm text-(--muted)"
 					>
 						<LoaderCircleIcon class="animate-spin" size={14} />
 						<span>Loading source...</span>
