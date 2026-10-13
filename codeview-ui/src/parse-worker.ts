@@ -90,6 +90,8 @@ const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
 const MAX_PLAN_ITEMS_SCANNED_PER_DRAIN = 100;
 /** Delay before a completion-triggered drain, so the finished GitHub run stops counting as active. */
 const COMPLETION_DRAIN_DELAY_SECONDS = 60;
+/** Width of one 5-minute cron tick; duplicate invocations inside a slot are skipped. */
+const CRON_SLOT_MS = 5 * 60 * 1000;
 /** UI requests waiting for GitHub capacity give up after this long. */
 const MAX_DISPATCH_WAIT_MS = 6 * 60 * 60 * 1000;
 const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
@@ -1096,6 +1098,23 @@ async function writeDrainCursor(env: ParseWorkerEnv, runId: string, next: number
   );
 }
 
+async function claimCronSlot(env: ParseWorkerEnv, scheduledTime: number): Promise<boolean> {
+  const url = new URL("https://status/cron-tick");
+  url.searchParams.set("slot", String(Math.floor(scheduledTime / CRON_SLOT_MS)));
+  try {
+    const response = await parseStatusObject(env.PARSE_STATUS).fetch(url, { method: "POST" });
+    if (!response.ok) return true;
+    const body = Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.Struct({ claimed: Schema.Boolean }))(await response.json()),
+    );
+    return body?.claimed ?? true;
+  } catch (err) {
+    // A missed dedupe only costs a repeated tick; a missed tick stalls the queue.
+    console.warn(`cron slot claim failed, running anyway: ${errorMessage(err)}`);
+    return true;
+  }
+}
+
 /** Refill freed GitHub capacity from the plan without waiting for the next cron tick. */
 async function scheduleCompletionDrain(env: ParseWorkerEnv): Promise<void> {
   if (!env.PARSE_REQUESTS) return;
@@ -1413,6 +1432,9 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
 
   override async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname === "/cron-tick" && request.method === "POST") {
+      return json({ claimed: this.claimCronSlot(Number(url.searchParams.get("slot"))) });
+    }
     if (url.pathname === "/ws" || url.pathname === "/api/events/ws") {
       return this.handleWebSocket(request);
     }
@@ -1753,6 +1775,26 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
     this.broadcast(crateStatusTag(message.name, message.version), status);
     this.broadcastStatusSnapshots();
     return status;
+  }
+
+  /**
+   * Cloudflare fires the parser's single cron trigger twice per tick (about
+   * 8 s apart, same version). The Durable Object handles one request at a
+   * time, so the first invocation for a slot wins and the other skips.
+   */
+  private claimCronSlot(slot: number): boolean {
+    if (!Number.isSafeInteger(slot)) return true;
+    this.ctx.storage.sql.exec(
+      `CREATE TABLE IF NOT EXISTS cron_ticks (id INTEGER PRIMARY KEY CHECK (id = 1), slot INTEGER NOT NULL)`,
+    );
+    const row = this.ctx.storage.sql.exec(`SELECT slot FROM cron_ticks WHERE id = 1`).toArray()[0];
+    const last = Predicate.isObject(row) && Predicate.isNumber(row.slot) ? row.slot : null;
+    if (last !== null && last >= slot) return false;
+    this.ctx.storage.sql.exec(
+      `INSERT INTO cron_ticks (id, slot) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET slot = excluded.slot`,
+      slot,
+    );
+    return true;
   }
 
   private registerQueuedParse(message: Schema.Json): QueueParseResponse {
@@ -2469,7 +2511,11 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
 }
 
 export default {
-  async scheduled(_controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
+  async scheduled(controller: ScheduledController, env: ParseWorkerEnv): Promise<void> {
+    if (!(await claimCronSlot(env, controller.scheduledTime))) {
+      console.log(`skipping duplicate cron invocation scheduled=${controller.scheduledTime}`);
+      return;
+    }
     await enqueueWorkerTasks(env);
   },
 
