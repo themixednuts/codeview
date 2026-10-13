@@ -2,8 +2,8 @@ packages:
   - .
 
 catalog:
-  vite: npm:@voidzero-dev/vite-plus-core@0.2.9
-  vite-plus: 0.2.9
+  vite: npm:@voidzero-dev/vite-plus-core@1.1.0
+  vite-plus: 1.1.0
 
 saveExact: true
 strictPeerDependencies: true
@@ -49,6 +49,8 @@ peerDependencyRules:
   allowedVersions:
     better-auth: "1.7.7"
     "@cloudflare/workers-types": ">=5"
-    vite: "0.2.9"
+    vite: "1.1.0"
     drizzle-orm: "1.0.0-rc.5-ab785fc"
     "@sveltejs/kit": "3.0.1"
+    # Declares typescript ^5 as a peer but never imports it.
+    "@jesterkit/exe-sveltekit>typescript": "6"
