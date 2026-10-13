@@ -1032,13 +1032,15 @@ html:not([data-hydrated="true"]) .hydrated-only {
     overflow: hidden !important;
   }
 
-  html[data-js="enabled"] .live-explorer:not(.mobile-tree-open)
+  html[data-js="enabled"]
+    .live-explorer:not(.mobile-tree-open)
     .codeview-resizable-group
     > [data-pane]:has(.tree-pane) {
     display: none !important;
   }
 
-  html[data-js="enabled"] .live-explorer:not(.mobile-tree-open)
+  html[data-js="enabled"]
+    .live-explorer:not(.mobile-tree-open)
     .codeview-resizable-group
     > [data-pane]:not(:has(.tree-pane)) {
     flex: 1 1 auto !important;
@@ -1048,7 +1050,8 @@ html:not([data-hydrated="true"]) .hydrated-only {
     overflow: hidden !important;
   }
 
-  html[data-js="enabled"] .live-explorer.mobile-tree-open
+  html[data-js="enabled"]
+    .live-explorer.mobile-tree-open
     .codeview-resizable-group
     > [data-pane]:has(.tree-pane) {
     display: flex !important;
@@ -1060,13 +1063,15 @@ html:not([data-hydrated="true"]) .hydrated-only {
     border-bottom: 0;
   }
 
-  html[data-js="enabled"] .live-explorer.mobile-tree-open
+  html[data-js="enabled"]
+    .live-explorer.mobile-tree-open
     .codeview-resizable-group
     > [data-pane]:not(:has(.tree-pane)) {
     display: none !important;
   }
 
-  html[data-js="enabled"] .live-explorer:not(.mobile-tree-open)
+  html[data-js="enabled"]
+    .live-explorer:not(.mobile-tree-open)
     .codeview-resizable-group
     > [data-pane]:has(.detail-pane) {
     flex: 0 1 42% !important;

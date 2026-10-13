@@ -810,8 +810,10 @@ async function withShortEdgeCache<T>(
   if (cache) {
     try {
       const cached = await cache.match(request);
-      // SAFETY: only this function writes this internal URL, with JSON of T.
-      if (cached) return (await cached.json()) as T;
+      if (cached) {
+        // SAFETY: only this function writes this internal URL, and it stores JSON of T.
+        return (await cached.json()) as T;
+      }
     } catch (err) {
       log.warn`Cache API match failed for ${cacheUrl}: ${String(err)}`;
     }
@@ -824,9 +826,11 @@ async function withShortEdgeCache<T>(
         "Cache-Control": `public, max-age=${ttlSeconds}`,
       },
     });
-    await cache.put(request, response).catch((err: unknown) => {
+    try {
+      await cache.put(request, response);
+    } catch (err) {
       log.warn`Cache API put failed for ${cacheUrl}: ${String(err)}`;
-    });
+    }
   }
   return value;
 }

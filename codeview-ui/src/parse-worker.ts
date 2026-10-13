@@ -359,7 +359,6 @@ function parseNonNegativeInteger(value: string | undefined, fallback: number): n
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-
 function isSafeCrateName(value: string): boolean {
   return SAFE_CRATE_NAME_PATTERN.test(value);
 }
