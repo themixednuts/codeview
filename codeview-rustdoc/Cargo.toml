@@ -27,7 +27,7 @@ serde = "1.0"
 serde_json = { version = "1.0.149", features = ["unbounded_depth"] }
 serde_path_to_error = "0.1"
 serde_stacker = "0.1"
-syn = { version = "2.0.114", features = ["full", "visit"] }
+syn = { version = "3.0.9", features = ["full", "visit"] }
 thiserror = "2.0.18"
 
 # Native-only: cargo metadata for workspace member detection + crate root resolution

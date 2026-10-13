@@ -915,6 +915,20 @@ mod tests {
     use crate::publisher::r2::freshness_key;
     use std::sync::Mutex;
 
+    /// Content hashes are persisted in freshness entries and compared
+    /// across runs; a hashing-crate upgrade must keep them byte-identical.
+    #[test]
+    fn sha256_hex_matches_known_digests() {
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            sha256_hex(b"codeview content hash"),
+            "f81ceba3c05200757501bfb00f958b97702d2764184d90d056f70737d593f41b"
+        );
+    }
+
     #[derive(Default)]
     struct MemoryR2 {
         objects: Mutex<BTreeMap<String, Vec<u8>>>,
