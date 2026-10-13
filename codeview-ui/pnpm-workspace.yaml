@@ -17,8 +17,7 @@ allowBuilds:
   msgpackr-extract: true
 
 patchedDependencies:
-  "@alchemy.run/cloudflare-frameworks@2.0.0-beta.72": patches/@alchemy.run__cloudflare-frameworks@2.0.0-beta.72.patch
-  "@jesterkit/exe-sveltekit@0.1.7": patches/@jesterkit%2Fexe-sveltekit@0.1.7.patch
+  "@jesterkit/exe-sveltekit@0.1.7": patches/@jesterkit__exe-sveltekit@0.1.7.patch
 
 overrides:
   clsx: 2.1.1
@@ -39,7 +38,7 @@ minimumReleaseAgeExclude:
   - drizzle-orm
   - drizzle-kit
   - alchemy
-  - "@alchemy.run/cloudflare-frameworks"
+  - "@alchemy.run/frontend-frameworks"
   - "@alchemy.run/better-auth"
   - better-auth
   - "@better-auth/passkey"
@@ -48,8 +47,8 @@ minimumReleaseAgeExclude:
 
 peerDependencyRules:
   allowedVersions:
-    better-auth: "1.7.0-rc.5"
+    better-auth: "1.7.7"
     "@cloudflare/workers-types": ">=5"
     vite: "0.2.9"
     drizzle-orm: "1.0.0-rc.5-ab785fc"
-    "@sveltejs/kit": "3.0.0-next.23"
+    "@sveltejs/kit": "3.0.1"

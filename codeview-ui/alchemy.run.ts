@@ -8,7 +8,7 @@ const parserScriptName = "codeview-parser";
 
 export const AuthDb = Cloudflare.D1.Database("AuthDb", {
   name: "codeview-auth",
-  migrationsDir: "./src/lib/server/db/auth-migrations",
+  migrations: "./src/lib/server/db/auth-migrations",
 });
 
 export const CrateGraphs = Cloudflare.R2.Bucket("CrateGraphs", {
@@ -53,8 +53,8 @@ export const Parser = Cloudflare.Worker("Parser", {
     DOCSRS_PARSE_REFILL_SECONDS: "20",
     SYSROOT_PARSE_BURST: "1",
     SYSROOT_PARSE_REFILL_SECONDS: "600",
-    GITHUB_TOKEN: Config.redacted("GITHUB_TOKEN"),
-    PARSE_CALLBACK_SECRET: Config.redacted("PARSE_CALLBACK_SECRET"),
+    GITHUB_TOKEN: Config.Redacted("GITHUB_TOKEN"),
+    PARSE_CALLBACK_SECRET: Config.Redacted("PARSE_CALLBACK_SECRET"),
   },
 });
 
@@ -103,9 +103,9 @@ export const Website = Cloudflare.Website.SvelteKit(
       PLAN_DRAIN_ACTIVE_TARGET: "4",
       PLAN_DRAIN_BATCH_SIZE: "4",
       GITHUB_ACTIONS_REPO_USAGE_TARGET_PERCENT: "35",
-      BETTER_AUTH_SECRET: Config.redacted("BETTER_AUTH_SECRET"),
-      GITHUB_OAUTH_CLIENT_SECRET: Config.redacted("GITHUB_OAUTH_CLIENT_SECRET"),
-      GITHUB_TOKEN: Config.redacted("GITHUB_TOKEN"),
+      BETTER_AUTH_SECRET: Config.Redacted("BETTER_AUTH_SECRET"),
+      GITHUB_OAUTH_CLIENT_SECRET: Config.Redacted("GITHUB_OAUTH_CLIENT_SECRET"),
+      GITHUB_TOKEN: Config.Redacted("GITHUB_TOKEN"),
     },
   }),
 );
