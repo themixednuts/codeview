@@ -305,8 +305,16 @@ pub async fn publish_one(opts: PublishOptions<'_>) -> Result<Outcome, PublishErr
     }
 
     // ─── 5. Build artifacts ──────────────────────────────────────
-    let mut artifacts = shards::build_all(&crate_graph, storage_name, aliases)
-        .map_err(|e| PublishError::Permanent(format!("artifact build: {e:#}")))?;
+    // The site reads only the hosted `site/*` set. The older shard set
+    // (manifest/nodes/node-details/...) roughly doubled the objects uploaded
+    // per crate and has no reader; set CODEVIEW_PUBLISH_LEGACY_ARTIFACTS=1 to
+    // publish it anyway.
+    let mut artifacts = if publish_legacy_artifacts() {
+        shards::build_all(&crate_graph, storage_name, aliases)
+            .map_err(|e| PublishError::Permanent(format!("artifact build: {e:#}")))?
+    } else {
+        Vec::new()
+    };
     let hosted_set = hosted_artifacts::build_all(&crate_graph, storage_name)
         .map_err(|e| PublishError::Permanent(format!("hosted artifact build: {e:#}")))?;
     eprintln!(
@@ -467,6 +475,10 @@ fn find_unpacked_crate_dir(root: &std::path::Path) -> Option<std::path::PathBuf>
             None
         }
     })
+}
+
+fn publish_legacy_artifacts() -> bool {
+    std::env::var("CODEVIEW_PUBLISH_LEGACY_ARTIFACTS").is_ok_and(|value| value == "1")
 }
 
 fn is_commit_marker(key: &str) -> bool {
