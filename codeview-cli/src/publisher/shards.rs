@@ -1309,6 +1309,14 @@ mod tests {
     }
 
     #[test]
+    fn work_bucket_matches_the_hosted_drain() {
+        // Pinned in codeview-ui plan-drain.test.ts too; the hosted queue skips
+        // items by these buckets, so both sides must agree.
+        assert_eq!(work_bucket("crate:serde:1.0.228:default", 8), 1);
+        assert_eq!(work_bucket("crate:syn:3.0.9:default", 8), 3);
+    }
+
+    #[test]
     fn work_bucket_is_deterministic_and_evenish() {
         let shard_count = 16;
         let first = work_bucket("crate:serde:1.0.228:default", shard_count);

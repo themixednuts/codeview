@@ -66,9 +66,9 @@ on:
         required: false
         default: 'top:5000'
       max_total:
-        description: 'Maximum crates in this run'
+        description: 'Maximum crates in the plan; shards drain max_per_shard each, the hosted queue dispatches the rest'
         required: false
-        default: '100'
+        default: '1000'
       shard_count:
         description: 'Deterministic publish shards'
         required: false
@@ -377,7 +377,7 @@ jobs:
         id: plan
         env:
           CORPUS: ${{ inputs.corpus || 'top:5000' }}
-          MAX_TOTAL: ${{ inputs.max_total || '100' }}
+          MAX_TOTAL: ${{ inputs.max_total || '1000' }}
           MAX_PER_SHARD: ${{ inputs.max_per_shard || '15' }}
           SHARD_COUNT: ${{ inputs.shard_count || '8' }}
           FORCE_NAMES: ${{ inputs.force || '' }}
@@ -385,11 +385,16 @@ jobs:
           chmod +x bin/codeview
           RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           PLAN_KEY="rust/_runs/${RUN_ID}/plan.json"
+          # Shards drain MAX_PER_SHARD items each. The plan holds up to
+          # MAX_TOTAL so the hosted queue can dispatch the remainder.
+          PLAN_PER_SHARD=$(( (MAX_TOTAL + SHARD_COUNT - 1) / SHARD_COUNT ))
+          if [ "$PLAN_PER_SHARD" -lt "$MAX_PER_SHARD" ]; then PLAN_PER_SHARD="$MAX_PER_SHARD"; fi
           bin/codeview cron plan \
             --mode daily \
             --corpus "$CORPUS" \
             --max-total "$MAX_TOTAL" \
-            --max-per-shard "$MAX_PER_SHARD" \
+            --max-per-shard "$PLAN_PER_SHARD" \
+            --shard-drain-limit "$MAX_PER_SHARD" \
             --shard-count "$SHARD_COUNT" \
             --force "$FORCE_NAMES" \
             --plan-out "r2:${PLAN_KEY}" \

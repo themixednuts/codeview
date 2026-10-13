@@ -2,10 +2,13 @@ import { describe, expect, test } from "vite-plus/test";
 import * as Effect from "effect/Effect";
 import {
   isParseWorkerTaskMessage,
+  isRecentPermanentFailure,
   listParsePlanKeys,
   makeParseRequest,
   PARSE_WORKER_TASK_SCHEMA_VERSION,
   ORPHANED_PROCESSING_MS,
+  PERMANENT_FAILURE_COOLDOWN_MS,
+  PERMANENT_FAILURE_STEP,
   shouldAcceptQueuedParseRequest,
   type StoredParseStatus,
 } from "./parse-contract";
@@ -71,6 +74,29 @@ describe("queued parse registration", () => {
     };
     expect(shouldAcceptQueuedParseRequest(storedStatus("failed"), request)).toBe(false);
   });
+
+  test("blocks non-forced requests for a recent permanent failure, but not admin force", () => {
+    const existing = { ...storedStatus("failed"), step: PERMANENT_FAILURE_STEP };
+    const later = Date.parse(existing.updatedAt) + 60 * 60 * 1000;
+    const visit = {
+      ...makeParseRequest("serde", "1.0.228", false),
+      requestedAt: new Date(later).toISOString(),
+    };
+    const forced = { ...visit, force: true };
+    expect(shouldAcceptQueuedParseRequest(existing, visit, later)).toBe(false);
+    expect(shouldAcceptQueuedParseRequest(existing, forced, later)).toBe(true);
+    expect(isRecentPermanentFailure(existing, later)).toBe(true);
+  });
+
+  test("lets a permanent failure be retried after the cooldown", () => {
+    const existing = { ...storedStatus("failed"), step: PERMANENT_FAILURE_STEP };
+    const later = Date.parse(existing.updatedAt) + PERMANENT_FAILURE_COOLDOWN_MS + 1;
+    const visit = {
+      ...makeParseRequest("serde", "1.0.228", false),
+      requestedAt: new Date(later).toISOString(),
+    };
+    expect(shouldAcceptQueuedParseRequest(existing, visit, later)).toBe(true);
+  });
 });
 
 describe("parse worker task messages", () => {
@@ -86,6 +112,16 @@ describe("parse worker task messages", () => {
           actionsInUse: 2,
           capacityReliable: true,
         },
+      }),
+    ).toBe(true);
+  });
+
+  test("accepts a delayed drain task that reads pressure when it runs", () => {
+    expect(
+      isParseWorkerTaskMessage({
+        schemaVersion: PARSE_WORKER_TASK_SCHEMA_VERSION,
+        task: "drain-planned",
+        enqueuedAt: "2026-10-13T08:00:00.000Z",
       }),
     ).toBe(true);
   });

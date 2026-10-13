@@ -16,11 +16,13 @@ import {
   crateStatusTag,
   isParseRequestMessage,
   isParseWorkerTaskMessage,
+  isRecentPermanentFailure,
   LATEST_PLAN_POINTER_KEY,
   LatestPlanPointer,
   listParsePlanKeys,
   makeParseRequest,
   PARSE_WORKER_TASK_SCHEMA_VERSION,
+  PERMANENT_FAILURE_STEP,
   parseStatusObject,
   parseWorkflowId,
   registerQueuedParseRequest,
@@ -36,6 +38,7 @@ import {
   type ParseWorkflowParams,
   type StoredParseStatus,
 } from "./lib/server/cloudflare/parse-contract";
+import { shardReservedIndices } from "./lib/server/cloudflare/plan-drain";
 
 type ParseWorkerEnv = Env & {
   CRATE_GRAPHS: R2Bucket;
@@ -83,10 +86,10 @@ const ACTIVE_GITHUB_RUN_STATUSES = [
   "requested",
 ] as const;
 const STALE_PROCESSING_RECONCILE_MS = 20 * 60 * 1000;
-/** Status step for deterministic failures (e.g. the crate is a `compile_error!`). */
-const PERMANENT_FAILURE_STEP = "failed-permanent";
-/** Planned work skips a permanent failure for this long; a new parser revision re-plans it. */
-const PERMANENT_FAILURE_PLAN_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+/** Plan items one drain may look up (status + freshness reads) before it stops. */
+const MAX_PLAN_ITEMS_SCANNED_PER_DRAIN = 100;
+/** Delay before a completion-triggered drain, so the finished GitHub run stops counting as active. */
+const COMPLETION_DRAIN_DELAY_SECONDS = 60;
 /** UI requests waiting for GitHub capacity give up after this long. */
 const MAX_DISPATCH_WAIT_MS = 6 * 60 * 60 * 1000;
 const ORPHANED_PROCESSING_RECONCILE_MS = 30 * 60 * 1000;
@@ -133,6 +136,8 @@ type WorkPlanArtifact = {
   runId?: string;
   generated_at?: string;
   generatedAt?: string;
+  shard_count?: number;
+  shard_drain_limit?: number;
   work?: Array<{
     work_id?: string;
     workId?: string;
@@ -880,14 +885,9 @@ async function plannedItemAlreadyHandled(
   if (status?.status === "processing") return true;
   if (await plannedItemSatisfiedByFreshness(env, item, plan)) return true;
   if (status?.status === "failed" && statusIsNewerThanPlan(status, plan)) return true;
-  if (status?.status === "failed" && status.step === PERMANENT_FAILURE_STEP) {
-    // A new daily plan does not change a deterministic failure. Only a
-    // parser refresh (reason "parser a -> b") is worth another attempt.
-    const updatedAtMs = Date.parse(status.updatedAt);
-    const recent =
-      Number.isFinite(updatedAtMs) && Date.now() - updatedAtMs < PERMANENT_FAILURE_PLAN_COOLDOWN_MS;
-    if (recent && !planReasonParserTarget(item.reason)) return true;
-  }
+  // A new daily plan does not change a deterministic failure. Only a
+  // parser refresh (reason "parser a -> b") is worth another attempt.
+  if (isRecentPermanentFailure(status) && !planReasonParserTarget(item.reason)) return true;
   if (
     status?.status === "ready" &&
     statusIsNewerThanPlan(status, plan) &&
@@ -1029,28 +1029,82 @@ async function drainPlannedParses(
   }
   const plan = await loadLatestPlan(env);
   const work = Array.isArray(plan?.work) ? plan.work : [];
+  const runId = plan ? (plan.run_id ?? plan.runId) : undefined;
+  // Items the daily shards will parse themselves; dispatching them too would
+  // double the work while the scheduled run is still going.
+  const reserved = plan
+    ? shardReservedIndices({
+        generatedAt: generatedAt(plan),
+        shardCount: plan.shard_count,
+        shardDrainLimit: plan.shard_drain_limit,
+        workIds: work.map((raw) => raw.work_id ?? raw.workId),
+      })
+    : new Set<number>();
+  // Everything before the cursor is settled (parsed, in flight, failed or
+  // dispatched), so a 1000-item plan is not re-read from the top every tick.
+  const startAt = runId ? await readDrainCursor(env, runId) : 0;
+  let cursor = startAt;
+  let cursorBlocked = false;
+  let scanned = 0;
   let queued = 0;
   let skipped = 0;
-  for (const raw of work) {
-    if (remaining === 0) break;
-    const item = plannedParseItem(raw);
+  for (let index = startAt; index < work.length; index += 1) {
+    if (remaining === 0 || scanned >= MAX_PLAN_ITEMS_SCANNED_PER_DRAIN) break;
+    const item = plannedParseItem(work[index]!);
+    let settled = true;
     if (!item) {
       skipped += 1;
-      continue;
-    }
-    const status = await readStatus(env, item.name, item.version);
-    if (await plannedItemAlreadyHandled(env, item, plan, status)) {
-      skipped += 1;
-      continue;
-    }
-    if (await enqueuePlannedItem(env, item)) {
-      queued += 1;
-      remaining -= 1;
+    } else if (reserved.has(index)) {
+      settled = false;
     } else {
-      skipped += 1;
+      scanned += 1;
+      const status = await readStatus(env, item.name, item.version);
+      if (await plannedItemAlreadyHandled(env, item, plan, status)) {
+        skipped += 1;
+      } else if (await enqueuePlannedItem(env, item)) {
+        queued += 1;
+        remaining -= 1;
+      } else {
+        skipped += 1;
+      }
     }
+    if (!settled) cursorBlocked = true;
+    if (!cursorBlocked) cursor = index + 1;
   }
+  if (runId && cursor !== startAt) await writeDrainCursor(env, runId, cursor);
   return { ...pressure, activeTarget, availableSlots, budgetLimited: false, queued, skipped };
+}
+
+function drainCursorKey(runId: string): string {
+  return `rust/_runs/${runId}/drain-cursor.json`;
+}
+
+async function readDrainCursor(env: ParseWorkerEnv, runId: string): Promise<number> {
+  const object = await env.CRATE_GRAPHS.get(drainCursorKey(runId));
+  if (!object) return 0;
+  const value = Option.getOrUndefined(
+    Schema.decodeUnknownOption(Schema.Struct({ next: Schema.Number }))(await object.json()),
+  );
+  return value && Number.isInteger(value.next) && value.next > 0 ? value.next : 0;
+}
+
+async function writeDrainCursor(env: ParseWorkerEnv, runId: string, next: number): Promise<void> {
+  await env.CRATE_GRAPHS.put(
+    drainCursorKey(runId),
+    JSON.stringify({ next, updatedAt: new Date().toISOString() }),
+    { httpMetadata: { contentType: "application/json" } },
+  );
+}
+
+/** Refill freed GitHub capacity from the plan without waiting for the next cron tick. */
+async function scheduleCompletionDrain(env: ParseWorkerEnv): Promise<void> {
+  if (!env.PARSE_REQUESTS) return;
+  const task: ParseWorkerTaskMessage = {
+    schemaVersion: PARSE_WORKER_TASK_SCHEMA_VERSION,
+    task: "drain-planned",
+    enqueuedAt: new Date().toISOString(),
+  };
+  await env.PARSE_REQUESTS.send(task, { delaySeconds: COMPLETION_DRAIN_DELAY_SECONDS });
 }
 
 type CrateRefs = {
@@ -1704,6 +1758,15 @@ export class ParseStatusDurableObject extends DurableObject<ParseWorkerEnv> {
   private registerQueuedParse(message: Schema.Json): QueueParseResponse {
     if (!isParseRequestMessage(message)) throw new Error("invalid parse request");
     const existing = this.getStatus(message.name, message.version);
+    // `bincode_derive` and `bincode-derive` are separate rows; a permanent
+    // failure under either spelling should stop the other from re-running.
+    if (!message.force) {
+      for (const variant of crateNameVariants(message.name)) {
+        if (variant === message.name) continue;
+        const sibling = this.getStatus(variant, message.version);
+        if (isRecentPermanentFailure(sibling)) return { accepted: false, status: sibling! };
+      }
+    }
     if (!shouldAcceptQueuedParseRequest(existing, message)) {
       if (!existing) throw new Error("queued parse registration state is unavailable");
       return { accepted: false, status: existing };
@@ -2190,7 +2253,7 @@ async function handleWorkerTaskMessage(
         break;
       }
       case "reconcile-stale": {
-        const githubActive = body.pressure.capacityReliable ? body.pressure.githubActive : null;
+        const githubActive = body.pressure?.capacityReliable ? body.pressure.githubActive : null;
         const result = await reconcileStaleProcessingParses(env, {
           cursor,
           batchSize: RECONCILE_BATCH_SIZE,
@@ -2382,6 +2445,9 @@ async function handleCallback(request: Request, env: ParseWorkerEnv): Promise<Re
     githubRunUrl: payload.runUrl,
   });
   const eventDelivered = await deliverCompletionEvent(env, payload);
+  await scheduleCompletionDrain(env).catch((err) => {
+    console.warn(`completion drain scheduling failed: ${errorMessage(err)}`);
+  });
   if (payload.ok) {
     try {
       await verifyArtifacts(env, payload.name, payload.version);

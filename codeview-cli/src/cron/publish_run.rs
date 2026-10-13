@@ -125,6 +125,7 @@ pub async fn run(args: PublishRun) -> Result<()> {
             shard_count: args.shard_count,
             max_total: args.max_total,
             max_per_shard: args.max_per_shard,
+            shard_drain_limit: None,
             include_retries: false,
             force_names: HashSet::new(),
             force_all: args.force,
@@ -373,6 +374,7 @@ mod tests {
             generated_at: "2026-07-04T00:00:00Z".to_string(),
             mode: PlanMode::Daily,
             shard_count,
+            shard_drain_limit: None,
             work: Vec::new(),
         }
     }

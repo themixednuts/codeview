@@ -225,12 +225,29 @@ export async function registerQueuedParseRequest(
  */
 export const ORPHANED_PROCESSING_MS = 6 * 60 * 60 * 1000 + 30 * 60 * 1000;
 
+/** Status step for a parse that failed deterministically (it will fail again). */
+export const PERMANENT_FAILURE_STEP = "failed-permanent";
+/** How long a permanent failure blocks non-forced requests for the same crate. */
+export const PERMANENT_FAILURE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function isRecentPermanentFailure(
+  status: StoredParseStatus | null | undefined,
+  now = Date.now(),
+): boolean {
+  if (status?.status !== "failed" || status.step !== PERMANENT_FAILURE_STEP) return false;
+  const updatedAt = Date.parse(status.updatedAt);
+  return Number.isFinite(updatedAt) && now - updatedAt < PERMANENT_FAILURE_COOLDOWN_MS;
+}
+
 export function shouldAcceptQueuedParseRequest(
   existing: StoredParseStatus | null,
   message: ParseRequestMessage,
   now = Date.now(),
 ): boolean {
   if (!existing) return true;
+  // Page views re-request unparsed crates; a crate that cannot build would
+  // burn a GitHub run on every visit. Admin force still goes through.
+  if (!message.force && isRecentPermanentFailure(existing, now)) return false;
   if (existing.status === "processing") {
     const updatedAt = Date.parse(existing.updatedAt);
     return Number.isFinite(updatedAt) && now - updatedAt > ORPHANED_PROCESSING_MS;
@@ -316,7 +333,8 @@ export type ParseWorkerTaskMessage = {
   schemaVersion: typeof PARSE_WORKER_TASK_SCHEMA_VERSION;
   task: ParseWorkerTaskKind;
   enqueuedAt: string;
-  pressure: ParseDrainPressureSnapshot;
+  /** Omitted by delayed tasks, which read live pressure when they run. */
+  pressure?: ParseDrainPressureSnapshot;
   reconcileCursor?: number;
 };
 
@@ -332,7 +350,7 @@ const ParseWorkerTaskMessageSchema = Schema.Struct({
   schemaVersion: Schema.Literal(PARSE_WORKER_TASK_SCHEMA_VERSION),
   task: Schema.Literals(["reconcile-finalizing", "reconcile-stale", "drain-planned"]),
   enqueuedAt: Schema.String,
-  pressure: ParseDrainPressureSnapshotSchema,
+  pressure: Schema.optionalKey(ParseDrainPressureSnapshotSchema),
   reconcileCursor: Schema.optionalKey(Schema.Number),
 });
 

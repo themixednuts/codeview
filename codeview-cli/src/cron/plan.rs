@@ -54,6 +54,12 @@ pub struct Plan {
     #[arg(long)]
     pub max_per_shard: Option<usize>,
 
+    /// Items per shard bucket that `cron parse-shard --max-items` will drain.
+    /// Recorded in the plan so the hosted drain leaves them to the shards and
+    /// dispatches the rest.
+    #[arg(long)]
+    pub shard_drain_limit: Option<usize>,
+
     /// Include eligible retry work. Retry index support lands in a later step.
     #[arg(long)]
     pub include_retries: bool,
@@ -132,6 +138,8 @@ pub struct WorkPlan {
     pub generated_at: String,
     pub mode: PlanMode,
     pub shard_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard_drain_limit: Option<usize>,
     pub work: Vec<WorkItem>,
 }
 
@@ -209,6 +217,7 @@ struct PlanAssembly {
     shard_count: usize,
     max_total: Option<usize>,
     max_per_shard: Option<usize>,
+    shard_drain_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -225,6 +234,7 @@ pub(crate) struct PlanBuildConfig {
     pub(crate) shard_count: usize,
     pub(crate) max_total: Option<usize>,
     pub(crate) max_per_shard: Option<usize>,
+    pub(crate) shard_drain_limit: Option<usize>,
     pub(crate) include_retries: bool,
     pub(crate) force_names: HashSet<String>,
     pub(crate) force_all: bool,
@@ -248,6 +258,7 @@ impl PlanBuildConfig {
             shard_count: args.shard_count,
             max_total: args.max_total,
             max_per_shard: args.max_per_shard,
+            shard_drain_limit: args.shard_drain_limit,
             include_retries: args.include_retries,
             force_names: parse_force(&args.force),
             force_all: false,
@@ -512,6 +523,7 @@ pub(crate) async fn build_plan(ctx: &CronContext, config: PlanBuildConfig) -> Re
             shard_count: config.shard_count,
             max_total: config.max_total,
             max_per_shard: config.max_per_shard,
+            shard_drain_limit: config.shard_drain_limit,
         },
         evaluated,
     )?;
@@ -674,6 +686,7 @@ fn assemble_work_plan(
         generated_at: options.generated_at,
         mode: options.mode,
         shard_count: options.shard_count,
+        shard_drain_limit: options.shard_drain_limit,
         work,
     })
 }
@@ -1073,6 +1086,7 @@ mod tests {
                 shard_count: 4,
                 max_total: Some(3),
                 max_per_shard: None,
+                shard_drain_limit: None,
             },
             evaluated,
         )
@@ -1150,6 +1164,7 @@ mod tests {
                 shard_count: 4,
                 max_total: Some(5),
                 max_per_shard: None,
+                shard_drain_limit: None,
             },
             evaluated,
         )
@@ -1161,5 +1176,29 @@ mod tests {
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names, vec!["alpha", "beta", "epsilon", "gamma", "zeta"]);
+    }
+    #[test]
+    fn plan_records_shard_drain_limit_and_reads_plans_without_it() {
+        let plan = assemble_work_plan(
+            PlanAssembly {
+                run_id: "run-123".to_string(),
+                generated_at: "2026-07-04T00:00:00Z".to_string(),
+                mode: PlanMode::Daily,
+                shard_count: 4,
+                max_total: None,
+                max_per_shard: None,
+                shard_drain_limit: Some(15),
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let json = serde_json::to_value(&plan).unwrap();
+        assert_eq!(json["shard_drain_limit"], 15);
+
+        let legacy: WorkPlan = serde_json::from_str(
+            r#"{"run_id":"r","generated_at":"g","mode":"daily","shard_count":8,"work":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.shard_drain_limit, None);
     }
 }
