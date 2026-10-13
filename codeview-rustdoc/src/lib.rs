@@ -1306,6 +1306,10 @@ pub fn validate_rustdoc_json(
     crate_name: &str,
     policy: &RustdocFormatPolicy,
 ) -> Result<ValidatedRustdoc, RustdocError> {
+    if let Some(validated) = validate_current_format_fast(json, crate_name, policy)? {
+        return Ok(validated);
+    }
+
     let mut doc = parse_json_value_unbounded(json).map_err(RustdocError::JsonSyntax)?;
     let source_format_version = preflight_rustdoc_json(&doc, policy)?;
 
@@ -1320,6 +1324,33 @@ pub fn validate_rustdoc_json(
     validate_rustdoc_structure(&krate, crate_name, &mut report)?;
 
     Ok(ValidatedRustdoc { krate, report })
+}
+
+/// Deserialize straight into `rdt::Crate` when the document already uses
+/// the parser's format version, skipping the intermediate `serde_json::Value`
+/// tree (several GB and ~20 s for windows-sys's 300 MB JSON).
+///
+/// Returns `Ok(None)` whenever the general path must decide instead: other
+/// format versions (which may need `compat::upgrade`), or any typed
+/// deserialization error (the general path reports it with a JSON path).
+fn validate_current_format_fast(
+    json: &str,
+    crate_name: &str,
+    policy: &RustdocFormatPolicy,
+) -> Result<Option<ValidatedRustdoc>, RustdocError> {
+    let Ok(krate) = deserialize_json_str_unbounded::<rdt::Crate>(json) else {
+        return Ok(None);
+    };
+    if krate.format_version != rdt::FORMAT_VERSION {
+        return Ok(None);
+    }
+    policy.validate(krate.format_version)?;
+    if krate.index.is_empty() {
+        return Err(RustdocShapeError::EmptyIndex.into());
+    }
+    let mut report = RustdocValidationReport::new(crate_name, krate.format_version);
+    validate_rustdoc_structure(&krate, crate_name, &mut report)?;
+    Ok(Some(ValidatedRustdoc { krate, report }))
 }
 
 pub fn extract_graph_validated(
