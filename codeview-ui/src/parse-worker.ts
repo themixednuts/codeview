@@ -38,7 +38,11 @@ import {
   type ParseWorkflowParams,
   type StoredParseStatus,
 } from "./lib/server/cloudflare/parse-contract";
-import { shardReservedIndices } from "./lib/server/cloudflare/plan-drain";
+import {
+  drainStartIndex,
+  shardReservedIndices,
+  type DrainCursor,
+} from "./lib/server/cloudflare/plan-drain";
 
 type ParseWorkerEnv = Env & {
   CRATE_GRAPHS: R2Bucket;
@@ -1042,38 +1046,39 @@ async function drainPlannedParses(
         workIds: work.map((raw) => raw.work_id ?? raw.workId),
       })
     : new Set<number>();
-  // Everything before the cursor is settled (parsed, in flight, failed or
-  // dispatched), so a 1000-item plan is not re-read from the top every tick.
-  const startAt = runId ? await readDrainCursor(env, runId) : 0;
+  // Everything before the cursor is settled (parsed, in flight, failed,
+  // dispatched or left to the shards), so a 1000-item plan is not re-read
+  // from the top every pass.
+  const reservedWindow = reserved.size > 0;
+  const stored = runId ? await readDrainCursor(env, runId) : null;
+  const startAt = drainStartIndex(stored, reservedWindow);
   let cursor = startAt;
-  let cursorBlocked = false;
   let scanned = 0;
   let queued = 0;
   let skipped = 0;
   for (let index = startAt; index < work.length; index += 1) {
     if (remaining === 0 || scanned >= MAX_PLAN_ITEMS_SCANNED_PER_DRAIN) break;
+    cursor = index + 1;
     const item = plannedParseItem(work[index]!);
-    let settled = true;
     if (!item) {
       skipped += 1;
-    } else if (reserved.has(index)) {
-      settled = false;
-    } else {
-      scanned += 1;
-      const status = await readStatus(env, item.name, item.version);
-      if (await plannedItemAlreadyHandled(env, item, plan, status)) {
-        skipped += 1;
-      } else if (await enqueuePlannedItem(env, item)) {
-        queued += 1;
-        remaining -= 1;
-      } else {
-        skipped += 1;
-      }
+      continue;
     }
-    if (!settled) cursorBlocked = true;
-    if (!cursorBlocked) cursor = index + 1;
+    if (reserved.has(index)) continue;
+    scanned += 1;
+    const status = await readStatus(env, item.name, item.version);
+    if (await plannedItemAlreadyHandled(env, item, plan, status)) {
+      skipped += 1;
+    } else if (await enqueuePlannedItem(env, item)) {
+      queued += 1;
+      remaining -= 1;
+    } else {
+      skipped += 1;
+    }
   }
-  if (runId && cursor !== startAt) await writeDrainCursor(env, runId, cursor);
+  if (runId && (cursor !== stored?.next || reservedWindow !== stored?.reservedWindow)) {
+    await writeDrainCursor(env, runId, { next: cursor, reservedWindow });
+  }
   return { ...pressure, activeTarget, availableSlots, budgetLimited: false, queued, skipped };
 }
 
@@ -1081,19 +1086,26 @@ function drainCursorKey(runId: string): string {
   return `rust/_runs/${runId}/drain-cursor.json`;
 }
 
-async function readDrainCursor(env: ParseWorkerEnv, runId: string): Promise<number> {
+async function readDrainCursor(env: ParseWorkerEnv, runId: string): Promise<DrainCursor | null> {
   const object = await env.CRATE_GRAPHS.get(drainCursorKey(runId));
-  if (!object) return 0;
+  if (!object) return null;
   const value = Option.getOrUndefined(
-    Schema.decodeUnknownOption(Schema.Struct({ next: Schema.Number }))(await object.json()),
+    Schema.decodeUnknownOption(
+      Schema.Struct({ next: Schema.Number, reservedWindow: Schema.optionalKey(Schema.Boolean) }),
+    )(await object.json()),
   );
-  return value && Number.isInteger(value.next) && value.next > 0 ? value.next : 0;
+  if (!value || !Number.isInteger(value.next) || value.next < 0) return null;
+  return { next: value.next, reservedWindow: value.reservedWindow ?? false };
 }
 
-async function writeDrainCursor(env: ParseWorkerEnv, runId: string, next: number): Promise<void> {
+async function writeDrainCursor(
+  env: ParseWorkerEnv,
+  runId: string,
+  cursor: DrainCursor,
+): Promise<void> {
   await env.CRATE_GRAPHS.put(
     drainCursorKey(runId),
-    JSON.stringify({ next, updatedAt: new Date().toISOString() }),
+    JSON.stringify({ ...cursor, updatedAt: new Date().toISOString() }),
     { httpMetadata: { contentType: "application/json" } },
   );
 }

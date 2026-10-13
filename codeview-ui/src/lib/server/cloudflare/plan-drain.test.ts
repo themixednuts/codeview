@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vite-plus/test";
-import { SHARD_RESERVATION_MS, fnv1a64, shardReservedIndices, workBucket } from "./plan-drain";
+import {
+  SHARD_RESERVATION_MS,
+  drainStartIndex,
+  fnv1a64,
+  shardReservedIndices,
+  workBucket,
+} from "./plan-drain";
 
 describe("plan drain helpers", () => {
   test("fnv1a64 matches the published FNV-1a 64 vectors used by codeview-cli", () => {
@@ -47,5 +53,11 @@ describe("plan drain helpers", () => {
         Date.parse(generatedAt),
       ).size,
     ).toBe(0);
+  });
+  test("drain resumes at its cursor and rescans once the shard window closes", () => {
+    expect(drainStartIndex(null, true)).toBe(0);
+    expect(drainStartIndex({ next: 140, reservedWindow: true }, true)).toBe(140);
+    expect(drainStartIndex({ next: 140, reservedWindow: true }, false)).toBe(0);
+    expect(drainStartIndex({ next: 300, reservedWindow: false }, false)).toBe(300);
   });
 });

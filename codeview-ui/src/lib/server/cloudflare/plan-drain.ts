@@ -62,3 +62,21 @@ export function shardReservedIndices(plan: ShardReservationInput, now = Date.now
   });
   return reserved;
 }
+
+/** Saved drain position for one plan, stored next to the plan in R2. */
+export type DrainCursor = {
+  next: number;
+  /** True when it was written while shard reservations were in force. */
+  reservedWindow: boolean;
+};
+
+/**
+ * Where a drain pass starts. During the shard window reserved items are
+ * stepped over like settled ones, so once the window closes the drain
+ * rescans from the top to pick up anything the shards left unparsed.
+ */
+export function drainStartIndex(stored: DrainCursor | null, reservedWindow: boolean): number {
+  if (!stored) return 0;
+  if (stored.reservedWindow && !reservedWindow) return 0;
+  return stored.next;
+}
