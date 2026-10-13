@@ -15,8 +15,7 @@ import * as Schema from "effect/Schema";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type * as Scope from "effect/Scope";
-import type { DBFieldAttribute } from "better-auth";
-import { authRelations, authTables } from "#lib/server/db/auth-schema.js";
+import { authRelations, authTables, authUserAdditionalFields } from "#lib/server/db/auth-schema.js";
 
 export type AuthEnv = {
   AUTH_DB?: D1Database;
@@ -57,11 +56,6 @@ export type ParseRequestActor = {
   login: string;
   avatarUrl?: string;
 };
-
-const githubLoginField = {
-  type: "string",
-  required: false,
-} satisfies DBFieldAttribute;
 
 const AuthUserFields = Schema.Struct({
   id: Schema.String,
@@ -233,9 +227,7 @@ function authProps(env: AuthEnv): BetterAuthProps {
     baseURL: env.BETTER_AUTH_URL,
     basePath: "/api/auth",
     user: {
-      additionalFields: {
-        githubLogin: githubLoginField,
-      },
+      additionalFields: authUserAdditionalFields,
     },
     account: {
       accountLinking: {

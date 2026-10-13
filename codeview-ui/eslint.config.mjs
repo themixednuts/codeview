@@ -42,6 +42,8 @@ const rules = {
 export default defineConfig([
   globalIgnores([
     ".svelte-kit/**",
+    ".wrangler/**",
+    ".alchemy/**",
     "build/**",
     "dist/**",
     "node_modules/**",
