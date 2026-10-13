@@ -16,7 +16,8 @@ export interface DocResponseCache {
 }
 
 const DOC_RESPONSE_CACHE_ORIGIN = "https://codeview.internal";
-const DOC_RESPONSE_CACHE_NAMESPACE = "doc-pages-v1";
+// Keys include the build version so a deploy never serves pages an older build rendered.
+const DOC_RESPONSE_CACHE_NAMESPACE = "doc-pages";
 
 export function isDocExplorerPath(pathname: string): boolean {
   const segments = pathname.split("/").filter(Boolean);
@@ -90,9 +91,10 @@ export async function readCachedAnonymousDocResponse(
   cache: DocResponseCache,
   request: Request,
   pathname: string,
+  buildVersion: string,
 ): Promise<Response | null> {
   if (!shouldEdgeCacheDocPage(request, pathname, false)) return null;
-  return (await cache.match(docResponseCacheRequest(request))) ?? null;
+  return (await cache.match(docResponseCacheRequest(request, buildVersion))) ?? null;
 }
 
 export async function writeCachedAnonymousDocResponse(
@@ -101,17 +103,18 @@ export async function writeCachedAnonymousDocResponse(
   pathname: string,
   loggedIn: boolean,
   response: Response,
+  buildVersion: string,
 ): Promise<boolean> {
   if (!response.ok || response.headers.has("Set-Cookie")) return false;
   if (!shouldEdgeCacheDocPage(request, pathname, loggedIn)) return false;
-  await cache.put(docResponseCacheRequest(request), response.clone());
+  await cache.put(docResponseCacheRequest(request, buildVersion), response.clone());
   return true;
 }
 
-function docResponseCacheRequest(request: Request): Request {
+function docResponseCacheRequest(request: Request, buildVersion: string): Request {
   const source = new URL(request.url);
   const key = new URL(DOC_RESPONSE_CACHE_ORIGIN);
-  key.pathname = `/${DOC_RESPONSE_CACHE_NAMESPACE}${source.pathname}`;
+  key.pathname = `/${DOC_RESPONSE_CACHE_NAMESPACE}/${encodeURIComponent(buildVersion)}${source.pathname}`;
   key.search = source.search;
   return new Request(key, { method: "GET" });
 }

@@ -1,4 +1,5 @@
 import type { Cookies } from "@sveltejs/kit";
+import { version } from "$app/env";
 import type { Handle } from "@sveltejs/kit/hooks";
 import { setupLogging } from "#lib/log.server.js";
 import { handleWsUpgrade } from "$provider";
@@ -117,7 +118,7 @@ async function maybeReadCachedDocResponse(
   const cache = getDefaultWorkerCache();
   if (!cache) return null;
   try {
-    return await readCachedAnonymousDocResponse(cache, event.request, event.url.pathname);
+    return await readCachedAnonymousDocResponse(cache, event.request, event.url.pathname, version);
   } catch {
     return null;
   }
@@ -136,6 +137,7 @@ async function maybeWriteCachedDocResponse(
       event.url.pathname,
       event.locals.user !== null,
       response,
+      version,
     );
   } catch {
     return false;

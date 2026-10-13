@@ -136,23 +136,26 @@ describe("cache-policy", () => {
   });
 
   test("reads and writes only anonymous doc responses", async () => {
+    const build = "build-1";
     const { cache, keys } = createResponseCache();
     const anonymous = new Request("https://codeview.codes/syn/3.0.3/TypeMacro");
     const credentialed = new Request(anonymous, { headers: { Cookie: "session=secret" } });
     const pathname = new URL(anonymous.url).pathname;
     const response = withCacheHeaders(new Response("anonymous"), ANONYMOUS_DOC_CACHE_CONTROL);
 
-    expect(await writeCachedAnonymousDocResponse(cache, anonymous, pathname, false, response)).toBe(
-      true,
-    );
-    expect((await readCachedAnonymousDocResponse(cache, anonymous, pathname))?.status).toBe(200);
-    expect(await readCachedAnonymousDocResponse(cache, credentialed, pathname)).toBeNull();
     expect(
-      await writeCachedAnonymousDocResponse(cache, credentialed, pathname, false, response),
-    ).toBe(false);
-    expect(await writeCachedAnonymousDocResponse(cache, anonymous, pathname, true, response)).toBe(
-      false,
+      await writeCachedAnonymousDocResponse(cache, anonymous, pathname, false, response, build),
+    ).toBe(true);
+    expect((await readCachedAnonymousDocResponse(cache, anonymous, pathname, build))?.status).toBe(
+      200,
     );
+    expect(await readCachedAnonymousDocResponse(cache, credentialed, pathname, build)).toBeNull();
+    expect(
+      await writeCachedAnonymousDocResponse(cache, credentialed, pathname, false, response, build),
+    ).toBe(false);
+    expect(
+      await writeCachedAnonymousDocResponse(cache, anonymous, pathname, true, response, build),
+    ).toBe(false);
     expect(
       await writeCachedAnonymousDocResponse(
         cache,
@@ -160,11 +163,14 @@ describe("cache-policy", () => {
         pathname,
         false,
         new Response("private", { headers: { "Set-Cookie": "session=secret" } }),
+        build,
       ),
     ).toBe(false);
     expect(keys.length).toBeGreaterThan(0);
-    expect(keys.every((key) => key.startsWith("https://codeview.internal/doc-pages-v1/"))).toBe(
-      true,
-    );
+    expect(
+      keys.every((key) => key.startsWith("https://codeview.internal/doc-pages/build-1/")),
+    ).toBe(true);
+    // A new deploy must not see pages the previous build rendered.
+    expect(await readCachedAnonymousDocResponse(cache, anonymous, pathname, "build-2")).toBeNull();
   });
 });
