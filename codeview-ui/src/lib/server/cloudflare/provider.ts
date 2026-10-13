@@ -795,6 +795,44 @@ function getDefaultWorkerCache(): Cache | null {
   return workerCaches.default ?? null;
 }
 
+/**
+ * Memoize a JSON-serializable value in the colo-wide Cache API for a short
+ * time. The /queue page annotated every planned item with an R2 freshness
+ * read (~100 subrequests, 2-4 s TTFB) on each cold isolate.
+ */
+async function withShortEdgeCache<T>(
+  cacheUrl: string,
+  ttlSeconds: number,
+  compute: () => Promise<T>,
+): Promise<T> {
+  const cache = getDefaultWorkerCache();
+  const request = new Request(cacheUrl, { method: "GET" });
+  if (cache) {
+    try {
+      const cached = await cache.match(request);
+      // SAFETY: only this function writes this internal URL, with JSON of T.
+      if (cached) return (await cached.json()) as T;
+    } catch (err) {
+      log.warn`Cache API match failed for ${cacheUrl}: ${String(err)}`;
+    }
+  }
+  const value = await compute();
+  if (cache && value !== null && value !== undefined) {
+    const response = new Response(JSON.stringify(value), {
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": `public, max-age=${ttlSeconds}`,
+      },
+    });
+    await cache.put(request, response).catch((err: unknown) => {
+      log.warn`Cache API put failed for ${cacheUrl}: ${String(err)}`;
+    });
+  }
+  return value;
+}
+
+const PLANNED_RUN_CACHE_TTL_SECONDS = 60;
+
 async function decodeR2ObjectText(_key: string, obj: R2ObjectBody): Promise<string> {
   const bytes = new Uint8Array(await obj.arrayBuffer());
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
@@ -1789,6 +1827,19 @@ export function createCloudflareProvider(
     const runId = plan.run_id ?? plan.runId;
     const generatedAt = plan.generated_at ?? plan.generatedAt;
     if (!runId || !generatedAt) return null;
+    return withShortEdgeCache(
+      `https://codeview.internal/queue/planned/${encodeURIComponent(runId)}/${limit}`,
+      PLANNED_RUN_CACHE_TTL_SECONDS,
+      () => annotatePlan(plan, runId, generatedAt, limit),
+    );
+  }
+
+  async function annotatePlan(
+    plan: WorkPlanArtifact,
+    runId: string,
+    generatedAt: string,
+    limit: number,
+  ): Promise<PlannedParseRun> {
     const work = Array.isArray(plan.work) ? plan.work : [];
     const candidates = work
       .map(planItemFromArtifact)
@@ -1842,8 +1893,7 @@ export function createCloudflareProvider(
     }).pipe(Effect.option);
     if (Option.isSome(encoded)) {
       yield* Effect.tryPromise({
-        try: () =>
-          env.CRATE_GRAPHS.put(LATEST_PLAN_POINTER_KEY, JSON.stringify(encoded.value)),
+        try: () => env.CRATE_GRAPHS.put(LATEST_PLAN_POINTER_KEY, JSON.stringify(encoded.value)),
         catch: (cause) => new Error(`latest plan pointer write failed: ${errorMessage(cause)}`),
       }).pipe(Effect.catch(() => Effect.void));
     }

@@ -1,4 +1,4 @@
-import { redirect } from "@sveltejs/kit";
+import { error, redirect } from "@sveltejs/kit";
 import type { LayoutServerLoad } from "./$types";
 import { initProvider } from "#lib/server/provider.js";
 import { hyphenateCrateName, normalizeCrateName } from "#lib/crate-names.js";
@@ -26,6 +26,13 @@ export const load: LayoutServerLoad = async (event) => {
   const provider = initProvider(event);
   const name = hyphenateCrateName(crate);
 
+  // `rand_core` and `rand-core` are the same crate; keep one URL per page.
+  // Toolchain crates (`proc_macro`) keep their underscore names.
+  if (crate !== name && !isStdCrate(normalizeCrateName(crate))) {
+    const pathname = `/${name}${event.url.pathname.slice(crate.length + 1)}`;
+    throw redirect(308, `${pathname}${event.url.search}`);
+  }
+
   if (INVALID_VERSION_SENTINELS.has(version)) {
     const resolved = await provider.resolveVersion(name, "latest");
     const prefix = `/${crate}/${version}`;
@@ -38,6 +45,11 @@ export const load: LayoutServerLoad = async (event) => {
   // Resolve version aliases (latest → concrete semver) and redirect
   if (VERSION_ALIASES.has(version)) {
     const resolved = await provider.resolveVersion(name, version);
+    // `latest` only stays unresolved when neither crates.io nor our refs
+    // know any version of this crate.
+    if (resolved === version && version === "latest" && !isStdCrate(normalizeCrateName(name))) {
+      error(404, "Crate not found");
+    }
     if (resolved !== version) {
       const prefix = `/${crate}/${version}`;
       const rest = event.url.pathname.startsWith(prefix)
@@ -63,6 +75,14 @@ export const load: LayoutServerLoad = async (event) => {
 
   const status = await provider.getCrateStatus(name, version);
   if (status.status !== "ready") {
+    const neverParsed = status.status === "unknown" || status.action === "docs_unavailable";
+    if (neverParsed && !VERSION_ALIASES.has(version)) {
+      const versions = await provider.getCrateVersions(name).catch((): string[] => []);
+      // An empty list means the registry lookup failed; don't 404 on that.
+      if (versions.length > 0 && !versions.includes(version)) {
+        error(404, `${name} ${version} is not a published version`);
+      }
+    }
     return {
       status,
       meta: null,
@@ -101,6 +121,10 @@ export const load: LayoutServerLoad = async (event) => {
     resolve.crateMeta(name, version, provider).catch(() => null),
     resolve.treeRoots(name, version, provider).catch(() => null),
   ]);
+
+  if (rest && nodeView === null && meta !== null) {
+    error(404, "Item not found");
+  }
 
   const rootId = roots?.[0]?.node.id;
   const rootChildrenPromise = rootId

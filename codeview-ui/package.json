@@ -97,7 +97,6 @@
     "alchemy": "2.0.0-beta.72",
     "drizzle-kit": "1.0.0-rc.5-ab785fc",
     "json-schema-to-typescript": "15.0.4",
-    "mode-watcher": "1.1.0",
     "oxlint": "1.78.0",
     "paneforge": "1.0.2",
     "shadcn-svelte": "1.5.0",

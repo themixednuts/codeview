@@ -4,6 +4,7 @@ import { edgeLabels, isPublic, kindLabels } from "#lib/display-names.js";
 import { formatSignature, type FormattedSignature } from "#lib/signature-format.js";
 import { nodeUrl } from "#lib/url.js";
 import * as v from "valibot";
+import { plainDocSummary } from "#lib/doc-summary.js";
 
 export type DesignKindToken =
   | "crate"
@@ -275,12 +276,7 @@ function pathFromAncestors(
 
 function docsBlurb(node: Node | NodeSummary): string | undefined {
   if (!("docs" in node) || !node.docs) return undefined;
-  const firstParagraph = node.docs
-    .trim()
-    .split(/\n\s*\n/, 1)[0]
-    ?.replace(/\s+/g, " ")
-    .trim();
-  return firstParagraph || undefined;
+  return plainDocSummary(node.docs, Number.POSITIVE_INFINITY) ?? undefined;
 }
 
 function hasRealSignature(

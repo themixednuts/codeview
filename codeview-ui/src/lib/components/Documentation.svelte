@@ -122,24 +122,24 @@
 		color: var(--ink);
 		line-height: 1.25;
 	}
-	.documentation-text :global(h1) {
+	.documentation-text :global(.doc-h1) {
 		font-size: 1.45em;
 		margin-top: 1.75em;
 		margin-bottom: 0.5em;
 	}
-	.documentation-text :global(h2) {
+	.documentation-text :global(.doc-h2) {
 		font-size: 1.28em;
 		margin-top: 1.55em;
 		margin-bottom: 0.45em;
 	}
-	.documentation-text :global(h3) {
+	.documentation-text :global(.doc-h3) {
 		font-size: 1.12em;
 		margin-top: 1.35em;
 		margin-bottom: 0.4em;
 	}
-	.documentation-text :global(h4),
-	.documentation-text :global(h5),
-	.documentation-text :global(h6) {
+	.documentation-text :global(.doc-h4),
+	.documentation-text :global(.doc-h5),
+	.documentation-text :global(.doc-h6) {
 		font-size: 1em;
 		margin-top: 1.2em;
 		margin-bottom: 0.35em;

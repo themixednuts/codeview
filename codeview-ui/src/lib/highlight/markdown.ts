@@ -50,6 +50,11 @@ const sanitizeOptions: sanitizeHtml.IOptions = {
   },
   allowedClasses: {
     a: ["intra-doc-link"],
+    h2: ["doc-h1"],
+    h3: ["doc-h2"],
+    h4: ["doc-h3"],
+    h5: ["doc-h4"],
+    h6: ["doc-h5", "doc-h6"],
   },
   transformTags: {
     img: (_tagName, attribs) => ({
@@ -72,6 +77,19 @@ const md = new MarkdownIt({
   linkify: true, // Auto-convert URLs to links
   typographer: true, // Smart quotes, dashes, etc.
 }).use(markdownItGithubAlerts); // GitHub-style alert blocks (> [!NOTE], etc.)
+
+// Doc comments use `#` for their own top-level headings, but they render
+// inside a page whose <h1> is the item name. Demote every heading one level
+// for a correct outline; the class keeps the authored level for styling.
+md.core.ruler.push("demote_doc_headings", (state) => {
+  for (const token of state.tokens) {
+    if (token.type !== "heading_open" && token.type !== "heading_close") continue;
+    const level = Number(token.tag.slice(1));
+    if (!Number.isInteger(level)) continue;
+    token.tag = `h${Math.min(level + 1, 6)}`;
+    if (token.type === "heading_open") token.attrJoin("class", `doc-h${level}`);
+  }
+});
 
 // Rustdoc commonly wraps Markdown badges and prose in raw block elements.
 // Keep the tags as inline HTML so MarkdownIt still parses their contents.
