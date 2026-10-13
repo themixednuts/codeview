@@ -1164,6 +1164,26 @@ mod tests {
         Node::new(id, name, kind, Visibility::Public)
     }
 
+    /// Pins the canonical JSON hashing used for graph dedup: object keys
+    /// sorted, no whitespace, then SHA-256.  Expected value is the sha256
+    /// of `{"a":"x","b":[1,true,null,-2.5],"c":{"d":false}}`.
+    #[test]
+    fn canonical_hash_matches_known_sha256() {
+        use sha2::{Digest, Sha256};
+
+        let value = serde_json::json!({
+            "c": { "d": false },
+            "b": [1, true, null, -2.5],
+            "a": "x",
+        });
+        let mut hasher = Sha256::new();
+        canonical_hash(&value, &mut hasher);
+        assert_eq!(
+            hex::encode(hasher.finalize()),
+            "da6abae0178f79361c1e3538d37440fcf8c57af15cc75b4d9e81df68b4136862"
+        );
+    }
+
     fn external_node(id: &str, name: &str, kind: NodeKind) -> Node {
         let mut node = node(id, name, kind);
         node.is_external = true;

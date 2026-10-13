@@ -17,7 +17,7 @@ open = "5"
 schemars = "1.2.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-base64 = "0.22"
+base64 = "0.23"
 thiserror = "2.0.18"
 tempfile = "3"
 
@@ -37,7 +37,7 @@ aws-config = { version = "1.8", default-features = false, features = ["behavior-
 aws-credential-types = "1.2"
 
 # HTTP for docs.rs (rustdoc JSON) + crates.io (newest-version lookup)
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
 
 # Async runtime (aws-sdk-s3 requires)
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "fs", "io-util", "process"] }
@@ -45,7 +45,7 @@ futures = "0.3"
 
 # Decompress docs.rs rustdoc JSON (`/json` zstd and `.json.gz`)
 flate2 = "1.0"
-zstd = "0.13"
+zstd = "0.14"
 
 # crates.io db-dump snapshot: stream `*.csv` members from `db-dump.tar.gz`
 csv = "1.4"
@@ -53,15 +53,16 @@ semver = "1.0"
 tar = "0.4"
 
 # Local R2 emulation — miniflare SQLite schema mirrored 1:1 via drizzle
-drizzle = { version = "0.1.6", features = ["sqlite", "rusqlite", "serde"] }
-# Pinned to match drizzle's transitive requirement (rusqlite ^0.37 →
-# libsqlite3-sys ^0.35) — keeps a single native-link entry for sqlite3
-# so cargo's `links = "sqlite3"` invariant holds.
-rusqlite = { version = "0.37", features = ["bundled"] }
+drizzle = { version = "0.4.0", features = ["sqlite", "rusqlite", "serde"] }
+# Pinned to match drizzle's transitive requirement (drizzle 0.4 accepts
+# rusqlite >=0.36,<0.41 → 0.40 / libsqlite3-sys 0.38) — keeps a single
+# native-link entry for sqlite3 so cargo's `links = "sqlite3"` invariant
+# holds.
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Hashing — graph dedup + miniflare DO-id derivation + rustdoc-input hash
-sha2 = "0.10"
-hmac = "0.12"
+sha2 = "0.11"
+hmac = "0.13"
 hex = "0.4"
 
 # async traits without macro overhead

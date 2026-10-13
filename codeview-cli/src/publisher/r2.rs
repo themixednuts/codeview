@@ -608,18 +608,20 @@ impl LocalMiniflareBackend {
 /// 3. `hmac     = HMAC-SHA256(key, nameHmac)[..16]`
 /// 4. id = `hex(nameHmac || hmac)` (32 bytes → 64 hex chars)
 fn namespace_id_from_name(unique_key: &str, name: &str) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
 
     let mut hasher = Sha256::new();
     hasher.update(unique_key.as_bytes());
     let key = hasher.finalize();
 
-    let mut h1 = <Hmac<Sha256> as Mac>::new_from_slice(&key).expect("HMAC accepts any key length");
+    let mut h1 =
+        <Hmac<Sha256> as KeyInit>::new_from_slice(&key).expect("HMAC accepts any key length");
     h1.update(name.as_bytes());
     let name_hmac = h1.finalize().into_bytes();
     let name_hmac_16 = &name_hmac[..16];
 
-    let mut h2 = <Hmac<Sha256> as Mac>::new_from_slice(&key).expect("HMAC accepts any key length");
+    let mut h2 =
+        <Hmac<Sha256> as KeyInit>::new_from_slice(&key).expect("HMAC accepts any key length");
     h2.update(name_hmac_16);
     let hmac = h2.finalize().into_bytes();
     let hmac_16 = &hmac[..16];
@@ -856,7 +858,19 @@ pub fn refs_key(storage_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{retry_delay, s3_is_transient};
+    use super::{namespace_id_from_name, retry_delay, s3_is_transient};
+
+    /// Pins the miniflare Durable Object id derivation (SHA-256 key +
+    /// two truncated HMAC-SHA256 rounds).  The local backend locates the
+    /// bucket's `.sqlite` file by this id, so a sha2/hmac upgrade that
+    /// changed the output would silently point at a non-existent file.
+    #[test]
+    fn namespace_id_from_name_matches_known_digest() {
+        assert_eq!(
+            namespace_id_from_name("miniflare-R2BucketObject", "codeview-static"),
+            "b26818f0f7b1752c77144743f49d44855bfb0af929c34517ee92d502dd1dc0d8"
+        );
+    }
 
     #[test]
     fn cloudflare_internal_errors_are_retryable() {
